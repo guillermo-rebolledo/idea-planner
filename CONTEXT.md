@@ -9,7 +9,7 @@ The top-level container for a thought being developed, from its initial capture 
 _Avoid_: Effort, project
 
 **Conversation**:
-An optional AI-assisted exchange attached to an Idea. A Conversation may be pinned, settled as resolved context, or discarded from the active view while remaining recoverable.
+A permanent, user-visible history belonging to one Idea. It spans every planning phase and contains the Idea's user messages, AI responses, and Run boundaries.
 _Avoid_: Agent session, chat
 
 **Proposal**:
@@ -17,11 +17,11 @@ A change to an Idea's durable content suggested through a Conversation. A Propos
 _Avoid_: Automatic edit, agent action
 
 **Artifact**:
-A durable Markdown document accepted by the user from a Run, such as an MVP specification, requirements, decisions, or issue drafts. The user may edit it directly; later AI changes require approval as Proposals.
+A durable Markdown document promoted from a Draft Artifact when the user accepts the Planning Package. The user may edit it directly; later AI changes require approval as Proposals.
 _Avoid_: File, item
 
 **Draft Artifact**:
-A read-only Markdown document created and continuously revised by an active Run. It becomes an Artifact only when the user accepts it.
+A Markdown document created and revised during planning. It remains read-only inside the application until the user accepts the complete Planning Package.
 _Avoid_: Artifact, Proposal
 
 **MVP Spec**:
@@ -33,8 +33,12 @@ A user-approved, dependency-aware vertical slice of an accepted MVP Spec, repres
 _Avoid_: Task, issue
 
 **Run**:
-An explicitly started AI execution within a Conversation, configured with a local harness, model, and reasoning effort. A Run may continue in the background until it completes, is paused, or is stopped.
-_Avoid_: Conversation, background agent
+One user submission followed by AI work until the application is waiting for the user, completes, fails, or is stopped. A Run is configured with a harness, model, and reasoning effort.
+_Avoid_: Conversation, Harness Session
+
+**Harness Session**:
+The provider-specific continuity record behind a Conversation, such as a Codex thread or Claude session. A Conversation may cross Harness Sessions when the user switches harnesses.
+_Avoid_: Conversation, Run
 
 **Suggested Response**:
 A selectable answer offered by the AI during a Conversation. Selecting it submits that answer on the user's behalf, while the user may always write a custom response instead.
@@ -43,3 +47,19 @@ _Avoid_: Command, action
 **Idea Library**:
 The user-selected, local folder containing Ideas and their Markdown artifacts. Its contents remain visible and usable outside the application.
 _Avoid_: Workspace, vault, app database
+
+**Working Directory**:
+The user-approved local directory containing an Idea's root Markdown file and managed planning files. It may be a folder in the Idea Library or an attached existing project.
+_Avoid_: Idea Library, repository
+
+**Planning Package**:
+The complete set of planning Markdown accepted when an Idea becomes Ready, including its Conversation transcript and, for a Software Idea, its MVP Spec and Implementation Tickets.
+_Avoid_: Export, deliverable
+
+**Software Idea**:
+An Idea intended to produce an MVP Spec and Implementation Tickets.
+_Avoid_: Project
+
+**General Idea**:
+An Idea that may use Grill Me or Wayfinder but does not require an engineering spec or Implementation Tickets to become Ready.
+_Avoid_: Note
