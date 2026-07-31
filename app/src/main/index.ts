@@ -14,6 +14,8 @@ import {
   CoreError,
   IPC_CHANNELS,
   ideaSummarySchema,
+  ideaRelativePathSchema,
+  openedIdeaSchema,
   librarySnapshotSchema,
   captureIdeaInputSchema,
   themePreferenceSchema,
@@ -146,6 +148,10 @@ function registerIpc(): void {
     }
     return idea
   })
+
+  handleInvoke(IPC_CHANNELS.openIdea, ideaRelativePathSchema, async (relativePath) =>
+    openedIdeaSchema.parse(await coreClient.send({ type: 'idea/open', relativePath }))
+  )
 
   handleInvoke(IPC_CHANNELS.listIdeas, z.undefined(), async () => {
     const ideas = z.array(ideaSummarySchema).parse(await coreClient.send({ type: 'idea/list' }))
