@@ -1,4 +1,5 @@
-import { join } from 'node:path'
+import { mkdir, rename, stat } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import {
   BrowserWindow,
   app,
@@ -6,6 +7,7 @@ import {
   ipcMain,
   nativeTheme,
   session,
+  shell,
   type IpcMainInvokeEvent
 } from 'electron'
 import { z } from 'zod'
@@ -18,9 +20,16 @@ import {
   openedIdeaSchema,
   librarySnapshotSchema,
   captureIdeaInputSchema,
+  deleteIdeaInputSchema,
+  deleteIdeaPreviewSchema,
+  mailboxQuerySchema,
+  mailboxSnapshotSchema,
+  setIdeaArchivedInputSchema,
+  setIdeaPinnedInputSchema,
   themePreferenceSchema,
   type BootState,
   type ChooseLibraryResult,
+  type DeleteIdeaResult,
   type LibrarySnapshot,
   type ThemeState
 } from '@shared/contract'
@@ -37,6 +46,7 @@ import { SettingsStore } from './settings'
 // are hermetic, and answer the native folder picker without a real dialog.
 const testUserData = process.env['IDEA_SHELL_TEST_USER_DATA']
 const testChooseDir = process.env['IDEA_SHELL_TEST_CHOOSE_DIR']
+const testTrashDir = process.env['IDEA_SHELL_TEST_TRASH_DIR']
 const devServerUrl = process.env['ELECTRON_RENDERER_URL']
 if (testUserData && !app.isPackaged) {
   app.setPath('userData', testUserData)
@@ -159,11 +169,114 @@ function registerIpc(): void {
     return ideas
   })
 
+  handleInvoke(IPC_CHANNELS.queryMailbox, mailboxQuerySchema, async (query) =>
+    mailboxSnapshotSchema.parse(
+      await coreClient.send({
+        type: 'mailbox/query',
+        query: { ...query, dormantAfterDays: settings.get().dormantAfterDays }
+      })
+    )
+  )
+
+  handleInvoke(IPC_CHANNELS.setIdeaPinned, setIdeaPinnedInputSchema, async (input) =>
+    ideaSummarySchema.parse(
+      await coreClient.send({
+        type: 'idea/set-pinned',
+        relativePath: ideaRelativePathSchema.parse(input.relativePath),
+        pinned: input.pinned
+      })
+    )
+  )
+
+  handleInvoke(IPC_CHANNELS.setIdeaArchived, setIdeaArchivedInputSchema, async (input) =>
+    ideaSummarySchema.parse(
+      await coreClient.send({
+        type: 'idea/set-archived',
+        relativePath: ideaRelativePathSchema.parse(input.relativePath),
+        archived: input.archived
+      })
+    )
+  )
+
+  handleInvoke(IPC_CHANNELS.previewDeleteIdea, ideaRelativePathSchema, async (relativePath) =>
+    deleteIdeaPreviewSchema.parse(
+      await coreClient.send({ type: 'idea/delete-preview', relativePath })
+    )
+  )
+
+  handleInvoke(
+    IPC_CHANNELS.deleteIdeaPermanently,
+    deleteIdeaInputSchema,
+    async ({ relativePath, targets }): Promise<DeleteIdeaResult> => {
+      const libraryPath = libraryState?.path ?? settings.get().libraryPath
+      if (!libraryPath) {
+        throw new CoreError('NO_LIBRARY_OPEN', 'Open an Idea Library before deleting an Idea')
+      }
+      // Delete acts only on the previewed, confirmed app-owned targets. That
+      // keeps what happens identical to what the person read, and lets a
+      // retry finish the remaining targets after a partial failure even when
+      // the Idea is no longer recognizable on disk.
+      const folder = ideaRelativePathSchema.parse(relativePath)
+      if (!targets.every((target) => isConfirmedIdeaTarget(target, folder))) {
+        throw new CoreError('INVALID_INPUT', 'Delete targets must stay inside the Idea folder')
+      }
+      const trashed: string[] = []
+      const failed: DeleteIdeaResult['failed'] = []
+      for (const target of targets) {
+        try {
+          await trashTarget(join(libraryPath, target))
+          trashed.push(target)
+        } catch (error) {
+          if (await isMissing(join(libraryPath, target))) {
+            // Already gone (for example after a retried partial delete): the
+            // desired end state is reached.
+            trashed.push(target)
+            continue
+          }
+          failed.push({
+            path: target,
+            message: error instanceof Error ? error.message : 'Could not move to Trash'
+          })
+        }
+      }
+      // Resync canonical state and the search projection after the change.
+      await openLibrary(libraryPath).catch(() => undefined)
+      return { trashed, failed }
+    }
+  )
+
   handleInvoke(IPC_CHANNELS.setThemePreference, themePreferenceSchema, (preference) => {
     settings.update({ themePreference: preference })
     nativeTheme.themeSource = preference
     return themeState()
   })
+}
+
+/** A previewed target: the Idea folder itself or a portable path inside it. */
+function isConfirmedIdeaTarget(target: string, folder: string): boolean {
+  if (target === folder) return true
+  if (!target.startsWith(`${folder}/`)) return false
+  return target
+    .split('/')
+    .every((part) => part !== '' && part !== '.' && part !== '..' && !part.includes('\\'))
+}
+
+async function isMissing(absolutePath: string): Promise<boolean> {
+  return stat(absolutePath).then(
+    () => false,
+    () => true
+  )
+}
+
+async function trashTarget(absolutePath: string): Promise<void> {
+  // Test seam: acceptance tests observe the move without touching the real
+  // macOS Trash. Ignored in packaged builds.
+  if (testTrashDir && !app.isPackaged) {
+    await mkdir(testTrashDir, { recursive: true })
+    await rename(absolutePath, join(testTrashDir, `${Date.now()}-${basename(absolutePath)}`))
+    return
+  }
+  await shell.trashItem(absolutePath)
 }
 
 function hardenSession(): void {

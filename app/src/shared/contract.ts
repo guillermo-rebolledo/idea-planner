@@ -27,7 +27,11 @@ export const ideaSummarySchema = z.object({
   updatedAt: z.string().datetime(),
   openState: ideaOpenStateSchema,
   /** Path of the Idea's folder relative to the Idea Library root. */
-  relativePath: z.string().min(1)
+  relativePath: z.string().min(1),
+  // Defaults keep summaries persisted before these fields existed readable.
+  pinned: z.boolean().default(false),
+  /** When set, the Idea is archived in place; canonical files never move. */
+  archivedAt: z.string().datetime().nullable().default(null)
 })
 export type IdeaSummary = z.infer<typeof ideaSummarySchema>
 
@@ -63,6 +67,97 @@ export const ideaRelativePathSchema = z
     'Expected a portable Idea folder reference'
   )
 export type IdeaRelativePath = z.infer<typeof ideaRelativePathSchema>
+
+export const mailboxKindFilterSchema = z.enum(['all', 'software', 'general'])
+export type MailboxKindFilter = z.infer<typeof mailboxKindFilterSchema>
+
+export const mailboxViewSchema = z.enum(['active', 'archived'])
+export type MailboxView = z.infer<typeof mailboxViewSchema>
+
+/** The Renderer's mailbox request; Main adds the configured thresholds. */
+export const mailboxQuerySchema = z.object({
+  search: z.string().max(500),
+  kind: mailboxKindFilterSchema,
+  view: mailboxViewSchema
+})
+export type MailboxQuery = z.infer<typeof mailboxQuerySchema>
+
+export const mailboxCoreQuerySchema = mailboxQuerySchema.extend({
+  /** Days without activity after which a pinned Idea shows as Dormant. */
+  dormantAfterDays: z.number().int().positive()
+})
+export type MailboxCoreQuery = z.infer<typeof mailboxCoreQuerySchema>
+
+export const mailboxIdeaSchema = ideaSummarySchema.extend({
+  dormant: z.boolean()
+})
+export type MailboxIdea = z.infer<typeof mailboxIdeaSchema>
+
+export const mailboxGroupKeySchema = z.enum([
+  'pinned',
+  'needs-attention',
+  'running',
+  'recent',
+  'archived'
+])
+export type MailboxGroupKey = z.infer<typeof mailboxGroupKeySchema>
+
+export const mailboxGroupSchema = z.object({
+  key: mailboxGroupKeySchema,
+  ideas: z.array(mailboxIdeaSchema)
+})
+export type MailboxGroup = z.infer<typeof mailboxGroupSchema>
+
+export const mailboxSnapshotSchema = z.object({
+  view: mailboxViewSchema,
+  /** Ideas in this view before search and kind filters: 0 means truly empty. */
+  total: z.number().int().nonnegative(),
+  /** Ideas matching the search and filters across all groups. */
+  matched: z.number().int().nonnegative(),
+  /** Whether this answer required rebuilding the disposable search index. */
+  index: z.enum(['ready', 'rebuilt']),
+  groups: z.array(mailboxGroupSchema)
+})
+export type MailboxSnapshot = z.infer<typeof mailboxSnapshotSchema>
+
+export const setIdeaPinnedInputSchema = z.object({
+  relativePath: z.string().min(1),
+  pinned: z.boolean()
+})
+export type SetIdeaPinnedInput = z.infer<typeof setIdeaPinnedInputSchema>
+
+export const setIdeaArchivedInputSchema = z.object({
+  relativePath: z.string().min(1),
+  archived: z.boolean()
+})
+export type SetIdeaArchivedInput = z.infer<typeof setIdeaArchivedInputSchema>
+
+export const deleteIdeaPreviewSchema = z.object({
+  relativePath: z.string().min(1),
+  title: z.string().min(1),
+  /** Library-relative app-owned paths that permanent delete moves to Trash. */
+  targets: z.array(z.string().min(1)),
+  /** Library-relative content inside the folder that is kept untouched. */
+  keeps: z.array(z.string().min(1))
+})
+export type DeleteIdeaPreview = z.infer<typeof deleteIdeaPreviewSchema>
+
+export const deleteIdeaInputSchema = z.object({
+  relativePath: z.string().min(1),
+  /**
+   * The exact previewed targets to move to Trash. Delete acts only on what
+   * the person confirmed, so a retry after a partial failure can finish the
+   * remaining targets even when the Idea itself is no longer recognizable.
+   */
+  targets: z.array(z.string().min(1)).min(1)
+})
+export type DeleteIdeaInput = z.infer<typeof deleteIdeaInputSchema>
+
+export const deleteIdeaResultSchema = z.object({
+  trashed: z.array(z.string().min(1)),
+  failed: z.array(z.object({ path: z.string().min(1), message: z.string() }))
+})
+export type DeleteIdeaResult = z.infer<typeof deleteIdeaResultSchema>
 
 export const captureIdeaInputSchema = z.object({
   kind: ideaKindSchema,
@@ -123,7 +218,19 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('library/open'), path: z.string().min(1) }),
   z.object({ type: z.literal('idea/capture'), input: captureIdeaInputSchema }),
   z.object({ type: z.literal('idea/open'), relativePath: ideaRelativePathSchema }),
-  z.object({ type: z.literal('idea/list') })
+  z.object({ type: z.literal('idea/list') }),
+  z.object({ type: z.literal('mailbox/query'), query: mailboxCoreQuerySchema }),
+  z.object({
+    type: z.literal('idea/set-pinned'),
+    relativePath: ideaRelativePathSchema,
+    pinned: z.boolean()
+  }),
+  z.object({
+    type: z.literal('idea/set-archived'),
+    relativePath: ideaRelativePathSchema,
+    archived: z.boolean()
+  }),
+  z.object({ type: z.literal('idea/delete-preview'), relativePath: ideaRelativePathSchema })
 ])
 export type CoreCommand = z.infer<typeof coreCommandSchema>
 
@@ -157,6 +264,13 @@ export interface IdeaShellApi {
   captureIdea(input: CaptureIdeaInput): Promise<IdeaSummary>
   openIdea(relativePath: IdeaRelativePath): Promise<OpenedIdea>
   listIdeas(): Promise<IdeaSummary[]>
+  queryMailbox(query: MailboxQuery): Promise<MailboxSnapshot>
+  setIdeaPinned(input: SetIdeaPinnedInput): Promise<IdeaSummary>
+  setIdeaArchived(input: SetIdeaArchivedInput): Promise<IdeaSummary>
+  /** Enumerates the exact app-owned targets before any permanent delete. */
+  previewDeleteIdea(relativePath: IdeaRelativePath): Promise<DeleteIdeaPreview>
+  /** Moves only the previewed, confirmed app-owned targets to the macOS Trash. */
+  deleteIdeaPermanently(input: DeleteIdeaInput): Promise<DeleteIdeaResult>
   setThemePreference(preference: ThemePreference): Promise<ThemeState>
   onThemeChanged(listener: (theme: ThemeState) => void): () => void
 }

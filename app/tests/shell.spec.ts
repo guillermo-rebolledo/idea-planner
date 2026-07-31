@@ -18,6 +18,7 @@ const mainEntry = join(__dirname, '../out/main/index.js')
 interface Sandbox {
   userDataDir: string
   libraryDir: string
+  trashDir: string
 }
 
 let sandbox: Sandbox
@@ -29,7 +30,8 @@ async function launchShell(): Promise<ElectronApplication> {
     env: {
       ...process.env,
       IDEA_SHELL_TEST_USER_DATA: sandbox.userDataDir,
-      IDEA_SHELL_TEST_CHOOSE_DIR: sandbox.libraryDir
+      IDEA_SHELL_TEST_CHOOSE_DIR: sandbox.libraryDir,
+      IDEA_SHELL_TEST_TRASH_DIR: sandbox.trashDir
     }
   })
 }
@@ -37,13 +39,15 @@ async function launchShell(): Promise<ElectronApplication> {
 test.beforeEach(async () => {
   sandbox = {
     userDataDir: await mkdtemp(join(tmpdir(), 'idea-shell-userdata-')),
-    libraryDir: await mkdtemp(join(tmpdir(), 'idea-shell-library-'))
+    libraryDir: await mkdtemp(join(tmpdir(), 'idea-shell-library-')),
+    trashDir: await mkdtemp(join(tmpdir(), 'idea-shell-trash-'))
   }
 })
 
 test.afterEach(async () => {
   await rm(sandbox.userDataDir, { recursive: true, force: true })
   await rm(sandbox.libraryDir, { recursive: true, force: true })
+  await rm(sandbox.trashDir, { recursive: true, force: true })
 })
 
 test('renderer is sandboxed with only the narrow preload surface', async () => {
@@ -69,11 +73,16 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
     expect(exposure.shellKeys).toEqual([
       'captureIdea',
       'chooseLibraryLocation',
+      'deleteIdeaPermanently',
       'getBootState',
       'listIdeas',
       'onThemeChanged',
       'openIdea',
       'openLibrary',
+      'previewDeleteIdea',
+      'queryMailbox',
+      'setIdeaArchived',
+      'setIdeaPinned',
       'setThemePreference'
     ])
 
@@ -153,6 +162,116 @@ test('a person captures an Idea and it survives an application restart', async (
     await expect(page.getByText('interrupted write was recovered', { exact: false })).toBeVisible()
   } finally {
     await secondRun.close()
+  }
+})
+
+async function chooseLibrary(page: Awaited<ReturnType<ElectronApplication['firstWindow']>>) {
+  await page.getByRole('button', { name: 'Choose or create a folder…' }).click()
+  await page.getByRole('button', { name: 'Use this Idea Library' }).click()
+}
+
+async function captureIdea(
+  page: Awaited<ReturnType<ElectronApplication['firstWindow']>>,
+  title: string,
+  notes: string,
+  kind: 'Software Idea' | 'General Idea' = 'Software Idea'
+) {
+  await page.getByRole('button', { name: 'New Idea' }).click()
+  if (kind !== 'Software Idea') {
+    await page.getByRole('form', { name: 'New Idea' }).getByText(kind, { exact: true }).click()
+  }
+  await page.getByLabel('What’s the idea?').fill(notes)
+  await page.getByLabel('Title').fill(title)
+  await page.getByRole('button', { name: 'Save for later' }).click()
+  await expect(page.getByRole('heading', { name: title })).toBeVisible()
+}
+
+test('a person organizes the mailbox: pin, search, archive, restore, compact rail', async () => {
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await chooseLibrary(page)
+    await captureIdea(page, 'Offline recipe planner', 'Plans weekly meals without accounts.')
+    await captureIdea(page, 'Community tool library', 'Neighbors share tools.', 'General Idea')
+
+    const inbox = page.getByRole('navigation', { name: 'Idea inbox' })
+    const pinnedGroup = inbox.getByRole('region', { name: 'Pinned' })
+    const recentGroup = inbox.getByRole('region', { name: 'Recent' })
+
+    // Grouped inbox: both land in Recent, with the status groups presented.
+    await expect(recentGroup.getByText('Offline recipe planner')).toBeVisible()
+    await expect(inbox.getByRole('region', { name: 'Needs attention' })).toBeVisible()
+    await expect(inbox.getByRole('region', { name: 'Running' })).toBeVisible()
+
+    // Pin groups the Idea first, out of the Recent list.
+    await inbox.getByRole('button', { name: 'Pin “Offline recipe planner”' }).click()
+    await expect(pinnedGroup.getByText('Offline recipe planner')).toBeVisible()
+    await expect(recentGroup.getByText('Offline recipe planner')).toHaveCount(0)
+
+    // Search narrows to matching Ideas; no-results is a visible, recoverable state.
+    const search = page.getByRole('searchbox', { name: 'Search Ideas' })
+    await search.fill('recipe')
+    await expect(inbox.getByText('Community tool library')).toHaveCount(0)
+    await expect(pinnedGroup.getByText('Offline recipe planner')).toBeVisible()
+    await search.fill('zeppelin')
+    await expect(inbox.getByText('No Ideas match', { exact: false })).toBeVisible()
+    await inbox.getByRole('button', { name: 'Clear search' }).click()
+    await expect(inbox.getByText('Community tool library')).toBeVisible()
+
+    // Archive is reversible and files never move.
+    await inbox.getByRole('button', { name: 'Archive “Community tool library”' }).click()
+    await expect(inbox.getByText('Community tool library')).toHaveCount(0)
+    await page.getByRole('button', { name: 'Archive', exact: true }).click()
+    await expect(inbox.getByText('Community tool library')).toBeVisible()
+    expect(
+      await readFile(join(sandbox.libraryDir, 'community-tool-library', 'idea.md'), 'utf8')
+    ).toContain('archived:')
+    await inbox.getByRole('button', { name: 'Restore “Community tool library”' }).click()
+    await page.getByRole('button', { name: 'Inbox', exact: true }).click()
+    await expect(inbox.getByText('Community tool library')).toBeVisible()
+
+    // The inbox collapses to a compact rail that keeps Ideas reachable while
+    // the central Focus Deck stays in place.
+    await page.getByRole('button', { name: 'Collapse inbox to rail' }).click()
+    const rail = page.getByRole('navigation', { name: 'Idea inbox (compact)' })
+    await expect(rail.getByRole('button', { name: 'Offline recipe planner' })).toBeVisible()
+    await expect(page.getByRole('main')).toBeVisible()
+    await rail.getByRole('button', { name: 'Community tool library' }).click()
+    await expect(page.getByRole('heading', { name: 'Community tool library' })).toBeVisible()
+  } finally {
+    await app.close()
+  }
+})
+
+test('permanent delete previews exact app-owned targets and moves them to the Trash', async () => {
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await chooseLibrary(page)
+    await captureIdea(page, 'Doomed idea', 'This one goes away.')
+
+    const inbox = page.getByRole('navigation', { name: 'Idea inbox' })
+    await inbox.getByRole('button', { name: 'Delete “Doomed idea” permanently…' }).click()
+
+    // The preview names the exact app-owned targets before anything happens.
+    await expect(
+      page.getByRole('heading', { name: 'Delete “Doomed idea” permanently?' })
+    ).toBeVisible()
+    await expect(
+      page.getByRole('list', { name: 'Items that move to the Trash' }).getByText('doomed-idea')
+    ).toBeVisible()
+
+    await page.getByRole('button', { name: 'Move to Trash' }).click()
+    await expect(inbox.getByText('Doomed idea')).toHaveCount(0)
+    await expect(page.getByText('No Ideas yet', { exact: false })).toBeVisible()
+
+    // The folder moved to the (test) Trash instead of being destroyed.
+    const { readdir } = await import('node:fs/promises')
+    expect(await readdir(sandbox.libraryDir)).not.toContain('doomed-idea')
+    const trashed = await readdir(sandbox.trashDir)
+    expect(trashed.some((entry) => entry.endsWith('doomed-idea'))).toBe(true)
+  } finally {
+    await app.close()
   }
 })
 
