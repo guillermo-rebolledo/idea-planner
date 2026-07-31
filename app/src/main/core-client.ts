@@ -6,7 +6,6 @@ import {
   CoreError,
   coreResponseSchema,
   type CoreCommand,
-  type CoreErrorCode,
   type CoreRequest
 } from '@shared/contract'
 
@@ -75,7 +74,7 @@ export class CoreClient {
       if (outcome.ok) {
         entry.resolve(outcome.result)
       } else {
-        entry.reject(new CoreError(outcome.error.code as CoreErrorCode, outcome.error.message))
+        entry.reject(new CoreError(outcome.error.code, outcome.error.message))
       }
     })
 

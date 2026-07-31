@@ -9,41 +9,39 @@ type BootPhase =
   | { phase: 'failed'; message: string }
   | { phase: 'ready'; boot: BootState }
 
-function applyResolvedTheme(theme: ThemeState): void {
-  document.documentElement.classList.toggle('dark', theme.resolved === 'dark')
-}
-
 export default function App(): React.JSX.Element {
   const [bootPhase, setBootPhase] = useState<BootPhase>({ phase: 'loading' })
   const [library, setLibrary] = useState<LibrarySnapshot | null>(null)
   const [theme, setTheme] = useState<ThemeState | null>(null)
 
+  const adoptTheme = useCallback((next: ThemeState) => {
+    document.documentElement.classList.toggle('dark', next.resolved === 'dark')
+    setTheme(next)
+  }, [])
+
   const loadBootState = useCallback(async () => {
     setBootPhase({ phase: 'loading' })
     try {
       const boot = await window.ideaShell.getBootState()
-      applyResolvedTheme(boot.theme)
-      setTheme(boot.theme)
+      adoptTheme(boot.theme)
       setLibrary(boot.library)
       setBootPhase({ phase: 'ready', boot })
     } catch {
       setBootPhase({ phase: 'failed', message: 'The app could not read its startup state.' })
     }
-  }, [])
+  }, [adoptTheme])
 
   useEffect(() => {
     void loadBootState()
-    return window.ideaShell.onThemeChanged((next) => {
-      applyResolvedTheme(next)
-      setTheme(next)
-    })
-  }, [loadBootState])
+    return window.ideaShell.onThemeChanged(adoptTheme)
+  }, [loadBootState, adoptTheme])
 
-  const changeThemePreference = useCallback(async (preference: ThemeState['preference']) => {
-    const next = await window.ideaShell.setThemePreference(preference)
-    applyResolvedTheme(next)
-    setTheme(next)
-  }, [])
+  const changeThemePreference = useCallback(
+    async (preference: ThemeState['preference']) => {
+      adoptTheme(await window.ideaShell.setThemePreference(preference))
+    },
+    [adoptTheme]
+  )
 
   if (bootPhase.phase === 'loading') {
     return (

@@ -61,12 +61,14 @@ export const chooseLibraryResultSchema = z.union([
 ])
 export type ChooseLibraryResult = z.infer<typeof chooseLibraryResultSchema>
 
-export type CoreErrorCode =
-  | 'LIBRARY_MISSING'
-  | 'NOT_A_DIRECTORY'
-  | 'NO_LIBRARY_OPEN'
-  | 'INVALID_INPUT'
-  | 'IO_ERROR'
+export const coreErrorCodeSchema = z.enum([
+  'LIBRARY_MISSING',
+  'NOT_A_DIRECTORY',
+  'NO_LIBRARY_OPEN',
+  'INVALID_INPUT',
+  'IO_ERROR'
+])
+export type CoreErrorCode = z.infer<typeof coreErrorCodeSchema>
 
 export class CoreError extends Error {
   constructor(
@@ -100,7 +102,7 @@ export const coreResponseSchema = z.object({
     z.object({ ok: z.literal(true), result: z.unknown() }),
     z.object({
       ok: z.literal(false),
-      error: z.object({ code: z.string(), message: z.string() })
+      error: z.object({ code: coreErrorCodeSchema, message: z.string() })
     })
   ])
 })

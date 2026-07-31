@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Inbox, Lightbulb, PanelLeft, Plus, Wrench } from 'lucide-react'
+import { Inbox, Lightbulb, PanelLeft, Plus } from 'lucide-react'
 import type { IdeaSummary, LibrarySnapshot, ThemePreference, ThemeState } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { CaptureForm } from '@renderer/components/CaptureForm'
+import { IDEA_KIND_META, IdeaKindIcon } from '@renderer/components/idea-kind'
 import { cn } from '@renderer/lib/utils'
 
 interface MailboxProps {
@@ -151,19 +152,13 @@ export function Mailbox({
   )
 }
 
-function IdeaKindIcon({ kind }: { kind: IdeaSummary['kind'] }): React.JSX.Element {
-  const Icon = kind === 'software' ? Wrench : Lightbulb
-  const label = kind === 'software' ? 'Software Idea' : 'General Idea'
-  return <Icon aria-label={label} role="img" className="size-3.5 shrink-0" />
-}
-
 function IdeaDetail({ idea }: { idea: IdeaSummary }): React.JSX.Element {
   const savedAt = new Date(idea.updatedAt)
   return (
     <article className="mx-auto w-full max-w-xl p-6" aria-label={idea.title}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <IdeaKindIcon kind={idea.kind} />
-        <span>{idea.kind === 'software' ? 'Software Idea' : 'General Idea'}</span>
+        <span>{IDEA_KIND_META[idea.kind].label}</span>
         <span aria-hidden="true">·</span>
         <span>
           Saved for later on{' '}

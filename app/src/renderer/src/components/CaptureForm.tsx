@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react'
+import { useId, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
 import type { IdeaKind, IdeaSummary } from '@shared/contract'
 import { suggestIdeaTitle } from '@shared/title'
@@ -6,17 +6,13 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Textarea } from '@renderer/components/ui/textarea'
+import { IDEA_KIND_META } from '@renderer/components/idea-kind'
 import { cn } from '@renderer/lib/utils'
 
 interface CaptureFormProps {
   onSaved: (idea: IdeaSummary) => void
   onCancel: () => void
 }
-
-const KIND_OPTIONS: Array<{ value: IdeaKind; label: string; hint: string }> = [
-  { value: 'software', label: 'Software Idea', hint: 'Develops into an MVP Spec and tickets' },
-  { value: 'general', label: 'General Idea', hint: 'Free-form thought without engineering phases' }
-]
 
 /**
  * New Idea capture. Save for later persists locally without any AI or
@@ -30,7 +26,6 @@ export function CaptureForm({ onSaved, onCancel }: CaptureFormProps): React.JSX.
   const [titleEdited, setTitleEdited] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const notesRef = useRef<HTMLTextAreaElement>(null)
   const titleId = useId()
   const notesId = useId()
 
@@ -78,26 +73,26 @@ export function CaptureForm({ onSaved, onCancel }: CaptureFormProps): React.JSX.
       <fieldset>
         <legend className="text-xs font-medium text-muted-foreground">Kind of Idea</legend>
         <div className="mt-1.5 grid grid-cols-2 gap-2" role="radiogroup" aria-label="Kind of Idea">
-          {KIND_OPTIONS.map((option) => (
+          {(Object.keys(IDEA_KIND_META) as IdeaKind[]).map((value) => (
             <label
-              key={option.value}
+              key={value}
               className={cn(
                 'cursor-pointer rounded-md border px-3 py-2 transition-colors',
-                kind === option.value
-                  ? 'border-ring bg-accent'
-                  : 'border-border bg-surface hover:bg-accent'
+                kind === value ? 'border-ring bg-accent' : 'border-border bg-surface hover:bg-accent'
               )}
             >
               <input
                 type="radio"
                 name="idea-kind"
-                value={option.value}
-                checked={kind === option.value}
-                onChange={() => setKind(option.value)}
+                value={value}
+                checked={kind === value}
+                onChange={() => setKind(value)}
                 className="sr-only"
               />
-              <span className="block font-medium">{option.label}</span>
-              <span className="mt-0.5 block text-xs text-muted-foreground">{option.hint}</span>
+              <span className="block font-medium">{IDEA_KIND_META[value].label}</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                {IDEA_KIND_META[value].hint}
+              </span>
             </label>
           ))}
         </div>
@@ -107,7 +102,6 @@ export function CaptureForm({ onSaved, onCancel }: CaptureFormProps): React.JSX.
         <Label htmlFor={notesId}>What&rsquo;s the idea?</Label>
         <Textarea
           id={notesId}
-          ref={notesRef}
           rows={6}
           autoFocus
           value={notes}

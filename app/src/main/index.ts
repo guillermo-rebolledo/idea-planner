@@ -1,4 +1,3 @@
-import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   BrowserWindow,
@@ -36,6 +35,7 @@ import { SettingsStore } from './settings'
 // are hermetic, and answer the native folder picker without a real dialog.
 const testUserData = process.env['IDEA_SHELL_TEST_USER_DATA']
 const testChooseDir = process.env['IDEA_SHELL_TEST_CHOOSE_DIR']
+const devServerUrl = process.env['ELECTRON_RENDERER_URL']
 if (testUserData && !app.isPackaged) {
   app.setPath('userData', testUserData)
 }
@@ -68,8 +68,7 @@ function isTrustedSender(event: IpcMainInvokeEvent): boolean {
   if (!mainWindow || !frame || frame !== mainWindow.webContents.mainFrame) return false
   const url = new URL(frame.url)
   if (url.protocol === 'file:') return true
-  const devServer = process.env['ELECTRON_RENDERER_URL']
-  return Boolean(devServer && !app.isPackaged && frame.url.startsWith(devServer))
+  return Boolean(devServerUrl && !app.isPackaged && frame.url.startsWith(devServerUrl))
 }
 
 function handleInvoke<Args, Result>(
@@ -97,7 +96,8 @@ function handleInvoke<Args, Result>(
 }
 
 async function openLibrary(path: string): Promise<LibrarySnapshot> {
-  await mkdir(path, { recursive: true })
+  // The native picker only yields existing folders; Core rejects anything
+  // else. Main never creates a library location on its own.
   const snapshot = librarySnapshotSchema.parse(
     await coreClient.send({ type: 'library/open', path })
   )
@@ -167,15 +167,14 @@ function hardenSession(): void {
 
   // The renderer needs no arbitrary network access: allow only local app
   // resources (and the Vite dev server during development).
-  const devServer = process.env['ELECTRON_RENDERER_URL']
   ses.webRequest.onBeforeRequest((details, callback) => {
     const allowed =
       details.url.startsWith('file:') ||
       details.url.startsWith('devtools:') ||
       details.url.startsWith('chrome-extension:') ||
       (!app.isPackaged &&
-        devServer &&
-        (details.url.startsWith(devServer) || details.url.startsWith('ws:')))
+        devServerUrl &&
+        (details.url.startsWith(devServerUrl) || details.url.startsWith('ws:')))
     callback({ cancel: !allowed })
   })
 }
@@ -209,13 +208,8 @@ function createWindow(): void {
     if (mainWindow === window) mainWindow = null
   })
 
-  nativeTheme.on('updated', () => {
-    window.webContents.send(IPC_CHANNELS.themeChanged, themeState())
-  })
-
-  const devServer = process.env['ELECTRON_RENDERER_URL']
-  if (devServer && !app.isPackaged) {
-    void window.loadURL(devServer)
+  if (devServerUrl && !app.isPackaged) {
+    void window.loadURL(devServerUrl)
   } else {
     void window.loadFile(join(__dirname, '../renderer/index.html'))
   }
@@ -231,6 +225,14 @@ void app.whenReady().then(() => {
   hardenSession()
   coreClient.start()
   registerIpc()
+
+  // Keep both surfaces in step when the resolved appearance changes, whether
+  // from macOS System appearance or an explicit preference change.
+  nativeTheme.on('updated', () => {
+    if (!mainWindow) return
+    mainWindow.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#101012' : '#fafafa')
+    mainWindow.webContents.send(IPC_CHANNELS.themeChanged, themeState())
+  })
 
   const libraryPath = settings.get().libraryPath
   if (libraryPath) {
