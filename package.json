@@ -1,0 +1,19 @@
+{
+  "name": "agents-ideas-prototypes",
+  "private": true,
+  "scripts": {
+    "prototype": "vite prototypes/core-workspace",
+    "prototype:check": "tsc -p prototypes/core-workspace/tsconfig.json && vite build prototypes/core-workspace --outDir ../../dist/prototype --emptyOutDir"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}

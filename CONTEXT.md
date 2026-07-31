@@ -56,6 +56,18 @@ _Avoid_: Idea Library, repository
 The complete set of planning Markdown accepted when an Idea becomes Ready, including its Conversation transcript and, for a Software Idea, its MVP Spec and Implementation Tickets.
 _Avoid_: Export, deliverable
 
+**Planning Index**:
+The managed Markdown guide that inventories an Idea's planning documents, their purposes, lifecycle states, and accepted baselines for people and AI harnesses.
+_Avoid_: README, manifest
+
+**Reference Attachment**:
+User-selected external context associated with a Conversation message but not copied into the Idea unless the user explicitly keeps it.
+_Avoid_: Asset, upload
+
+**Idea Asset**:
+Durable non-Markdown content generated for or explicitly copied into an Idea and included in its Planning Package.
+_Avoid_: Reference Attachment, attachment
+
 **Software Idea**:
 An Idea intended to produce an MVP Spec and Implementation Tickets.
 _Avoid_: Project
