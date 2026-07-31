@@ -25,6 +25,10 @@ parentPort.on('message', (event) => {
   handleMessage(event.data)
 })
 
+process.once('beforeExit', () => {
+  void Effect.runPromise(core.shutdown)
+})
+
 function handleMessage(data: unknown): void {
   const parsed = coreRequestSchema.safeParse(data)
   if (!parsed.success) {
@@ -78,6 +82,42 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.setIdeaArchived(command.relativePath, command.archived)
     case 'idea/delete-preview':
       return core.previewDeleteIdea(command.relativePath)
+    case 'idea/reconcile':
+      return core.reconcileIdea(command.input)
+    case 'idea/reconciliation-latest':
+      return core.latestReconciliation(command.relativePath)
+    case 'idea/locate':
+      return core.locateIdea(
+        command.relativePath,
+        command.selectedDirectory,
+        command.expectedIdeaId
+      )
+    case 'idea/restore-version':
+      return core.restoreManagedVersion(command.input)
+    case 'idea/resolve-conflict':
+      return core.resolveManagedConflict(command.input)
+    case 'idea/resolve-duplicate':
+      return core.resolveDuplicateManagedDocument(command.input)
+    case 'run/reconciliation-end':
+      return core.endRunReconciliation(command.relativePath, command.runId)
+    case 'reference/add':
+      return core.addReferenceAttachment({
+        relativePath: command.relativePath,
+        messageId: command.messageId,
+        sourcePath: command.sourcePath
+      })
+    case 'reference/list':
+      return core.listReferenceAttachments(command.relativePath)
+    case 'reference/keep':
+      return core.keepReferenceWithIdea(command.input)
+    case 'reference/continue-without':
+      return core.continueWithoutReference(command.input)
+    case 'reference/locate':
+      return core.locateReferenceAttachment(command.input)
+    case 'reference/prepare-context':
+      return core.prepareReferenceContext(command)
+    case 'reference/remove-context':
+      return core.removeReferenceContext(command.contextId)
   }
 }
 

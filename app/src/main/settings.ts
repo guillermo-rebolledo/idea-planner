@@ -7,13 +7,17 @@ const settingsSchema = z.object({
   libraryPath: z.string().min(1).optional(),
   themePreference: themePreferenceSchema.default('system'),
   /** Days without activity after which a pinned Idea shows as Dormant. */
-  dormantAfterDays: z.number().int().positive().default(14)
+  dormantAfterDays: z.number().int().positive().default(14),
+  workingDirectories: z
+    .record(z.object({ path: z.string().min(1), ideaId: z.string().min(1) }))
+    .default({})
 })
 
 export interface Settings {
   libraryPath?: string
   themePreference: ThemePreference
   dormantAfterDays: number
+  workingDirectories: Record<string, { path: string; ideaId: string }>
 }
 
 /**
@@ -49,6 +53,6 @@ export class SettingsStore {
     } catch {
       // Missing or corrupt settings fall back to defaults; Ideas live elsewhere.
     }
-    return { themePreference: 'system', dormantAfterDays: 14 }
+    return { themePreference: 'system', dormantAfterDays: 14, workingDirectories: {} }
   }
 }

@@ -19,6 +19,23 @@ const api: IdeaShellApi = {
   setIdeaArchived: (input) => ipcRenderer.invoke(IPC_CHANNELS.setIdeaArchived, input),
   previewDeleteIdea: (relativePath) =>
     ipcRenderer.invoke(IPC_CHANNELS.previewDeleteIdea, relativePath),
+  reconcileIdea: (input) => ipcRenderer.invoke(IPC_CHANNELS.reconcileIdea, input),
+  latestReconciliation: (relativePath) =>
+    ipcRenderer.invoke(IPC_CHANNELS.latestReconciliation, relativePath),
+  locateIdea: (relativePath) => ipcRenderer.invoke(IPC_CHANNELS.locateIdea, relativePath),
+  restoreManagedVersion: (input) => ipcRenderer.invoke(IPC_CHANNELS.restoreManagedVersion, input),
+  resolveManagedConflict: (input) => ipcRenderer.invoke(IPC_CHANNELS.resolveManagedConflict, input),
+  resolveDuplicateManagedDocument: (relativePath, documentId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.resolveDuplicateManagedDocument, { relativePath, documentId }),
+  chooseReferenceAttachment: (input) =>
+    ipcRenderer.invoke(IPC_CHANNELS.chooseReferenceAttachment, input),
+  listReferenceAttachments: (relativePath) =>
+    ipcRenderer.invoke(IPC_CHANNELS.listReferenceAttachments, relativePath),
+  keepReferenceWithIdea: (input) => ipcRenderer.invoke(IPC_CHANNELS.keepReferenceWithIdea, input),
+  locateReferenceAttachment: (input) =>
+    ipcRenderer.invoke(IPC_CHANNELS.locateReferenceAttachment, input),
+  continueWithoutReference: (input) =>
+    ipcRenderer.invoke(IPC_CHANNELS.continueWithoutReference, input),
   deleteIdeaPermanently: (input) => ipcRenderer.invoke(IPC_CHANNELS.deleteIdeaPermanently, input),
   setThemePreference: (preference) =>
     ipcRenderer.invoke(IPC_CHANNELS.setThemePreference, preference),

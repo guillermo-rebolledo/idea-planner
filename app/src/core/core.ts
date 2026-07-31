@@ -13,6 +13,11 @@ import {
   type MailboxCoreQuery,
   type MailboxSnapshot,
   type OpenedIdea,
+  type ReconcileIdeaInput,
+  type ReconciliationReason,
+  type ReconciliationState,
+  type ResolveDuplicateManagedDocumentInput,
+  type ReferenceAttachment,
   type IdeaSummary,
   type LibrarySnapshot
 } from '@shared/contract'
@@ -25,11 +30,16 @@ import {
   upsertIdea,
   type IndexedIdea
 } from './search-index'
+import { createExternalContentEffects, type ReferenceContext } from './external-content'
 
 export interface CoreDeps {
   now?: () => Date
   randomId?: () => string
   onTransactionBoundary?: (boundary: TransactionBoundary) => void
+  observeManagedPaths?: (
+    paths: string[],
+    onHint: (reason: ReconciliationReason) => void
+  ) => (() => void) | undefined
 }
 
 export type TransactionBoundary =
@@ -54,6 +64,50 @@ export interface Core {
   setIdeaPinned(relativePath: string, pinned: boolean): Promise<IdeaSummary>
   setIdeaArchived(relativePath: string, archived: boolean): Promise<IdeaSummary>
   previewDeleteIdea(relativePath: string): Promise<DeleteIdeaPreview>
+  reconcileIdea(input: ReconcileIdeaInput): Promise<ReconciliationState>
+  latestReconciliation(relativePath: string): Promise<ReconciliationState | null>
+  locateIdea(
+    relativePath: string,
+    selectedDirectory: string,
+    expectedIdeaId?: string
+  ): Promise<ReconciliationState>
+  restoreManagedVersion(input: {
+    relativePath: string
+    documentId: string
+    version: number
+  }): Promise<ReconciliationState>
+  resolveManagedConflict(input: {
+    relativePath: string
+    documentId: string
+    choice: 'keep-disk' | 'keep-ai-draft'
+    aiDraft?: string
+  }): Promise<ReconciliationState>
+  resolveDuplicateManagedDocument(
+    input: ResolveDuplicateManagedDocumentInput
+  ): Promise<ReconciliationState>
+  endRunReconciliation(relativePath: string, runId: string): Promise<void>
+  addReferenceAttachment(input: {
+    relativePath: string
+    messageId: string
+    sourcePath: string
+  }): Promise<ReferenceAttachment>
+  listReferenceAttachments(relativePath: string): Promise<ReferenceAttachment[]>
+  prepareReferenceContext(input: {
+    relativePath: string
+    runId: string
+    referenceIds: string[]
+  }): Promise<ReferenceContext>
+  removeReferenceContext(contextId: string): Promise<void>
+  keepReferenceWithIdea(input: {
+    relativePath: string
+    referenceId: string
+  }): Promise<ReferenceAttachment>
+  locateReferenceAttachment(input: {
+    relativePath: string
+    referenceId: string
+    sourcePath: string
+  }): Promise<ReferenceAttachment>
+  continueWithoutReference(input: { relativePath: string; referenceId: string }): Promise<void>
 }
 
 /**
@@ -61,6 +115,7 @@ export interface Core {
  * (the utility-process dispatcher). Dependencies are already provided.
  */
 export interface CoreEffects {
+  shutdown: Effect.Effect<void, CoreError>
   openLibrary(path: string): Effect.Effect<LibrarySnapshot, CoreError>
   captureIdea(input: CaptureIdeaInput): Effect.Effect<IdeaSummary, CoreError>
   openIdea(relativePath: string): Effect.Effect<OpenedIdea, CoreError>
@@ -69,6 +124,53 @@ export interface CoreEffects {
   setIdeaPinned(relativePath: string, pinned: boolean): Effect.Effect<IdeaSummary, CoreError>
   setIdeaArchived(relativePath: string, archived: boolean): Effect.Effect<IdeaSummary, CoreError>
   previewDeleteIdea(relativePath: string): Effect.Effect<DeleteIdeaPreview, CoreError>
+  reconcileIdea(input: ReconcileIdeaInput): Effect.Effect<ReconciliationState, CoreError>
+  latestReconciliation(relativePath: string): Effect.Effect<ReconciliationState | null, CoreError>
+  locateIdea(
+    relativePath: string,
+    selectedDirectory: string,
+    expectedIdeaId?: string
+  ): Effect.Effect<ReconciliationState, CoreError>
+  restoreManagedVersion(input: {
+    relativePath: string
+    documentId: string
+    version: number
+  }): Effect.Effect<ReconciliationState, CoreError>
+  resolveManagedConflict(input: {
+    relativePath: string
+    documentId: string
+    choice: 'keep-disk' | 'keep-ai-draft'
+    aiDraft?: string
+  }): Effect.Effect<ReconciliationState, CoreError>
+  resolveDuplicateManagedDocument(
+    input: ResolveDuplicateManagedDocumentInput
+  ): Effect.Effect<ReconciliationState, CoreError>
+  endRunReconciliation(relativePath: string, runId: string): Effect.Effect<void, CoreError>
+  addReferenceAttachment(input: {
+    relativePath: string
+    messageId: string
+    sourcePath: string
+  }): Effect.Effect<ReferenceAttachment, CoreError>
+  listReferenceAttachments(relativePath: string): Effect.Effect<ReferenceAttachment[], CoreError>
+  prepareReferenceContext(input: {
+    relativePath: string
+    runId: string
+    referenceIds: string[]
+  }): Effect.Effect<ReferenceContext, CoreError>
+  removeReferenceContext(contextId: string): Effect.Effect<void, CoreError>
+  keepReferenceWithIdea(input: {
+    relativePath: string
+    referenceId: string
+  }): Effect.Effect<ReferenceAttachment, CoreError>
+  locateReferenceAttachment(input: {
+    relativePath: string
+    referenceId: string
+    sourcePath: string
+  }): Effect.Effect<ReferenceAttachment, CoreError>
+  continueWithoutReference(input: {
+    relativePath: string
+    referenceId: string
+  }): Effect.Effect<void, CoreError>
 }
 
 const IDEA_FILE = 'idea.md'
@@ -94,6 +196,12 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
   )
 
   const libraryPath = Effect.runSync(Ref.make(Option.none<string>()))
+  const externalContent = createExternalContentEffects({
+    library: Ref.get(libraryPath).pipe(Effect.map(Option.getOrNull)),
+    observeManagedPaths: deps.observeManagedPaths,
+    clock: Effect.sync(deps.now ?? (() => new Date())),
+    nextReferenceId: Effect.sync(deps.randomId ?? (() => `reference-${randomUUID()}`))
+  })
   // Writes hold this permit so two captures can never race on folder naming.
   const writeLock = Effect.runSync(Effect.makeSemaphore(1))
 
@@ -122,6 +230,10 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       })
       if (!stats.isDirectory()) {
         return yield* Effect.fail(new CoreError('NOT_A_DIRECTORY', `${path} is not a folder`))
+      }
+      const previousLibrary = Option.getOrNull(yield* Ref.get(libraryPath))
+      if (previousLibrary !== null && previousLibrary !== path) {
+        yield* externalContent.resetForLibraryChange
       }
       yield* Ref.set(libraryPath, Option.some(path))
       const ideas = yield* provide(scanIdeas(path))
@@ -190,7 +302,11 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
 
   const openIdea = (relativePath: string): Effect.Effect<OpenedIdea, CoreError> =>
     requireLibrary('opening an Idea').pipe(
-      Effect.flatMap((library) => provide(reopenIdea(library, relativePath)))
+      Effect.flatMap((library) =>
+        externalContent
+          .resolveIdeaDirectory(relativePath)
+          .pipe(Effect.flatMap((ideaDir) => provide(reopenIdea(library, relativePath, ideaDir))))
+      )
     )
 
   const queryMailbox = (query: MailboxCoreQuery): Effect.Effect<MailboxSnapshot, CoreError> =>
@@ -361,6 +477,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     )
 
   return {
+    shutdown: externalContent.shutdown,
     openLibrary,
     captureIdea: (input) => provide(captureIdea(input)),
     openIdea,
@@ -370,7 +487,22 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       updateRootFlags(relativePath, 'set-pinned', { pinned }),
     setIdeaArchived: (relativePath, archived) =>
       updateRootFlags(relativePath, 'set-archived', { archived }),
-    previewDeleteIdea
+    previewDeleteIdea,
+    reconcileIdea: (input) => externalContent.reconcile(input),
+    latestReconciliation: (relativePath) => externalContent.latestState(relativePath),
+    locateIdea: (relativePath, selectedDirectory, expectedIdeaId) =>
+      externalContent.locateIdea(relativePath, selectedDirectory, expectedIdeaId),
+    restoreManagedVersion: (input) => externalContent.restore(input),
+    resolveManagedConflict: (input) => externalContent.resolveConflict(input),
+    resolveDuplicateManagedDocument: (input) => externalContent.resolveDuplicate(input),
+    endRunReconciliation: (relativePath, runId) => externalContent.endRun(relativePath, runId),
+    addReferenceAttachment: (input) => externalContent.addReference(input),
+    listReferenceAttachments: (relativePath) => externalContent.listReferences(relativePath),
+    prepareReferenceContext: (input) => externalContent.prepareReferences(input),
+    removeReferenceContext: (contextId) => externalContent.removeReferenceContext(contextId),
+    keepReferenceWithIdea: (input) => externalContent.keepReference(input),
+    locateReferenceAttachment: (input) => externalContent.locateReference(input),
+    continueWithoutReference: (input) => externalContent.continueWithoutReference(input)
   }
 }
 
@@ -391,7 +523,23 @@ export function createCore(deps: CoreDeps = {}): Core {
     queryMailbox: (query) => run(core.queryMailbox(query)),
     setIdeaPinned: (relativePath, pinned) => run(core.setIdeaPinned(relativePath, pinned)),
     setIdeaArchived: (relativePath, archived) => run(core.setIdeaArchived(relativePath, archived)),
-    previewDeleteIdea: (relativePath) => run(core.previewDeleteIdea(relativePath))
+    previewDeleteIdea: (relativePath) => run(core.previewDeleteIdea(relativePath)),
+    reconcileIdea: (input) => run(core.reconcileIdea(input)),
+    latestReconciliation: (relativePath) => run(core.latestReconciliation(relativePath)),
+    locateIdea: (relativePath, selectedDirectory, expectedIdeaId) =>
+      run(core.locateIdea(relativePath, selectedDirectory, expectedIdeaId)),
+    restoreManagedVersion: (input) => run(core.restoreManagedVersion(input)),
+    resolveManagedConflict: (input) => run(core.resolveManagedConflict(input)),
+    resolveDuplicateManagedDocument: (input) => run(core.resolveDuplicateManagedDocument(input)),
+    endRunReconciliation: (relativePath, runId) =>
+      run(core.endRunReconciliation(relativePath, runId)),
+    addReferenceAttachment: (input) => run(core.addReferenceAttachment(input)),
+    listReferenceAttachments: (relativePath) => run(core.listReferenceAttachments(relativePath)),
+    prepareReferenceContext: (input) => run(core.prepareReferenceContext(input)),
+    removeReferenceContext: (contextId) => run(core.removeReferenceContext(contextId)),
+    keepReferenceWithIdea: (input) => run(core.keepReferenceWithIdea(input)),
+    locateReferenceAttachment: (input) => run(core.locateReferenceAttachment(input)),
+    continueWithoutReference: (input) => run(core.continueWithoutReference(input))
   }
 }
 
@@ -619,7 +767,8 @@ interface RecoveryState {
 
 function reopenIdea(
   library: string,
-  relativePath: string
+  relativePath: string,
+  explicitIdeaDir?: string
 ): Effect.Effect<OpenedIdea, CoreError, TransactionObserver> {
   return Effect.gen(function* () {
     const parsedPath = ideaRelativePathSchema.safeParse(relativePath)
@@ -628,8 +777,8 @@ function reopenIdea(
         new CoreError('INVALID_INPUT', 'The Idea reference is not portable')
       )
     }
-    const ideaDir = join(library, parsedPath.data)
-    const summary = yield* readIdeaSummary(library, parsedPath.data, false)
+    const ideaDir = explicitIdeaDir ?? join(library, parsedPath.data)
+    const summary = yield* readIdeaSummary(library, parsedPath.data, false, ideaDir)
     if (!summary)
       return yield* Effect.fail(new CoreError('IDEA_NOT_FOUND', 'The Idea was not found'))
 
@@ -943,23 +1092,24 @@ async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
 function readIdeaSummary(
   library: string,
   folder: string,
-  recovered: boolean
+  recovered: boolean,
+  explicitIdeaDir?: string
 ): Effect.Effect<IdeaSummary | null, CoreError> {
   return Effect.gen(function* () {
-    const root = yield* Effect.tryPromise(() => findRootDocument(join(library, folder))).pipe(
+    const ideaDir = explicitIdeaDir ?? join(library, folder)
+    const root = yield* Effect.tryPromise(() => findRootDocument(ideaDir)).pipe(
       Effect.orElseSucceed(() => null)
     )
-    if (!root) return yield* recoverySummary(library, folder)
+    if (!root) return yield* recoverySummary(library, folder, ideaDir)
     const parsed = root.parsed
 
     const format = Number(parsed.frontmatter['format'] ?? '0')
     const wasRecovered =
       recovered ||
       (yield* Effect.promise(async () => {
-        const recoveryRaw = await readFile(
-          join(library, folder, '.idea', 'recovery.json'),
-          'utf8'
-        ).catch(() => null)
+        const recoveryRaw = await readFile(join(ideaDir, '.idea', 'recovery.json'), 'utf8').catch(
+          () => null
+        )
         if (!recoveryRaw) return false
         try {
           const recovery = JSON.parse(recoveryRaw) as RecoveryState
@@ -988,7 +1138,7 @@ function readIdeaSummary(
     if (validated.data.openState === 'ready' || validated.data.openState === 'recovered') {
       yield* Effect.tryPromise({
         try: () =>
-          writeJsonAtomic(join(library, folder, '.idea', 'projection.json'), {
+          writeJsonAtomic(join(ideaDir, '.idea', 'projection.json'), {
             format: 1,
             source: 'canonical-markdown',
             idea: validated.data
@@ -1000,11 +1150,16 @@ function readIdeaSummary(
   })
 }
 
-function recoverySummary(library: string, folder: string): Effect.Effect<IdeaSummary | null> {
+function recoverySummary(
+  library: string,
+  folder: string,
+  explicitIdeaDir?: string
+): Effect.Effect<IdeaSummary | null> {
   return Effect.promise(async () => {
-    const raw = await readFile(join(library, folder, '.idea', 'recovery.json'), 'utf8').catch(
-      () => null
-    )
+    const raw = await readFile(
+      join(explicitIdeaDir ?? join(library, folder), '.idea', 'recovery.json'),
+      'utf8'
+    ).catch(() => null)
     if (!raw) return null
     try {
       const recovery = JSON.parse(raw) as RecoveryState
