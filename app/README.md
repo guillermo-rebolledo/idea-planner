@@ -10,7 +10,9 @@ Main / Core / Preload / Renderer architecture; the throwaway prototype under
   IPC sender validation, and supervision of the Core utility process.
 - `src/core` — the deep product-behavior module (`core.ts`) plus the utility-process entry
   (`index.ts`). Owns the Idea lifecycle and canonical Markdown persistence. This module
-  interface is the primary test seam.
+  interface is the primary test seam. Internals are written with
+  [Effect](https://effect.website) behind a promise-based interface — see
+  `docs/adr/0001-adopt-effect-in-core.md`; Effect never leaks past Core.
 - `src/preload` — the narrow context-isolated bridge. Fixed product functions only; no
   Node, filesystem, shell, raw IPC, or Electron objects reach the Renderer.
 - `src/renderer` — the sandboxed React Renderer with the Focus Mailbox frame, built from
@@ -33,3 +35,6 @@ pnpm test:core    # Core-interface and title tests (Vitest)
 pnpm test:shell   # packaged-shell acceptance tests (Playwright + Electron)
 pnpm test         # typecheck + all suites
 ```
+
+Lint and formatting live at the repo root and cover this package: run
+`pnpm verify` there before finishing a change. See `docs/agents/code-style.md`.

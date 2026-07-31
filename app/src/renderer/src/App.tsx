@@ -5,9 +5,7 @@ import { Onboarding } from '@renderer/components/Onboarding'
 import { Mailbox } from '@renderer/components/Mailbox'
 
 type BootPhase =
-  | { phase: 'loading' }
-  | { phase: 'failed'; message: string }
-  | { phase: 'ready'; boot: BootState }
+  { phase: 'loading' } | { phase: 'failed'; message: string } | { phase: 'ready'; boot: BootState }
 
 export default function App(): React.JSX.Element {
   const [bootPhase, setBootPhase] = useState<BootPhase>({ phase: 'loading' })

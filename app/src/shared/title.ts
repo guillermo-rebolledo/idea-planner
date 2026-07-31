@@ -19,10 +19,9 @@ export function suggestIdeaTitle(notes: string): string {
 
   const cut = collapsed.slice(0, MAX_TITLE_LENGTH + 1)
   const lastSpace = cut.lastIndexOf(' ')
-  const trimmed = (lastSpace > 0 ? cut.slice(0, lastSpace) : cut.slice(0, MAX_TITLE_LENGTH)).replace(
-    /[\s.,;:!?-]+$/,
-    ''
-  )
+  const trimmed = (
+    lastSpace > 0 ? cut.slice(0, lastSpace) : cut.slice(0, MAX_TITLE_LENGTH)
+  ).replace(/[\s.,;:!?-]+$/, '')
   return trimmed.length > 0 ? trimmed : FALLBACK_TITLE
 }
 

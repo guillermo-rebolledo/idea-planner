@@ -88,7 +88,7 @@ function handleInvoke<Args, Result>(
       return await handler(parsed.data)
     } catch (error) {
       if (error instanceof CoreError) {
-        throw new Error(`${error.code}: ${error.message}`)
+        throw new Error(`${error.code}: ${error.message}`, { cause: error })
       }
       throw error
     }

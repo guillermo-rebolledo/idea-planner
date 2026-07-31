@@ -46,6 +46,10 @@ export function CaptureForm({ onSaved, onCancel }: CaptureFormProps): React.JSX.
   }
 
   return (
+    // The Escape shortcut is bound on the form so it works from any field.
+    // Focus always lives on an inner control, so nothing here is a substitute
+    // for an interactive element.
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
     <form
       className="mx-auto flex w-full max-w-xl flex-col gap-4 p-6"
       aria-label="New Idea"
@@ -78,7 +82,9 @@ export function CaptureForm({ onSaved, onCancel }: CaptureFormProps): React.JSX.
               key={value}
               className={cn(
                 'cursor-pointer rounded-md border px-3 py-2 transition-colors',
-                kind === value ? 'border-ring bg-accent' : 'border-border bg-surface hover:bg-accent'
+                kind === value
+                  ? 'border-ring bg-accent'
+                  : 'border-border bg-surface hover:bg-accent'
               )}
             >
               <input
@@ -103,6 +109,9 @@ export function CaptureForm({ onSaved, onCancel }: CaptureFormProps): React.JSX.
         <Textarea
           id={notesId}
           rows={6}
+          // Capture-first: this view exists only because the person chose to
+          // write an Idea, so the notes field takes focus deliberately.
+          // eslint-disable-next-line jsx-a11y/no-autofocus
           autoFocus
           value={notes}
           onChange={(event) => handleNotesChange(event.target.value)}

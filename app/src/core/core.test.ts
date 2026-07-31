@@ -190,11 +190,8 @@ describe('an application restart', () => {
 
 describe('CoreError', () => {
   it('is what open/capture failures are made of', async () => {
-    try {
-      await core.captureIdea({ kind: 'general', title: 'x', notes: '' })
-      expect.unreachable()
-    } catch (error) {
-      expect(error).toBeInstanceOf(CoreError)
-    }
+    await expect(
+      core.captureIdea({ kind: 'general', title: 'x', notes: '' })
+    ).rejects.toBeInstanceOf(CoreError)
   })
 })

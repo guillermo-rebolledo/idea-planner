@@ -1,4 +1,5 @@
 import type {} from 'electron'
+import { Effect, type Fiber } from 'effect'
 import {
   CONTRACT_VERSION,
   CoreError,
@@ -6,20 +7,25 @@ import {
   type CoreCommand,
   type CoreResponse
 } from '@shared/contract'
-import { createCore } from './core'
+import { createCoreEffects } from './core'
 
 /**
  * Entry point for the Core utility process. It owns product behavior and
  * speaks to Main exclusively through validated, correlated messages.
+ *
+ * Each request runs in its own fiber, tracked by request id: a future
+ * cancellation envelope interrupts the matching fiber, which composes with
+ * whatever cleanup the running work acquired.
  */
-const core = createCore()
+const core = createCoreEffects()
 const parentPort = process.parentPort
+const inFlight = new Map<string, Fiber.RuntimeFiber<void>>()
 
 parentPort.on('message', (event) => {
-  void handleMessage(event.data)
+  handleMessage(event.data)
 })
 
-async function handleMessage(data: unknown): Promise<void> {
+function handleMessage(data: unknown): void {
   const parsed = coreRequestSchema.safeParse(data)
   if (!parsed.success) {
     respond(bestEffortRequestId(data), {
@@ -30,16 +36,31 @@ async function handleMessage(data: unknown): Promise<void> {
   }
 
   const { id, command } = parsed.data
-  try {
-    respond(id, { ok: true, result: await dispatch(command) })
-  } catch (error) {
-    const code = error instanceof CoreError ? error.code : 'IO_ERROR'
-    const message = error instanceof Error ? error.message : 'Unexpected Core failure'
-    respond(id, { ok: false, error: { code, message } })
-  }
+  const program = dispatch(command).pipe(
+    Effect.catchAllDefect((defect) =>
+      Effect.fail(
+        defect instanceof CoreError
+          ? defect
+          : new CoreError(
+              'IO_ERROR',
+              defect instanceof Error ? defect.message : 'Unexpected Core failure'
+            )
+      )
+    ),
+    Effect.match({
+      onSuccess: (result): CoreResponse['outcome'] => ({ ok: true, result }),
+      onFailure: (error): CoreResponse['outcome'] => ({
+        ok: false,
+        error: { code: error.code, message: error.message }
+      })
+    }),
+    Effect.flatMap((outcome) => Effect.sync(() => respond(id, outcome))),
+    Effect.ensuring(Effect.sync(() => inFlight.delete(id)))
+  )
+  inFlight.set(id, Effect.runFork(program))
 }
 
-function dispatch(command: CoreCommand): Promise<unknown> {
+function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
   switch (command.type) {
     case 'library/open':
       return core.openLibrary(command.path)
@@ -56,13 +77,8 @@ function respond(id: string, outcome: CoreResponse['outcome']): void {
 }
 
 function bestEffortRequestId(data: unknown): string {
-  if (
-    typeof data === 'object' &&
-    data !== null &&
-    'id' in data &&
-    typeof (data as { id: unknown }).id === 'string'
-  ) {
-    return (data as { id: string }).id
+  if (typeof data === 'object' && data !== null && 'id' in data && typeof data.id === 'string') {
+    return data.id
   }
   return 'unknown'
 }

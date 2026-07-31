@@ -1,0 +1,5 @@
+# Fast gate: format and lint what is staged, then prove the types and the
+# Core behavior still hold. The heavy build-and-launch suites run on push.
+pnpm lint-staged
+pnpm --filter idea-development-desktop typecheck
+pnpm --filter idea-development-desktop test:core
