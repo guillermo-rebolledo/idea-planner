@@ -26,5 +26,11 @@ export const IPC_CHANNELS = {
   continueWithoutReference: 'reference:continue-without',
   deleteIdeaPermanently: 'idea:delete-permanently',
   setThemePreference: 'theme:set-preference',
-  themeChanged: 'theme:changed'
+  themeChanged: 'theme:changed',
+  getReadiness: 'readiness:get',
+  refreshReadiness: 'readiness:refresh',
+  chooseProviderExecutable: 'readiness:choose-executable',
+  clearProviderExecutable: 'readiness:clear-executable',
+  setLoginShellDiscovery: 'readiness:set-login-shell-discovery',
+  openExternalLink: 'shell:open-external-link'
 } as const

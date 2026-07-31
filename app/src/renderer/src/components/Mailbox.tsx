@@ -9,6 +9,7 @@ import {
   ImagePlus,
   Lightbulb,
   PanelLeft,
+  Bot,
   Pin,
   PinOff,
   Plus,
@@ -33,6 +34,7 @@ import type {
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { CaptureForm } from '@renderer/components/CaptureForm'
+import { ReadinessDialog } from '@renderer/components/Readiness'
 import { IDEA_KIND_META, IdeaKindIcon } from '@renderer/components/idea-kind'
 import { cn } from '@renderer/lib/utils'
 
@@ -95,6 +97,7 @@ export function Mailbox({
 }: MailboxProps): React.JSX.Element {
   const [surface, setSurface] = useState<CenterSurface>({ kind: 'empty' })
   const [inboxCollapsed, setInboxCollapsed] = useState(false)
+  const [readinessOpen, setReadinessOpen] = useState(false)
   const [announcement, setAnnouncement] = useState('')
   const [query, setQuery] = useState<MailboxQuery>({ search: '', kind: 'all', view: 'active' })
   const [mailbox, setMailbox] = useState<MailboxData>({ state: 'indexing' })
@@ -297,7 +300,7 @@ export function Mailbox({
   const allIdeas = snapshot?.groups.flatMap((group) => group.ideas) ?? []
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="relative flex h-full flex-col">
       <header className="app-drag-region flex h-11 shrink-0 items-center gap-2 border-b border-border pr-3 pl-20">
         <Button
           variant="ghost"
@@ -311,6 +314,15 @@ export function Mailbox({
         <h1 className="text-[13px] font-semibold">Ideas</h1>
         <div className="ml-auto flex items-center gap-2">
           <ThemeSelect theme={theme} onChange={onThemePreferenceChange} />
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="AI Providers"
+            onClick={() => setReadinessOpen(true)}
+          >
+            <Bot aria-hidden="true" className="size-3.5" />
+            AI Providers
+          </Button>
           <Button onClick={startCapture} size="sm">
             <Plus aria-hidden="true" className="size-3.5" />
             New Idea
@@ -403,7 +415,11 @@ export function Mailbox({
 
         <main className="flex min-w-0 flex-1 flex-col overflow-y-auto">
           {surface.kind === 'capture' ? (
-            <CaptureForm onSaved={handleSaved} onCancel={() => setSurface({ kind: 'empty' })} />
+            <CaptureForm
+              onSaved={handleSaved}
+              onCancel={() => setSurface({ kind: 'empty' })}
+              onShowReadiness={() => setReadinessOpen(true)}
+            />
           ) : surface.kind === 'opening' ? (
             <IdeaOpening title={surface.idea.title} />
           ) : surface.kind === 'unrecoverable' ? (
@@ -518,6 +534,8 @@ export function Mailbox({
       <div aria-live="polite" role="status" className="sr-only">
         {announcement}
       </div>
+
+      {readinessOpen && <ReadinessDialog onClose={() => setReadinessOpen(false)} />}
     </div>
   )
 }

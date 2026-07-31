@@ -39,6 +39,15 @@ const api: IdeaShellApi = {
   deleteIdeaPermanently: (input) => ipcRenderer.invoke(IPC_CHANNELS.deleteIdeaPermanently, input),
   setThemePreference: (preference) =>
     ipcRenderer.invoke(IPC_CHANNELS.setThemePreference, preference),
+  getReadiness: () => ipcRenderer.invoke(IPC_CHANNELS.getReadiness),
+  refreshReadiness: (provider) => ipcRenderer.invoke(IPC_CHANNELS.refreshReadiness, { provider }),
+  chooseProviderExecutable: (provider) =>
+    ipcRenderer.invoke(IPC_CHANNELS.chooseProviderExecutable, provider),
+  clearProviderExecutable: (provider) =>
+    ipcRenderer.invoke(IPC_CHANNELS.clearProviderExecutable, provider),
+  setLoginShellDiscovery: (consent) =>
+    ipcRenderer.invoke(IPC_CHANNELS.setLoginShellDiscovery, consent),
+  openExternalLink: (url) => ipcRenderer.invoke(IPC_CHANNELS.openExternalLink, url),
   onThemeChanged: (listener) => {
     const subscription = (_event: unknown, theme: ThemeState): void => listener(theme)
     ipcRenderer.on(IPC_CHANNELS.themeChanged, subscription)

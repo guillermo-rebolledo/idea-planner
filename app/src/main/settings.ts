@@ -10,7 +10,11 @@ const settingsSchema = z.object({
   dormantAfterDays: z.number().int().positive().default(14),
   workingDirectories: z
     .record(z.object({ path: z.string().min(1), ideaId: z.string().min(1) }))
-    .default({})
+    .default({}),
+  /** Explicitly selected provider executables; absence means PATH resolution. */
+  providerExecutables: z.record(z.string().min(1)).default({}),
+  /** One-time informed consent for bounded login-shell PATH discovery. */
+  loginShellDiscovery: z.object({ grantedAt: z.string() }).nullable().default(null)
 })
 
 export interface Settings {
@@ -18,6 +22,8 @@ export interface Settings {
   themePreference: ThemePreference
   dormantAfterDays: number
   workingDirectories: Record<string, { path: string; ideaId: string }>
+  providerExecutables: Record<string, string>
+  loginShellDiscovery: { grantedAt: string } | null
 }
 
 /**
@@ -53,6 +59,12 @@ export class SettingsStore {
     } catch {
       // Missing or corrupt settings fall back to defaults; Ideas live elsewhere.
     }
-    return { themePreference: 'system', dormantAfterDays: 14, workingDirectories: {} }
+    return {
+      themePreference: 'system',
+      dormantAfterDays: 14,
+      workingDirectories: {},
+      providerExecutables: {},
+      loginShellDiscovery: null
+    }
   }
 }

@@ -1,6 +1,6 @@
-import { useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
-import type { IdeaKind, IdeaSummary } from '@shared/contract'
+import type { IdeaKind, IdeaSummary, ReadinessSnapshot } from '@shared/contract'
 import { suggestIdeaTitle } from '@shared/title'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -12,6 +12,7 @@ import { cn } from '@renderer/lib/utils'
 interface CaptureFormProps {
   onSaved: (idea: IdeaSummary) => void
   onCancel: () => void
+  onShowReadiness: () => void
 }
 
 /**
@@ -19,7 +20,11 @@ interface CaptureFormProps {
  * provider readiness. The title is a deterministic local suggestion until the
  * person edits it themselves.
  */
-export function CaptureForm({ onSaved, onCancel }: CaptureFormProps): React.JSX.Element {
+export function CaptureForm({
+  onSaved,
+  onCancel,
+  onShowReadiness
+}: CaptureFormProps): React.JSX.Element {
   const [kind, setKind] = useState<IdeaKind>('software')
   const [notes, setNotes] = useState('')
   const [title, setTitle] = useState('')
@@ -28,6 +33,24 @@ export function CaptureForm({ onSaved, onCancel }: CaptureFormProps): React.JSX.
   const [error, setError] = useState<string | null>(null)
   const titleId = useId()
   const notesId = useId()
+  // The same readiness the person saw in onboarding and Settings, restated
+  // immediately before any Run could be started from this Idea.
+  const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
+
+  useEffect(() => {
+    let disposed = false
+    window.ideaShell.getReadiness().then(
+      (snapshot) => {
+        if (!disposed) setReadiness(snapshot)
+      },
+      () => undefined
+    )
+    return () => {
+      disposed = true
+    }
+  }, [])
+
+  const readyProviders = readiness?.providers.filter((provider) => provider.available) ?? []
 
   function handleNotesChange(value: string): void {
     setNotes(value)
@@ -153,6 +176,21 @@ export function CaptureForm({ onSaved, onCancel }: CaptureFormProps): React.JSX.
         </Button>
         <p className="ml-auto text-xs text-muted-foreground">Saves locally. No AI runs.</p>
       </div>
+
+      <p className="text-xs text-muted-foreground">
+        {readiness === null
+          ? 'Checking AI readiness…'
+          : readyProviders.length > 0
+            ? `Ready for AI planning: ${readyProviders.map((provider) => provider.displayName).join(', ')}.`
+            : 'No AI provider is ready — this Idea saves in capture-only mode.'}{' '}
+        <button
+          type="button"
+          className="underline underline-offset-2 hover:text-foreground"
+          onClick={onShowReadiness}
+        >
+          AI readiness…
+        </button>
+      </p>
     </form>
   )
 }

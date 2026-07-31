@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { ChooseExecutableResult, ProviderId, ReadinessSnapshot } from './readiness'
 
 /**
  * The versioned contract shared by Core, Main, Preload, and Renderer.
@@ -457,6 +458,19 @@ export interface IdeaShellApi {
   deleteIdeaPermanently(input: DeleteIdeaInput): Promise<DeleteIdeaResult>
   setThemePreference(preference: ThemePreference): Promise<ThemeState>
   onThemeChanged(listener: (theme: ThemeState) => void): () => void
+  /** Returns the latest readiness snapshot, probing on first demand. */
+  getReadiness(): Promise<ReadinessSnapshot>
+  /** Re-probes one provider or all of them (“Check again”). */
+  refreshReadiness(provider?: ProviderId): Promise<ReadinessSnapshot>
+  /** Native picker for an explicit executable; the native probe still runs. */
+  chooseProviderExecutable(provider: ProviderId): Promise<ChooseExecutableResult>
+  /** Returns the provider to ordinary PATH resolution. */
+  clearProviderExecutable(provider: ProviderId): Promise<ReadinessSnapshot>
+  /** Grants or revokes the one-time login-shell discovery consent. */
+  setLoginShellDiscovery(consent: boolean): Promise<ReadinessSnapshot>
+  /** Opens one of the fixed readiness-guidance URLs in the default browser. */
+  openExternalLink(url: string): Promise<void>
 }
 
 export { IPC_CHANNELS } from './channels'
+export * from './readiness'
