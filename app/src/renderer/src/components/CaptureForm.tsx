@@ -39,12 +39,13 @@ export function CaptureForm({
 
   useEffect(() => {
     let disposed = false
-    window.ideaShell.getReadiness().then(
-      (snapshot) => {
-        if (!disposed) setReadiness(snapshot)
-      },
-      () => undefined
-    )
+    const adopt = (snapshot: ReadinessSnapshot): void => {
+      if (!disposed) setReadiness(snapshot)
+    }
+    // Show the last known snapshot immediately, then re-probe so the answer
+    // reflects the machine as it is now, not as it was at launch.
+    window.ideaShell.getReadiness().then(adopt, () => undefined)
+    window.ideaShell.refreshReadiness().then(adopt, () => undefined)
     return () => {
       disposed = true
     }

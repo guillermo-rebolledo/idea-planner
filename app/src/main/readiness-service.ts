@@ -26,7 +26,9 @@ const PROVIDER_IDS = providerIdSchema.options
  */
 export class ReadinessService {
   private snapshot: ReadinessSnapshot | null = null
-  private inFlight: Promise<ReadinessSnapshot> | null = null
+  private inFlightFull: Promise<ReadinessSnapshot> | null = null
+  /** All probing is serialized so overlapping refreshes cannot clobber. */
+  private queue: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly options: ReadinessServiceOptions) {}
 
@@ -35,16 +37,18 @@ export class ReadinessService {
   }
 
   async refresh(provider?: ProviderId): Promise<ReadinessSnapshot> {
+    if (provider) return this.enqueue(() => this.probe(provider))
     // A full refresh already in flight answers concurrent requests.
-    if (!provider && this.inFlight) return this.inFlight
-    const work = this.probe(provider)
-    if (!provider) {
-      this.inFlight = work.finally(() => {
-        this.inFlight = null
-      })
-      return this.inFlight
-    }
-    return work
+    this.inFlightFull ??= this.enqueue(() => this.probe()).finally(() => {
+      this.inFlightFull = null
+    })
+    return this.inFlightFull
+  }
+
+  private enqueue(work: () => Promise<ReadinessSnapshot>): Promise<ReadinessSnapshot> {
+    const result = this.queue.then(work, work)
+    this.queue = result.catch(() => undefined)
+    return result
   }
 
   async setExplicitExecutable(provider: ProviderId, path: string): Promise<ReadinessSnapshot> {

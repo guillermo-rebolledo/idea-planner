@@ -361,7 +361,8 @@ test('readiness reports Codex and Claude independently, with safe repair and re-
     await claudeCard.getByRole('button', { name: 'Check Claude Code again' }).click()
     await expect(claudeCard.getByText('Ready for planning')).toBeVisible()
 
-    await page.getByRole('button', { name: 'Continue with capture only' }).click()
+    // With a ready provider the continue action stops calling itself capture-only.
+    await page.getByRole('button', { name: 'Continue', exact: true }).click()
 
     // The same readiness module is reachable from Settings (AI Providers).
     await page.getByRole('button', { name: 'AI Providers' }).click()

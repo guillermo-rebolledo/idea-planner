@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { FolderOpen } from 'lucide-react'
-import type { LibrarySnapshot } from '@shared/contract'
+import type { LibrarySnapshot, ReadinessSnapshot } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { ReadinessPanel } from '@renderer/components/Readiness'
 
@@ -19,6 +19,7 @@ export function Onboarding({ onComplete }: OnboardingProps): React.JSX.Element {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [library, setLibrary] = useState<LibrarySnapshot | null>(null)
+  const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
 
   async function chooseLocation(): Promise<void> {
     setError(null)
@@ -53,10 +54,14 @@ export function Onboarding({ onComplete }: OnboardingProps): React.JSX.Element {
               provider, and check readiness again later in Settings.
             </p>
             <div className="mt-6">
-              <ReadinessPanel />
+              <ReadinessPanel onSnapshot={setReadiness} />
             </div>
             <div className="mt-6 flex justify-end">
-              <Button onClick={() => onComplete(library)}>Continue with capture only</Button>
+              <Button onClick={() => onComplete(library)}>
+                {readiness?.providers.some((provider) => provider.available)
+                  ? 'Continue'
+                  : 'Continue with capture only'}
+              </Button>
             </div>
           </section>
         </main>

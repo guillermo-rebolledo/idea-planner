@@ -53,7 +53,7 @@ import {
   refreshReadinessInputSchema
 } from '@shared/readiness'
 import { CoreClient } from './core-client'
-import { PROVIDER_SPECS } from './readiness'
+import { PROVIDER_SPECS, readinessLinkHosts } from './readiness'
 import { ReadinessService } from './readiness-service'
 import { SettingsStore } from './settings'
 
@@ -505,12 +505,7 @@ function registerIpc(): void {
 
   // Only the fixed readiness-guidance hosts may leave the app. Anything else
   // is rejected, so the renderer cannot turn this into an open redirect.
-  const externalLinkHosts = new Set([
-    'github.com',
-    'nodejs.org',
-    'developers.openai.com',
-    'code.claude.com'
-  ])
+  const externalLinkHosts = readinessLinkHosts()
   handleInvoke(IPC_CHANNELS.openExternalLink, z.string().url(), async (url) => {
     const parsed = new URL(url)
     if (parsed.protocol !== 'https:' || !externalLinkHosts.has(parsed.hostname)) {

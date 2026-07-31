@@ -85,10 +85,19 @@ export function useReadiness(): {
 interface ReadinessPanelProps {
   /** Compact spacing for embedding inside a dialog. */
   className?: string
+  /** Called with every snapshot the panel receives, including re-checks. */
+  onSnapshot?: (snapshot: ReadinessSnapshot) => void
 }
 
-export function ReadinessPanel({ className }: ReadinessPanelProps): React.JSX.Element {
+export function ReadinessPanel({ className, onSnapshot }: ReadinessPanelProps): React.JSX.Element {
   const { state, reload, run } = useReadiness()
+  const snapshotListenerRef = useRef(onSnapshot)
+  snapshotListenerRef.current = onSnapshot
+  const latestSnapshot = state.phase === 'ready' ? state.snapshot : null
+
+  useEffect(() => {
+    if (latestSnapshot) snapshotListenerRef.current?.(latestSnapshot)
+  }, [latestSnapshot])
 
   if (state.phase === 'loading') {
     return (

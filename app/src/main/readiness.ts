@@ -31,6 +31,15 @@ const SKILLS_LINKS: RemediationLink[] = [
 /** The workflows this product invokes plus their reviewed dependency closure. */
 const REQUIRED_SKILLS = ['grill-me', 'grilling', 'wayfinder']
 
+/** Hosts of every remediation link, so the open-link allowlist cannot drift. */
+export function readinessLinkHosts(): Set<string> {
+  const links = [
+    ...SKILLS_LINKS,
+    ...Object.values(PROVIDER_SPECS).flatMap((spec) => [spec.installLink, spec.authLink])
+  ]
+  return new Set(links.map((link) => new URL(link.url).hostname))
+}
+
 type AuthProbe = { kind: 'exit-code'; args: string[] } | { kind: 'stream-init'; args: string[] }
 type SandboxProbe = { kind: 'exit-code'; args: string[] } | { kind: 'host-sandbox-exec' }
 
@@ -45,6 +54,8 @@ export interface ProviderSpec {
   untestedFrom: string
   authProbe: AuthProbe
   sandboxProbe: SandboxProbe
+  /** Copyable sign-in command shown when authentication fails. Never run. */
+  authRemediationCommand: string
   /** Home-relative root of the harness's documented skill location. */
   skillsRoot: string
   installLink: RemediationLink
@@ -60,6 +71,7 @@ export const PROVIDER_SPECS: Record<ProviderId, ProviderSpec> = {
     minimumVersion: '0.100.0',
     untestedFrom: '0.147.0',
     authProbe: { kind: 'exit-code', args: ['login', 'status'] },
+    authRemediationCommand: 'codex login',
     // Codex's own Seatbelt runner proves the native macOS sandbox works.
     sandboxProbe: { kind: 'exit-code', args: ['debug', 'seatbelt', '/usr/bin/true'] },
     skillsRoot: '.agents/skills',
@@ -80,6 +92,7 @@ export const PROVIDER_SPECS: Record<ProviderId, ProviderSpec> = {
       kind: 'stream-init',
       args: ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose']
     },
+    authRemediationCommand: 'claude /login',
     sandboxProbe: { kind: 'host-sandbox-exec' },
     skillsRoot: '.claude/skills',
     installLink: { label: 'Install Claude Code', url: 'https://code.claude.com/docs/en/overview' },
@@ -218,7 +231,6 @@ function notProbed(dimension: ReadinessDimension, spec: ProviderSpec): Readiness
 
 async function probeCompatibility(
   spec: ProviderSpec,
-  executable: string,
   run: (args: string[], untilStdoutLine?: (line: string) => boolean) => Promise<RunResult>
 ): Promise<{ check: ReadinessCheck; version: string | null }> {
   const result = await run(spec.versionArgs)
@@ -301,7 +313,7 @@ async function probeAuthentication(
       status: 'failed',
       code,
       summary,
-      command: spec.id === 'codex' ? `${spec.command} login` : `${spec.command}  (then run /login)`,
+      command: spec.authRemediationCommand,
       links: [spec.authLink]
     })
 
@@ -487,7 +499,7 @@ export async function probeProvider(
         homeDir: options.homeDir,
         untilStdoutLine
       })
-    const compatibility = await probeCompatibility(spec, executable, run)
+    const compatibility = await probeCompatibility(spec, run)
     compatibilityCheck = compatibility.check
     version = compatibility.version
     authenticationCheck = await probeAuthentication(spec, run)
