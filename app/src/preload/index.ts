@@ -19,8 +19,7 @@ const api: IdeaShellApi = {
   setIdeaArchived: (input) => ipcRenderer.invoke(IPC_CHANNELS.setIdeaArchived, input),
   previewDeleteIdea: (relativePath) =>
     ipcRenderer.invoke(IPC_CHANNELS.previewDeleteIdea, relativePath),
-  deleteIdeaPermanently: (relativePath) =>
-    ipcRenderer.invoke(IPC_CHANNELS.deleteIdeaPermanently, relativePath),
+  deleteIdeaPermanently: (input) => ipcRenderer.invoke(IPC_CHANNELS.deleteIdeaPermanently, input),
   setThemePreference: (preference) =>
     ipcRenderer.invoke(IPC_CHANNELS.setThemePreference, preference),
   onThemeChanged: (listener) => {

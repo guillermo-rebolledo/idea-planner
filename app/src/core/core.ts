@@ -172,7 +172,13 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
             conversationId,
             'capture'
           )
-          yield* upsertProjection(library, idea, `# ${idea.title}\n\n${input.notes}`)
+          // Index exactly what was persisted so search answers cannot change
+          // when the projection is later rebuilt from canonical content.
+          yield* upsertProjection(
+            library,
+            idea,
+            markdownBody(renderRootDocument(idea, input.notes))
+          )
           return idea
         })
       )
@@ -409,16 +415,10 @@ function reserveFolder(library: string, title: string): Effect.Effect<string, Co
   })
 }
 
-function writePortableIdea(
-  ideaDir: string,
-  idea: IdeaSummary,
-  notes: string,
-  planningIndexId: string,
-  conversationId: string,
-  transactionId: TransactionId
-): Effect.Effect<void, CoreError, TransactionObserver> {
+/** Renders the canonical root document, shared by persistence and indexing. */
+function renderRootDocument(idea: IdeaSummary, notes: string): string {
   const body = notes.replace(/\r\n/g, '\n').trim()
-  const root = [
+  return [
     '---',
     'format: 1',
     `id: ${idea.id}`,
@@ -436,6 +436,17 @@ function writePortableIdea(
     ...(body ? ['', body] : []),
     ''
   ].join('\n')
+}
+
+function writePortableIdea(
+  ideaDir: string,
+  idea: IdeaSummary,
+  notes: string,
+  planningIndexId: string,
+  conversationId: string,
+  transactionId: TransactionId
+): Effect.Effect<void, CoreError, TransactionObserver> {
+  const root = renderRootDocument(idea, notes)
   const planningIndex = [
     '---',
     'format: 1',

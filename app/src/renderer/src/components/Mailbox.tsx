@@ -48,7 +48,7 @@ type CenterSurface =
   | { kind: 'unrecoverable'; idea: IdeaSummary }
   | { kind: 'missing'; idea: IdeaSummary }
   | { kind: 'failed'; idea: IdeaSummary }
-  | { kind: 'delete-preview'; idea: MailboxIdea; preview: DeleteIdeaPreview }
+  | { kind: 'delete-preview'; idea: IdeaSummary; preview: DeleteIdeaPreview }
   | { kind: 'delete-result'; title: string; relativePath: string; result: DeleteIdeaResult }
 
 type MailboxData =
@@ -101,7 +101,12 @@ export function Mailbox({
     const requestId = ++requestSequenceRef.current
     try {
       const snapshot = await window.ideaShell.queryMailbox(nextQuery)
-      if (requestSequenceRef.current === requestId) setMailbox({ state: 'ready', snapshot })
+      if (requestSequenceRef.current === requestId) {
+        setMailbox({ state: 'ready', snapshot })
+        if (snapshot.index === 'rebuilt') {
+          setAnnouncement('The search index was rebuilt from your canonical Idea content.')
+        }
+      }
     } catch {
       if (requestSequenceRef.current === requestId) setMailbox({ state: 'failed' })
     }
@@ -168,7 +173,7 @@ export function Mailbox({
     }
   }
 
-  async function togglePinned(idea: MailboxIdea): Promise<void> {
+  async function togglePinned(idea: IdeaSummary): Promise<void> {
     try {
       const updated = await window.ideaShell.setIdeaPinned({
         relativePath: idea.relativePath,
@@ -181,7 +186,7 @@ export function Mailbox({
     void refreshMailbox(query)
   }
 
-  async function setArchived(idea: MailboxIdea, archived: boolean): Promise<void> {
+  async function setArchived(idea: IdeaSummary, archived: boolean): Promise<void> {
     try {
       await window.ideaShell.setIdeaArchived({ relativePath: idea.relativePath, archived })
       setAnnouncement(
@@ -201,7 +206,7 @@ export function Mailbox({
     void refreshMailbox(query)
   }
 
-  async function startDelete(idea: MailboxIdea): Promise<void> {
+  async function startDelete(idea: IdeaSummary): Promise<void> {
     try {
       const preview = await window.ideaShell.previewDeleteIdea(idea.relativePath)
       setSurface({ kind: 'delete-preview', idea, preview })
@@ -210,15 +215,26 @@ export function Mailbox({
     }
   }
 
-  async function confirmDelete(title: string, relativePath: string): Promise<void> {
-    const result = await window.ideaShell.deleteIdeaPermanently(relativePath)
-    void refreshMailbox(query)
-    if (result.failed.length > 0) {
-      setAnnouncement(`Some of “${title}” could not be moved to the Trash.`)
-      setSurface({ kind: 'delete-result', title, relativePath, result })
-    } else {
-      setAnnouncement(`Moved “${title}” to the Trash.`)
-      setSurface({ kind: 'empty' })
+  // Delete acts on the exact targets the person confirmed in the preview, so
+  // a retry after a partial failure finishes only what is still in place.
+  async function confirmDelete(
+    title: string,
+    relativePath: string,
+    targets: string[]
+  ): Promise<void> {
+    try {
+      const result = await window.ideaShell.deleteIdeaPermanently({ relativePath, targets })
+      void refreshMailbox(query)
+      if (result.failed.length > 0) {
+        setAnnouncement(`Some of “${title}” could not be moved to the Trash.`)
+        setSurface({ kind: 'delete-result', title, relativePath, result })
+      } else {
+        setAnnouncement(`Moved “${title}” to the Trash.`)
+        setSurface({ kind: 'empty' })
+      }
+    } catch {
+      setAnnouncement(`Deleting “${title}” failed. Nothing further was moved.`)
+      void refreshMailbox(query)
     }
   }
 
@@ -376,24 +392,32 @@ export function Mailbox({
               preview={surface.preview}
               onCancel={() => setSurface({ kind: 'empty' })}
               onConfirm={() =>
-                void confirmDelete(surface.preview.title, surface.preview.relativePath)
+                void confirmDelete(
+                  surface.preview.title,
+                  surface.preview.relativePath,
+                  surface.preview.targets
+                )
               }
             />
           ) : surface.kind === 'delete-result' ? (
             <DeleteResultSurface
               title={surface.title}
               result={surface.result}
-              onRetry={() => void confirmDelete(surface.title, surface.relativePath)}
+              onRetry={() =>
+                void confirmDelete(
+                  surface.title,
+                  surface.relativePath,
+                  surface.result.failed.map((failure) => failure.path)
+                )
+              }
               onClose={() => setSurface({ kind: 'empty' })}
             />
           ) : surface.kind === 'idea' ? (
             <IdeaDetail
               openedIdea={surface.openedIdea}
-              onTogglePinned={(idea) => void togglePinned({ ...idea, dormant: false })}
-              onSetArchived={(idea, archived) =>
-                void setArchived({ ...idea, dormant: false }, archived)
-              }
-              onDelete={(idea) => void startDelete({ ...idea, dormant: false })}
+              onTogglePinned={(idea) => void togglePinned(idea)}
+              onSetArchived={(idea, archived) => void setArchived(idea, archived)}
+              onDelete={(idea) => void startDelete(idea)}
             />
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">

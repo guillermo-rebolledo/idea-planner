@@ -142,6 +142,17 @@ export const deleteIdeaPreviewSchema = z.object({
 })
 export type DeleteIdeaPreview = z.infer<typeof deleteIdeaPreviewSchema>
 
+export const deleteIdeaInputSchema = z.object({
+  relativePath: z.string().min(1),
+  /**
+   * The exact previewed targets to move to Trash. Delete acts only on what
+   * the person confirmed, so a retry after a partial failure can finish the
+   * remaining targets even when the Idea itself is no longer recognizable.
+   */
+  targets: z.array(z.string().min(1)).min(1)
+})
+export type DeleteIdeaInput = z.infer<typeof deleteIdeaInputSchema>
+
 export const deleteIdeaResultSchema = z.object({
   trashed: z.array(z.string().min(1)),
   failed: z.array(z.object({ path: z.string().min(1), message: z.string() }))
@@ -258,8 +269,8 @@ export interface IdeaShellApi {
   setIdeaArchived(input: SetIdeaArchivedInput): Promise<IdeaSummary>
   /** Enumerates the exact app-owned targets before any permanent delete. */
   previewDeleteIdea(relativePath: IdeaRelativePath): Promise<DeleteIdeaPreview>
-  /** Moves only the previewed app-owned targets to the macOS Trash. */
-  deleteIdeaPermanently(relativePath: IdeaRelativePath): Promise<DeleteIdeaResult>
+  /** Moves only the previewed, confirmed app-owned targets to the macOS Trash. */
+  deleteIdeaPermanently(input: DeleteIdeaInput): Promise<DeleteIdeaResult>
   setThemePreference(preference: ThemePreference): Promise<ThemeState>
   onThemeChanged(listener: (theme: ThemeState) => void): () => void
 }
