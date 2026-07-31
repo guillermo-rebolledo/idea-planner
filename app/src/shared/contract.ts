@@ -10,6 +10,14 @@ export const CONTRACT_VERSION = 1
 export const ideaKindSchema = z.enum(['software', 'general'])
 export type IdeaKind = z.infer<typeof ideaKindSchema>
 
+export const ideaOpenStateSchema = z.enum([
+  'ready',
+  'recovered',
+  'read-only-newer-format',
+  'unrecoverable-content'
+])
+export type IdeaOpenState = z.infer<typeof ideaOpenStateSchema>
+
 export const ideaSummarySchema = z.object({
   id: z.string().min(1),
   kind: ideaKindSchema,
@@ -17,16 +25,44 @@ export const ideaSummarySchema = z.object({
   status: z.literal('saved'),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  openState: ideaOpenStateSchema,
   /** Path of the Idea's folder relative to the Idea Library root. */
   relativePath: z.string().min(1)
 })
 export type IdeaSummary = z.infer<typeof ideaSummarySchema>
+
+export const managedDocumentSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(['root', 'planning-index', 'conversation']),
+  path: z.string().min(1)
+})
+export type ManagedDocument = z.infer<typeof managedDocumentSchema>
+
+export const openedIdeaSchema = z.object({
+  idea: ideaSummarySchema,
+  documents: z.object({
+    root: managedDocumentSchema,
+    planningIndex: managedDocumentSchema,
+    conversation: managedDocumentSchema
+  }),
+  notice: z.string().nullable()
+})
+export type OpenedIdea = z.infer<typeof openedIdeaSchema>
 
 export const librarySnapshotSchema = z.object({
   path: z.string().min(1),
   ideas: z.array(ideaSummarySchema)
 })
 export type LibrarySnapshot = z.infer<typeof librarySnapshotSchema>
+
+export const ideaRelativePathSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (path) => path !== '.' && path !== '..' && !path.includes('/') && !path.includes('\\'),
+    'Expected a portable Idea folder reference'
+  )
+export type IdeaRelativePath = z.infer<typeof ideaRelativePathSchema>
 
 export const captureIdeaInputSchema = z.object({
   kind: ideaKindSchema,
@@ -65,6 +101,8 @@ export const coreErrorCodeSchema = z.enum([
   'LIBRARY_MISSING',
   'NOT_A_DIRECTORY',
   'NO_LIBRARY_OPEN',
+  'IDEA_NOT_FOUND',
+  'UNRECOVERABLE_CONTENT',
   'INVALID_INPUT',
   'IO_ERROR'
 ])
@@ -84,6 +122,7 @@ export class CoreError extends Error {
 export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('library/open'), path: z.string().min(1) }),
   z.object({ type: z.literal('idea/capture'), input: captureIdeaInputSchema }),
+  z.object({ type: z.literal('idea/open'), relativePath: ideaRelativePathSchema }),
   z.object({ type: z.literal('idea/list') })
 ])
 export type CoreCommand = z.infer<typeof coreCommandSchema>
@@ -116,6 +155,7 @@ export interface IdeaShellApi {
   /** Opens (and remembers) the confirmed library location. */
   openLibrary(path: string): Promise<LibrarySnapshot>
   captureIdea(input: CaptureIdeaInput): Promise<IdeaSummary>
+  openIdea(relativePath: IdeaRelativePath): Promise<OpenedIdea>
   listIdeas(): Promise<IdeaSummary[]>
   setThemePreference(preference: ThemePreference): Promise<ThemeState>
   onThemeChanged(listener: (theme: ThemeState) => void): () => void

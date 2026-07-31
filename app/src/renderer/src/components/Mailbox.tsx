@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Inbox, Lightbulb, PanelLeft, Plus } from 'lucide-react'
-import type { IdeaSummary, LibrarySnapshot, ThemePreference, ThemeState } from '@shared/contract'
+import type {
+  IdeaSummary,
+  OpenedIdea,
+  LibrarySnapshot,
+  ThemePreference,
+  ThemeState
+} from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { CaptureForm } from '@renderer/components/CaptureForm'
 import { IDEA_KIND_META, IdeaKindIcon } from '@renderer/components/idea-kind'
@@ -13,7 +19,13 @@ interface MailboxProps {
   onThemePreferenceChange: (preference: ThemePreference) => void
 }
 
-type CenterSurface = { kind: 'empty' } | { kind: 'capture' } | { kind: 'idea'; ideaId: string }
+type CenterSurface =
+  | { kind: 'empty' }
+  | { kind: 'capture' }
+  | { kind: 'opening'; idea: IdeaSummary }
+  | { kind: 'idea'; openedIdea: OpenedIdea }
+  | { kind: 'unrecoverable'; idea: IdeaSummary }
+  | { kind: 'failed'; idea: IdeaSummary }
 
 /**
  * The Focus Mailbox production frame: collapsible Idea inbox on the left and
@@ -52,12 +64,35 @@ export function Mailbox({
 
   function handleSaved(idea: IdeaSummary): void {
     onLibraryChanged({ ...library, ideas: [idea, ...library.ideas] })
-    setSurface({ kind: 'idea', ideaId: idea.id })
+    void openIdea(idea)
     setAnnouncement(`Saved “${idea.title}” for later.`)
   }
 
+  async function openIdea(idea: IdeaSummary): Promise<void> {
+    setSurface({ kind: 'opening', idea })
+    try {
+      const openedIdea = await window.ideaShell.openIdea(idea.relativePath)
+      setSurface({ kind: 'idea', openedIdea })
+      if (openedIdea.idea.openState === 'recovered') {
+        setAnnouncement(`Recovered “${openedIdea.idea.title}” from canonical local content.`)
+      }
+    } catch (error) {
+      setSurface({
+        kind:
+          error instanceof Error && error.message.includes('UNRECOVERABLE_CONTENT')
+            ? 'unrecoverable'
+            : 'failed',
+        idea
+      })
+    }
+  }
+
   const selectedIdea =
-    surface.kind === 'idea' ? library.ideas.find((idea) => idea.id === surface.ideaId) : undefined
+    surface.kind === 'idea'
+      ? surface.openedIdea.idea
+      : surface.kind === 'opening' || surface.kind === 'unrecoverable' || surface.kind === 'failed'
+        ? surface.idea
+        : undefined
 
   return (
     <div className="flex h-full flex-col">
@@ -72,9 +107,6 @@ export function Mailbox({
           <PanelLeft aria-hidden="true" className="size-4" />
         </Button>
         <h1 className="text-[13px] font-semibold">Ideas</h1>
-        <span className="truncate font-mono text-[11px] text-muted-foreground" title={library.path}>
-          {library.path}
-        </span>
         <div className="ml-auto flex items-center gap-2">
           <ThemeSelect theme={theme} onChange={onThemePreferenceChange} />
           <Button onClick={startCapture} size="sm">
@@ -103,7 +135,7 @@ export function Mailbox({
                   <li key={idea.id}>
                     <button
                       type="button"
-                      onClick={() => setSurface({ kind: 'idea', ideaId: idea.id })}
+                      onClick={() => void openIdea(idea)}
                       aria-current={selectedIdea?.id === idea.id ? 'true' : undefined}
                       className={cn(
                         'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
@@ -128,8 +160,17 @@ export function Mailbox({
         <main className="flex min-w-0 flex-1 flex-col overflow-y-auto">
           {surface.kind === 'capture' ? (
             <CaptureForm onSaved={handleSaved} onCancel={() => setSurface({ kind: 'empty' })} />
-          ) : selectedIdea ? (
-            <IdeaDetail idea={selectedIdea} />
+          ) : surface.kind === 'opening' ? (
+            <IdeaOpening title={surface.idea.title} />
+          ) : surface.kind === 'unrecoverable' ? (
+            <UnrecoverableIdea
+              title={surface.idea.title}
+              onRetry={() => void openIdea(surface.idea)}
+            />
+          ) : surface.kind === 'failed' ? (
+            <OpenFailed title={surface.idea.title} onRetry={() => void openIdea(surface.idea)} />
+          ) : surface.kind === 'idea' ? (
+            <IdeaDetail openedIdea={surface.openedIdea} />
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
               <Lightbulb aria-hidden="true" className="size-6 text-muted-foreground" />
@@ -152,7 +193,60 @@ export function Mailbox({
   )
 }
 
-function IdeaDetail({ idea }: { idea: IdeaSummary }): React.JSX.Element {
+function IdeaOpening({ title }: { title: string }): React.JSX.Element {
+  return (
+    <div className="flex flex-1 items-center justify-center p-8" role="status" aria-live="polite">
+      <p className="text-sm text-muted-foreground">Opening “{title}” from local content…</p>
+    </div>
+  )
+}
+
+function UnrecoverableIdea({
+  title,
+  onRetry
+}: {
+  title: string
+  onRetry: () => void
+}): React.JSX.Element {
+  return (
+    <div
+      className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center"
+      role="alert"
+    >
+      <div>
+        <h2 className="font-semibold">“{title}” needs attention</h2>
+        <p className="mt-1 max-w-md text-sm text-muted-foreground">
+          Canonical Idea content is missing or unreadable. No partial content was opened.
+        </p>
+      </div>
+      <Button variant="secondary" onClick={onRetry}>
+        Try again
+      </Button>
+    </div>
+  )
+}
+
+function OpenFailed({ title, onRetry }: { title: string; onRetry: () => void }): React.JSX.Element {
+  return (
+    <div
+      className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center"
+      role="alert"
+    >
+      <div>
+        <h2 className="font-semibold">“{title}” could not be opened</h2>
+        <p className="mt-1 max-w-md text-sm text-muted-foreground">
+          The app could not finish reading local content. The Idea was not classified as corrupt.
+        </p>
+      </div>
+      <Button variant="secondary" onClick={onRetry}>
+        Try again
+      </Button>
+    </div>
+  )
+}
+
+function IdeaDetail({ openedIdea }: { openedIdea: OpenedIdea }): React.JSX.Element {
+  const idea = openedIdea.idea
   const savedAt = new Date(idea.updatedAt)
   return (
     <article className="mx-auto w-full max-w-xl p-6" aria-label={idea.title}>
@@ -170,8 +264,21 @@ function IdeaDetail({ idea }: { idea: IdeaSummary }): React.JSX.Element {
         </span>
       </div>
       <h2 className="mt-2 text-lg font-semibold select-text">{idea.title}</h2>
+      {openedIdea.notice && (
+        <div
+          className="mt-4 rounded-md border border-border bg-muted/50 p-3 text-sm text-foreground"
+          role={idea.openState === 'read-only-newer-format' ? 'alert' : 'status'}
+        >
+          <p>{openedIdea.notice}</p>
+          {idea.openState === 'read-only-newer-format' && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              The content is open read-only; nothing on disk was changed.
+            </p>
+          )}
+        </div>
+      )}
       <p className="mt-4 rounded-md border border-border bg-surface p-3 font-mono text-xs break-all text-muted-foreground select-text">
-        {idea.relativePath}/idea.md
+        {openedIdea.documents.root.path}
       </p>
       <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
         This Idea is plain Markdown inside your Idea Library. Developing it with AI is a separate,

@@ -7,6 +7,7 @@ export const IPC_CHANNELS = {
   chooseLibraryLocation: 'library:choose-location',
   openLibrary: 'library:open',
   captureIdea: 'idea:capture',
+  openIdea: 'idea:open',
   listIdeas: 'idea:list',
   setThemePreference: 'theme:set-preference',
   themeChanged: 'theme:changed'

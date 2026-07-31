@@ -66,6 +66,8 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.openLibrary(command.path)
     case 'idea/capture':
       return core.captureIdea(command.input)
+    case 'idea/open':
+      return core.openIdea(command.relativePath)
     case 'idea/list':
       return core.listIdeas()
   }

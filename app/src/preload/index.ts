@@ -12,6 +12,7 @@ const api: IdeaShellApi = {
   chooseLibraryLocation: () => ipcRenderer.invoke(IPC_CHANNELS.chooseLibraryLocation),
   openLibrary: (path) => ipcRenderer.invoke(IPC_CHANNELS.openLibrary, path),
   captureIdea: (input) => ipcRenderer.invoke(IPC_CHANNELS.captureIdea, input),
+  openIdea: (relativePath) => ipcRenderer.invoke(IPC_CHANNELS.openIdea, relativePath),
   listIdeas: () => ipcRenderer.invoke(IPC_CHANNELS.listIdeas),
   setThemePreference: (preference) =>
     ipcRenderer.invoke(IPC_CHANNELS.setThemePreference, preference),
