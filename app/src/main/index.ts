@@ -46,7 +46,15 @@ import {
   type ReferenceAttachmentView,
   type ThemeState
 } from '@shared/contract'
+import {
+  chooseExecutableResultSchema,
+  providerIdSchema,
+  readinessSnapshotSchema,
+  refreshReadinessInputSchema
+} from '@shared/readiness'
 import { CoreClient } from './core-client'
+import { PROVIDER_SPECS, readinessLinkHosts } from './readiness'
+import { ReadinessService } from './readiness-service'
 import { SettingsStore } from './settings'
 
 /**
@@ -60,6 +68,9 @@ import { SettingsStore } from './settings'
 const testUserData = process.env['IDEA_SHELL_TEST_USER_DATA']
 const testChooseDir = process.env['IDEA_SHELL_TEST_CHOOSE_DIR']
 const testTrashDir = process.env['IDEA_SHELL_TEST_TRASH_DIR']
+const testReadinessPath = process.env['IDEA_SHELL_TEST_READINESS_PATH']
+const testReadinessHome = process.env['IDEA_SHELL_TEST_READINESS_HOME']
+const testChooseExecutable = process.env['IDEA_SHELL_TEST_CHOOSE_EXECUTABLE']
 const devServerUrl = process.env['ELECTRON_RENDERER_URL']
 if (testUserData && !app.isPackaged) {
   app.setPath('userData', testUserData)
@@ -69,6 +80,7 @@ app.enableSandbox()
 
 let mainWindow: BrowserWindow | null = null
 let settings: SettingsStore
+let readiness: ReadinessService
 let libraryState: LibrarySnapshot | null = null
 let bootReady: Promise<void> = Promise.resolve()
 
@@ -452,6 +464,55 @@ function registerIpc(): void {
     nativeTheme.themeSource = preference
     return themeState()
   })
+
+  handleInvoke(IPC_CHANNELS.getReadiness, z.undefined(), async () =>
+    readinessSnapshotSchema.parse(await readiness.get())
+  )
+
+  handleInvoke(IPC_CHANNELS.refreshReadiness, refreshReadinessInputSchema, async ({ provider }) =>
+    readinessSnapshotSchema.parse(await readiness.refresh(provider))
+  )
+
+  handleInvoke(IPC_CHANNELS.chooseProviderExecutable, providerIdSchema, async (provider) => {
+    let selected: string | undefined
+    if (testChooseExecutable && !app.isPackaged) {
+      selected = testChooseExecutable
+    } else {
+      if (!mainWindow) return { canceled: true as const }
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: `Choose the ${PROVIDER_SPECS[provider].displayName} executable`,
+        message:
+          'The selected program is verified and must still pass the provider’s own readiness checks. Nothing is installed or changed.',
+        buttonLabel: 'Use this executable',
+        properties: ['openFile', 'showHiddenFiles']
+      })
+      selected = result.canceled ? undefined : result.filePaths[0]
+    }
+    if (!selected) return { canceled: true as const }
+    return chooseExecutableResultSchema.parse({
+      canceled: false,
+      snapshot: await readiness.setExplicitExecutable(provider, selected)
+    })
+  })
+
+  handleInvoke(IPC_CHANNELS.clearProviderExecutable, providerIdSchema, async (provider) =>
+    readinessSnapshotSchema.parse(await readiness.clearExplicitExecutable(provider))
+  )
+
+  handleInvoke(IPC_CHANNELS.setLoginShellDiscovery, z.boolean(), async (consent) =>
+    readinessSnapshotSchema.parse(await readiness.setLoginShellDiscovery(consent))
+  )
+
+  // Only the fixed readiness-guidance hosts may leave the app. Anything else
+  // is rejected, so the renderer cannot turn this into an open redirect.
+  const externalLinkHosts = readinessLinkHosts()
+  handleInvoke(IPC_CHANNELS.openExternalLink, z.string().url(), async (url) => {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:' || !externalLinkHosts.has(parsed.hostname)) {
+      throw new Error('Refused to open an unapproved external link')
+    }
+    await shell.openExternal(parsed.toString())
+  })
 }
 
 async function referenceView(reference: ReferenceAttachment): Promise<ReferenceAttachmentView> {
@@ -549,6 +610,12 @@ function createWindow(): void {
 
 void app.whenReady().then(() => {
   settings = new SettingsStore(app.getPath('userData'))
+  readiness = new ReadinessService({
+    settings,
+    homeDir: !app.isPackaged && testReadinessHome ? testReadinessHome : app.getPath('home'),
+    testPathOverride:
+      !app.isPackaged && testReadinessPath !== undefined ? testReadinessPath : undefined
+  })
 
   // Resolve appearance before any window exists so the first paint already
   // matches System, Light, or Dark.

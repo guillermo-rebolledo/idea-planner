@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { _electron as electron, expect, test, type ElectronApplication } from '@playwright/test'
@@ -19,6 +19,10 @@ interface Sandbox {
   userDataDir: string
   libraryDir: string
   trashDir: string
+  /** PATH used for readiness discovery; empty means no provider is found. */
+  readinessBinDir: string
+  /** HOME used for readiness skill discovery. */
+  readinessHomeDir: string
 }
 
 let sandbox: Sandbox
@@ -31,7 +35,9 @@ async function launchShell(): Promise<ElectronApplication> {
       ...process.env,
       IDEA_SHELL_TEST_USER_DATA: sandbox.userDataDir,
       IDEA_SHELL_TEST_CHOOSE_DIR: sandbox.libraryDir,
-      IDEA_SHELL_TEST_TRASH_DIR: sandbox.trashDir
+      IDEA_SHELL_TEST_TRASH_DIR: sandbox.trashDir,
+      IDEA_SHELL_TEST_READINESS_PATH: sandbox.readinessBinDir,
+      IDEA_SHELL_TEST_READINESS_HOME: sandbox.readinessHomeDir
     }
   })
 }
@@ -40,7 +46,9 @@ test.beforeEach(async () => {
   sandbox = {
     userDataDir: await mkdtemp(join(tmpdir(), 'idea-shell-userdata-')),
     libraryDir: await mkdtemp(join(tmpdir(), 'idea-shell-library-')),
-    trashDir: await mkdtemp(join(tmpdir(), 'idea-shell-trash-'))
+    trashDir: await mkdtemp(join(tmpdir(), 'idea-shell-trash-')),
+    readinessBinDir: await mkdtemp(join(tmpdir(), 'idea-shell-readiness-bin-')),
+    readinessHomeDir: await mkdtemp(join(tmpdir(), 'idea-shell-readiness-home-'))
   }
 })
 
@@ -48,7 +56,21 @@ test.afterEach(async () => {
   await rm(sandbox.userDataDir, { recursive: true, force: true })
   await rm(sandbox.libraryDir, { recursive: true, force: true })
   await rm(sandbox.trashDir, { recursive: true, force: true })
+  await rm(sandbox.readinessBinDir, { recursive: true, force: true })
+  await rm(sandbox.readinessHomeDir, { recursive: true, force: true })
 })
+
+async function installFakeProvider(name: string, script: string): Promise<void> {
+  await writeFile(join(sandbox.readinessBinDir, name), `#!/bin/sh\n${script}\n`, { mode: 0o755 })
+}
+
+async function installFakeSkills(root: string): Promise<void> {
+  for (const skill of ['grill-me', 'grilling', 'wayfinder']) {
+    const dir = join(sandbox.readinessHomeDir, root, skill)
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'SKILL.md'), `---\nname: ${skill}\n---\n`)
+  }
+}
 
 test('renderer is sandboxed with only the narrow preload surface', async () => {
   const app = await launchShell()
@@ -73,10 +95,13 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
     expect(exposure.shellKeys).toEqual([
       'captureIdea',
       'chooseLibraryLocation',
+      'chooseProviderExecutable',
       'chooseReferenceAttachment',
+      'clearProviderExecutable',
       'continueWithoutReference',
       'deleteIdeaPermanently',
       'getBootState',
+      'getReadiness',
       'keepReferenceWithIdea',
       'latestReconciliation',
       'listIdeas',
@@ -84,16 +109,19 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'locateIdea',
       'locateReferenceAttachment',
       'onThemeChanged',
+      'openExternalLink',
       'openIdea',
       'openLibrary',
       'previewDeleteIdea',
       'queryMailbox',
       'reconcileIdea',
+      'refreshReadiness',
       'resolveDuplicateManagedDocument',
       'resolveManagedConflict',
       'restoreManagedVersion',
       'setIdeaArchived',
       'setIdeaPinned',
+      'setLoginShellDiscovery',
       'setThemePreference'
     ])
 
@@ -123,6 +151,10 @@ test('a person captures an Idea and it survives an application restart', async (
     await page.getByRole('button', { name: 'Choose or create a folder…' }).click()
     await expect(page.getByText(sandbox.libraryDir)).toBeVisible()
     await page.getByRole('button', { name: 'Use this Idea Library' }).click()
+
+    // The optional readiness step never blocks capture-only onboarding.
+    await page.getByRole('heading', { name: 'Check AI readiness' }).waitFor()
+    await page.getByRole('button', { name: 'Continue with capture only' }).click()
 
     // The mailbox opens empty.
     await expect(page.getByText('No Ideas yet', { exact: false })).toBeVisible()
@@ -179,6 +211,7 @@ test('a person captures an Idea and it survives an application restart', async (
 async function chooseLibrary(page: Awaited<ReturnType<ElectronApplication['firstWindow']>>) {
   await page.getByRole('button', { name: 'Choose or create a folder…' }).click()
   await page.getByRole('button', { name: 'Use this Idea Library' }).click()
+  await page.getByRole('button', { name: 'Continue with capture only' }).click()
 }
 
 async function captureIdea(
@@ -286,12 +319,72 @@ test('permanent delete previews exact app-owned targets and moves them to the Tr
   }
 })
 
+const READY_CODEX_FAKE = `case "$1" in
+  --version) echo "codex-cli 0.146.0"; exit 0;;
+  login) exit 0;;
+  sandbox) exit 0;;
+esac
+exit 1`
+
+const READY_CLAUDE_FAKE = `case "$1" in
+  --version) echo "2.1.220 (Claude Code)"; exit 0;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+esac`
+
+test('readiness reports Codex and Claude independently, with safe repair and re-check', async () => {
+  await installFakeProvider('codex', READY_CODEX_FAKE)
+  await installFakeSkills('.agents/skills')
+
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await page.getByRole('button', { name: 'Choose or create a folder…' }).click()
+    await page.getByRole('button', { name: 'Use this Idea Library' }).click()
+    await page.getByRole('heading', { name: 'Check AI readiness' }).waitFor()
+
+    const codexCard = page.getByRole('region', { name: 'Codex readiness' })
+    const claudeCard = page.getByRole('region', { name: 'Claude Code readiness' })
+
+    // Codex is fully ready; the resolved absolute path is visible.
+    await expect(codexCard.getByText('Ready for planning')).toBeVisible()
+    await expect(
+      codexCard.getByText(join(sandbox.readinessBinDir, 'codex'), { exact: true })
+    ).toBeVisible()
+
+    // Claude stays visible but not ready, with only the approved remediation.
+    await expect(claudeCard.getByText('Not ready — capture still works')).toBeVisible()
+    await expect(claudeCard.getByText('npx skills@latest add mattpocock/skills')).toBeVisible()
+
+    // The person repairs Claude in their own terminal; Check again recovers.
+    await installFakeProvider('claude', READY_CLAUDE_FAKE)
+    await installFakeSkills('.claude/skills')
+    await claudeCard.getByRole('button', { name: 'Check Claude Code again' }).click()
+    await expect(claudeCard.getByText('Ready for planning')).toBeVisible()
+
+    // With a ready provider the continue action stops calling itself capture-only.
+    await page.getByRole('button', { name: 'Continue', exact: true }).click()
+
+    // The same readiness module is reachable from Settings (AI Providers).
+    await page.getByRole('button', { name: 'AI Providers' }).click()
+    const dialog = page.getByRole('dialog', { name: 'AI Providers' })
+    await expect(
+      dialog.getByRole('region', { name: 'Codex readiness' }).getByText('Ready for planning')
+    ).toBeVisible()
+    await dialog.getByRole('button', { name: 'Close AI Providers' }).click()
+
+    // And it is restated immediately before any Run could start.
+    await page.getByRole('button', { name: 'New Idea' }).click()
+    await expect(page.getByText('Ready for AI planning: Codex, Claude Code.')).toBeVisible()
+  } finally {
+    await app.close()
+  }
+})
+
 test('reopen presents newer-format and unrecoverable states without absolute paths', async () => {
   const setupRun = await launchShell()
   try {
     const page = await setupRun.firstWindow()
-    await page.getByRole('button', { name: 'Choose or create a folder…' }).click()
-    await page.getByRole('button', { name: 'Use this Idea Library' }).click()
+    await chooseLibrary(page)
 
     await page.getByRole('button', { name: 'New Idea' }).click()
     await page.getByLabel('What’s the idea?').fill('A future format Idea')

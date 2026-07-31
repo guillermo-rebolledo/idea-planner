@@ -1,20 +1,25 @@
 import { useState } from 'react'
 import { FolderOpen } from 'lucide-react'
-import type { LibrarySnapshot } from '@shared/contract'
+import type { LibrarySnapshot, ReadinessSnapshot } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
+import { ReadinessPanel } from '@renderer/components/Readiness'
 
 interface OnboardingProps {
-  onLibraryOpened: (library: LibrarySnapshot) => void
+  onComplete: (library: LibrarySnapshot) => void
 }
 
 /**
- * First launch: choose or create the Idea Library through the native picker.
- * The exact location is shown, and nothing is written until it is confirmed.
+ * First launch. Step one chooses or creates the Idea Library through the
+ * native picker; nothing is written until it is confirmed. Step two checks AI
+ * readiness and is entirely optional: capture-only mode is a normal state,
+ * never an error, and needs no provider.
  */
-export function Onboarding({ onLibraryOpened }: OnboardingProps): React.JSX.Element {
+export function Onboarding({ onComplete }: OnboardingProps): React.JSX.Element {
   const [chosenPath, setChosenPath] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [library, setLibrary] = useState<LibrarySnapshot | null>(null)
+  const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
 
   async function chooseLocation(): Promise<void> {
     setError(null)
@@ -27,12 +32,41 @@ export function Onboarding({ onLibraryOpened }: OnboardingProps): React.JSX.Elem
     setBusy(true)
     setError(null)
     try {
-      onLibraryOpened(await window.ideaShell.openLibrary(chosenPath))
+      setLibrary(await window.ideaShell.openLibrary(chosenPath))
     } catch {
       setError('That folder could not be opened as an Idea Library. Choose another location.')
     } finally {
       setBusy(false)
     }
+  }
+
+  if (library) {
+    return (
+      <div className="flex h-full flex-col">
+        <header className="app-drag-region h-11 shrink-0" aria-hidden="true" />
+        <main className="flex min-h-0 flex-1 justify-center overflow-y-auto p-8">
+          <section className="w-full max-w-xl" aria-labelledby="readiness-title">
+            <h1 id="readiness-title" className="text-lg font-semibold">
+              Check AI readiness
+            </h1>
+            <p className="mt-2 leading-relaxed text-muted-foreground">
+              This step is optional. You can capture, organize, and edit Ideas without any AI
+              provider, and check readiness again later in Settings.
+            </p>
+            <div className="mt-6">
+              <ReadinessPanel onSnapshot={setReadiness} />
+            </div>
+            <div className="mt-6 flex justify-end">
+              <Button onClick={() => onComplete(library)}>
+                {readiness?.providers.some((provider) => provider.available)
+                  ? 'Continue'
+                  : 'Continue with capture only'}
+              </Button>
+            </div>
+          </section>
+        </main>
+      </div>
+    )
   }
 
   return (

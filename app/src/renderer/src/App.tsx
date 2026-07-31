@@ -61,7 +61,7 @@ export default function App(): React.JSX.Element {
   }
 
   if (!library) {
-    return <Onboarding onLibraryOpened={setLibrary} />
+    return <Onboarding onComplete={setLibrary} />
   }
 
   return (
