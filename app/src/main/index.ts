@@ -38,6 +38,9 @@ import {
   setIdeaArchivedInputSchema,
   setIdeaPinnedInputSchema,
   themePreferenceSchema,
+  runSnapshotSchema,
+  startRunInputSchema,
+  stopRunInputSchema,
   type BootState,
   type ChooseLibraryResult,
   type DeleteIdeaResult,
@@ -56,6 +59,8 @@ import { CoreClient } from './core-client'
 import { PROVIDER_SPECS, readinessLinkHosts } from './readiness'
 import { ReadinessService } from './readiness-service'
 import { SettingsStore } from './settings'
+import { RunProcessBroker } from './run-process-broker'
+import { RunService } from './run-service'
 
 /**
  * Thin privileged Main process: window lifecycle, native dialogs and theme,
@@ -81,6 +86,7 @@ app.enableSandbox()
 let mainWindow: BrowserWindow | null = null
 let settings: SettingsStore
 let readiness: ReadinessService
+let runService: RunService
 let libraryState: LibrarySnapshot | null = null
 let bootReady: Promise<void> = Promise.resolve()
 
@@ -93,6 +99,7 @@ const coreClient = new CoreClient(() => {
       .send({ type: 'library/open', path: libraryPath })
       .then(restoreWorkingDirectories, () => undefined)
   }
+  void runService.stopAll('core-crash').catch(() => undefined)
 })
 
 function themeState(): ThemeState {
@@ -513,6 +520,14 @@ function registerIpc(): void {
     }
     await shell.openExternal(parsed.toString())
   })
+
+  handleInvoke(IPC_CHANNELS.startRun, startRunInputSchema, (input) => runService.start(input))
+  handleInvoke(IPC_CHANNELS.listRuns, ideaRelativePathSchema, async (relativePath) =>
+    runSnapshotSchema.array().parse(await runService.list(relativePath))
+  )
+  handleInvoke(IPC_CHANNELS.stopRun, stopRunInputSchema, ({ runId, relativePath }) =>
+    runService.stop(runId, relativePath)
+  )
 }
 
 async function referenceView(reference: ReferenceAttachment): Promise<ReferenceAttachmentView> {
@@ -616,6 +631,14 @@ void app.whenReady().then(() => {
     testPathOverride:
       !app.isPackaged && testReadinessPath !== undefined ? testReadinessPath : undefined
   })
+  runService = new RunService({
+    core: coreClient,
+    broker: new RunProcessBroker(),
+    readiness,
+    libraryPath: () => libraryState?.path ?? settings.get().libraryPath,
+    homeDirectory: app.getPath('home'),
+    privateRoot: join(app.getPath('userData'), 'runs')
+  })
 
   // Resolve appearance before any window exists so the first paint already
   // matches System, Light, or Dark.
@@ -653,6 +676,27 @@ app.on('window-all-closed', () => {
   app.quit()
 })
 
-app.on('quit', () => {
-  coreClient.stop()
+let shutdownStarted = false
+app.on('before-quit', (event) => {
+  if (shutdownStarted) return
+  event.preventDefault()
+  shutdownStarted = true
+  void runService
+    .stopAll('quit')
+    .then(() => {
+      coreClient.stop()
+      app.exit(0)
+    })
+    .catch(async () => {
+      shutdownStarted = false
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'Could not verify Run cleanup',
+        message:
+          'Idea Development stayed open because a provider process group may still be running.',
+        detail:
+          'Check Activity Monitor, then try Quit again. New Runs remain blocked until supervision is recovered.',
+        buttons: ['Keep app open']
+      })
+    })
 })

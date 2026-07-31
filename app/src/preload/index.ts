@@ -48,6 +48,9 @@ const api: IdeaShellApi = {
   setLoginShellDiscovery: (consent) =>
     ipcRenderer.invoke(IPC_CHANNELS.setLoginShellDiscovery, consent),
   openExternalLink: (url) => ipcRenderer.invoke(IPC_CHANNELS.openExternalLink, url),
+  startRun: (input) => ipcRenderer.invoke(IPC_CHANNELS.startRun, input),
+  listRuns: (relativePath) => ipcRenderer.invoke(IPC_CHANNELS.listRuns, relativePath),
+  stopRun: (input) => ipcRenderer.invoke(IPC_CHANNELS.stopRun, input),
   onThemeChanged: (listener) => {
     const subscription = (_event: unknown, theme: ThemeState): void => listener(theme)
     ipcRenderer.on(IPC_CHANNELS.themeChanged, subscription)

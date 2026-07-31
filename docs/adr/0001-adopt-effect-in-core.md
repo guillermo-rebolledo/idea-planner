@@ -5,11 +5,12 @@ Date: 2026-07-31
 
 ## Context
 
-The Core utility process will soon own the hardest parts of the product: harness
-adapters that spawn Codex/Claude CLI processes per Run, normalize their
-stream-JSON output into a versioned event stream, and supervise Run lifecycle —
-stop, failure, timeout, cleanup of every acquired process, stream, and file
-handle. Hand-rolled promises put all of that burden on cancellation edge cases.
+The Core utility process owns durable Run acceptance, normalized event state,
+managed-file writes, and product lifecycle decisions. Main alone can own native
+Codex/Claude process groups and the macOS sandbox. Hand-rolled promises inside
+Core would put durable cancellation and write-ordering guarantees on bespoke
+queues, while importing Effect into Electron authority wiring would enlarge the
+trusted surface without improving the narrow OS process contract.
 
 The existing Core already hand-rolls three things a structured-effect system
 provides: typed errors (`CoreError` codes), dependency injection (`CoreDeps`),
@@ -23,8 +24,9 @@ injection — exactly the shape of the upcoming Run supervision work.
 ## Decision
 
 Use Effect for all product behavior inside the **Core utility process**. Future
-Core subsystems (harness adapters, Run supervision, managed-file writes,
-event streams) are written Effect-native from the start.
+Core subsystems (durable Run state, managed-file writes, and event journals) are
+written Effect-native from the start. Native process launch and reaping remain
+in Main as described by the follow-up decision below.
 
 Effect stays **contained behind the process boundary**:
 
@@ -61,9 +63,10 @@ Conventions inside Core:
 
 ## Consequences
 
-- Run supervision, interruption, and stream normalization get compiler-checked
+- Durable Run state, interruption, and event normalization get compiler-checked
   error handling and guaranteed resource cleanup instead of bespoke promise
-  plumbing.
+  plumbing; native process-group cleanup stays behind a small tested Main
+  boundary.
 - Contributors and agents implementing Core issues must read and write Effect
   (generators, `Effect.gen`, `pipe`). Renderer/Main work is unaffected.
 - Effect 3.x is the pinned major; a v4 migration is expected eventually and is
@@ -71,13 +74,14 @@ Conventions inside Core:
 - Reference migration: the capture slice in `app/src/core/core.ts` demonstrates
   the idioms (services, `Ref`, semaphore, `tryPromise`, boundary unwrapping).
 
-## Open decision: Effect in Main's process supervision
+## Follow-up decision: Main process supervision stays promise-based
 
-The Electron architecture decision places the future `RunProcessBroker`
-(spawning and supervising provider CLI process trees) in **Main**, alongside
-`CoreClient` — the most supervision-shaped code in the app, in the process
-this ADR declares Effect-free. When the RunProcessBroker issue is implemented,
-explicitly decide whether to extend Effect to Main's supervision modules
-(`CoreClient`, the broker — never the Electron lifecycle/security wiring) or
-keep Main promise-based. Do not silently pick a side; surface the choice in
-that issue.
+`RunService`, `PlanningPolicy`, and `RunProcessBroker` remain promise- and
+event-driven in **Main**. They form one native authority boundary: resolve the
+already-probed executable, freeze the launch configuration through Core,
+compile the fixed policy into a Seatbelt profile, then launch, terminate, reap,
+verify, and remove the private Run directory. Main may report observed native
+lifecycle events, but it does not own canonical state transitions: each one is
+validated and persisted by Core before presentation. Dependencies are injected
+and the boundary contract is tested directly. Revisit if orchestration expands
+beyond this fixed request/persist/launch/report sequence.

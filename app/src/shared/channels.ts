@@ -32,5 +32,8 @@ export const IPC_CHANNELS = {
   chooseProviderExecutable: 'readiness:choose-executable',
   clearProviderExecutable: 'readiness:clear-executable',
   setLoginShellDiscovery: 'readiness:set-login-shell-discovery',
-  openExternalLink: 'shell:open-external-link'
+  openExternalLink: 'shell:open-external-link',
+  startRun: 'run:start',
+  listRuns: 'run:list',
+  stopRun: 'run:stop'
 } as const

@@ -106,6 +106,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'latestReconciliation',
       'listIdeas',
       'listReferenceAttachments',
+      'listRuns',
       'locateIdea',
       'locateReferenceAttachment',
       'onThemeChanged',
@@ -122,7 +123,9 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'setIdeaArchived',
       'setIdeaPinned',
       'setLoginShellDiscovery',
-      'setThemePreference'
+      'setThemePreference',
+      'startRun',
+      'stopRun'
     ])
 
     // The preload functions cross the bridge by value: none of them can be
