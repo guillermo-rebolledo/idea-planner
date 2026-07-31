@@ -47,7 +47,7 @@ function check(readiness: ProviderReadiness, dimension: ReadinessDimension): Rea
 const READY_CODEX_SCRIPT = `case "$1" in
   --version) echo "codex-cli 0.146.0"; exit 0;;
   login) exit 0;;
-  debug) exit 0;;
+  sandbox) exit 0;;
 esac
 exit 1`
 
@@ -224,7 +224,7 @@ describe('sandbox', () => {
     const readiness = await probeCodex({
       script: `case "$1" in
         --version) echo "codex-cli 0.146.0"; exit 0;;
-        debug) exit 1;;
+        sandbox) exit 1;;
         *) exit 0;;
       esac`
     })

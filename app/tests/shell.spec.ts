@@ -322,7 +322,7 @@ test('permanent delete previews exact app-owned targets and moves them to the Tr
 const READY_CODEX_FAKE = `case "$1" in
   --version) echo "codex-cli 0.146.0"; exit 0;;
   login) exit 0;;
-  debug) exit 0;;
+  sandbox) exit 0;;
 esac
 exit 1`
 

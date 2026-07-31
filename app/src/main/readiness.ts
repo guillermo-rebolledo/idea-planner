@@ -73,7 +73,7 @@ export const PROVIDER_SPECS: Record<ProviderId, ProviderSpec> = {
     authProbe: { kind: 'exit-code', args: ['login', 'status'] },
     authRemediationCommand: 'codex login',
     // Codex's own Seatbelt runner proves the native macOS sandbox works.
-    sandboxProbe: { kind: 'exit-code', args: ['debug', 'seatbelt', '/usr/bin/true'] },
+    sandboxProbe: { kind: 'exit-code', args: ['sandbox', '/usr/bin/true'] },
     skillsRoot: '.agents/skills',
     installLink: { label: 'Install Codex CLI', url: 'https://developers.openai.com/codex/cli' },
     authLink: { label: 'Codex sign-in guidance', url: 'https://developers.openai.com/codex/cli' }
