@@ -9,6 +9,11 @@ export const IPC_CHANNELS = {
   captureIdea: 'idea:capture',
   openIdea: 'idea:open',
   listIdeas: 'idea:list',
+  queryMailbox: 'mailbox:query',
+  setIdeaPinned: 'idea:set-pinned',
+  setIdeaArchived: 'idea:set-archived',
+  previewDeleteIdea: 'idea:delete-preview',
+  deleteIdeaPermanently: 'idea:delete-permanently',
   setThemePreference: 'theme:set-preference',
   themeChanged: 'theme:changed'
 } as const

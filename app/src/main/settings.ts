@@ -5,12 +5,15 @@ import { themePreferenceSchema, type ThemePreference } from '@shared/contract'
 
 const settingsSchema = z.object({
   libraryPath: z.string().min(1).optional(),
-  themePreference: themePreferenceSchema.default('system')
+  themePreference: themePreferenceSchema.default('system'),
+  /** Days without activity after which a pinned Idea shows as Dormant. */
+  dormantAfterDays: z.number().int().positive().default(14)
 })
 
 export interface Settings {
   libraryPath?: string
   themePreference: ThemePreference
+  dormantAfterDays: number
 }
 
 /**
@@ -46,6 +49,6 @@ export class SettingsStore {
     } catch {
       // Missing or corrupt settings fall back to defaults; Ideas live elsewhere.
     }
-    return { themePreference: 'system' }
+    return { themePreference: 'system', dormantAfterDays: 14 }
   }
 }

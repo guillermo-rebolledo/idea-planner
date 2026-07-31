@@ -70,6 +70,14 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.openIdea(command.relativePath)
     case 'idea/list':
       return core.listIdeas()
+    case 'mailbox/query':
+      return core.queryMailbox(command.query)
+    case 'idea/set-pinned':
+      return core.setIdeaPinned(command.relativePath, command.pinned)
+    case 'idea/set-archived':
+      return core.setIdeaArchived(command.relativePath, command.archived)
+    case 'idea/delete-preview':
+      return core.previewDeleteIdea(command.relativePath)
   }
 }
 

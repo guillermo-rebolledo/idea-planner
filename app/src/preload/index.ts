@@ -14,6 +14,13 @@ const api: IdeaShellApi = {
   captureIdea: (input) => ipcRenderer.invoke(IPC_CHANNELS.captureIdea, input),
   openIdea: (relativePath) => ipcRenderer.invoke(IPC_CHANNELS.openIdea, relativePath),
   listIdeas: () => ipcRenderer.invoke(IPC_CHANNELS.listIdeas),
+  queryMailbox: (query) => ipcRenderer.invoke(IPC_CHANNELS.queryMailbox, query),
+  setIdeaPinned: (input) => ipcRenderer.invoke(IPC_CHANNELS.setIdeaPinned, input),
+  setIdeaArchived: (input) => ipcRenderer.invoke(IPC_CHANNELS.setIdeaArchived, input),
+  previewDeleteIdea: (relativePath) =>
+    ipcRenderer.invoke(IPC_CHANNELS.previewDeleteIdea, relativePath),
+  deleteIdeaPermanently: (relativePath) =>
+    ipcRenderer.invoke(IPC_CHANNELS.deleteIdeaPermanently, relativePath),
   setThemePreference: (preference) =>
     ipcRenderer.invoke(IPC_CHANNELS.setThemePreference, preference),
   onThemeChanged: (listener) => {
