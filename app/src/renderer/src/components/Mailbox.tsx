@@ -181,7 +181,7 @@ function IdeaDetail({ idea }: { idea: IdeaSummary }): React.JSX.Element {
   )
 }
 
-const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
+const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: 'system', label: 'System' },
   { value: 'light', label: 'Light' },
   { value: 'dark', label: 'Dark' }

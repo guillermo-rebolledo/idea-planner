@@ -1,0 +1,14 @@
+node_modules
+out
+dist
+test-results
+playwright-report
+coverage
+pnpm-lock.yaml
+
+# Local editor/agent state.
+.claude
+
+# Agent-managed issue tracker prose: the skills that write these files own
+# their layout, and reformatting only churns them.
+.scratch

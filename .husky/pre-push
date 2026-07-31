@@ -1,0 +1,3 @@
+# Full gate before code leaves this machine: formatting, lint, the prototype
+# build, and the packaged-shell acceptance tests.
+pnpm verify

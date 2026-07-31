@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { Cause, Context, Effect, Exit, Layer, Option, Ref } from 'effect'
 import {
   CoreError,
   captureIdeaInputSchema,
@@ -20,6 +21,9 @@ export interface CoreDeps {
  * The deep product-behavior module. It owns the Idea lifecycle and canonical
  * Markdown persistence, and is the primary test seam. It runs inside the Core
  * utility process in production and directly inside tests.
+ *
+ * Internals are Effect (see ADR 0001); this interface stays promise-based so
+ * Main and tests never see Effect types.
  */
 export interface Core {
   openLibrary(path: string): Promise<LibrarySnapshot>
@@ -27,91 +31,151 @@ export interface Core {
   listIdeas(): Promise<IdeaSummary[]>
 }
 
+/**
+ * The same behavior as Effect values, for callers inside the Core process
+ * (the utility-process dispatcher). Dependencies are already provided.
+ */
+export interface CoreEffects {
+  openLibrary(path: string): Effect.Effect<LibrarySnapshot, CoreError>
+  captureIdea(input: CaptureIdeaInput): Effect.Effect<IdeaSummary, CoreError>
+  listIdeas(): Effect.Effect<IdeaSummary[], CoreError>
+}
+
 const IDEA_FILE = 'idea.md'
 const MAX_SLUG_LENGTH = 40
+const SCAN_CONCURRENCY = 8
+
+class IdeaClock extends Context.Tag('core/IdeaClock')<IdeaClock, { now(): Date }>() {}
+class IdGenerator extends Context.Tag('core/IdGenerator')<IdGenerator, { nextId(): string }>() {}
+
+type CoreServices = IdeaClock | IdGenerator
+
+export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
+  const services: Layer.Layer<CoreServices> = Layer.mergeAll(
+    Layer.succeed(IdeaClock, { now: deps.now ?? (() => new Date()) }),
+    Layer.succeed(IdGenerator, { nextId: deps.randomId ?? (() => `idea-${randomUUID()}`) })
+  )
+
+  const libraryPath = Effect.runSync(Ref.make(Option.none<string>()))
+  // Writes hold this permit so two captures can never race on folder naming.
+  const writeLock = Effect.runSync(Effect.makeSemaphore(1))
+
+  const requireLibrary = (activity: string): Effect.Effect<string, CoreError> =>
+    Ref.get(libraryPath).pipe(
+      Effect.flatMap(
+        Option.match({
+          onNone: () =>
+            Effect.fail(
+              new CoreError('NO_LIBRARY_OPEN', `Open an Idea Library before ${activity}`)
+            ),
+          onSome: Effect.succeed
+        })
+      )
+    )
+
+  const openLibrary = (path: string): Effect.Effect<LibrarySnapshot, CoreError> =>
+    Effect.gen(function* () {
+      const stats = yield* Effect.tryPromise({
+        try: () => stat(path),
+        catch: () => new CoreError('LIBRARY_MISSING', `No folder exists at ${path}`)
+      })
+      if (!stats.isDirectory()) {
+        return yield* Effect.fail(new CoreError('NOT_A_DIRECTORY', `${path} is not a folder`))
+      }
+      yield* Ref.set(libraryPath, Option.some(path))
+      return { path, ideas: yield* scanIdeas(path) }
+    })
+
+  const captureIdea = (
+    rawInput: CaptureIdeaInput
+  ): Effect.Effect<IdeaSummary, CoreError, CoreServices> =>
+    Effect.gen(function* () {
+      const library = yield* requireLibrary('capturing an Idea')
+      const parsed = captureIdeaInputSchema.safeParse(rawInput)
+      if (!parsed.success) {
+        return yield* Effect.fail(
+          new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid Idea input')
+        )
+      }
+      const input = parsed.data
+      const title = input.title.trim() || suggestIdeaTitle(input.notes)
+
+      return yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const clock = yield* IdeaClock
+          const ids = yield* IdGenerator
+          const timestamp = clock.now().toISOString()
+          const idea: IdeaSummary = {
+            id: ids.nextId(),
+            kind: input.kind,
+            title,
+            status: 'saved',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            relativePath: yield* reserveFolder(library, title)
+          }
+          yield* writeIdeaFile(join(library, idea.relativePath), idea, input.notes)
+          return idea
+        })
+      )
+    })
+
+  const listIdeas: Effect.Effect<IdeaSummary[], CoreError> = requireLibrary('listing Ideas').pipe(
+    Effect.flatMap(scanIdeas)
+  )
+
+  const provide = <A>(
+    effect: Effect.Effect<A, CoreError, CoreServices>
+  ): Effect.Effect<A, CoreError> => Effect.provide(effect, services)
+
+  return {
+    openLibrary,
+    captureIdea: (input) => provide(captureIdea(input)),
+    listIdeas: () => listIdeas
+  }
+}
 
 export function createCore(deps: CoreDeps = {}): Core {
-  const now = deps.now ?? (() => new Date())
-  const randomId = deps.randomId ?? (() => `idea-${randomUUID()}`)
+  const core = createCoreEffects(deps)
 
-  let libraryPath: string | null = null
-  // Writes are serialized so two captures can never race on folder naming.
-  let writeQueue: Promise<unknown> = Promise.resolve()
-
-  function enqueue<T>(work: () => Promise<T>): Promise<T> {
-    const result = writeQueue.then(work, work)
-    writeQueue = result.catch(() => undefined)
-    return result
-  }
-
-  async function openLibrary(path: string): Promise<LibrarySnapshot> {
-    let stats
-    try {
-      stats = await stat(path)
-    } catch {
-      throw new CoreError('LIBRARY_MISSING', `No folder exists at ${path}`)
-    }
-    if (!stats.isDirectory()) {
-      throw new CoreError('NOT_A_DIRECTORY', `${path} is not a folder`)
-    }
-    libraryPath = path
-    return { path, ideas: await scanIdeas(path) }
-  }
-
-  async function captureIdea(rawInput: CaptureIdeaInput): Promise<IdeaSummary> {
-    if (libraryPath === null) {
-      throw new CoreError('NO_LIBRARY_OPEN', 'Open an Idea Library before capturing an Idea')
-    }
-    const parsed = captureIdeaInputSchema.safeParse(rawInput)
-    if (!parsed.success) {
-      throw new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid Idea input')
-    }
-    const library = libraryPath
-    const input = parsed.data
-    const title = input.title.trim() || suggestIdeaTitle(input.notes)
-
-    return enqueue(async () => {
-      const timestamp = now().toISOString()
-      const idea: IdeaSummary = {
-        id: randomId(),
-        kind: input.kind,
-        title,
-        status: 'saved',
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        relativePath: await reserveFolder(library, title)
-      }
-      await writeIdeaFile(join(library, idea.relativePath), idea, input.notes)
-      return idea
+  const run = <A>(effect: Effect.Effect<A, CoreError>): Promise<A> =>
+    Effect.runPromiseExit(effect).then((exit) => {
+      if (Exit.isSuccess(exit)) return exit.value
+      throw Cause.squash(exit.cause)
     })
-  }
 
-  async function listIdeas(): Promise<IdeaSummary[]> {
-    if (libraryPath === null) {
-      throw new CoreError('NO_LIBRARY_OPEN', 'Open an Idea Library before listing Ideas')
-    }
-    return scanIdeas(libraryPath)
-  }
-
-  return { openLibrary, captureIdea, listIdeas }
-}
-
-async function reserveFolder(library: string, title: string): Promise<string> {
-  const base = slugify(title)
-  for (let attempt = 1; ; attempt++) {
-    const candidate = attempt === 1 ? base : `${base}-${attempt}`
-    try {
-      await mkdir(join(library, candidate))
-      return candidate
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-        throw new CoreError('IO_ERROR', `Could not create Idea folder in ${library}`)
-      }
-    }
+  return {
+    openLibrary: (path) => run(core.openLibrary(path)),
+    captureIdea: (input) => run(core.captureIdea(input)),
+    listIdeas: () => run(core.listIdeas())
   }
 }
 
-async function writeIdeaFile(ideaDir: string, idea: IdeaSummary, notes: string): Promise<void> {
+function reserveFolder(library: string, title: string): Effect.Effect<string, CoreError> {
+  return Effect.gen(function* () {
+    const base = slugify(title)
+    for (let attempt = 1; ; attempt++) {
+      const candidate = attempt === 1 ? base : `${base}-${attempt}`
+      const created = yield* Effect.tryPromise({
+        try: () => mkdir(join(library, candidate)).then(() => true),
+        catch: (error) => error as NodeJS.ErrnoException
+      }).pipe(
+        Effect.catchAll((error) =>
+          error.code === 'EEXIST'
+            ? Effect.succeed(false)
+            : Effect.fail(new CoreError('IO_ERROR', `Could not create Idea folder in ${library}`))
+        )
+      )
+      if (created) return candidate
+    }
+  })
+}
+
+function writeIdeaFile(
+  ideaDir: string,
+  idea: IdeaSummary,
+  notes: string
+): Effect.Effect<void, CoreError> {
   const body = notes.replace(/\r\n/g, '\n').trim()
   const markdown = [
     '---',
@@ -130,55 +194,54 @@ async function writeIdeaFile(ideaDir: string, idea: IdeaSummary, notes: string):
   // Staged sibling file plus atomic rename, so a crash cannot leave a
   // half-written canonical document.
   const staged = join(ideaDir, `.${IDEA_FILE}.staged`)
-  try {
-    await writeFile(staged, markdown, 'utf8')
-    await rename(staged, join(ideaDir, IDEA_FILE))
-  } catch {
-    throw new CoreError('IO_ERROR', `Could not save the Idea to ${ideaDir}`)
-  }
+  return Effect.tryPromise({
+    try: async () => {
+      await writeFile(staged, markdown, 'utf8')
+      await rename(staged, join(ideaDir, IDEA_FILE))
+    },
+    catch: () => new CoreError('IO_ERROR', `Could not save the Idea to ${ideaDir}`)
+  })
 }
 
-async function scanIdeas(library: string): Promise<IdeaSummary[]> {
-  let entries
-  try {
-    entries = await readdir(library, { withFileTypes: true })
-  } catch {
-    throw new CoreError('IO_ERROR', `Could not read the Idea Library at ${library}`)
-  }
-
-  const ideas: IdeaSummary[] = []
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-    const summary = await readIdeaSummary(library, entry.name)
-    if (summary) ideas.push(summary)
-  }
-
-  return ideas.sort(
-    (a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.title.localeCompare(b.title)
-  )
+function scanIdeas(library: string): Effect.Effect<IdeaSummary[], CoreError> {
+  return Effect.gen(function* () {
+    const entries = yield* Effect.tryPromise({
+      try: () => readdir(library, { withFileTypes: true }),
+      catch: () => new CoreError('IO_ERROR', `Could not read the Idea Library at ${library}`)
+    })
+    const summaries = yield* Effect.forEach(
+      entries.filter((entry) => entry.isDirectory()),
+      (entry) => readIdeaSummary(library, entry.name),
+      { concurrency: SCAN_CONCURRENCY }
+    )
+    return summaries
+      .filter((summary): summary is IdeaSummary => summary !== null)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.title.localeCompare(b.title))
+  })
 }
 
-async function readIdeaSummary(library: string, folder: string): Promise<IdeaSummary | null> {
-  let raw: string
-  try {
-    raw = await readFile(join(library, folder, IDEA_FILE), 'utf8')
-  } catch {
-    return null
-  }
-  const parsed = parseIdeaMarkdown(raw)
-  if (!parsed) return null
+function readIdeaSummary(library: string, folder: string): Effect.Effect<IdeaSummary | null> {
+  return Effect.gen(function* () {
+    const raw = yield* Effect.tryPromise(() =>
+      readFile(join(library, folder, IDEA_FILE), 'utf8')
+    ).pipe(Effect.orElseSucceed(() => null))
+    if (raw === null) return null
 
-  const candidate = {
-    id: parsed.frontmatter['id'],
-    kind: parsed.frontmatter['kind'],
-    title: parsed.title,
-    status: parsed.frontmatter['status'],
-    createdAt: parsed.frontmatter['created'],
-    updatedAt: parsed.frontmatter['updated'],
-    relativePath: folder
-  }
-  const validated = ideaSummarySchema.safeParse(candidate)
-  return validated.success ? validated.data : null
+    const parsed = parseIdeaMarkdown(raw)
+    if (!parsed) return null
+
+    const candidate = {
+      id: parsed.frontmatter['id'],
+      kind: parsed.frontmatter['kind'],
+      title: parsed.title,
+      status: parsed.frontmatter['status'],
+      createdAt: parsed.frontmatter['created'],
+      updatedAt: parsed.frontmatter['updated'],
+      relativePath: folder
+    }
+    const validated = ideaSummarySchema.safeParse(candidate)
+    return validated.success ? validated.data : null
+  })
 }
 
 function parseIdeaMarkdown(

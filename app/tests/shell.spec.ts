@@ -9,6 +9,9 @@ import { _electron as electron, expect, test, type ElectronApplication } from '@
  * renderer isolation.
  */
 
+// The `electron` package resolves to the binary path in plain Node, which is
+// what Playwright needs to launch — a CJS-only export with no ESM equivalent.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const electronBinary = require('electron') as unknown as string
 const mainEntry = join(__dirname, '../out/main/index.js')
 
