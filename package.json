@@ -1,6 +1,12 @@
 {
   "name": "agents-ideas-prototypes",
   "private": true,
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
+  },
   "scripts": {
     "prototype": "vite prototypes/core-workspace",
     "prototype:check": "tsc -p prototypes/core-workspace/tsconfig.json && vite build prototypes/core-workspace --outDir ../../dist/prototype --emptyOutDir"
