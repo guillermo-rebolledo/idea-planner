@@ -24,6 +24,14 @@ _Avoid_: File, item
 A read-only Markdown document created and continuously revised by an active Run. It becomes an Artifact only when the user accepts it.
 _Avoid_: Artifact, Proposal
 
+**MVP Spec**:
+A user-reviewed specification synthesized from an Idea's accepted Artifacts and Conversation context. It remains open to discussion and revision until the user explicitly accepts it as the basis for implementation planning.
+_Avoid_: PRD, plan
+
+**Implementation Ticket**:
+A user-approved, dependency-aware vertical slice of an accepted MVP Spec, represented as a durable Markdown document.
+_Avoid_: Task, issue
+
 **Run**:
 An explicitly started AI execution within a Conversation, configured with a local harness, model, and reasoning effort. A Run may continue in the background until it completes, is paused, or is stopped.
 _Avoid_: Conversation, background agent
