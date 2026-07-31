@@ -15,15 +15,26 @@ import {
   CONTRACT_VERSION,
   CoreError,
   IPC_CHANNELS,
+  chooseReferenceAttachmentInputSchema,
+  chooseReferenceAttachmentResultSchema,
   ideaSummarySchema,
   ideaRelativePathSchema,
   openedIdeaSchema,
   librarySnapshotSchema,
+  locateIdeaResultSchema,
   captureIdeaInputSchema,
   deleteIdeaInputSchema,
   deleteIdeaPreviewSchema,
   mailboxQuerySchema,
   mailboxSnapshotSchema,
+  reconcileIdeaInputSchema,
+  reconciliationStateSchema,
+  referenceActionInputSchema,
+  referenceAttachmentSchema,
+  referenceAttachmentViewSchema,
+  resolveManagedConflictInputSchema,
+  resolveDuplicateManagedDocumentInputSchema,
+  restoreManagedVersionInputSchema,
   setIdeaArchivedInputSchema,
   setIdeaPinnedInputSchema,
   themePreferenceSchema,
@@ -31,6 +42,8 @@ import {
   type ChooseLibraryResult,
   type DeleteIdeaResult,
   type LibrarySnapshot,
+  type ReferenceAttachment,
+  type ReferenceAttachmentView,
   type ThemeState
 } from '@shared/contract'
 import { CoreClient } from './core-client'
@@ -64,7 +77,9 @@ const coreClient = new CoreClient(() => {
   // persisted settings so the renderer keeps working.
   const libraryPath = settings.get().libraryPath
   if (libraryPath) {
-    void coreClient.send({ type: 'library/open', path: libraryPath }).catch(() => undefined)
+    void coreClient
+      .send({ type: 'library/open', path: libraryPath })
+      .then(restoreWorkingDirectories, () => undefined)
   }
 })
 
@@ -110,12 +125,37 @@ function handleInvoke<Args, Result>(
 async function openLibrary(path: string): Promise<LibrarySnapshot> {
   // The native picker only yields existing folders; Core rejects anything
   // else. Main never creates a library location on its own.
+  const previousLibraryPath = settings.get().libraryPath
   const snapshot = librarySnapshotSchema.parse(
     await coreClient.send({ type: 'library/open', path })
   )
   libraryState = snapshot
-  settings.update({ libraryPath: path })
+  settings.update({
+    libraryPath: path,
+    ...(previousLibraryPath && previousLibraryPath !== path ? { workingDirectories: {} } : {})
+  })
   return snapshot
+}
+
+async function restoreWorkingDirectories(): Promise<void> {
+  for (const [relativePath, registration] of Object.entries(settings.get().workingDirectories)) {
+    try {
+      await coreClient.send({
+        type: 'idea/locate',
+        relativePath,
+        selectedDirectory: registration.path,
+        expectedIdeaId: registration.ideaId
+      })
+      const opened = openedIdeaSchema.parse(
+        await coreClient.send({ type: 'idea/open', relativePath })
+      )
+      if (libraryState && !libraryState.ideas.some((idea) => idea.id === opened.idea.id)) {
+        libraryState = { ...libraryState, ideas: [opened.idea, ...libraryState.ideas] }
+      }
+    } catch {
+      // Keep the placeholder registration so a remounted volume recovers on restart.
+    }
+  }
 }
 
 function registerIpc(): void {
@@ -204,6 +244,168 @@ function registerIpc(): void {
     )
   )
 
+  handleInvoke(IPC_CHANNELS.reconcileIdea, reconcileIdeaInputSchema, async (input) =>
+    reconciliationStateSchema.parse(await coreClient.send({ type: 'idea/reconcile', input }))
+  )
+
+  handleInvoke(IPC_CHANNELS.latestReconciliation, ideaRelativePathSchema, async (relativePath) =>
+    reconciliationStateSchema
+      .nullable()
+      .parse(await coreClient.send({ type: 'idea/reconciliation-latest', relativePath }))
+  )
+
+  handleInvoke(IPC_CHANNELS.locateIdea, ideaRelativePathSchema, async (relativePath) => {
+    if (!mainWindow) return { canceled: true as const }
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Locate Idea Working Directory',
+      message: 'Choose this Idea’s folder. The app will not search anywhere else.',
+      buttonLabel: 'Use this folder',
+      properties: ['openDirectory']
+    })
+    const selectedDirectory = result.filePaths[0]
+    if (result.canceled || !selectedDirectory) return { canceled: true as const }
+    const expectedIdeaId = libraryState?.ideas.find(
+      (idea) => idea.relativePath === relativePath
+    )?.id
+    if (!expectedIdeaId) throw new CoreError('IDEA_NOT_FOUND', 'The Idea identity is unavailable')
+    const state = await coreClient.send({
+      type: 'idea/locate',
+      relativePath,
+      selectedDirectory,
+      expectedIdeaId
+    })
+    settings.update({
+      workingDirectories: {
+        ...settings.get().workingDirectories,
+        [relativePath]: { path: selectedDirectory, ideaId: expectedIdeaId }
+      }
+    })
+    return locateIdeaResultSchema.parse({
+      canceled: false,
+      state
+    })
+  })
+
+  handleInvoke(
+    IPC_CHANNELS.restoreManagedVersion,
+    restoreManagedVersionInputSchema,
+    async (input) =>
+      reconciliationStateSchema.parse(
+        await coreClient.send({ type: 'idea/restore-version', input })
+      )
+  )
+
+  handleInvoke(
+    IPC_CHANNELS.resolveManagedConflict,
+    resolveManagedConflictInputSchema,
+    async (input) =>
+      reconciliationStateSchema.parse(
+        await coreClient.send({ type: 'idea/resolve-conflict', input })
+      )
+  )
+
+  handleInvoke(
+    IPC_CHANNELS.resolveDuplicateManagedDocument,
+    resolveDuplicateManagedDocumentInputSchema.pick({ relativePath: true, documentId: true }),
+    async ({ relativePath, documentId }) => {
+      if (!mainWindow) return { canceled: true as const }
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Choose the Intended Managed Copy',
+        message:
+          'Choose the Markdown file to keep. Other duplicate copies will be preserved in recovery storage.',
+        buttonLabel: 'Keep this copy',
+        properties: ['openFile'],
+        filters: [{ name: 'Markdown', extensions: ['md'] }]
+      })
+      const selectedPath = result.filePaths[0]
+      if (result.canceled || !selectedPath) return { canceled: true as const }
+      const state = reconciliationStateSchema.parse(
+        await coreClient.send({
+          type: 'idea/resolve-duplicate',
+          input: { relativePath, documentId, selectedPath }
+        })
+      )
+      return locateIdeaResultSchema.parse({ canceled: false, state })
+    }
+  )
+
+  handleInvoke(
+    IPC_CHANNELS.chooseReferenceAttachment,
+    chooseReferenceAttachmentInputSchema,
+    async (input) => {
+      if (!mainWindow) return { canceled: true as const }
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Choose a Reference Attachment',
+        message: 'The image stays external unless you choose Keep with Idea.',
+        buttonLabel: 'Use image',
+        properties: ['openFile'],
+        filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }]
+      })
+      const sourcePath = result.filePaths[0]
+      if (result.canceled || !sourcePath) return { canceled: true as const }
+      const reference = referenceAttachmentSchema.parse(
+        await coreClient.send({
+          type: 'reference/add',
+          relativePath: input.relativePath,
+          messageId: input.messageId,
+          sourcePath
+        })
+      )
+      return chooseReferenceAttachmentResultSchema.parse({
+        canceled: false,
+        reference: await referenceView(reference)
+      })
+    }
+  )
+
+  handleInvoke(
+    IPC_CHANNELS.listReferenceAttachments,
+    ideaRelativePathSchema,
+    async (relativePath) => {
+      const references = z
+        .array(referenceAttachmentSchema)
+        .parse(await coreClient.send({ type: 'reference/list', relativePath }))
+      return Promise.all(references.map(referenceView))
+    }
+  )
+
+  handleInvoke(IPC_CHANNELS.keepReferenceWithIdea, referenceActionInputSchema, async (input) =>
+    referenceView(
+      referenceAttachmentSchema.parse(await coreClient.send({ type: 'reference/keep', input }))
+    )
+  )
+
+  handleInvoke(
+    IPC_CHANNELS.locateReferenceAttachment,
+    referenceActionInputSchema,
+    async (input) => {
+      if (!mainWindow) return { canceled: true as const }
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Locate Reference Attachment',
+        buttonLabel: 'Use image',
+        properties: ['openFile'],
+        filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }]
+      })
+      const sourcePath = result.filePaths[0]
+      if (result.canceled || !sourcePath) return { canceled: true as const }
+      return chooseReferenceAttachmentResultSchema.parse({
+        canceled: false,
+        reference: await referenceView(
+          referenceAttachmentSchema.parse(
+            await coreClient.send({
+              type: 'reference/locate',
+              input: { ...input, sourcePath }
+            })
+          )
+        )
+      })
+    }
+  )
+
+  handleInvoke(IPC_CHANNELS.continueWithoutReference, referenceActionInputSchema, async (input) => {
+    await coreClient.send({ type: 'reference/continue-without', input })
+  })
+
   handleInvoke(
     IPC_CHANNELS.deleteIdeaPermanently,
     deleteIdeaInputSchema,
@@ -250,6 +452,17 @@ function registerIpc(): void {
     nativeTheme.themeSource = preference
     return themeState()
   })
+}
+
+async function referenceView(reference: ReferenceAttachment): Promise<ReferenceAttachmentView> {
+  const availability = reference.omitted
+    ? 'omitted'
+    : reference.durablePath
+      ? 'kept'
+      : (await isMissing(reference.sourcePath))
+        ? 'missing'
+        : 'available'
+  return referenceAttachmentViewSchema.parse({ ...reference, availability })
 }
 
 /** A previewed target: the Idea folder itself or a portable path inside it. */
@@ -355,14 +568,11 @@ void app.whenReady().then(() => {
 
   const libraryPath = settings.get().libraryPath
   if (libraryPath) {
-    bootReady = openLibrary(libraryPath).then(
-      () => undefined,
-      () => {
-        // The remembered library is missing or unreadable: fall back to
-        // onboarding instead of failing the launch.
-        libraryState = null
-      }
-    )
+    bootReady = openLibrary(libraryPath).then(restoreWorkingDirectories, () => {
+      // The remembered library is missing or unreadable: fall back to
+      // onboarding instead of failing the launch.
+      libraryState = null
+    })
   }
 
   createWindow()
