@@ -1,0 +1,3 @@
+{"type":"turn.failed","error":{"message":"401 Unauthorized: please run codex login"}}
+{"type":"turn.failed","error":{"message":"429 Too Many Requests: usage limit reached"}}
+{"type":"turn.failed","error":{"message":"maximum context length exceeded for this model"}}

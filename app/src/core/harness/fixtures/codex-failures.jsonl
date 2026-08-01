@@ -1,8 +1,6 @@
-{"id":"1","msg":{"type":"task_started"}}
-{"id":"1","msg":{"type":"agent_message_delta","delta":"Checking"}}
-{"id":"1","msg":{"type":"stream_error","message":"stream error: 429 Too Many Requests; retrying"}}
-{"id":"1","msg":{"type":"error","message":"401 Unauthorized: please run codex login"}}
-{"id":"1","msg":{"type":"error","message":"maximum context length exceeded for this model"}}
-{"id":"1","msg":{"type":"error","message":"the sky fell on the request"}}
+{"type":"thread.started","thread_id":"019fbb98-340c-7670-ad95-6f878fa32518"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `gpt-5-codex` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.\"}}"}
+{"type":"turn.failed","error":{"message":"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account."}}
 not json at all
-{"id":"1","msg":{"type":"turn_aborted","reason":"interrupted"}}

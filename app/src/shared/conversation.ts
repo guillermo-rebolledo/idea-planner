@@ -49,8 +49,17 @@ export type HarnessUsage = z.infer<typeof harnessUsageSchema>
  * reaches portable Conversation content.
  */
 export const harnessEventSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('assistant-delta'), text: z.string().min(1) }),
-  z.object({ type: z.literal('assistant-message'), text: z.string() }),
+  /**
+   * One assistant message, identified by the provider's own item id. A Run may
+   * produce several. `text` is always the whole message so far, so a later
+   * event supersedes an earlier one; `complete` says the provider finished it.
+   */
+  z.object({
+    type: z.literal('assistant-message'),
+    id: z.string().min(1).max(200),
+    text: z.string(),
+    complete: z.boolean()
+  }),
   z.object({ type: z.literal('reasoning'), summary: z.string().min(1) }),
   z.object({ type: z.literal('tool'), name: z.string().min(1), summary: z.string().min(1) }),
   z.object({
@@ -195,7 +204,6 @@ export type FinalizeConversationRunInput = z.infer<typeof finalizeConversationRu
 export const conversationStreamEventSchema = z.object({
   relativePath: ideaRelativePathSchema,
   runId: z.string().min(1),
-  messageId: z.string().min(1),
   event: harnessEventSchema
 })
 export type ConversationStreamEvent = z.infer<typeof conversationStreamEventSchema>
@@ -207,9 +215,15 @@ export type ConversationStreamEvent = z.infer<typeof conversationStreamEventSche
  */
 export const CONVERSATION_PROVIDERS: readonly ProviderId[] = ['codex']
 
-/** The Conversation message one Run streams into. Core owns this identity. */
-export function assistantMessageId(runId: string): string {
-  return `assistant:${runId}`
+/**
+ * The model value meaning "whatever the provider is configured to use". The
+ * app never guesses a model name an account may not be entitled to.
+ */
+export const PROVIDER_DEFAULT_MODEL = 'default'
+
+/** The durable identity of one assistant message inside a Run. */
+export function assistantMessageId(runId: string, itemId: string): string {
+  return `assistant:${runId}:${itemId}`
 }
 
 /**

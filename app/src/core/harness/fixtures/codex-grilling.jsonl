@@ -1,15 +1,9 @@
-{"id":"0","msg":{"type":"session_configured","session_id":"01J000000000000000000000","model":"gpt-5-codex","history_log_id":7}}
-{"id":"1","msg":{"type":"task_started","model_context_window":272000}}
-{"id":"1","msg":{"type":"agent_reasoning_delta","delta":"Reading the Idea"}}
-{"id":"1","msg":{"type":"agent_reasoning","text":"Reading the Idea before asking the first question."}}
-{"id":"1","msg":{"type":"mcp_tool_call_begin","invocation":{"server":"planning","tool":"read_file","arguments":{"path":"idea.md"}}}}
-{"id":"1","msg":{"type":"mcp_tool_call_end","invocation":{"server":"planning","tool":"read_file","arguments":{"path":"idea.md"}},"duration":{"secs":0,"nanos":41000000},"result":{"Ok":{"content":[{"type":"text","text":"# Offline receipts"}],"isError":false}}}}
-{"id":"1","msg":{"type":"agent_message_delta","delta":"Who "}}
-{"id":"1","msg":{"type":"agent_message_delta","delta":"is this for, "}}
-{"id":"1","msg":{"type":"agent_message_delta","delta":"exactly?"}}
-{"id":"1","msg":{"type":"agent_message","message":"Who is this for, exactly?"}}
-{"id":"1","msg":{"type":"mcp_tool_call_begin","invocation":{"server":"planning","tool":"offer_response_options","arguments":{"question":"Who is this for, exactly?","options":[{"label":"Solo freelancers","value":"Solo freelancers who invoice a handful of clients."},{"label":"Small agencies","value":"Small agencies with a shared finance inbox."}]}}}}
-{"id":"1","msg":{"type":"mcp_tool_call_end","invocation":{"server":"planning","tool":"offer_response_options","arguments":{"question":"Who is this for, exactly?","options":[{"label":"Solo freelancers","value":"Solo freelancers who invoice a handful of clients."},{"label":"Small agencies","value":"Small agencies with a shared finance inbox."}]}},"result":{"Ok":{"content":[{"type":"text","text":"offered"}],"isError":false}}}}
-{"id":"1","msg":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1840,"cached_input_tokens":512,"output_tokens":320,"reasoning_output_tokens":96,"total_tokens":2160},"last_token_usage":{"input_tokens":1840,"output_tokens":320,"total_tokens":2160},"model_context_window":272000}}}
-{"id":"1","msg":{"type":"unrecognised_future_event","payload":{"anything":true}}}
-{"id":"1","msg":{"type":"task_complete","last_agent_message":"Who is this for, exactly?"}}
+{"type":"thread.started","thread_id":"019fbb9a-aaa6-74a1-8b88-05802de70c12"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Reading the Idea before asking the first question."}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"planning","tool":"read_file","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"planning","tool":"read_file","status":"completed"}}
+{"type":"item.updated","item":{"id":"item_2","type":"agent_message","text":"Who is this"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Who is this for, exactly?"}}
+{"type":"item.completed","item":{"id":"item_3","type":"future_item_kind","text":"anything"}}
+{"type":"turn.completed","usage":{"input_tokens":16506,"cached_input_tokens":9984,"cache_write_input_tokens":0,"output_tokens":29,"reasoning_output_tokens":0}}

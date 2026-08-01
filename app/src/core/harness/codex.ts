@@ -1,7 +1,6 @@
 import { z } from 'zod'
 import {
   redactCredentials,
-  suggestedResponseSchema,
   type HarnessEvent,
   type HarnessFailureCategory
 } from '@shared/conversation'
@@ -21,54 +20,35 @@ export interface HarnessAdapter {
 }
 
 /**
- * Frames Codex emits that the app understands but has nothing to show for.
- * Listing them explicitly keeps genuinely unknown protocol distinguishable
- * from protocol we chose to ignore.
+ * `codex exec --json` reports a thread of turns made of items. Items arrive
+ * started → updated → completed and each payload carries the item's whole
+ * value so far, so this Adapter forwards the current state and lets Core
+ * supersede rather than trying to reconstruct deltas.
  */
-const IGNORED_FRAMES = new Set([
-  'session_configured',
-  'task_started',
-  'agent_reasoning_delta',
-  'agent_reasoning_section_break',
-  'exec_command_output_delta',
-  'exec_command_end',
-  'mcp_tool_call_end',
-  'turn_aborted'
-])
-
-const invocationSchema = z.object({
-  server: z.string().default('planning'),
-  tool: z.string().min(1),
-  arguments: z.record(z.unknown()).default({})
+const itemSchema = z.object({
+  id: z.string().min(1).max(200).default('item'),
+  type: z.string().default(''),
+  text: z.string().optional(),
+  message: z.string().optional(),
+  command: z.string().optional(),
+  server: z.string().optional(),
+  tool: z.string().optional(),
+  query: z.string().optional()
 })
 
-const choiceArgumentsSchema = z.object({
-  question: z.string().max(2_000).default(''),
-  options: z
-    .array(
-      z.union([
-        z
-          .string()
-          .min(1)
-          .max(2_000)
-          .transform((value) => ({ label: value, value })),
-        z.object({ label: z.string().min(1).max(200), value: z.string().min(1).max(2_000) })
-      ])
-    )
-    .min(1)
-    .max(12)
+const usageSchema = z.object({
+  input_tokens: z.number().int().nonnegative().default(0),
+  output_tokens: z.number().int().nonnegative().default(0)
 })
 
 const UNREADABLE: HarnessEvent = { type: 'unsupported', detail: 'unreadable protocol line' }
 
-const usageSchema = z.object({
-  total_token_usage: z.object({
-    input_tokens: z.number().int().nonnegative().default(0),
-    output_tokens: z.number().int().nonnegative().default(0),
-    total_tokens: z.number().int().nonnegative().default(0)
-  }),
-  model_context_window: z.number().int().positive().nullish()
-})
+/**
+ * Protocol this Adapter understands but has nothing to show for. Listing it
+ * keeps genuinely unknown protocol distinguishable from what we chose to skip.
+ */
+const IGNORED_EVENTS = new Set(['thread.started', 'turn.started', 'item.added'])
+const IGNORED_ITEMS = new Set(['todo_list'])
 
 export function createCodexAdapter(): HarnessAdapter {
   let pending = ''
@@ -82,11 +62,7 @@ export function createCodexAdapter(): HarnessAdapter {
       return [UNREADABLE]
     }
     if (typeof record !== 'object' || record === null) return [UNREADABLE]
-    // Codex wraps events in a submission envelope; tolerate a bare frame too.
-    const envelope = record as { msg?: unknown }
-    const frame = (
-      typeof envelope.msg === 'object' && envelope.msg !== null ? envelope.msg : record
-    ) as Record<string, unknown>
+    const frame = record as Record<string, unknown>
     const type = typeof frame['type'] === 'string' ? frame['type'] : ''
     if (!type) return [UNREADABLE]
     return translate(type, frame)
@@ -116,119 +92,126 @@ export function createCodexAdapter(): HarnessAdapter {
 
 function translate(type: string, frame: Record<string, unknown>): HarnessEvent[] {
   switch (type) {
-    case 'agent_message_delta': {
-      const text = typeof frame['delta'] === 'string' ? frame['delta'] : ''
-      return text ? [{ type: 'assistant-delta', text }] : []
-    }
-    case 'agent_message':
-      return [{ type: 'assistant-message', text: asText(frame['message']) }]
-    case 'agent_reasoning': {
-      // Only provider-supplied summaries. Hidden chain-of-thought is never
-      // requested, and reasoning deltas are not a summary.
-      const summary = redactCredentials(asText(frame['text'])).trim()
-      return summary ? [{ type: 'reasoning', summary: summary.slice(0, 2_000) }] : []
-    }
-    case 'mcp_tool_call_begin':
-      return describeToolCall(frame['invocation'])
-    case 'exec_command_begin':
-      return [{ type: 'tool', name: 'shell', summary: 'Requested a shell command' }]
-    case 'token_count':
-      return describeUsage(frame['info'])
-    case 'task_complete':
-      return [{ type: 'completed' }]
+    case 'item.started':
+    case 'item.updated':
+    case 'item.completed':
+      return describeItem(frame['item'], type === 'item.completed')
+    case 'turn.completed':
+      return [...describeUsage(frame['usage']), { type: 'completed' }]
+    case 'turn.failed':
+      return [describeFailure(nestedMessage(frame['error']))]
+    case 'thread.error':
     case 'error':
-    case 'stream_error': {
-      const summary = redactCredentials(asText(frame['message'])).trim()
+      return [describeFailure(asText(frame['message']))]
+    default:
+      return IGNORED_EVENTS.has(type) ? [] : [{ type: 'unsupported', detail: type.slice(0, 200) }]
+  }
+}
+
+function describeItem(raw: unknown, completed: boolean): HarnessEvent[] {
+  const parsed = itemSchema.safeParse(raw)
+  if (!parsed.success) return [{ type: 'unsupported', detail: 'item payload' }]
+  const item = parsed.data
+  switch (item.type) {
+    case 'agent_message':
       return [
         {
-          type: 'failed',
-          category: categorize(summary),
-          summary: (summary || 'The provider reported an error').slice(0, 2_000)
+          type: 'assistant-message',
+          id: item.id,
+          text: redactCredentials(item.text ?? ''),
+          complete: completed
         }
       ]
+    case 'reasoning': {
+      // Only the provider's own finished summary. Hidden chain-of-thought is
+      // never requested, and a half-written summary is not a summary.
+      if (!completed) return []
+      const summary = redactCredentials(item.text ?? '').trim()
+      return summary ? [{ type: 'reasoning', summary: summary.slice(0, 2_000) }] : []
     }
+    // Tool items report once, when they start: the activity row is about what
+    // the provider asked for, not about how it turned out.
+    case 'command_execution':
+      return completed
+        ? []
+        : [
+            {
+              type: 'tool',
+              name: 'shell',
+              summary: `Ran command: ${redactCredentials(item.command ?? '').slice(0, 300)}`
+            }
+          ]
+    case 'mcp_tool_call':
+      return completed
+        ? []
+        : [
+            {
+              type: 'tool',
+              name: `${item.server ?? 'mcp'}.${item.tool ?? 'unknown'}`,
+              summary: `Called planning tool ${item.tool ?? 'unknown'}`
+            }
+          ]
+    case 'file_change':
+      return completed
+        ? []
+        : [{ type: 'tool', name: 'file_change', summary: 'Proposed a file change' }]
+    case 'web_search':
+      return completed
+        ? []
+        : [
+            {
+              type: 'tool',
+              name: 'web_search',
+              summary: `Searched the web: ${redactCredentials(item.query ?? '').slice(0, 200)}`
+            }
+          ]
+    case 'error':
+      return [describeFailure(asText(item.message ?? item.text))]
     default:
-      return IGNORED_FRAMES.has(type) ? [] : [{ type: 'unsupported', detail: type.slice(0, 200) }]
-  }
-}
-
-function describeToolCall(raw: unknown): HarnessEvent[] {
-  const parsed = invocationSchema.safeParse(raw)
-  if (!parsed.success) return [{ type: 'unsupported', detail: 'mcp_tool_call_begin' }]
-  const invocation = parsed.data
-  if (invocation.tool === 'offer_response_options') {
-    const choices = choiceArgumentsSchema.safeParse(invocation.arguments)
-    if (!choices.success) {
-      // Malformed choices are not a menu the app can trust; the person keeps
-      // answering by typing.
-      return [{ type: 'unsupported', detail: 'offer_response_options arguments' }]
-    }
-    return [
-      {
-        type: 'choices',
-        question: redactCredentials(choices.data.question),
-        options: choices.data.options.map((option, index) =>
-          suggestedResponseSchema.parse({
-            id: `option-${index + 1}`,
-            label: redactCredentials(option.label),
-            value: redactCredentials(option.value)
-          })
-        )
-      }
-    ]
-  }
-  return [
-    {
-      type: 'tool',
-      name: `${invocation.server}.${invocation.tool}`,
-      summary: summarizeTool(invocation.tool, invocation.arguments)
-    }
-  ]
-}
-
-function summarizeTool(tool: string, args: Record<string, unknown>): string {
-  const path = redactCredentials(asText(args['path'] ?? args['from'] ?? '.')).slice(0, 200)
-  switch (tool) {
-    case 'read_file':
-      return `Read file ${path}`
-    case 'list_directory':
-      return `List directory ${path}`
-    case 'search_text':
-      return `Search for text in ${path}`
-    case 'write_planning_file':
-      return `Write planning file ${path}`
-    case 'rename_planning_file':
-      return `Rename planning file ${path}`
-    case 'delete_planning_file':
-      return `Delete planning file ${path}`
-    default:
-      return `Called ${tool.slice(0, 100)}`
+      return IGNORED_ITEMS.has(item.type)
+        ? []
+        : [{ type: 'unsupported', detail: `item:${item.type.slice(0, 100)}` }]
   }
 }
 
 function describeUsage(raw: unknown): HarnessEvent[] {
   const parsed = usageSchema.safeParse(raw)
-  if (!parsed.success) return [{ type: 'unsupported', detail: 'token_count' }]
-  const total = parsed.data.total_token_usage
+  if (!parsed.success) return []
   return [
     {
       type: 'usage',
       usage: {
-        inputTokens: total.input_tokens,
-        outputTokens: total.output_tokens,
-        totalTokens: total.total_tokens,
-        contextWindow: parsed.data.model_context_window ?? null,
-        // Codex reports consumption, not remaining allowance: what the app
-        // shows is exactly what the provider said.
-        contextUsed: total.total_tokens
+        inputTokens: parsed.data.input_tokens,
+        outputTokens: parsed.data.output_tokens,
+        totalTokens: parsed.data.input_tokens + parsed.data.output_tokens,
+        // This protocol reports consumption only. The app never invents a
+        // window, a quota, or a remaining allowance the provider did not give.
+        contextWindow: null,
+        contextUsed: null
       }
     }
   ]
 }
 
+function describeFailure(message: string): HarnessEvent {
+  const summary = redactCredentials(message).trim() || 'The provider reported an error'
+  return { type: 'failed', category: categorize(summary), summary: summary.slice(0, 2_000) }
+}
+
+/** Codex nests a turn failure as `{ error: { message } }`; a bare string also occurs. */
+function nestedMessage(raw: unknown): string {
+  if (typeof raw === 'string') return raw
+  if (typeof raw === 'object' && raw !== null && 'message' in raw) {
+    return asText(raw.message)
+  }
+  return ''
+}
+
 function categorize(summary: string): HarnessFailureCategory {
-  if (/\b401\b|unauthori[sz]ed|not logged in|authenticat/i.test(summary)) return 'authentication'
-  if (/\b429\b|rate.?limit|too many requests|quota/i.test(summary)) return 'rate-limit'
+  if (/\b401\b|unauthori[sz]ed|not logged in|authenticat|sign in/i.test(summary)) {
+    return 'authentication'
+  }
+  if (/\b429\b|rate.?limit|too many requests|quota|usage limit/i.test(summary)) return 'rate-limit'
   if (/context (?:length|window)|maximum context|too many tokens/i.test(summary)) {
     return 'context-exhausted'
   }

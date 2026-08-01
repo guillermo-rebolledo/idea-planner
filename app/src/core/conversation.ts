@@ -70,13 +70,18 @@ export interface ConversationEffects {
   finalize(input: FinalizeConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
 }
 
-/** Everything a Run has streamed so far, rebuilt from the journal after a crash. */
+/**
+ * One assistant message a Run is producing, rebuilt from the journal after a
+ * crash. A Run may produce several, so each is tracked under the provider's
+ * own item id.
+ */
 interface StreamState {
+  runId: string
+  itemId: string
   messageId: string
   text: string
   authoritative: boolean
   suggestedResponses: SuggestedResponse[]
-  usage: HarnessUsage | null
   checkpointedAt: number
 }
 
@@ -233,49 +238,63 @@ export function createConversationEffects(options: ConversationOptions): Convers
       )
     })
 
-  const putStream = (runId: string, state: StreamState): Effect.Effect<StreamState> =>
-    Ref.update(streams, (current) => new Map(current).set(runId, state)).pipe(Effect.as(state))
+  const putStream = (state: StreamState): Effect.Effect<StreamState> =>
+    Ref.update(streams, (current) => new Map(current).set(state.messageId, state)).pipe(
+      Effect.as(state)
+    )
+
+  const runStreams = (runId: string): Effect.Effect<StreamState[]> =>
+    Ref.get(streams).pipe(
+      Effect.map((current) => [...current.values()].filter((state) => state.runId === runId))
+    )
 
   const forgetRun = (runId: string): Effect.Effect<void> =>
     Effect.all([
-      Ref.update(streams, (current) => without(current, runId)),
+      Ref.update(
+        streams,
+        (current) => new Map([...current].filter(([, state]) => state.runId !== runId))
+      ),
       Ref.update(adapters, (current) => without(current, runId))
     ]).pipe(Effect.asVoid)
 
-  const loadStream = (ideaDir: string, runId: string): Effect.Effect<StreamState, CoreError> =>
+  const loadStream = (
+    ideaDir: string,
+    runId: string,
+    itemId: string
+  ): Effect.Effect<StreamState, CoreError> =>
     Effect.gen(function* () {
-      const known = (yield* Ref.get(streams)).get(runId)
+      const messageId = assistantMessageId(runId, itemId)
+      const known = (yield* Ref.get(streams)).get(messageId)
       if (known) return known
       // Core may have restarted mid-Run: continue from the last checkpoint
-      // rather than starting a second assistant message.
+      // rather than starting a second copy of the same message.
       const entries = yield* readEntries(ideaDir)
-      const messageId = assistantMessageId(runId)
       const previous = entries.find((entry) => entry.id === messageId)
-      return yield* putStream(runId, {
+      return yield* putStream({
+        runId,
+        itemId,
         messageId,
         text: previous?.kind === 'message' ? previous.text : '',
         authoritative: false,
         suggestedResponses: previous?.kind === 'message' ? previous.suggestedResponses : [],
-        usage: null,
         checkpointedAt: 0
       })
     })
 
   const checkpoint = (
     ideaDir: string,
-    runId: string,
     state: StreamState,
     at: Date
   ): Effect.Effect<void, CoreError> =>
     Effect.gen(function* () {
-      yield* putStream(runId, { ...state, checkpointedAt: at.getTime() })
+      yield* putStream({ ...state, checkpointedAt: at.getTime() })
       yield* append(
         ideaDir,
         conversationEntrySchema.parse({
           kind: 'message',
           id: state.messageId,
           at: at.toISOString(),
-          runId,
+          runId: state.runId,
           role: 'assistant',
           text: state.text,
           completeness: state.authoritative ? 'complete' : 'partial',
@@ -292,40 +311,40 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const ideaDir = yield* ideaDirectory(input.relativePath)
       yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const state = yield* loadStream(ideaDir, input.runId)
           const now = yield* options.clock
           const event = input.event
           switch (event.type) {
-            case 'assistant-delta': {
-              const grown = yield* putStream(input.runId, {
+            case 'assistant-message': {
+              const state = yield* loadStream(ideaDir, input.runId, event.id)
+              const grown = yield* putStream({
                 ...state,
-                text: state.text + event.text
+                text: event.text,
+                authoritative: event.complete
               })
-              // Deltas persist on a coalescing interval; every other change is
-              // durable at once.
-              if (now.getTime() - grown.checkpointedAt >= CHECKPOINT_INTERVAL_MS) {
-                yield* checkpoint(ideaDir, input.runId, grown, now)
+              // A growing message persists on a coalescing interval; a
+              // completed one is durable at once.
+              if (
+                event.complete ||
+                now.getTime() - grown.checkpointedAt >= CHECKPOINT_INTERVAL_MS
+              ) {
+                yield* checkpoint(ideaDir, grown, now)
               }
               return
             }
-            case 'assistant-message':
+            case 'choices': {
+              // Choices answer the newest message of this Run, which is the
+              // one the person is looking at.
+              const open = yield* runStreams(input.runId)
+              const target = open.at(-1)
+              if (!target) return
               yield* checkpoint(
                 ideaDir,
-                input.runId,
-                yield* putStream(input.runId, { ...state, text: event.text, authoritative: true }),
+                yield* putStream({ ...target, suggestedResponses: event.options }),
                 now
               )
               return
-            case 'choices':
-              yield* checkpoint(
-                ideaDir,
-                input.runId,
-                yield* putStream(input.runId, { ...state, suggestedResponses: event.options }),
-                now
-              )
-              return
+            }
             case 'usage':
-              yield* putStream(input.runId, { ...state, usage: event.usage })
               yield* append(
                 ideaDir,
                 conversationEntrySchema.parse({
@@ -361,14 +380,16 @@ export function createConversationEffects(options: ConversationOptions): Convers
       for (const event of trailing) {
         yield* apply({ relativePath: input.relativePath, runId: input.runId, event })
       }
+      const open = yield* runStreams(input.runId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const state = yield* loadStream(ideaDir, input.runId)
           const now = yield* options.clock
-          if (state.text) {
+          // Every message this Run left open is settled the same way: complete
+          // if the Run completed, otherwise labelled partial.
+          for (const state of open) {
+            if (!state.text) continue
             yield* checkpoint(
               ideaDir,
-              input.runId,
               { ...state, authoritative: state.authoritative || input.outcome === 'completed' },
               now
             )
@@ -378,7 +399,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
             (entry) => entry.kind === 'boundary' && entry.id === `boundary:${input.runId}:started`
           )
           const submissionId = started?.kind === 'boundary' ? started.submissionId : null
-          const contacted = state.text !== '' || state.usage !== null
+          const contacted =
+            open.some((state) => state.text !== '') ||
+            entries.some((entry) => entry.kind === 'usage' && entry.runId === input.runId)
           yield* append(
             ideaDir,
             conversationEntrySchema.parse({

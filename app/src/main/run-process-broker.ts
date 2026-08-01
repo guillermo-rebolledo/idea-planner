@@ -45,7 +45,10 @@ interface ActiveRun {
 }
 
 const defaultDeps: BrokerDeps = {
-  spawn: (file, args, options) => nodeSpawn(file, args, { ...options, stdio: 'pipe' }),
+  // stdin is closed: a provider that reads stdin for extra input would
+  // otherwise wait forever on a pipe this app never writes to.
+  spawn: (file, args, options) =>
+    nodeSpawn(file, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] }),
   killProcessGroup: (pid, signal) => process.kill(-pid, signal),
   waitForGroupExit: async (pid) => {
     const deadline = Date.now() + 2_000

@@ -306,7 +306,7 @@ describe('Run service', () => {
     const root = await readyProviderRoot('run-stream-')
     const core = fakeCore()
     core.events = [
-      { type: 'assistant-delta', text: 'Who is this for?' },
+      { type: 'assistant-message', id: 'item_0', text: 'Who is this for?', complete: true },
       { type: 'reasoning', summary: 'Reading the Idea first.' },
       { type: 'tool', name: 'planning.read_file', summary: 'Read file idea.md' }
     ]
@@ -333,11 +333,11 @@ describe('Run service', () => {
       workflow: 'grilling',
       permissionMode: 'ask'
     })
-    broker.launch?.onOutput?.('stdout', '{"msg":{"type":"agent_message_delta"}}\n')
+    broker.launch?.onOutput?.('stdout', '{"type":"turn.started"}\n')
     await Promise.resolve()
     await broker.launch?.onBeforeCleanup?.()
     expect(streamed.map((entry) => entry.event.type)).toEqual([
-      'assistant-delta',
+      'assistant-message',
       'reasoning',
       'tool'
     ])
@@ -391,6 +391,31 @@ describe('Run service', () => {
     expect(snapshot.recovery).toMatchObject({
       category: 'uncertain-submission',
       resumableSubmissionId: 'submission-1'
+    })
+  })
+
+  it('closes a Run the app no longer supervises when the Conversation is reopened', async () => {
+    const root = await readyProviderRoot('run-interrupted-')
+    const core = fakeCore()
+    core.conversation = { ...core.conversation, activeRunId: 'run-from-a-previous-session' }
+    const service = new RunService({
+      core,
+      broker: fakeBroker(),
+      readiness: readyReadiness(join(root, 'codex')),
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js'
+    })
+    await service.conversation('idea')
+    const finalize = (core.send.mock.calls as [{ type: string; input?: unknown }][]).find(
+      ([command]) => command.type === 'conversation/finalize'
+    )?.[0].input
+    expect(finalize).toMatchObject({
+      runId: 'run-from-a-previous-session',
+      outcome: 'failed',
+      category: 'process-crash'
     })
   })
 

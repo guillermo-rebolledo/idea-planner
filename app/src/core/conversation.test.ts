@@ -169,9 +169,8 @@ describe('streaming a Run into the Conversation', () => {
   it('accumulates streamed text into one complete assistant message', async () => {
     const runId = await startRun('Grill me', 'submission-1')
     await stream(runId, [
-      { type: 'assistant-delta', text: 'Who ' },
-      { type: 'assistant-delta', text: 'is this for?' },
-      { type: 'assistant-message', text: 'Who is this for?' }
+      { type: 'assistant-message', id: 'item_0', text: 'Who ', complete: false },
+      { type: 'assistant-message', id: 'item_0', text: 'Who is this for?', complete: true }
     ])
     await core.finalizeConversationRun({
       relativePath,
@@ -191,7 +190,9 @@ describe('streaming a Run into the Conversation', () => {
 
   it('keeps a stopped Run’s partial text and labels it partial', async () => {
     const runId = await startRun('Grill me', 'submission-1')
-    await stream(runId, [{ type: 'assistant-delta', text: 'Who is this f' }])
+    await stream(runId, [
+      { type: 'assistant-message', id: 'item_0', text: 'Who is this f', complete: false }
+    ])
     await core.finalizeConversationRun({
       relativePath,
       runId,
@@ -211,7 +212,7 @@ describe('streaming a Run into the Conversation', () => {
   it('attaches provider-native structured choices as Suggested Responses', async () => {
     const runId = await startRun('Grill me', 'submission-1')
     await stream(runId, [
-      { type: 'assistant-message', text: 'Who is this for?' },
+      { type: 'assistant-message', id: 'item_0', text: 'Who is this for?', complete: true },
       {
         type: 'choices',
         question: 'Who is this for?',
@@ -236,7 +237,9 @@ describe('streaming a Run into the Conversation', () => {
     await stream(runId, [
       {
         type: 'assistant-message',
-        text: 'Pick one:\n1. Solo freelancers\n2. Small agencies\n3. Something else'
+        id: 'item_0',
+        text: 'Pick one:\n1. Solo freelancers\n2. Small agencies\n3. Something else',
+        complete: true
       }
     ])
     await core.finalizeConversationRun({
@@ -256,7 +259,7 @@ describe('streaming a Run into the Conversation', () => {
     await stream(runId, [
       { type: 'reasoning', summary: 'Reading the Idea first.' },
       { type: 'tool', name: 'planning.read_file', summary: 'Read file idea.md' },
-      { type: 'assistant-message', text: 'Who is this for?' }
+      { type: 'assistant-message', id: 'item_0', text: 'Who is this for?', complete: true }
     ])
     await core.finalizeConversationRun({
       relativePath,
@@ -272,6 +275,53 @@ describe('streaming a Run into the Conversation', () => {
     expect(markdown).toContain('Who is this for?')
     expect(markdown).not.toContain('Reading the Idea first.')
     expect(markdown).not.toContain('read_file')
+  })
+
+  it('keeps every assistant message a Run produced, in order', async () => {
+    const runId = await startRun('Grill me', 'submission-1')
+    await stream(runId, [
+      { type: 'assistant-message', id: 'item_0', text: 'Let me read the Idea.', complete: true },
+      { type: 'assistant-message', id: 'item_2', text: 'Who is this for?', complete: true }
+    ])
+    await core.finalizeConversationRun({
+      relativePath,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Provider process completed'
+    })
+    const assistant = messages((await core.getConversation(relativePath)).entries).filter(
+      (entry) => entry.role === 'assistant'
+    )
+    expect(assistant.map((entry) => entry.text)).toEqual([
+      'Let me read the Idea.',
+      'Who is this for?'
+    ])
+  })
+
+  it('attaches structured choices to the newest message of the Run', async () => {
+    const runId = await startRun('Grill me', 'submission-1')
+    await stream(runId, [
+      { type: 'assistant-message', id: 'item_0', text: 'Let me read the Idea.', complete: true },
+      { type: 'assistant-message', id: 'item_2', text: 'Who is this for?', complete: true },
+      {
+        type: 'choices',
+        question: 'Who is this for?',
+        options: [{ id: 'option-1', label: 'Solo freelancers', value: 'Solo freelancers.' }]
+      }
+    ])
+    await core.finalizeConversationRun({
+      relativePath,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Provider process completed'
+    })
+    const assistant = messages((await core.getConversation(relativePath)).entries).filter(
+      (entry) => entry.role === 'assistant'
+    )
+    expect(assistant.at(-1)?.suggestedResponses).toHaveLength(1)
+    expect(assistant.at(0)?.suggestedResponses).toEqual([])
   })
 
   it('reports provider usage per Run and per Idea as informational totals', async () => {
@@ -333,8 +383,8 @@ describe('ingesting raw provider output', () => {
   it('turns Codex protocol into Conversation content across split chunks', async () => {
     const runId = await startRun('Grill me', 'submission-1')
     const lines = [
-      '{"msg":{"type":"agent_message_delta","delta":"Who is "}}\n{"msg":{"type":"agent_me',
-      'ssage_delta","delta":"this for?"}}\n{"msg":{"type":"task_complete"}}\n'
+      '{"type":"item.updated","item":{"id":"item_0","type":"agent_message","text":"Who is "}}\n{"type":"item.comp',
+      'leted","item":{"id":"item_0","type":"agent_message","text":"Who is this for?"}}\n{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}\n'
     ]
     const seen = []
     for (const chunk of lines) {
@@ -377,7 +427,7 @@ describe('recovering from a Run that ended badly', () => {
 
   it('offers a safe resend after authentication loss', async () => {
     const runId = await startRun('Grill me', 'submission-1')
-    await stream(runId, [{ type: 'assistant-delta', text: 'Who' }])
+    await stream(runId, [{ type: 'assistant-message', id: 'item_0', text: 'Who', complete: false }])
     await core.finalizeConversationRun({
       relativePath,
       runId,
@@ -395,7 +445,7 @@ describe('recovering from a Run that ended badly', () => {
 
   it('does not offer a resend when the context window is exhausted', async () => {
     const runId = await startRun('Grill me', 'submission-1')
-    await stream(runId, [{ type: 'assistant-delta', text: 'Who' }])
+    await stream(runId, [{ type: 'assistant-message', id: 'item_0', text: 'Who', complete: false }])
     await core.finalizeConversationRun({
       relativePath,
       runId,
@@ -445,7 +495,9 @@ describe('recovering from a Run that ended badly', () => {
 
   it('keeps history readable after a crash mid-stream', async () => {
     const runId = await startRun('Grill me', 'submission-1')
-    await stream(runId, [{ type: 'assistant-delta', text: 'Who is this f' }])
+    await stream(runId, [
+      { type: 'assistant-message', id: 'item_0', text: 'Who is this f', complete: false }
+    ])
     // A crash means nothing finalizes the Run: a fresh Core must still read
     // the durable history and see the interrupted work labelled.
     const restarted = makeCore()

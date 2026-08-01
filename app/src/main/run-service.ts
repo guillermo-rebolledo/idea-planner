@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { CoreCommand } from '@shared/contract'
 import {
-  assistantMessageId,
   CONVERSATION_PROVIDERS,
+  PROVIDER_DEFAULT_MODEL,
   conversationSnapshotSchema,
   developIdeaInputSchema,
   harnessEventSchema,
@@ -95,17 +95,41 @@ export class RunService {
         permissionMode: input.permissionMode
       })
     } catch (error) {
-      const snapshot = await this.conversation(input.relativePath)
+      const snapshot = await this.readConversation(input.relativePath)
       // A failure the Conversation already explains becomes recovery state the
       // person can act on. Anything else — an unready provider, say — is not
       // about this Run and has to reach them as an error.
       if (snapshot.recovery === null && snapshot.activeRunId === null) throw error
       return snapshot
     }
-    return await this.conversation(input.relativePath)
+    return await this.readConversation(input.relativePath)
   }
 
-  conversation(relativePath: string): Promise<ConversationSnapshot> {
+  /**
+   * Reads the Conversation, reconciling a Run the app no longer supervises.
+   * After a crash or a forced quit the durable history can still name an
+   * active Run; leaving it that way would block the person out of their own
+   * Idea, so it is closed as interrupted and offered back for resending.
+   */
+  async conversation(relativePath: string): Promise<ConversationSnapshot> {
+    const snapshot = await this.readConversation(relativePath)
+    if (!snapshot.activeRunId || this.deps.broker.activeRunIds().includes(snapshot.activeRunId)) {
+      return snapshot
+    }
+    await this.deps.core.send({
+      type: 'conversation/finalize',
+      input: {
+        relativePath,
+        runId: snapshot.activeRunId,
+        outcome: 'failed',
+        category: 'process-crash',
+        summary: 'The app stopped supervising this Run before it answered'
+      }
+    })
+    return await this.readConversation(relativePath)
+  }
+
+  private readConversation(relativePath: string): Promise<ConversationSnapshot> {
     return this.deps.core
       .send({ type: 'conversation/get', relativePath })
       .then((result) => conversationSnapshotSchema.parse(result))
@@ -239,6 +263,9 @@ export class RunService {
             ),
           onStop: (summary) => {
             void this.stopForPolicy(accepted, summary)
+          },
+          onChoices: (question, options) => {
+            void this.offerChoices(accepted, question, options)
           }
         }
       })
@@ -400,7 +427,6 @@ export class RunService {
       this.deps.onConversationEvent?.({
         relativePath: run.relativePath,
         runId: run.id,
-        messageId: assistantMessageId(run.id),
         event
       })
       const activity = describeActivity(event)
@@ -413,6 +439,37 @@ export class RunService {
         )
       }
     }
+  }
+
+  /**
+   * Records provider-native structured choices. Only the planning tool host
+   * sees the offered options, so it is what tells the Conversation.
+   */
+  private async offerChoices(
+    run: Pick<RunSnapshot, 'id' | 'relativePath'>,
+    question: string,
+    options: { label: string; value: string }[]
+  ): Promise<void> {
+    const event: HarnessEvent = {
+      type: 'choices',
+      question: redactCredentials(question),
+      options: options.map((option, index) => ({
+        id: `option-${index + 1}`,
+        label: redactCredentials(option.label),
+        value: redactCredentials(option.value)
+      }))
+    }
+    await this.deps.core.send({
+      type: 'conversation/apply',
+      relativePath: run.relativePath,
+      runId: run.id,
+      event
+    })
+    this.deps.onConversationEvent?.({
+      relativePath: run.relativePath,
+      runId: run.id,
+      event
+    })
   }
 
   /** Records a Run's terminal state and closes its Conversation boundary. */
@@ -550,8 +607,9 @@ function providerArguments(
       '--sandbox',
       'workspace-write',
       '--skip-git-repo-check',
-      '--model',
-      input.model,
+      // `default` means the provider's own configured model: passing a guess
+      // would fail on accounts that cannot use it.
+      ...(input.model === PROVIDER_DEFAULT_MODEL ? [] : ['--model', input.model]),
       '-c',
       `model_reasoning_effort=${JSON.stringify(input.effort)}`,
       skillPrompt
@@ -575,8 +633,7 @@ function providerArguments(
     '--no-chrome',
     '--output-format',
     'stream-json',
-    '--model',
-    input.model,
+    ...(input.model === PROVIDER_DEFAULT_MODEL ? [] : ['--model', input.model]),
     '--effort',
     input.effort,
     skillPrompt
@@ -613,7 +670,6 @@ function describeActivity(
       return { kind: 'output', summary: `${event.name}: ${event.summary}` }
     case 'failed':
       return { kind: 'error', summary: event.summary }
-    case 'assistant-delta':
     case 'assistant-message':
     case 'choices':
     case 'usage':

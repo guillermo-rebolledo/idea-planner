@@ -141,6 +141,12 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
         provider: command.provider,
         chunk: command.chunk
       })
+    case 'conversation/apply':
+      return core.applyHarnessEvent({
+        relativePath: command.relativePath,
+        runId: command.runId,
+        event: command.event
+      })
     case 'conversation/finalize':
       return core.finalizeConversationRun(command.input)
   }

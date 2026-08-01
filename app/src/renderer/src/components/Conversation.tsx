@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Bot, ChevronRight, Send, Square, User } from 'lucide-react'
 import {
   CONVERSATION_PROVIDERS,
+  PROVIDER_DEFAULT_MODEL,
   WORKFLOW_ATTRIBUTION,
   type ConversationEntry,
   type ConversationRecovery,
@@ -29,9 +30,10 @@ type Phase =
   { state: 'loading' } | { state: 'failed' } | { state: 'ready'; snapshot: ConversationSnapshot }
 
 /** Assistant text for the Run in flight, ahead of the durable projection. */
-interface LiveMessage {
+interface LiveRun {
   runId: string
-  text: string
+  /** One entry per provider message, in the order the provider opened them. */
+  messages: { id: string; text: string }[]
   suggestedResponses: SuggestedResponse[]
 }
 
@@ -62,10 +64,10 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
   const [phase, setPhase] = useState<Phase>({ state: 'loading' })
   const [runs, setRuns] = useState<RunSnapshot[]>([])
   const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
-  const [live, setLive] = useState<LiveMessage | null>(null)
+  const [live, setLive] = useState<LiveRun | null>(null)
   const [draft, setDraft] = useState('')
   const [provider, setProvider] = useState<ProviderId>('codex')
-  const [model, setModel] = useState('gpt-5-codex')
+  const [model, setModel] = useState(PROVIDER_DEFAULT_MODEL)
   const [effort, setEffort] = useState('medium')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
   const [busy, setBusy] = useState(false)
@@ -109,14 +111,23 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
           return
         }
         setLive((current) => {
-          const base =
+          const base: LiveRun =
             current?.runId === streamed.runId
               ? current
-              : { runId: streamed.runId, text: '', suggestedResponses: [] }
-          if (event.type === 'assistant-delta') return { ...base, text: base.text + event.text }
-          if (event.type === 'assistant-message') return { ...base, text: event.text }
+              : { runId: streamed.runId, messages: [], suggestedResponses: [] }
           if (event.type === 'choices') return { ...base, suggestedResponses: event.options }
-          return base
+          if (event.type !== 'assistant-message') return base
+          // Each event carries the whole message so far, so a later one for
+          // the same provider item replaces the earlier one.
+          const known = base.messages.some((message) => message.id === event.id)
+          return {
+            ...base,
+            messages: known
+              ? base.messages.map((message) =>
+                  message.id === event.id ? { ...message, text: event.text } : message
+                )
+              : [...base.messages, { id: event.id, text: event.text }]
+          }
         })
       }),
     [relativePath]
@@ -124,7 +135,7 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' })
-  }, [snapshot?.entries.length, live?.text])
+  }, [snapshot?.entries.length, live?.messages])
 
   const send = useCallback(
     async (text: string, source: 'composer' | 'suggested-response', submissionId?: string) => {
@@ -246,16 +257,18 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
         {entries.map((entry) => (
           <EntryRow key={entry.id} entry={entry} />
         ))}
-        {liveForActiveRun?.text && (
-          <li className="flex gap-2">
-            <Bot aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-            <div className="min-w-0">
-              <p className="text-xs font-medium text-muted-foreground">Assistant</p>
-              <p className="text-sm whitespace-pre-wrap select-text">{liveForActiveRun.text}</p>
-            </div>
-          </li>
-        )}
-        {activeRunId && !liveForActiveRun?.text && (
+        {liveForActiveRun?.messages
+          .filter((message) => message.text)
+          .map((message) => (
+            <li key={message.id} className="flex gap-2">
+              <Bot aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-muted-foreground">Assistant</p>
+                <p className="text-sm whitespace-pre-wrap select-text">{message.text}</p>
+              </div>
+            </li>
+          ))}
+        {activeRunId && !liveForActiveRun?.messages.some((message) => message.text) && (
           <li className="text-xs text-muted-foreground">Waiting for the provider to answer…</li>
         )}
         <div ref={endRef} />
@@ -265,6 +278,9 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
         <div role="alert" className="mx-3 mb-3 rounded-md border border-border bg-muted/50 p-3">
           <p className="text-xs text-foreground">
             {RECOVERY_GUIDANCE[phase.snapshot.recovery.category]}
+          </p>
+          <p className="mt-1 text-xs break-words text-muted-foreground">
+            The provider said: {phase.snapshot.recovery.summary}
           </p>
           {resumable && resumableText?.kind === 'message' && (
             <Button
@@ -360,7 +376,9 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
               aria-label="Model"
               value={model}
               onChange={(event) => setModel(event.target.value)}
-              className="h-8 w-32 rounded-md border border-border bg-background px-2 text-xs"
+              placeholder={PROVIDER_DEFAULT_MODEL}
+              title={`Leave as “${PROVIDER_DEFAULT_MODEL}” to use the provider’s configured model.`}
+              className="h-8 w-36 rounded-md border border-border bg-background px-2 text-xs"
             />
           </Field>
           <Field label="Effort">

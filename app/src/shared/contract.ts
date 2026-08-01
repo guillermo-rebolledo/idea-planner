@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   finalizeConversationRunInputSchema,
+  harnessEventSchema,
   submitConversationMessageInputSchema,
   type ConversationSnapshot,
   type ConversationStreamEvent,
@@ -429,6 +430,12 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     runId: z.string().min(1),
     provider: providerIdSchema,
     chunk: z.string()
+  }),
+  z.object({
+    type: z.literal('conversation/apply'),
+    relativePath: ideaRelativePathSchema,
+    runId: z.string().min(1),
+    event: harnessEventSchema
   }),
   z.object({ type: z.literal('conversation/finalize'), input: finalizeConversationRunInputSchema })
 ])
