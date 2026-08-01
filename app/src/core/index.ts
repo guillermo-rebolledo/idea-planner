@@ -132,7 +132,11 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.beginConversationRun({
         relativePath: command.relativePath,
         runId: command.runId,
-        submissionId: command.submissionId
+        submissionId: command.submissionId,
+        provider: command.provider,
+        workflow: command.workflow,
+        model: command.model,
+        restorationNote: command.restorationNote
       })
     case 'conversation/ingest':
       return core.ingestProviderOutput({

@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { createServer } from 'node:net'
 import { promisify } from 'node:util'
+import electron from 'electron'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   emptyUsage,
@@ -13,6 +14,7 @@ import {
 } from '@shared/conversation'
 import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
 import { PlanningPolicy } from './planning-policy'
+import { mergeProviderLaunches, resolveProviderLaunch } from './provider-launch'
 import type { RunLaunch } from './run-process-broker'
 import { RunService } from './run-service'
 
@@ -31,6 +33,15 @@ async function readyProviderRoot(prefix: string): Promise<string> {
     writeFile(join(root, 'codex'), '#!/bin/sh\n'),
     writeFile(join(root, '.codex', 'auth.json'), '{}')
   ])
+  return root
+}
+
+async function readyClaudeRoot(prefix: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), prefix))
+  temporaryDirectories.push(root)
+  await mkdir(join(root, '.claude', 'skills', 'wayfinder'), { recursive: true })
+  await writeFile(join(root, '.claude', 'skills', 'wayfinder', 'SKILL.md'), '# Wayfinder')
+  await writeFile(join(root, 'claude'), '#!/bin/sh\n')
   return root
 }
 
@@ -54,6 +65,8 @@ function fakeCore(): FakeCore {
       entries: [],
       usage: { run: null, idea: emptyUsage() },
       recovery: null,
+      providerSessions: {},
+      workflowCompletionSuggested: false,
       activeRunId: null
     }
   }
@@ -132,6 +145,8 @@ function readyReadiness(executablePath: string): {
     )
   }
 }
+
+const fakeClaudeOauthToken = (): Promise<string> => Promise.resolve('test-oauth-token')
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true }))
@@ -139,6 +154,285 @@ afterEach(async () => {
 })
 
 describe('Run service', () => {
+  it.skipIf(process.platform !== 'darwin' || !process.env['HOME'])(
+    'starts the installed Claude CLI with its MCP config inside the native sandbox',
+    async () => {
+      const home = process.env['HOME'] ?? ''
+      const claude = join(home, '.local', 'bin', 'claude')
+      const electronExecutable = electron as unknown as string
+      const root = await mkdtemp(join(tmpdir(), 'claude-sandbox-repro-'))
+      temporaryDirectories.push(root)
+      const runDirectory = join(root, 'run')
+      const planningDirectory = join(root, '.scratch', 'idea')
+      const proxyScript = join(__dirname, 'planning-mcp-proxy.ts')
+      const claudeConfig = join(runDirectory, 'claude-config')
+      await Promise.all([mkdir(runDirectory), mkdir(planningDirectory, { recursive: true })])
+      await mkdir(join(claudeConfig, 'skills', 'grilling'), { recursive: true })
+      await writeFile(
+        join(claudeConfig, 'skills', 'grilling', 'SKILL.md'),
+        '---\nname: grilling\ndescription: Ask one question at a time.\n---\nAsk one question.'
+      )
+      const mcpConfig = join(runDirectory, 'mcp.json')
+      await writeFile(
+        mcpConfig,
+        JSON.stringify({
+          mcpServers: {
+            planning: {
+              command: electronExecutable,
+              env: {
+                ELECTRON_RUN_AS_NODE: '1',
+                NODE_OPTIONS: `--require=${proxyScript}`,
+                PLANNING_MCP_SOCKET: join(runDirectory, 'missing.sock'),
+                PLANNING_MCP_CAPABILITY: 'test'
+              }
+            }
+          }
+        })
+      )
+      const profile = join(runDirectory, 'planning.sb')
+      await writeFile(
+        profile,
+        new PlanningPolicy({ workingDirectory: root, planningDirectory }).renderSandboxProfile({
+          runDirectory,
+          launch: mergeProviderLaunches(
+            await resolveProviderLaunch(claude, [join(home, '.claude', 'skills')]),
+            await resolveProviderLaunch(electronExecutable),
+            await resolveProviderLaunch('/usr/bin/security')
+          ),
+          proxyScript,
+          socketPath: join(runDirectory, 'missing.sock')
+        })
+      )
+      const credentials = JSON.parse(
+        (
+          await promisify(execFile)('/usr/bin/security', [
+            'find-generic-password',
+            '-s',
+            'Claude Code-credentials',
+            '-w'
+          ])
+        ).stdout
+      ) as { claudeAiOauth: { accessToken: string } }
+      const result = await promisify(execFile)(
+        '/usr/bin/sandbox-exec',
+        [
+          '-f',
+          profile,
+          claude,
+          '--print',
+          '--setting-sources',
+          'user',
+          '--strict-mcp-config',
+          '--mcp-config',
+          mcpConfig,
+          '--tools',
+          'ToolSearch',
+          '--allowedTools',
+          'mcp__planning__*',
+          '--permission-mode',
+          'dontAsk',
+          '--no-chrome',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+          '/grilling hello'
+        ],
+        {
+          cwd: root,
+          env: {
+            PATH: `${dirname(claude)}:/usr/bin:/bin`,
+            HOME: home,
+            LANG: 'en_US.UTF-8',
+            LC_ALL: 'en_US.UTF-8',
+            TMPDIR: runDirectory,
+            CLAUDE_CODE_OAUTH_TOKEN: credentials.claudeAiOauth.accessToken,
+            CLAUDE_CONFIG_DIR: claudeConfig
+          },
+          timeout: 20_000
+        }
+      ).catch((error: unknown) => error as { stdout?: string; stderr?: string })
+      expect(result.stdout).toContain('"subtype":"init"')
+      expect(result.stdout).toContain('"grilling"')
+      expect(result.stdout).toContain('"tools":["ToolSearch"]')
+      expect(result.stderr).not.toContain("posix_spawn 'security'")
+      expect(result.stdout).not.toContain('Not logged in')
+    },
+    30_000
+  )
+  it('starts Claude Wayfinder with the documented stream protocol and native skill invocation', async () => {
+    const root = await readyClaudeRoot('run-claude-')
+    const core = fakeCore()
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            providers: [
+              {
+                provider: 'claude',
+                available: true,
+                executablePath: join(root, 'claude'),
+                version: '2.1.220 (Claude Code)'
+              }
+            ]
+          })
+        )
+      },
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      relativePath: 'idea',
+      prompt: 'Develop this idea',
+      provider: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'high',
+      workflow: 'wayfinder',
+      permissionMode: 'ask'
+    })
+    expect(broker.launch?.args).toEqual(
+      expect.arrayContaining([
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        '--include-partial-messages',
+        '--include-hook-events'
+      ])
+    )
+    expect(broker.launch?.args).not.toContain('--input-format')
+    expect(broker.launch?.args).toEqual(expect.arrayContaining(['--setting-sources', 'user']))
+    expect(broker.launch?.args).toEqual(expect.arrayContaining(['--tools', 'ToolSearch']))
+    expect(broker.launch?.args.at(-1)).toContain('/wayfinder Develop this idea')
+    expect(broker.launch?.args).not.toContain('--disable-slash-commands')
+    const mcpConfigPath = broker.launch?.args[broker.launch.args.indexOf('--mcp-config') + 1]
+    if (!mcpConfigPath) throw new Error('Claude launch did not include an MCP config')
+    const mcpConfig = JSON.parse(await readFile(mcpConfigPath, 'utf8')) as {
+      mcpServers: { planning: Record<string, unknown> }
+    }
+    expect(mcpConfig.mcpServers.planning).not.toHaveProperty('args')
+    expect(broker.launch?.environment['CLAUDE_CONFIG_DIR']).toContain('claude-config')
+    await expect(
+      readFile(
+        join(
+          broker.launch?.environment['CLAUDE_CONFIG_DIR'] ?? '',
+          'skills',
+          'wayfinder',
+          'SKILL.md'
+        ),
+        'utf8'
+      )
+    ).resolves.toBe('# Wayfinder')
+  })
+
+  it('gives Wayfinder its own managed planning tree', async () => {
+    const root = await readyClaudeRoot('run-wayfinder-tree-')
+    const broker = fakeBroker()
+    const service = new RunService({
+      core: fakeCore(),
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            providers: [
+              {
+                provider: 'claude',
+                available: true,
+                executablePath: join(root, 'claude'),
+                version: '2.1.220 (Claude Code)'
+              }
+            ]
+          })
+        )
+      },
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      relativePath: 'idea',
+      prompt: 'Develop this',
+      provider: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      workflow: 'wayfinder',
+      permissionMode: 'ask'
+    })
+    expect(broker.launch?.args.at(-1)).toContain('.scratch/idea-wayfinding')
+  })
+
+  it('resumes compatible Claude continuity but hands off local history when switching providers', async () => {
+    const root = await readyClaudeRoot('run-claude-continuity-')
+    const core = fakeCore()
+    core.conversation = {
+      ...core.conversation,
+      providerSessions: { claude: 'saved-session' },
+      entries: [
+        {
+          kind: 'boundary',
+          id: 'boundary:old:started',
+          at: '2026-07-31T12:00:00.000Z',
+          runId: 'old',
+          boundary: 'run-started',
+          summary: 'Wayfinder via Claude',
+          submissionId: 'old-submission',
+          recovery: null,
+          provider: 'claude',
+          workflow: 'wayfinder',
+          model: 'claude-sonnet-4-5'
+        }
+      ]
+    }
+    const projectKey = join(root, 'library', 'idea').replaceAll('/', '-')
+    await mkdir(join(root, '.claude', 'projects', projectKey), { recursive: true })
+    await writeFile(join(root, '.claude', 'projects', projectKey, 'saved-session.jsonl'), '{}\n')
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            providers: [
+              {
+                provider: 'claude',
+                available: true,
+                executablePath: join(root, 'claude'),
+                version: '2.1.220 (Claude Code)'
+              }
+            ]
+          })
+        )
+      },
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      relativePath: 'idea',
+      prompt: 'Continue',
+      provider: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      workflow: 'wayfinder',
+      permissionMode: 'ask'
+    })
+    expect(broker.launch?.args).toEqual(expect.arrayContaining(['--resume', 'saved-session']))
+  })
   it('persists acceptance before starting provider contact and freezes provenance', async () => {
     const root = await mkdtemp(join(tmpdir(), 'run-service-'))
     temporaryDirectories.push(root)
@@ -156,6 +450,17 @@ describe('Run service', () => {
     const core = {
       send: vi.fn((command: { type: string; input?: unknown }) => {
         order.push(command.type)
+        if (command.type === 'conversation/get') {
+          return Promise.resolve({
+            relativePath: 'idea',
+            entries: [],
+            usage: { run: null, idea: emptyUsage() },
+            recovery: null,
+            providerSessions: {},
+            workflowCompletionSuggested: false,
+            activeRunId: null
+          })
+        }
         if (command.type === 'run/accept') {
           const input = command.input as Omit<
             RunSnapshot,
@@ -351,6 +656,54 @@ describe('Run service', () => {
     expect(activity).toContainEqual(
       expect.objectContaining({ kind: 'output', summary: 'planning.read_file: Read file idea.md' })
     )
+  })
+
+  it('keeps a correctness-critical protocol failure failed even when Claude exits zero', async () => {
+    const root = await readyClaudeRoot('run-protocol-failure-')
+    const core = fakeCore()
+    core.events = [{ type: 'failed', category: 'protocol', summary: 'Unsupported Claude event' }]
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            providers: [
+              {
+                provider: 'claude',
+                available: true,
+                executablePath: join(root, 'claude'),
+                version: '2.1.220 (Claude Code)'
+              }
+            ]
+          })
+        )
+      },
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js'
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      relativePath: 'idea',
+      prompt: 'Develop',
+      provider: 'claude',
+      model: 'default',
+      effort: 'medium',
+      workflow: 'wayfinder',
+      permissionMode: 'ask'
+    })
+    broker.launch?.onOutput?.('stdout', '{"type":"system","subtype":"future"}\n')
+    broker.launch?.onExit?.(0, null)
+    await vi.waitFor(() => {
+      const terminal = (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
+        .filter(([command]) => command.type === 'run/event')
+        .at(-1)?.[0].input
+      expect(terminal?.status).toBe('failed')
+    })
   })
 
   it('keeps the message and offers recovery when the provider is never contacted', async () => {

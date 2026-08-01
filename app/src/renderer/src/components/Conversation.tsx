@@ -36,9 +36,6 @@ interface LiveRun {
   suggestedResponses: SuggestedResponse[]
 }
 
-/** The one planning workflow this surface starts today. */
-const WORKFLOW: PlanningWorkflow = 'grilling'
-
 const EFFORT_OPTIONS = ['low', 'medium', 'high']
 
 const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
@@ -68,6 +65,7 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
   const [live, setLive] = useState<LiveRun | null>(null)
   const [draft, setDraft] = useState('')
   const [provider, setProvider] = useState<ProviderId>('codex')
+  const [workflow, setWorkflow] = useState<PlanningWorkflow>('grilling')
   const [model, setModel] = useState(PROVIDER_DEFAULT_MODEL)
   const [effort, setEffort] = useState('medium')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
@@ -111,6 +109,16 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
           setError(event.summary)
           return
         }
+        if (event.type === 'workflow-completion-suggested') {
+          setPhase((current) =>
+            current.state === 'ready'
+              ? {
+                  state: 'ready',
+                  snapshot: { ...current.snapshot, workflowCompletionSuggested: true }
+                }
+              : current
+          )
+        }
         setLive((current) => {
           const base: LiveRun =
             current?.runId === streamed.runId
@@ -148,7 +156,7 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
           submissionId: submissionId ?? crypto.randomUUID(),
           text,
           source,
-          workflow: WORKFLOW,
+          workflow,
           provider,
           model,
           effort,
@@ -168,7 +176,7 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
         setBusy(false)
       }
     },
-    [relativePath, provider, model, effort, permissionMode, refresh]
+    [relativePath, provider, workflow, model, effort, permissionMode, refresh]
   )
 
   if (phase.state === 'loading') {
@@ -359,7 +367,15 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
         />
         <div className="flex flex-wrap items-center gap-2">
           <Field label="Workflow">
-            <span className="text-foreground">Grill Me</span>
+            <select
+              aria-label="Workflow"
+              value={workflow}
+              onChange={(event) => setWorkflow(event.target.value as PlanningWorkflow)}
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+            >
+              <option value="grilling">Grill Me</option>
+              <option value="wayfinder">Wayfinder</option>
+            </select>
           </Field>
           <Field label="Provider">
             <select
@@ -421,6 +437,17 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
             <Send aria-hidden="true" className="size-3.5" />
             {busy ? 'Sending…' : started ? 'Send' : 'Start developing'}
           </Button>
+          {phase.snapshot.workflowCompletionSuggested && (
+            <Button
+              size="sm"
+              type="button"
+              variant="secondary"
+              disabled
+              title="MVP Spec synthesis arrives in the next planning phase."
+            >
+              Create MVP Spec
+            </Button>
+          )}
         </div>
         {blocked && canDevelop && (
           <div role="status" className="rounded-md border border-border bg-muted/50 p-2">
@@ -479,7 +506,9 @@ function Field({
 }
 
 function EntryRow({ entry }: { entry: ConversationEntry }): React.JSX.Element | null {
-  if (entry.kind === 'usage') return null
+  if (entry.kind === 'usage' || entry.kind === 'session' || entry.kind === 'workflow-completion') {
+    return null
+  }
   if (entry.kind === 'boundary') {
     return (
       <li className="text-[11px] text-muted-foreground">

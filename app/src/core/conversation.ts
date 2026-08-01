@@ -20,7 +20,9 @@ import {
   type SuggestedResponse
 } from '@shared/conversation'
 import type { ProviderId } from '@shared/readiness'
+import type { PlanningWorkflow } from '@shared/run'
 import { createCodexAdapter, type HarnessAdapter } from './harness/codex'
+import { createClaudeAdapter } from './harness/claude'
 
 /**
  * The Idea's one permanent Conversation.
@@ -46,6 +48,10 @@ export interface BeginConversationRunInput {
   relativePath: string
   runId: string
   submissionId: string
+  provider?: ProviderId
+  workflow?: PlanningWorkflow
+  model?: string
+  restorationNote?: boolean
 }
 
 export interface ApplyHarnessEventInput {
@@ -230,7 +236,11 @@ export function createConversationEffects(options: ConversationOptions): Convers
             at,
             runId: input.runId,
             boundary: 'run-started',
-            summary: 'Run started',
+            summary: runBoundarySummary(input),
+            ...(input.provider ? { provider: input.provider } : {}),
+            ...(input.workflow ? { workflow: input.workflow } : {}),
+            ...(input.model ? { model: input.model } : {}),
+            ...(input.restorationNote ? { restorationNote: true } : {}),
             submissionId: input.submissionId,
             recovery: null
           })
@@ -361,6 +371,42 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 })
               )
               return
+            case 'session-ready': {
+              const entries = yield* readEntries(ideaDir)
+              const started = entries.find(
+                (entry) =>
+                  entry.kind === 'boundary' && entry.id === `boundary:${input.runId}:started`
+              )
+              if (started?.kind !== 'boundary' || started.provider !== event.provider) {
+                return yield* Effect.fail(
+                  new CoreError('INVALID_INPUT', 'Provider session does not belong to this Run')
+                )
+              }
+              yield* append(
+                ideaDir,
+                conversationEntrySchema.parse({
+                  kind: 'session',
+                  id: `session:${started.provider}`,
+                  at: now.toISOString(),
+                  runId: input.runId,
+                  provider: event.provider,
+                  sessionId: event.sessionId,
+                  model: event.model
+                })
+              )
+              return
+            }
+            case 'workflow-completion-suggested':
+              yield* append(
+                ideaDir,
+                conversationEntrySchema.parse({
+                  kind: 'workflow-completion',
+                  id: `workflow-completion:${input.runId}`,
+                  at: now.toISOString(),
+                  runId: input.runId
+                })
+              )
+              return
             case 'unsupported':
               yield* Ref.update(drift, (current) =>
                 new Map(current).set(input.runId, (current.get(input.runId) ?? 0) + 1)
@@ -368,6 +414,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
               return
             case 'reasoning':
             case 'tool':
+            case 'retrying':
             case 'completed':
             case 'failed':
               // Reasoning summaries and tool calls belong to the sanitized
@@ -465,8 +512,24 @@ export function createConversationEffects(options: ConversationOptions): Convers
   return { get, submit, begin, apply, ingest, finalize }
 }
 
+function runBoundarySummary(input: BeginConversationRunInput): string {
+  const workflow =
+    input.workflow === 'wayfinder'
+      ? 'Wayfinder'
+      : input.workflow === 'grilling'
+        ? 'Grill Me'
+        : 'Run'
+  const provider =
+    input.provider === 'claude' ? 'Claude' : input.provider === 'codex' ? 'Codex' : null
+  const started = provider ? `${workflow} started via ${provider}` : 'Run started'
+  return input.restorationNote
+    ? `${started}. Provider session restored from local history`
+    : started
+}
+
 const ADAPTER_FACTORIES: Partial<Record<ProviderId, () => HarnessAdapter>> = {
-  codex: createCodexAdapter
+  codex: createCodexAdapter,
+  claude: createClaudeAdapter
 }
 
 function without<A>(current: ReadonlyMap<string, A>, key: string): ReadonlyMap<string, A> {
@@ -554,11 +617,14 @@ function summarize(relativePath: string, entries: ConversationEntry[]): Conversa
   let recovery: ConversationRecovery | null = null
   let latestRunUsage: HarnessUsage | null = null
   let ideaUsage = emptyUsage()
+  const providerSessions: Partial<Record<ProviderId, string>> = {}
+  let workflowCompletionSuggested = false
   for (const entry of entries) {
     if (entry.kind === 'boundary') {
       if (entry.boundary === 'run-started') {
         activeRunId = entry.runId
         recovery = null
+        workflowCompletionSuggested = false
       } else if (entry.runId === activeRunId) {
         activeRunId = null
         recovery = entry.recovery
@@ -568,12 +634,19 @@ function summarize(relativePath: string, entries: ConversationEntry[]): Conversa
       ideaUsage = addUsage(ideaUsage, entry.usage)
       latestRunUsage = entry.usage
     }
+    if (entry.kind === 'session') providerSessions[entry.provider] = entry.sessionId
+    if (entry.kind === 'workflow-completion') workflowCompletionSuggested = true
   }
   return {
     relativePath: ideaRelativePathSchema.parse(relativePath),
-    entries: entries.filter((entry) => entry.kind !== 'usage'),
+    entries: entries.filter(
+      (entry) =>
+        entry.kind !== 'usage' && entry.kind !== 'session' && entry.kind !== 'workflow-completion'
+    ),
     usage: { run: latestRunUsage, idea: ideaUsage },
     recovery,
+    providerSessions,
+    workflowCompletionSuggested,
     activeRunId
   }
 }
@@ -596,7 +669,8 @@ function renderConversation(existing: string, entries: ConversationEntry[]): str
     ? existing.slice(0, existing.indexOf('\n---\n') + 5)
     : ''
   const body = entries.flatMap((entry) => {
-    if (entry.kind === 'usage') return []
+    if (entry.kind === 'usage' || entry.kind === 'session' || entry.kind === 'workflow-completion')
+      return []
     if (entry.kind === 'boundary') {
       return [`_${BOUNDARY_LABEL[entry.boundary]} — ${entry.summary}_`, '']
     }

@@ -13,6 +13,7 @@ import { ideaRelativePathSchema, type IdeaRelativePath } from './portable-path'
 import {
   acceptRunInputSchema,
   recordRunEventInputSchema,
+  workflowSchema,
   type RunSnapshot,
   type StartRunInput,
   type StopRunInput
@@ -422,7 +423,11 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('conversation/begin'),
     relativePath: ideaRelativePathSchema,
     runId: z.string().min(1),
-    submissionId: z.string().min(1)
+    submissionId: z.string().min(1),
+    provider: providerIdSchema.optional(),
+    workflow: workflowSchema.optional(),
+    model: z.string().min(1).optional(),
+    restorationNote: z.boolean().optional()
   }),
   z.object({
     type: z.literal('conversation/ingest'),
