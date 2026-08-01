@@ -89,6 +89,24 @@ describe('Claude harness Adapter', () => {
     ).toBe(false)
   })
 
+  it('accepts validated thinking-token telemetry without exposing hidden reasoning', () => {
+    const adapter = createClaudeAdapter()
+    expect(
+      adapter.ingest(
+        '{"type":"system","subtype":"thinking_tokens","estimated_tokens":103,"estimated_tokens_delta":53}\n'
+      )
+    ).toEqual([])
+    expect(
+      adapter.ingest('{"type":"system","subtype":"thinking_tokens","estimated_tokens":"unknown"}\n')
+    ).toEqual([
+      {
+        type: 'failed',
+        category: 'protocol',
+        summary: 'Invalid Claude thinking_tokens event'
+      }
+    ])
+  })
+
   it('fails visibly on unknown correctness-critical system and result events', async () => {
     const events = await replay('claude-failures.jsonl')
     expect(events).toContainEqual({

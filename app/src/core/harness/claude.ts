@@ -32,6 +32,7 @@ const assistantSchema = z.object({
 const KNOWN_SYSTEM_EVENTS = new Set([
   'init',
   'status',
+  'thinking_tokens',
   'api_retry',
   'hook_started',
   'hook_response'
@@ -40,6 +41,10 @@ const hookEventSchema = z.object({
   hook_id: z.string().min(1).max(200),
   hook_name: z.string().min(1).max(200),
   hook_event: z.string().min(1).max(200)
+})
+const thinkingTokensSchema = z.object({
+  estimated_tokens: z.number().int().nonnegative(),
+  estimated_tokens_delta: z.number().int().nonnegative()
 })
 
 /** Translates Claude Code's documented `--output-format stream-json` protocol. */
@@ -147,6 +152,11 @@ function describeSystem(frame: Record<string, unknown>): HarnessEvent[] {
         category: /rate.?limit/i.test(text(frame['error'])) ? 'rate-limit' : 'provider'
       }
     ]
+  }
+  if (subtype === 'thinking_tokens') {
+    return thinkingTokensSchema.safeParse(frame).success
+      ? []
+      : [protocolFailure('Invalid Claude thinking_tokens event')]
   }
   if (subtype === 'hook_started' || subtype === 'hook_response') {
     return hookEventSchema.safeParse(frame).success
