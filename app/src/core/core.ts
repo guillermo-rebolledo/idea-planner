@@ -21,6 +21,15 @@ import {
   type IdeaSummary,
   type LibrarySnapshot
 } from '@shared/contract'
+import {
+  acceptRunInputSchema,
+  recordRunEventInputSchema,
+  runSnapshotSchema,
+  type AcceptRunInput,
+  type RecordRunEventInput,
+  type RunSnapshot,
+  type RunStatus
+} from '@shared/run'
 import { suggestIdeaTitle } from '@shared/title'
 import {
   emptyMailbox,
@@ -108,6 +117,9 @@ export interface Core {
     sourcePath: string
   }): Promise<ReferenceAttachment>
   continueWithoutReference(input: { relativePath: string; referenceId: string }): Promise<void>
+  acceptRun(input: AcceptRunInput): Promise<RunSnapshot>
+  listRuns(relativePath: string): Promise<RunSnapshot[]>
+  recordRunEvent(input: RecordRunEventInput): Promise<RunSnapshot>
 }
 
 /**
@@ -171,6 +183,9 @@ export interface CoreEffects {
     relativePath: string
     referenceId: string
   }): Effect.Effect<void, CoreError>
+  acceptRun(input: AcceptRunInput): Effect.Effect<RunSnapshot, CoreError>
+  listRuns(relativePath: string): Effect.Effect<RunSnapshot[], CoreError>
+  recordRunEvent(input: RecordRunEventInput): Effect.Effect<RunSnapshot, CoreError>
 }
 
 const IDEA_FILE = 'idea.md'
@@ -476,6 +491,194 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       )
     )
 
+  const acceptRun = (rawInput: AcceptRunInput): Effect.Effect<RunSnapshot, CoreError> =>
+    requireLibrary('starting a Run').pipe(
+      Effect.flatMap((library) =>
+        provide(
+          writeLock.withPermits(1)(
+            Effect.gen(function* () {
+              const parsed = acceptRunInputSchema.safeParse(rawInput)
+              if (!parsed.success) {
+                return yield* Effect.fail(
+                  new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid Run')
+                )
+              }
+              const input = parsed.data
+              const ideaDir = join(library, input.relativePath)
+              const idea = yield* readIdeaSummary(library, input.relativePath, false)
+              if (!idea) {
+                return yield* Effect.fail(new CoreError('IDEA_NOT_FOUND', 'The Idea was not found'))
+              }
+              if (input.configuration.workingDirectory !== ideaDir) {
+                return yield* Effect.fail(
+                  new CoreError('INVALID_INPUT', 'Run Working Directory does not match the Idea')
+                )
+              }
+              const fingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex')
+              const submissionKey = createHash('sha256').update(input.submissionId).digest('hex')
+              const submissionsDir = join(ideaDir, '.idea', 'submissions')
+              const runsDir = join(ideaDir, '.idea', 'runs')
+              const submissionPath = join(submissionsDir, `${submissionKey}.json`)
+              const existing = yield* Effect.promise(() =>
+                readFile(submissionPath, 'utf8').catch(() => null)
+              )
+              if (existing !== null) {
+                const saved = yield* Effect.try({
+                  try: () => {
+                    const value = JSON.parse(existing) as { fingerprint?: unknown; run?: unknown }
+                    return {
+                      fingerprint: z.string().length(64).parse(value.fingerprint),
+                      run: runSnapshotSchema.parse(value.run)
+                    }
+                  },
+                  catch: () =>
+                    new CoreError('UNRECOVERABLE_CONTENT', 'Durable Run acceptance is unreadable')
+                })
+                if (saved.fingerprint !== fingerprint) {
+                  return yield* Effect.fail(
+                    new CoreError(
+                      'INVALID_INPUT',
+                      'Submission identity was already used for different content'
+                    )
+                  )
+                }
+                const acceptedRun = saved.run
+                const current = yield* Effect.promise(() =>
+                  readFile(join(runsDir, `${acceptedRun.id}.json`), 'utf8').catch(() => null)
+                )
+                if (current === null) return acceptedRun
+                return yield* Effect.try({
+                  try: () => runSnapshotSchema.parse(JSON.parse(current)),
+                  catch: () =>
+                    new CoreError('UNRECOVERABLE_CONTENT', 'Durable Run state is unreadable')
+                })
+              }
+              const clock = yield* IdeaClock
+              const ids = yield* IdGenerator
+              const timestamp = clock.now().toISOString()
+              const run: RunSnapshot = {
+                id: ids.nextId(),
+                submissionId: input.submissionId,
+                relativePath: input.relativePath,
+                prompt: input.prompt,
+                configuration: input.configuration,
+                status: 'accepted',
+                acceptedAt: timestamp,
+                updatedAt: timestamp,
+                activity: [
+                  {
+                    id: ids.nextId(),
+                    at: timestamp,
+                    kind: 'lifecycle',
+                    summary: 'Run accepted locally'
+                  }
+                ]
+              }
+              yield* Effect.tryPromise({
+                try: async () => {
+                  await Promise.all([
+                    mkdir(submissionsDir, { recursive: true, mode: 0o700 }),
+                    mkdir(runsDir, { recursive: true, mode: 0o700 })
+                  ])
+                  await writeJsonAtomic(join(runsDir, `${run.id}.json`), run)
+                  await writeJsonAtomic(submissionPath, { fingerprint, run })
+                },
+                catch: () => new CoreError('IO_ERROR', 'Could not accept the Run durably')
+              })
+              return run
+            })
+          )
+        )
+      )
+    )
+
+  const listRuns = (relativePath: string): Effect.Effect<RunSnapshot[], CoreError> =>
+    requireLibrary('listing Runs').pipe(
+      Effect.flatMap((library) =>
+        Effect.tryPromise({
+          try: async () => {
+            const parsedPath = ideaRelativePathSchema.parse(relativePath)
+            const runsDir = join(library, parsedPath, '.idea', 'runs')
+            const names = await readdir(runsDir).catch(() => [])
+            const runs = await Promise.all(
+              names
+                .filter((name) => name.endsWith('.json'))
+                .map(async (name) =>
+                  runSnapshotSchema.parse(JSON.parse(await readFile(join(runsDir, name), 'utf8')))
+                )
+            )
+            return runs.sort((a, b) => b.acceptedAt.localeCompare(a.acceptedAt))
+          },
+          catch: () => new CoreError('IO_ERROR', 'Could not read Run history')
+        })
+      )
+    )
+
+  const recordRunEvent = (input: RecordRunEventInput): Effect.Effect<RunSnapshot, CoreError> =>
+    requireLibrary('updating a Run').pipe(
+      Effect.flatMap((library) =>
+        provide(
+          writeLock.withPermits(1)(
+            Effect.gen(function* () {
+              const parsedInput = recordRunEventInputSchema.safeParse(input)
+              if (!parsedInput.success) {
+                return yield* Effect.fail(
+                  new CoreError(
+                    'INVALID_INPUT',
+                    parsedInput.error.issues[0]?.message ?? 'Invalid Run event'
+                  )
+                )
+              }
+              const event = parsedInput.data
+              const path = join(library, event.relativePath, '.idea', 'runs', `${event.runId}.json`)
+              const existing = yield* Effect.tryPromise({
+                try: () => readFile(path, 'utf8'),
+                catch: () => new CoreError('RUN_NOT_FOUND', 'The Run was not found')
+              })
+              const run = yield* Effect.try({
+                try: () => runSnapshotSchema.parse(JSON.parse(existing)),
+                catch: () =>
+                  new CoreError('UNRECOVERABLE_CONTENT', 'Durable Run state is unreadable')
+              })
+              if (
+                event.status &&
+                event.status !== run.status &&
+                !RUN_STATUS_TRANSITIONS[run.status].includes(event.status)
+              ) {
+                return yield* Effect.fail(
+                  new CoreError(
+                    'INVALID_INPUT',
+                    `Run cannot transition from ${run.status} to ${event.status}`
+                  )
+                )
+              }
+              const clock = yield* IdeaClock
+              const ids = yield* IdGenerator
+              const timestamp = clock.now().toISOString()
+              const next = yield* Effect.try({
+                try: () =>
+                  runSnapshotSchema.parse({
+                    ...run,
+                    ...(event.status ? { status: event.status } : {}),
+                    updatedAt: timestamp,
+                    activity: [
+                      ...run.activity,
+                      { id: ids.nextId(), at: timestamp, kind: event.kind, summary: event.summary }
+                    ]
+                  }),
+                catch: () => new CoreError('INVALID_INPUT', 'Invalid Run event')
+              })
+              yield* Effect.tryPromise({
+                try: () => writeJsonAtomic(path, next),
+                catch: () => new CoreError('IO_ERROR', 'Could not update the Run')
+              })
+              return next
+            })
+          )
+        )
+      )
+    )
+
   return {
     shutdown: externalContent.shutdown,
     openLibrary,
@@ -502,8 +705,23 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     removeReferenceContext: (contextId) => externalContent.removeReferenceContext(contextId),
     keepReferenceWithIdea: (input) => externalContent.keepReference(input),
     locateReferenceAttachment: (input) => externalContent.locateReference(input),
-    continueWithoutReference: (input) => externalContent.continueWithoutReference(input)
+    continueWithoutReference: (input) => externalContent.continueWithoutReference(input),
+    acceptRun,
+    listRuns,
+    recordRunEvent
   }
+}
+
+const RUN_STATUS_TRANSITIONS: Record<RunStatus, readonly RunStatus[]> = {
+  accepted: ['starting', 'failed', 'supervision-failed'],
+  starting: ['running', 'failed', 'stopped', 'policy-violation', 'supervision-failed'],
+  running: ['waiting', 'completed', 'failed', 'stopped', 'policy-violation', 'supervision-failed'],
+  waiting: ['running', 'completed', 'failed', 'stopped', 'policy-violation', 'supervision-failed'],
+  completed: ['supervision-failed'],
+  failed: ['supervision-failed'],
+  stopped: ['supervision-failed'],
+  'policy-violation': ['supervision-failed'],
+  'supervision-failed': []
 }
 
 export function createCore(deps: CoreDeps = {}): Core {
@@ -539,7 +757,10 @@ export function createCore(deps: CoreDeps = {}): Core {
     removeReferenceContext: (contextId) => run(core.removeReferenceContext(contextId)),
     keepReferenceWithIdea: (input) => run(core.keepReferenceWithIdea(input)),
     locateReferenceAttachment: (input) => run(core.locateReferenceAttachment(input)),
-    continueWithoutReference: (input) => run(core.continueWithoutReference(input))
+    continueWithoutReference: (input) => run(core.continueWithoutReference(input)),
+    acceptRun: (input) => run(core.acceptRun(input)),
+    listRuns: (relativePath) => run(core.listRuns(relativePath)),
+    recordRunEvent: (input) => run(core.recordRunEvent(input))
   }
 }
 

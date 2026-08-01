@@ -15,7 +15,8 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
-          core: resolve(__dirname, 'src/core/index.ts')
+          core: resolve(__dirname, 'src/core/index.ts'),
+          'planning-mcp-proxy': resolve(__dirname, 'src/main/planning-mcp-proxy.ts')
         }
       }
     }

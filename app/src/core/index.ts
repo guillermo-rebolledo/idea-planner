@@ -118,6 +118,12 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.prepareReferenceContext(command)
     case 'reference/remove-context':
       return core.removeReferenceContext(command.contextId)
+    case 'run/accept':
+      return core.acceptRun(command.input)
+    case 'run/list':
+      return core.listRuns(command.relativePath)
+    case 'run/event':
+      return core.recordRunEvent(command.input)
   }
 }
 

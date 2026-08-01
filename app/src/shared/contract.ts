@@ -1,5 +1,13 @@
 import { z } from 'zod'
 import type { ChooseExecutableResult, ProviderId, ReadinessSnapshot } from './readiness'
+import { ideaRelativePathSchema, type IdeaRelativePath } from './portable-path'
+import {
+  acceptRunInputSchema,
+  recordRunEventInputSchema,
+  type RunSnapshot,
+  type StartRunInput,
+  type StopRunInput
+} from './run'
 
 /**
  * The versioned contract shared by Core, Main, Preload, and Renderer.
@@ -189,14 +197,8 @@ export const librarySnapshotSchema = z.object({
 })
 export type LibrarySnapshot = z.infer<typeof librarySnapshotSchema>
 
-export const ideaRelativePathSchema = z
-  .string()
-  .min(1)
-  .refine(
-    (path) => path !== '.' && path !== '..' && !path.includes('/') && !path.includes('\\'),
-    'Expected a portable Idea folder reference'
-  )
-export type IdeaRelativePath = z.infer<typeof ideaRelativePathSchema>
+export { ideaRelativePathSchema }
+export type { IdeaRelativePath }
 
 export const mailboxKindFilterSchema = z.enum(['all', 'software', 'general'])
 export type MailboxKindFilter = z.infer<typeof mailboxKindFilterSchema>
@@ -329,7 +331,9 @@ export const coreErrorCodeSchema = z.enum([
   'IDEA_NOT_FOUND',
   'UNRECOVERABLE_CONTENT',
   'INVALID_INPUT',
-  'IO_ERROR'
+  'IO_ERROR',
+  'RUN_NOT_FOUND',
+  'SUPERVISION_FAILED'
 ])
 export type CoreErrorCode = z.infer<typeof coreErrorCodeSchema>
 
@@ -399,7 +403,10 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     runId: z.string().min(1),
     referenceIds: z.array(z.string().min(1))
   }),
-  z.object({ type: z.literal('reference/remove-context'), contextId: z.string().min(1) })
+  z.object({ type: z.literal('reference/remove-context'), contextId: z.string().min(1) }),
+  z.object({ type: z.literal('run/accept'), input: acceptRunInputSchema }),
+  z.object({ type: z.literal('run/list'), relativePath: ideaRelativePathSchema }),
+  z.object({ type: z.literal('run/event'), input: recordRunEventInputSchema })
 ])
 export type CoreCommand = z.infer<typeof coreCommandSchema>
 
@@ -470,7 +477,11 @@ export interface IdeaShellApi {
   setLoginShellDiscovery(consent: boolean): Promise<ReadinessSnapshot>
   /** Opens one of the fixed readiness-guidance URLs in the default browser. */
   openExternalLink(url: string): Promise<void>
+  startRun(input: StartRunInput): Promise<RunSnapshot>
+  listRuns(relativePath: IdeaRelativePath): Promise<RunSnapshot[]>
+  stopRun(input: StopRunInput): Promise<RunSnapshot>
 }
 
 export { IPC_CHANNELS } from './channels'
 export * from './readiness'
+export * from './run'

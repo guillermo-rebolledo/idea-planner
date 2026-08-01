@@ -12,8 +12,10 @@ import {
   Bot,
   Pin,
   PinOff,
+  Play,
   Plus,
   Search,
+  Square,
   Trash2,
   type LucideIcon
 } from 'lucide-react'
@@ -29,6 +31,8 @@ import type {
   LibrarySnapshot,
   ReconciliationState,
   ReferenceAttachmentView,
+  RunSnapshot,
+  ProviderId,
   ThemePreference,
   ThemeState
 } from '@shared/contract'
@@ -1196,6 +1200,7 @@ function IdeaDetail({
       <p className="mt-4 rounded-md border border-border bg-surface p-3 font-mono text-xs break-all text-muted-foreground select-text">
         {openedIdea.documents.root.path}
       </p>
+      <RunPanel idea={idea} />
       <section
         className="mt-4 rounded-md border border-border bg-surface p-3"
         aria-labelledby="references-heading"
@@ -1329,6 +1334,171 @@ function IdeaDetail({
         explicit step that arrives in a later milestone.
       </p>
     </article>
+  )
+}
+
+function RunPanel({ idea }: { idea: IdeaSummary }): React.JSX.Element {
+  const [runs, setRuns] = useState<RunSnapshot[]>([])
+  const [provider, setProvider] = useState<ProviderId>('codex')
+  const [prompt, setPrompt] = useState('')
+  const [model, setModel] = useState('default')
+  const [effort, setEffort] = useState('medium')
+  const [permissionMode, setPermissionMode] = useState<'ask' | 'auto'>('ask')
+  const [submissionId, setSubmissionId] = useState(() => crypto.randomUUID())
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const refresh = useCallback(() => {
+    void window.ideaShell.listRuns(idea.relativePath).then(setRuns, () => undefined)
+  }, [idea.relativePath])
+
+  useEffect(() => {
+    refresh()
+    const timer = window.setInterval(refresh, 750)
+    return () => window.clearInterval(timer)
+  }, [refresh])
+
+  const active = runs.find((run) =>
+    ['accepted', 'starting', 'running', 'waiting'].includes(run.status)
+  )
+
+  async function start(): Promise<void> {
+    if (!prompt.trim()) return
+    setBusy(true)
+    setError(null)
+    try {
+      await window.ideaShell.startRun({
+        submissionId,
+        relativePath: idea.relativePath,
+        prompt: prompt.trim(),
+        provider,
+        model,
+        effort,
+        workflow: 'grilling',
+        permissionMode
+      })
+      setPrompt('')
+      setSubmissionId(crypto.randomUUID())
+      refresh()
+    } catch {
+      setError('The Run could not start. Check provider readiness and supervision recovery.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section
+      className="mt-4 rounded-md border border-border bg-surface p-3"
+      aria-labelledby="run-heading"
+    >
+      <div className="flex items-center gap-2">
+        <div>
+          <h3 id="run-heading" className="text-sm font-medium">
+            Develop this Idea
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            One submission starts one supervised planning Run.
+          </p>
+        </div>
+        {active && (
+          <Button
+            className="ml-auto"
+            size="sm"
+            variant="secondary"
+            onClick={() =>
+              void window.ideaShell
+                .stopRun({ runId: active.id, relativePath: idea.relativePath })
+                .then(refresh)
+            }
+          >
+            <Square aria-hidden="true" className="size-3" /> Stop
+          </Button>
+        )}
+      </div>
+      {!active && (
+        <form
+          className="mt-3 flex flex-col gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void start()
+          }}
+        >
+          <textarea
+            aria-label="Message for the planning Run"
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            placeholder="What should we develop or decide next?"
+            className="min-h-20 rounded-md border border-border bg-background p-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              aria-label="Provider"
+              value={provider}
+              onChange={(event) => setProvider(event.target.value as ProviderId)}
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+            >
+              <option value="codex">Codex</option>
+              <option value="claude">Claude</option>
+            </select>
+            <input
+              aria-label="Model"
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              className="h-8 w-28 rounded-md border border-border bg-background px-2 text-xs"
+            />
+            <select
+              aria-label="Effort"
+              value={effort}
+              onChange={(event) => setEffort(event.target.value)}
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+            <select
+              aria-label="Permission prompts"
+              value={permissionMode}
+              onChange={(event) => setPermissionMode(event.target.value as 'ask' | 'auto')}
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+            >
+              <option value="ask">Ask</option>
+              <option value="auto">Auto inside planning sandbox</option>
+            </select>
+            <Button className="ml-auto" size="sm" type="submit" disabled={busy || !prompt.trim()}>
+              <Play aria-hidden="true" className="size-3.5" />{' '}
+              {busy ? 'Starting…' : 'Start developing'}
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Fixed authority: safe inspection and managed planning files only. Git, source edits,
+            secrets, sockets, scripts, and package managers are always blocked.
+          </p>
+        </form>
+      )}
+      {error && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {error}
+        </p>
+      )}
+      {runs[0] && (
+        <div className="mt-3" aria-live="polite">
+          <p className="text-xs font-medium capitalize">{runs[0].status.replace('-', ' ')}</p>
+          <ol className="mt-1 max-h-32 space-y-1 overflow-y-auto text-[11px] text-muted-foreground">
+            {runs[0].activity.slice(-8).map((activity) => (
+              <li key={activity.id}>{activity.summary}</li>
+            ))}
+          </ol>
+          {runs[0].status === 'supervision-failed' && (
+            <p role="alert" className="mt-2 text-xs text-destructive">
+              Provider cleanup could not be verified. Quit the app and check Activity Monitor before
+              starting another Run.
+            </p>
+          )}
+        </div>
+      )}
+    </section>
   )
 }
 
