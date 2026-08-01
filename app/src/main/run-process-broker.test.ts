@@ -106,6 +106,35 @@ describe('Run process broker', () => {
     ).rejects.toThrow('Supervision recovery is required')
   })
 
+  it('treats a process group disappearing during a monitor tick as a normal exit', async () => {
+    const child = fakeProcess()
+    const onSupervisionFailure = vi.fn()
+    const countProcessGroupMembers = vi
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error('Command failed: /bin/ps -o pid= -g 4242'), { code: 1 })
+      )
+    const broker = new RunProcessBroker({
+      spawn: () => child,
+      killProcessGroup: vi.fn(),
+      waitForGroupExit: vi.fn().mockResolvedValue(undefined),
+      countProcessGroupMembers,
+      monitorIntervalMs: undefined
+    })
+    await broker.start({
+      id: 'run-1',
+      executable: '/opt/claude',
+      args: [],
+      workingDirectory: '/work',
+      runDirectory: '/private/run-1',
+      environment: {},
+      sandboxProfile: '/private/run-1/profile.sb',
+      onSupervisionFailure
+    })
+    await expect(broker.inspectLimits('run-1')).resolves.toBeUndefined()
+    expect(onSupervisionFailure).not.toHaveBeenCalled()
+  })
+
   it('verifies the process group after the provider root exits', async () => {
     const child = fakeProcess()
     const waitForGroupExit = vi.fn().mockResolvedValue(undefined)

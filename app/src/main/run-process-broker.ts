@@ -113,7 +113,7 @@ export class RunProcessBroker {
     this.active.set(launch.id, entry)
     if (this.deps.monitorIntervalMs !== undefined) {
       entry.monitor = setInterval(
-        () => void this.inspectLimits(launch.id),
+        () => void this.inspectLimits(launch.id).catch(() => this.failSupervision(launch.id)),
         this.deps.monitorIntervalMs
       )
     }
@@ -173,7 +173,10 @@ export class RunProcessBroker {
   async inspectLimits(runId: string): Promise<void> {
     const entry = this.active.get(runId)
     if (!entry || entry.stopping || !this.deps.countProcessGroupMembers) return
-    const count = await this.deps.countProcessGroupMembers(entry.pid)
+    const count = await this.deps.countProcessGroupMembers(entry.pid).catch((error: unknown) => {
+      if (isMissingProcessGroup(error)) return 0
+      throw error
+    })
     if (count <= 16) return
     entry.stopping = true
     entry.launch.onLimitViolation?.('Provider process tree exceeded the 16-process Run limit')
@@ -206,6 +209,15 @@ export class RunProcessBroker {
     return cleanup(path)
   }
 
+  private failSupervision(runId: string): void {
+    const entry = this.active.get(runId)
+    if (!entry || entry.stopping) return
+    entry.stopping = true
+    this.supervisionFailed = true
+    this.clearMonitor(runId)
+    entry.launch.onSupervisionFailure?.()
+  }
+
   private clearMonitor(runId: string): void {
     const monitor = this.active.get(runId)?.monitor
     if (monitor) clearInterval(monitor)
@@ -229,4 +241,13 @@ export class RunProcessBroker {
     }
     launch.onOutput?.(stream, text)
   }
+}
+
+function isMissingProcessGroup(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error.code === 1 || error.code === 'ESRCH')
+  )
 }
