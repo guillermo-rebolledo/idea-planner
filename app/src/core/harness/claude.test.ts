@@ -79,6 +79,16 @@ describe('Claude harness Adapter', () => {
     })
   })
 
+  it('accepts Claude status and rate-limit telemetry without treating it as protocol drift', async () => {
+    const events = await replay('claude-wayfinder.jsonl')
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'failed' && event.summary.includes('Unsupported Claude protocol event')
+      )
+    ).toBe(false)
+  })
+
   it('fails visibly on unknown correctness-critical system and result events', async () => {
     const events = await replay('claude-failures.jsonl')
     expect(events).toContainEqual({

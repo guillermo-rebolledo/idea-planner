@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { createServer } from 'node:net'
 import { promisify } from 'node:util'
@@ -199,6 +199,12 @@ describe('Run service', () => {
     expect(broker.launch?.args).not.toContain('--input-format')
     expect(broker.launch?.args.at(-1)).toContain('/wayfinder Develop this idea')
     expect(broker.launch?.args).not.toContain('--disable-slash-commands')
+    const mcpConfigPath = broker.launch?.args[broker.launch.args.indexOf('--mcp-config') + 1]
+    if (!mcpConfigPath) throw new Error('Claude launch did not include an MCP config')
+    const mcpConfig = JSON.parse(await readFile(mcpConfigPath, 'utf8')) as {
+      mcpServers: { planning: Record<string, unknown> }
+    }
+    expect(mcpConfig.mcpServers.planning).not.toHaveProperty('args')
   })
 
   it('gives Wayfinder its own managed planning tree', async () => {

@@ -29,7 +29,13 @@ const assistantSchema = z.object({
   usage: usageSchema.optional()
 })
 
-const KNOWN_SYSTEM_EVENTS = new Set(['init', 'api_retry', 'hook_started', 'hook_response'])
+const KNOWN_SYSTEM_EVENTS = new Set([
+  'init',
+  'status',
+  'api_retry',
+  'hook_started',
+  'hook_response'
+])
 const hookEventSchema = z.object({
   hook_id: z.string().min(1).max(200),
   hook_name: z.string().min(1).max(200),
@@ -92,6 +98,7 @@ export function createClaudeAdapter(): HarnessAdapter {
       case 'result':
         return describeResult(frame)
       case 'user':
+      case 'rate_limit_event':
         return []
       default:
         return [protocolFailure(`Unsupported Claude protocol event: ${type || 'unknown'}`)]

@@ -618,9 +618,9 @@ export class RunService {
   ): Promise<void> {
     const proxy = {
       command: this.deps.proxyExecutable,
-      args: [this.deps.proxyScript],
       env: {
         ELECTRON_RUN_AS_NODE: '1',
+        NODE_OPTIONS: `--require=${this.deps.proxyScript}`,
         PLANNING_MCP_SOCKET: socketPath,
         PLANNING_MCP_CAPABILITY: capabilityToken
       }
@@ -640,7 +640,7 @@ export class RunService {
     await chmod(join(codexHome, 'auth.json'), 0o600)
     await writeFile(
       join(codexHome, 'config.toml'),
-      `[mcp_servers.planning]\ncommand = ${JSON.stringify(proxy.command)}\nargs = [${proxy.args.map((value) => JSON.stringify(value)).join(', ')}]\n\n[mcp_servers.planning.env]\nELECTRON_RUN_AS_NODE = "1"\nPLANNING_MCP_SOCKET = ${JSON.stringify(socketPath)}\nPLANNING_MCP_CAPABILITY = ${JSON.stringify(capabilityToken)}\n`,
+      `[mcp_servers.planning]\ncommand = ${JSON.stringify(proxy.command)}\n\n[mcp_servers.planning.env]\nELECTRON_RUN_AS_NODE = "1"\nNODE_OPTIONS = ${JSON.stringify(proxy.env.NODE_OPTIONS)}\nPLANNING_MCP_SOCKET = ${JSON.stringify(socketPath)}\nPLANNING_MCP_CAPABILITY = ${JSON.stringify(capabilityToken)}\n`,
       { mode: 0o600 }
     )
   }
