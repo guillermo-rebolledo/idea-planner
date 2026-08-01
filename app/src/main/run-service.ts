@@ -752,7 +752,7 @@ function providerArguments(
     '--mcp-config',
     join(runDirectory, 'mcp.json'),
     '--tools',
-    '',
+    'ToolSearch',
     '--allowedTools',
     'mcp__planning__*',
     '--permission-mode',

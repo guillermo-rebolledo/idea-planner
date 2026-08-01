@@ -226,7 +226,7 @@ describe('Run service', () => {
           '--mcp-config',
           mcpConfig,
           '--tools',
-          '',
+          'ToolSearch',
           '--allowedTools',
           'mcp__planning__*',
           '--permission-mode',
@@ -253,6 +253,7 @@ describe('Run service', () => {
       ).catch((error: unknown) => error as { stdout?: string; stderr?: string })
       expect(result.stdout).toContain('"subtype":"init"')
       expect(result.stdout).toContain('"grilling"')
+      expect(result.stdout).toContain('"tools":["ToolSearch"]')
       expect(result.stderr).not.toContain("posix_spawn 'security'")
       expect(result.stdout).not.toContain('Not logged in')
     },
@@ -307,6 +308,7 @@ describe('Run service', () => {
     )
     expect(broker.launch?.args).not.toContain('--input-format')
     expect(broker.launch?.args).toEqual(expect.arrayContaining(['--setting-sources', 'user']))
+    expect(broker.launch?.args).toEqual(expect.arrayContaining(['--tools', 'ToolSearch']))
     expect(broker.launch?.args.at(-1)).toContain('/wayfinder Develop this idea')
     expect(broker.launch?.args).not.toContain('--disable-slash-commands')
     const mcpConfigPath = broker.launch?.args[broker.launch.args.indexOf('--mcp-config') + 1]
