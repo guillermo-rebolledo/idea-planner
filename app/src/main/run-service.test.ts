@@ -419,6 +419,43 @@ describe('Run service', () => {
     })
   })
 
+  it('explains a failed Run with the provider’s own last diagnostic line', async () => {
+    const root = await readyProviderRoot('run-diagnostic-')
+    const core = fakeCore()
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'codex')),
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js'
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      relativePath: 'idea',
+      prompt: 'Grill me',
+      provider: 'codex',
+      model: 'default',
+      effort: 'medium',
+      workflow: 'grilling',
+      permissionMode: 'ask'
+    })
+    broker.launch?.onOutput?.(
+      'stderr',
+      "sandbox-exec: execvp() of 'codex' failed: Operation not permitted\n"
+    )
+    broker.launch?.onExit?.(1, null)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await broker.launch?.onBeforeCleanup?.()
+    const finalize = (core.send.mock.calls as [{ type: string; input?: unknown }][]).find(
+      ([command]) => command.type === 'conversation/finalize'
+    )?.[0].input as { summary: string } | undefined
+    expect(finalize?.summary).toContain('Operation not permitted')
+  })
+
   it('surfaces an unready provider as an error rather than false recovery state', async () => {
     const root = await readyProviderRoot('run-unready-')
     const service = new RunService({
@@ -470,7 +507,7 @@ describe('Run service', () => {
         profile,
         new PlanningPolicy({ workingDirectory: root, planningDirectory }).renderSandboxProfile({
           runDirectory,
-          executable: '/usr/bin/true',
+          launch: { executables: ['/usr/bin/true'], executableTrees: [], readRoots: [] },
           proxyExecutable: '/usr/bin/true',
           proxyScript: join(root, 'proxy.js'),
           socketPath: join(runDirectory, 'planning.sock')
@@ -501,7 +538,7 @@ describe('Run service', () => {
         profile,
         policy.renderSandboxProfile({
           runDirectory,
-          executable: '/usr/bin/touch',
+          launch: { executables: ['/usr/bin/touch'], executableTrees: [], readRoots: [] },
           proxyExecutable: '/usr/bin/true',
           proxyScript: join(root, 'proxy.js'),
           socketPath: join(runDirectory, 'planning.sock')
@@ -541,7 +578,7 @@ describe('Run service', () => {
         profile,
         new PlanningPolicy({ workingDirectory: root, planningDirectory }).renderSandboxProfile({
           runDirectory,
-          executable: '/usr/bin/nc',
+          launch: { executables: ['/usr/bin/nc'], executableTrees: [], readRoots: [] },
           proxyExecutable: '/usr/bin/true',
           proxyScript: join(root, 'proxy.js'),
           socketPath: allowedSocket

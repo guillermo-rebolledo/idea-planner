@@ -280,7 +280,10 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
             {RECOVERY_GUIDANCE[phase.snapshot.recovery.category]}
           </p>
           <p className="mt-1 text-xs break-words text-muted-foreground">
-            The provider said: {phase.snapshot.recovery.summary}
+            What happened: {phase.snapshot.recovery.summary}
+          </p>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            The full sanitized activity for this Run is below.
           </p>
           {resumable && resumableText?.kind === 'message' && (
             <Button
@@ -430,7 +433,14 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
 
       <UsagePanel usage={phase.snapshot.usage} />
 
-      {activeRun && <ActivityPanel run={activeRun} />}
+      {activeRun && (
+        <ActivityPanel
+          run={activeRun}
+          // A Run that ended badly is exactly when the detail matters, so it
+          // does not stay hidden behind a disclosure.
+          defaultOpen={FAILED_STATUSES.has(activeRun.status)}
+        />
+      )}
 
       <Attribution />
     </section>
@@ -517,9 +527,21 @@ function UsagePanel({
   )
 }
 
-function ActivityPanel({ run }: { run: RunSnapshot }): React.JSX.Element {
+const FAILED_STATUSES = new Set<RunSnapshot['status']>([
+  'failed',
+  'policy-violation',
+  'supervision-failed'
+])
+
+function ActivityPanel({
+  run,
+  defaultOpen
+}: {
+  run: RunSnapshot
+  defaultOpen: boolean
+}): React.JSX.Element {
   return (
-    <details className="group border-t border-border px-3 py-2">
+    <details open={defaultOpen} className="group border-t border-border px-3 py-2">
       <summary className="flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground">
         <ChevronRight
           aria-hidden="true"

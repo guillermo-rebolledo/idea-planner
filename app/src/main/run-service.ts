@@ -27,6 +27,7 @@ import {
 import { PROVIDER_SPECS, VERIFIED_WORKFLOW_SKILLS } from './readiness'
 import { PlanningPolicy } from './planning-policy'
 import { PlanningToolHost } from './planning-tool-host'
+import { resolveProviderLaunch } from './provider-launch'
 import type { RunProcessBroker } from './run-process-broker'
 
 interface CorePort {
@@ -61,6 +62,12 @@ export class RunService {
   private readonly toolHosts = new Map<string, PlanningToolHost>()
   /** The last failure a Run's provider reported, used when the Run ends. */
   private readonly failures = new Map<string, HarnessFailureCategory>()
+  /**
+   * The last thing a Run's provider wrote to its diagnostic stream. When a
+   * process dies without reporting a failure of its own, this is the only
+   * explanation there is, so it becomes what the person is told.
+   */
+  private readonly diagnostics = new Map<string, string>()
 
   constructor(private readonly deps: RunServiceDeps) {}
 
@@ -275,7 +282,11 @@ export class RunService {
         sandboxProfile,
         policy.renderSandboxProfile({
           runDirectory,
-          executable: provider.executablePath,
+          // The verified skills location is readable: providers scan the root
+          // on start, and this Run's workflow lives inside it.
+          launch: await resolveProviderLaunch(provider.executablePath, [
+            join(this.deps.homeDirectory, spec.skillsRoot)
+          ]),
           proxyExecutable: this.deps.proxyExecutable,
           proxyScript: this.deps.proxyScript,
           socketPath
@@ -333,7 +344,9 @@ export class RunService {
             return
           }
           const summary = sanitize(text, workingDirectory).trim()
-          if (summary) void this.record(accepted, undefined, 'output', summary)
+          if (!summary) return
+          this.diagnostics.set(accepted.id, summary)
+          void this.record(accepted, undefined, 'output', summary)
         },
         onExit: (code, signal) => {
           const stopped = signal === 'SIGTERM' || signal === 'SIGKILL'
@@ -479,15 +492,21 @@ export class RunService {
     kind: RunActivityKind,
     summary: string
   ): Promise<RunSnapshot> {
-    const snapshot = await this.record(run, status, kind, summary)
     const category = this.failures.get(run.id) ?? null
+    const diagnostic = this.diagnostics.get(run.id)
     this.failures.delete(run.id)
+    this.diagnostics.delete(run.id)
+    // A bare "it failed" helps nobody. When the provider said nothing the app
+    // could categorize, its own last diagnostic line is the explanation.
+    const explained =
+      status === 'failed' && category === null && diagnostic ? `${summary}: ${diagnostic}` : summary
+    const snapshot = await this.record(run, status, kind, explained)
     const finalize: FinalizeConversationRunInput = {
       relativePath: run.relativePath,
       runId: run.id,
       outcome: status,
       category: status === 'failed' ? category : null,
-      summary
+      summary: explained
     }
     await this.deps.core.send({ type: 'conversation/finalize', input: finalize })
     return snapshot
