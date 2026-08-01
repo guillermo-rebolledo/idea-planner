@@ -5,11 +5,133 @@ import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  emptyUsage,
+  type ConversationSnapshot,
+  type ConversationStreamEvent,
+  type HarnessEvent
+} from '@shared/conversation'
 import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
 import { PlanningPolicy } from './planning-policy'
+import type { RunLaunch } from './run-process-broker'
 import { RunService } from './run-service'
 
 const temporaryDirectories: string[] = []
+
+/** A ready Codex install with the verified Grill Me skill in place. */
+async function readyProviderRoot(prefix: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), prefix))
+  temporaryDirectories.push(root)
+  await Promise.all([
+    mkdir(join(root, '.agents', 'skills', 'grilling'), { recursive: true }),
+    mkdir(join(root, '.codex'), { recursive: true })
+  ])
+  await Promise.all([
+    writeFile(join(root, '.agents', 'skills', 'grilling', 'SKILL.md'), '# Grilling'),
+    writeFile(join(root, 'codex'), '#!/bin/sh\n'),
+    writeFile(join(root, '.codex', 'auth.json'), '{}')
+  ])
+  return root
+}
+
+interface FakeCore {
+  send: ReturnType<typeof vi.fn>
+  commands: string[]
+  events: HarnessEvent[]
+  conversation: ConversationSnapshot
+}
+
+let nextRunId = 0
+
+function fakeCore(): FakeCore {
+  const runId = `run-${++nextRunId}`
+  const state: FakeCore = {
+    send: vi.fn(),
+    commands: [],
+    events: [],
+    conversation: {
+      relativePath: 'idea',
+      entries: [],
+      usage: { run: null, idea: emptyUsage() },
+      recovery: null,
+      activeRunId: null
+    }
+  }
+  const run: RunSnapshot = {
+    id: runId,
+    submissionId: 'submission-1',
+    relativePath: 'idea',
+    prompt: 'Grill me',
+    configuration: runConfigurationSchema.parse({
+      provider: 'codex',
+      executable: '/usr/local/bin/codex',
+      executableHash: 'a'.repeat(64),
+      providerVersion: 'codex-cli 0.146.0',
+      model: 'gpt-5-codex',
+      effort: 'medium',
+      workflow: 'grilling',
+      skill: { name: 'grilling', path: '/skills/grilling', hash: 'b'.repeat(64) },
+      environment: {},
+      workingDirectory: '/library/idea',
+      permissionMode: 'ask',
+      permissionProfile: 'planning-v1'
+    }),
+    status: 'accepted',
+    acceptedAt: '2026-07-31T12:00:00.000Z',
+    updatedAt: '2026-07-31T12:00:00.000Z',
+    activity: []
+  }
+  state.send.mockImplementation((command: { type: string }) => {
+    state.commands.push(command.type)
+    if (command.type === 'conversation/ingest') return Promise.resolve(state.events)
+    if (command.type.startsWith('conversation/')) return Promise.resolve(state.conversation)
+    if (command.type === 'run/accept') return Promise.resolve(run)
+    return Promise.resolve({ ...run, status: 'running' })
+  })
+  return state
+}
+
+function fakeBroker(overrides: { start?: ReturnType<typeof vi.fn> } = {}): {
+  start: ReturnType<typeof vi.fn>
+  stop: ReturnType<typeof vi.fn>
+  stopAll: ReturnType<typeof vi.fn>
+  activeRunIds: ReturnType<typeof vi.fn>
+  needsRecovery: ReturnType<typeof vi.fn>
+  launch?: RunLaunch
+} {
+  const broker = {
+    start: vi.fn((launch: RunLaunch) => {
+      broker.launch = launch
+      return Promise.resolve()
+    }),
+    stop: vi.fn(() => Promise.resolve()),
+    stopAll: vi.fn(() => Promise.resolve()),
+    activeRunIds: vi.fn((): string[] => []),
+    needsRecovery: vi.fn(() => false),
+    launch: undefined as RunLaunch | undefined,
+    ...overrides
+  }
+  return broker
+}
+
+function readyReadiness(executablePath: string): {
+  refresh: ReturnType<typeof vi.fn>
+} {
+  return {
+    refresh: vi.fn(() =>
+      Promise.resolve({
+        providers: [
+          {
+            provider: 'codex',
+            available: true,
+            executablePath,
+            version: 'codex-cli 0.146.0'
+          }
+        ]
+      })
+    )
+  }
+}
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true }))
@@ -120,6 +242,191 @@ describe('Run service', () => {
     ]) {
       expect(launch?.args).toContain(argument)
     }
+  })
+
+  it('accepts the message durably, then records the Run boundary, then contacts the provider', async () => {
+    const root = await readyProviderRoot('run-develop-')
+    const core = fakeCore()
+    const service = new RunService({
+      core,
+      broker: fakeBroker(),
+      readiness: readyReadiness(join(root, 'codex')),
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js'
+    })
+    await service.develop({
+      relativePath: 'idea',
+      submissionId: 'submission-1',
+      text: 'Grill me',
+      source: 'composer',
+      workflow: 'grilling',
+      provider: 'codex',
+      model: 'gpt-5-codex',
+      effort: 'medium',
+      permissionMode: 'ask'
+    })
+    expect(core.commands.indexOf('conversation/submit')).toBeLessThan(
+      core.commands.indexOf('run/accept')
+    )
+    expect(core.commands.indexOf('run/accept')).toBeLessThan(
+      core.commands.indexOf('conversation/begin')
+    )
+  })
+
+  it('refuses a workflow whose skill identity has not been verified', async () => {
+    const root = await readyProviderRoot('run-unverified-')
+    const service = new RunService({
+      core: fakeCore(),
+      broker: fakeBroker(),
+      readiness: readyReadiness(join(root, 'codex')),
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js'
+    })
+    await expect(
+      service.start({
+        submissionId: 'submission-1',
+        relativePath: 'idea',
+        prompt: 'Develop this',
+        provider: 'codex',
+        model: 'gpt-5-codex',
+        effort: 'medium',
+        workflow: 'to-spec',
+        permissionMode: 'ask'
+      })
+    ).rejects.toThrow('not a verified planning workflow')
+  })
+
+  it('streams normalized events to the window and keeps assistant text out of activity', async () => {
+    const root = await readyProviderRoot('run-stream-')
+    const core = fakeCore()
+    core.events = [
+      { type: 'assistant-delta', text: 'Who is this for?' },
+      { type: 'reasoning', summary: 'Reading the Idea first.' },
+      { type: 'tool', name: 'planning.read_file', summary: 'Read file idea.md' }
+    ]
+    const broker = fakeBroker()
+    const streamed: ConversationStreamEvent[] = []
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'codex')),
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js',
+      onConversationEvent: (event) => streamed.push(event)
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      relativePath: 'idea',
+      prompt: 'Grill me',
+      provider: 'codex',
+      model: 'gpt-5-codex',
+      effort: 'medium',
+      workflow: 'grilling',
+      permissionMode: 'ask'
+    })
+    broker.launch?.onOutput?.('stdout', '{"msg":{"type":"agent_message_delta"}}\n')
+    await Promise.resolve()
+    await broker.launch?.onBeforeCleanup?.()
+    expect(streamed.map((entry) => entry.event.type)).toEqual([
+      'assistant-delta',
+      'reasoning',
+      'tool'
+    ])
+    const activity = (core.send.mock.calls as [{ type: string; input?: unknown }][])
+      .filter(([command]) => command.type === 'run/event')
+      .map(([command]) => command.input as { kind: string; summary: string })
+    expect(activity.some((entry) => entry.summary.includes('Who is this for?'))).toBe(false)
+    expect(activity).toContainEqual(
+      expect.objectContaining({ kind: 'reasoning', summary: 'Reading the Idea first.' })
+    )
+    expect(activity).toContainEqual(
+      expect.objectContaining({ kind: 'output', summary: 'planning.read_file: Read file idea.md' })
+    )
+  })
+
+  it('keeps the message and offers recovery when the provider is never contacted', async () => {
+    const root = await readyProviderRoot('run-uncertain-')
+    const core = fakeCore()
+    core.conversation = {
+      ...core.conversation,
+      recovery: {
+        category: 'uncertain-submission',
+        summary: 'Provider process could not start',
+        resumableSubmissionId: 'submission-1'
+      }
+    }
+    const service = new RunService({
+      core,
+      broker: fakeBroker({
+        start: vi.fn(() => Promise.reject(new Error('spawn failed')))
+      }),
+      readiness: readyReadiness(join(root, 'codex')),
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js'
+    })
+    const snapshot = await service.develop({
+      relativePath: 'idea',
+      submissionId: 'submission-1',
+      text: 'Grill me',
+      source: 'composer',
+      workflow: 'grilling',
+      provider: 'codex',
+      model: 'gpt-5-codex',
+      effort: 'medium',
+      permissionMode: 'ask'
+    })
+    expect(core.commands).toContain('conversation/finalize')
+    expect(snapshot.recovery).toMatchObject({
+      category: 'uncertain-submission',
+      resumableSubmissionId: 'submission-1'
+    })
+  })
+
+  it('surfaces an unready provider as an error rather than false recovery state', async () => {
+    const root = await readyProviderRoot('run-unready-')
+    const service = new RunService({
+      core: fakeCore(),
+      broker: fakeBroker(),
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            providers: [
+              { provider: 'codex', available: false, executablePath: null, version: null }
+            ]
+          })
+        )
+      },
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js'
+    })
+    await expect(
+      service.develop({
+        relativePath: 'idea',
+        submissionId: 'submission-1',
+        text: 'Grill me',
+        source: 'composer',
+        workflow: 'grilling',
+        provider: 'codex',
+        model: 'gpt-5-codex',
+        effort: 'medium',
+        permissionMode: 'ask'
+      })
+    ).rejects.toThrow('not ready for planning')
   })
 
   it.skipIf(process.platform !== 'darwin')(

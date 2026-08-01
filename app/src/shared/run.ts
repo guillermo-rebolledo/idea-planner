@@ -29,6 +29,21 @@ export type PlanningWorkflow = z.infer<typeof workflowSchema>
 export const permissionModeSchema = z.enum(['ask', 'auto'])
 export type PermissionMode = z.infer<typeof permissionModeSchema>
 
+/**
+ * The collapsed activity stream. It is sanitized and deliberately separate
+ * from portable Conversation content: `reasoning` carries only
+ * provider-supplied summaries, never requested hidden chain-of-thought.
+ */
+export const runActivityKindSchema = z.enum([
+  'lifecycle',
+  'allowed',
+  'blocked',
+  'output',
+  'error',
+  'reasoning'
+])
+export type RunActivityKind = z.infer<typeof runActivityKindSchema>
+
 export const runConfigurationSchema = z.object({
   provider: providerIdSchema,
   executable: z.string().min(1),
@@ -74,7 +89,7 @@ export const runSnapshotSchema = z.object({
     z.object({
       id: z.string().min(1),
       at: z.string().datetime(),
-      kind: z.enum(['lifecycle', 'allowed', 'blocked', 'output', 'error']),
+      kind: runActivityKindSchema,
       summary: z.string().min(1)
     })
   )
@@ -106,7 +121,7 @@ export const recordRunEventInputSchema = z.object({
   relativePath: ideaRelativePathSchema,
   runId: z.string().min(1),
   status: runStatusSchema.optional(),
-  kind: z.enum(['lifecycle', 'allowed', 'blocked', 'output', 'error']),
+  kind: runActivityKindSchema,
   summary: z.string().min(1).max(2_000)
 })
 export type RecordRunEventInput = z.infer<typeof recordRunEventInputSchema>

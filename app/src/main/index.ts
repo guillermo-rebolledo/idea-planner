@@ -41,6 +41,9 @@ import {
   runSnapshotSchema,
   startRunInputSchema,
   stopRunInputSchema,
+  conversationSnapshotSchema,
+  developIdeaInputSchema,
+  WORKFLOW_ATTRIBUTION,
   type BootState,
   type ChooseLibraryResult,
   type DeleteIdeaResult,
@@ -510,9 +513,14 @@ function registerIpc(): void {
     readinessSnapshotSchema.parse(await readiness.setLoginShellDiscovery(consent))
   )
 
-  // Only the fixed readiness-guidance hosts may leave the app. Anything else
-  // is rejected, so the renderer cannot turn this into an open redirect.
-  const externalLinkHosts = readinessLinkHosts()
+  // Only the fixed readiness-guidance and attribution hosts may leave the app.
+  // Anything else is rejected, so the renderer cannot turn this into an open
+  // redirect.
+  const externalLinkHosts = new Set([
+    ...readinessLinkHosts(),
+    new URL(WORKFLOW_ATTRIBUTION.website).hostname,
+    new URL(WORKFLOW_ATTRIBUTION.repository).hostname
+  ])
   handleInvoke(IPC_CHANNELS.openExternalLink, z.string().url(), async (url) => {
     const parsed = new URL(url)
     if (parsed.protocol !== 'https:' || !externalLinkHosts.has(parsed.hostname)) {
@@ -527,6 +535,13 @@ function registerIpc(): void {
   )
   handleInvoke(IPC_CHANNELS.stopRun, stopRunInputSchema, ({ runId, relativePath }) =>
     runService.stop(runId, relativePath)
+  )
+
+  handleInvoke(IPC_CHANNELS.getConversation, ideaRelativePathSchema, async (relativePath) =>
+    conversationSnapshotSchema.parse(await runService.conversation(relativePath))
+  )
+  handleInvoke(IPC_CHANNELS.developIdea, developIdeaInputSchema, async (input) =>
+    conversationSnapshotSchema.parse(await runService.develop(input))
   )
 }
 
@@ -639,7 +654,12 @@ void app.whenReady().then(() => {
     homeDirectory: app.getPath('home'),
     privateRoot: join(app.getPath('userData'), 'runs'),
     proxyExecutable: process.execPath,
-    proxyScript: join(__dirname, 'planning-mcp-proxy.js')
+    proxyScript: join(__dirname, 'planning-mcp-proxy.js'),
+    // Assistant text and control events take the direct path to the window so
+    // streaming stays responsive; durable projection follows behind it.
+    onConversationEvent: (event) => {
+      mainWindow?.webContents.send(IPC_CHANNELS.conversationEvent, event)
+    }
   })
 
   // Resolve appearance before any window exists so the first paint already

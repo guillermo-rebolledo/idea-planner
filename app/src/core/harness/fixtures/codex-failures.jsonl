@@ -1,0 +1,8 @@
+{"id":"1","msg":{"type":"task_started"}}
+{"id":"1","msg":{"type":"agent_message_delta","delta":"Checking"}}
+{"id":"1","msg":{"type":"stream_error","message":"stream error: 429 Too Many Requests; retrying"}}
+{"id":"1","msg":{"type":"error","message":"401 Unauthorized: please run codex login"}}
+{"id":"1","msg":{"type":"error","message":"maximum context length exceeded for this model"}}
+{"id":"1","msg":{"type":"error","message":"the sky fell on the request"}}
+not json at all
+{"id":"1","msg":{"type":"turn_aborted","reason":"interrupted"}}

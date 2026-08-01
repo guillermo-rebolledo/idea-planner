@@ -11,6 +11,7 @@ import type {
   ReadinessStatus,
   RemediationLink
 } from '@shared/readiness'
+import type { PlanningWorkflow } from '@shared/run'
 
 /**
  * Provider and skill readiness probing. Discovery is deliberately narrow:
@@ -30,6 +31,16 @@ const SKILLS_LINKS: RemediationLink[] = [
 
 /** The workflows this product invokes plus their reviewed dependency closure. */
 const REQUIRED_SKILLS = ['grill-me', 'grilling', 'wayfinder']
+
+/**
+ * The exact skill identity each planning workflow is allowed to invoke. A
+ * workflow absent here has not been reviewed and verified, so the app refuses
+ * to start a Run for it rather than reaching for a plausible directory name.
+ */
+export const VERIFIED_WORKFLOW_SKILLS: Partial<Record<PlanningWorkflow, string>> = {
+  grilling: 'grilling',
+  wayfinder: 'wayfinder'
+}
 
 /** Hosts of every remediation link, so the open-link allowlist cannot drift. */
 export function readinessLinkHosts(): Set<string> {

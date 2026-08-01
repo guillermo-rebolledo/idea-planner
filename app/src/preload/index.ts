@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '@shared/channels'
-import type { IdeaShellApi, ThemeState } from '@shared/contract'
+import type { ConversationStreamEvent, IdeaShellApi, ThemeState } from '@shared/contract'
 
 /**
  * The complete privileged surface available to the sandboxed Renderer.
@@ -51,6 +51,14 @@ const api: IdeaShellApi = {
   startRun: (input) => ipcRenderer.invoke(IPC_CHANNELS.startRun, input),
   listRuns: (relativePath) => ipcRenderer.invoke(IPC_CHANNELS.listRuns, relativePath),
   stopRun: (input) => ipcRenderer.invoke(IPC_CHANNELS.stopRun, input),
+  getConversation: (relativePath) => ipcRenderer.invoke(IPC_CHANNELS.getConversation, relativePath),
+  developIdea: (input) => ipcRenderer.invoke(IPC_CHANNELS.developIdea, input),
+  onConversationEvent: (listener) => {
+    const subscription = (_event: unknown, streamed: ConversationStreamEvent): void =>
+      listener(streamed)
+    ipcRenderer.on(IPC_CHANNELS.conversationEvent, subscription)
+    return () => ipcRenderer.off(IPC_CHANNELS.conversationEvent, subscription)
+  },
   onThemeChanged: (listener) => {
     const subscription = (_event: unknown, theme: ThemeState): void => listener(theme)
     ipcRenderer.on(IPC_CHANNELS.themeChanged, subscription)

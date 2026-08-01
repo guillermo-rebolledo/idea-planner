@@ -30,6 +30,12 @@ import {
   type RunSnapshot,
   type RunStatus
 } from '@shared/run'
+import type {
+  ConversationSnapshot,
+  FinalizeConversationRunInput,
+  HarnessEvent,
+  SubmitConversationMessageInput
+} from '@shared/conversation'
 import { suggestIdeaTitle } from '@shared/title'
 import {
   emptyMailbox,
@@ -40,6 +46,12 @@ import {
   type IndexedIdea
 } from './search-index'
 import { createExternalContentEffects, type ReferenceContext } from './external-content'
+import {
+  createConversationEffects,
+  type ApplyHarnessEventInput,
+  type BeginConversationRunInput,
+  type IngestProviderOutputInput
+} from './conversation'
 
 export interface CoreDeps {
   now?: () => Date
@@ -120,6 +132,12 @@ export interface Core {
   acceptRun(input: AcceptRunInput): Promise<RunSnapshot>
   listRuns(relativePath: string): Promise<RunSnapshot[]>
   recordRunEvent(input: RecordRunEventInput): Promise<RunSnapshot>
+  getConversation(relativePath: string): Promise<ConversationSnapshot>
+  submitConversationMessage(input: SubmitConversationMessageInput): Promise<ConversationSnapshot>
+  beginConversationRun(input: BeginConversationRunInput): Promise<ConversationSnapshot>
+  applyHarnessEvent(input: ApplyHarnessEventInput): Promise<void>
+  ingestProviderOutput(input: IngestProviderOutputInput): Promise<HarnessEvent[]>
+  finalizeConversationRun(input: FinalizeConversationRunInput): Promise<ConversationSnapshot>
 }
 
 /**
@@ -186,6 +204,18 @@ export interface CoreEffects {
   acceptRun(input: AcceptRunInput): Effect.Effect<RunSnapshot, CoreError>
   listRuns(relativePath: string): Effect.Effect<RunSnapshot[], CoreError>
   recordRunEvent(input: RecordRunEventInput): Effect.Effect<RunSnapshot, CoreError>
+  getConversation(relativePath: string): Effect.Effect<ConversationSnapshot, CoreError>
+  submitConversationMessage(
+    input: SubmitConversationMessageInput
+  ): Effect.Effect<ConversationSnapshot, CoreError>
+  beginConversationRun(
+    input: BeginConversationRunInput
+  ): Effect.Effect<ConversationSnapshot, CoreError>
+  applyHarnessEvent(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
+  ingestProviderOutput(input: IngestProviderOutputInput): Effect.Effect<HarnessEvent[], CoreError>
+  finalizeConversationRun(
+    input: FinalizeConversationRunInput
+  ): Effect.Effect<ConversationSnapshot, CoreError>
 }
 
 const IDEA_FILE = 'idea.md'
@@ -216,6 +246,10 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     observeManagedPaths: deps.observeManagedPaths,
     clock: Effect.sync(deps.now ?? (() => new Date())),
     nextReferenceId: Effect.sync(deps.randomId ?? (() => `reference-${randomUUID()}`))
+  })
+  const conversation = createConversationEffects({
+    library: Ref.get(libraryPath).pipe(Effect.map(Option.getOrNull)),
+    clock: Effect.sync(deps.now ?? (() => new Date()))
   })
   // Writes hold this permit so two captures can never race on folder naming.
   const writeLock = Effect.runSync(Effect.makeSemaphore(1))
@@ -708,7 +742,13 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     continueWithoutReference: (input) => externalContent.continueWithoutReference(input),
     acceptRun,
     listRuns,
-    recordRunEvent
+    recordRunEvent,
+    getConversation: (relativePath) => conversation.get(relativePath),
+    submitConversationMessage: (input) => conversation.submit(input),
+    beginConversationRun: (input) => conversation.begin(input),
+    applyHarnessEvent: (input) => conversation.apply(input),
+    ingestProviderOutput: (input) => conversation.ingest(input),
+    finalizeConversationRun: (input) => conversation.finalize(input)
   }
 }
 
@@ -760,7 +800,13 @@ export function createCore(deps: CoreDeps = {}): Core {
     continueWithoutReference: (input) => run(core.continueWithoutReference(input)),
     acceptRun: (input) => run(core.acceptRun(input)),
     listRuns: (relativePath) => run(core.listRuns(relativePath)),
-    recordRunEvent: (input) => run(core.recordRunEvent(input))
+    recordRunEvent: (input) => run(core.recordRunEvent(input)),
+    getConversation: (relativePath) => run(core.getConversation(relativePath)),
+    submitConversationMessage: (input) => run(core.submitConversationMessage(input)),
+    beginConversationRun: (input) => run(core.beginConversationRun(input)),
+    applyHarnessEvent: (input) => run(core.applyHarnessEvent(input)),
+    ingestProviderOutput: (input) => run(core.ingestProviderOutput(input)),
+    finalizeConversationRun: (input) => run(core.finalizeConversationRun(input))
   }
 }
 

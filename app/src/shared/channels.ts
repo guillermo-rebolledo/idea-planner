@@ -35,5 +35,8 @@ export const IPC_CHANNELS = {
   openExternalLink: 'shell:open-external-link',
   startRun: 'run:start',
   listRuns: 'run:list',
-  stopRun: 'run:stop'
+  stopRun: 'run:stop',
+  getConversation: 'conversation:get',
+  developIdea: 'conversation:develop',
+  conversationEvent: 'conversation:event'
 } as const

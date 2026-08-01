@@ -28,7 +28,8 @@ const callSchema = z.object({
     'search_text',
     'write_planning_file',
     'rename_planning_file',
-    'delete_planning_file'
+    'delete_planning_file',
+    'offer_response_options'
   ]),
   arguments: z.record(z.unknown()).default({})
 })
@@ -74,6 +75,22 @@ const TOOL_DEFINITIONS = [
     'Remove one planning file while retaining a reversible tombstone',
     { path: { type: 'string' } },
     ['path']
+  ),
+  tool(
+    'offer_response_options',
+    'Offer the person structured answers to the current question. They may always write their own instead.',
+    {
+      question: { type: 'string' },
+      options: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { label: { type: 'string' }, value: { type: 'string' } },
+          required: ['label', 'value']
+        }
+      }
+    },
+    ['question', 'options']
   )
 ]
 
@@ -245,6 +262,20 @@ export class PlanningToolHost {
   ): Promise<{ policy: PolicyResult; text: string }> {
     await this.options.beforeOperation?.()
     signal.throwIfAborted()
+    if (name === 'offer_response_options') {
+      // Offering answers touches nothing: no path, no process, no new
+      // authority. The Conversation reads the structured choices from the
+      // provider's own stream, so this only acknowledges the offer.
+      return {
+        policy: {
+          decision: 'allow',
+          code: 'allowed',
+          overridable: false,
+          activity: { kind: 'allowed', summary: 'Offered Suggested Responses' }
+        },
+        text: 'offered'
+      }
+    }
     if (name === 'read_file') {
       const path = requiredString(args['path'])
       const decision = await policy.authorize({ kind: 'read', path })

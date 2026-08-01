@@ -4,12 +4,27 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { CoreCommand } from '@shared/contract'
 import {
+  assistantMessageId,
+  CONVERSATION_PROVIDERS,
+  conversationSnapshotSchema,
+  developIdeaInputSchema,
+  harnessEventSchema,
+  redactCredentials,
+  type ConversationSnapshot,
+  type ConversationStreamEvent,
+  type DevelopIdeaInput,
+  type FinalizeConversationRunInput,
+  type HarnessEvent,
+  type HarnessFailureCategory
+} from '@shared/conversation'
+import {
   runSnapshotSchema,
   startRunInputSchema,
+  type RunActivityKind,
   type RunSnapshot,
   type StartRunInput
 } from '@shared/run'
-import { PROVIDER_SPECS } from './readiness'
+import { PROVIDER_SPECS, VERIFIED_WORKFLOW_SKILLS } from './readiness'
 import { PlanningPolicy } from './planning-policy'
 import { PlanningToolHost } from './planning-tool-host'
 import type { RunProcessBroker } from './run-process-broker'
@@ -37,13 +52,64 @@ interface RunServiceDeps {
   privateRoot: string
   proxyExecutable: string
   proxyScript: string
+  /** Delivers normalized assistant and control events straight to the window. */
+  onConversationEvent?: (event: ConversationStreamEvent) => void
 }
 
 /** Coordinates durable Core acceptance with Main's native process authority. */
 export class RunService {
   private readonly toolHosts = new Map<string, PlanningToolHost>()
+  /** The last failure a Run's provider reported, used when the Run ends. */
+  private readonly failures = new Map<string, HarnessFailureCategory>()
 
   constructor(private readonly deps: RunServiceDeps) {}
+
+  /**
+   * Develops an Idea through its Conversation: the person's message is
+   * accepted durably first, and only then does one planning Run start. A Run
+   * that never reaches the provider leaves the message and a recovery choice.
+   */
+  async develop(rawInput: DevelopIdeaInput): Promise<ConversationSnapshot> {
+    const input = developIdeaInputSchema.parse(rawInput)
+    if (!CONVERSATION_PROVIDERS.includes(input.provider)) {
+      throw new Error(`${input.provider} cannot yet develop an Idea through a Conversation`)
+    }
+    await this.deps.core.send({
+      type: 'conversation/submit',
+      input: {
+        relativePath: input.relativePath,
+        submissionId: input.submissionId,
+        text: input.text,
+        source: input.source
+      }
+    })
+    try {
+      await this.start({
+        submissionId: input.submissionId,
+        relativePath: input.relativePath,
+        prompt: input.text,
+        provider: input.provider,
+        model: input.model,
+        effort: input.effort,
+        workflow: input.workflow,
+        permissionMode: input.permissionMode
+      })
+    } catch (error) {
+      const snapshot = await this.conversation(input.relativePath)
+      // A failure the Conversation already explains becomes recovery state the
+      // person can act on. Anything else — an unready provider, say — is not
+      // about this Run and has to reach them as an error.
+      if (snapshot.recovery === null && snapshot.activeRunId === null) throw error
+      return snapshot
+    }
+    return await this.conversation(input.relativePath)
+  }
+
+  conversation(relativePath: string): Promise<ConversationSnapshot> {
+    return this.deps.core
+      .send({ type: 'conversation/get', relativePath })
+      .then((result) => conversationSnapshotSchema.parse(result))
+  }
 
   async start(rawInput: StartRunInput): Promise<RunSnapshot> {
     const input = startRunInputSchema.parse(rawInput)
@@ -55,8 +121,12 @@ export class RunService {
       throw new Error(`${input.provider} is not ready for planning`)
     }
     if (!provider.version) throw new Error(`${input.provider} version provenance is unavailable`)
+    const skillName = VERIFIED_WORKFLOW_SKILLS[input.workflow]
+    if (!skillName) {
+      throw new Error(`${input.workflow} is not a verified planning workflow`)
+    }
     const spec = PROVIDER_SPECS[input.provider]
-    const skillDirectory = join(this.deps.homeDirectory, spec.skillsRoot, input.workflow)
+    const skillDirectory = join(this.deps.homeDirectory, spec.skillsRoot, skillName)
     const skillFile = join(skillDirectory, 'SKILL.md')
     const skillHash = createHash('sha256')
       .update(await readFile(skillFile))
@@ -81,7 +151,7 @@ export class RunService {
       model: input.model,
       effort: input.effort,
       workflow: input.workflow,
-      skill: { name: input.workflow, path: skillDirectory, hash: skillHash },
+      skill: { name: skillName, path: skillDirectory, hash: skillHash },
       environment,
       workingDirectory,
       permissionMode: input.permissionMode,
@@ -114,8 +184,22 @@ export class RunService {
         'Interrupted Run requires explicit recovery; the provider was not contacted again'
       )
     }
+    // The Conversation records the Run boundary before anything can fail, so
+    // every later outcome has somewhere understandable to land.
+    await this.deps.core.send({
+      type: 'conversation/begin',
+      relativePath: input.relativePath,
+      runId: accepted.id,
+      submissionId: input.submissionId
+    })
+    await this.record(
+      accepted,
+      undefined,
+      'lifecycle',
+      `Invoking the verified ${skillName} skill, based on Matt Pocock’s MIT-licensed skills`
+    )
     if (this.deps.broker.needsRecovery()) {
-      return await this.record(
+      return await this.conclude(
         accepted,
         'supervision-failed',
         'error',
@@ -139,6 +223,9 @@ export class RunService {
       await mkdir(planningDirectory, { recursive: true, mode: 0o700 })
       await mkdir(socketDirectory, { recursive: true, mode: 0o700 })
       await chmod(socketDirectory, 0o700)
+      // A socket file left behind by a crash would otherwise make this Run's
+      // capability socket unbindable; the path belongs to this Run alone.
+      await rm(socketPath, { force: true })
       await this.prepareProviderHome(input.provider, runDirectory, socketPath, capabilityToken)
       toolHost = new PlanningToolHost({
         socketPath,
@@ -181,12 +268,12 @@ export class RunService {
         rm(socketDirectory, { recursive: true, force: true }),
         rm(runDirectory, { recursive: true, force: true })
       ])
-      await this.record(accepted, 'failed', 'error', 'Planning sandbox could not be prepared')
+      await this.conclude(accepted, 'failed', 'error', 'Planning sandbox could not be prepared')
       throw error
     }
     try {
       if ((await hashFile(provider.executablePath)) !== executableHash) {
-        await this.record(
+        await this.conclude(
           accepted,
           'failed',
           'error',
@@ -213,11 +300,17 @@ export class RunService {
           await rm(socketDirectory, { recursive: true, force: true })
           this.toolHosts.delete(accepted.id)
         },
-        onActivity: (summary) =>
-          void this.record(accepted, undefined, 'output', sanitize(summary, workingDirectory)),
+        onOutput: (stream, text) => {
+          if (stream === 'stdout') {
+            void this.ingest(accepted, input.provider, workingDirectory, text)
+            return
+          }
+          const summary = sanitize(text, workingDirectory).trim()
+          if (summary) void this.record(accepted, undefined, 'output', summary)
+        },
         onExit: (code, signal) => {
           const stopped = signal === 'SIGTERM' || signal === 'SIGKILL'
-          void this.record(
+          void this.conclude(
             accepted,
             stopped ? 'stopped' : code === 0 ? 'completed' : 'failed',
             code === 0 ? 'lifecycle' : 'error',
@@ -229,7 +322,7 @@ export class RunService {
           )
         },
         onSupervisionFailure: () => {
-          void this.record(
+          void this.conclude(
             accepted,
             'supervision-failed',
             'error',
@@ -237,7 +330,7 @@ export class RunService {
           )
         },
         onLimitViolation: (summary) => {
-          void this.record(accepted, 'policy-violation', 'blocked', summary)
+          void this.conclude(accepted, 'policy-violation', 'blocked', summary)
         }
       })
       return running
@@ -246,7 +339,7 @@ export class RunService {
       await rm(socketDirectory, { recursive: true, force: true })
       this.toolHosts.delete(accepted.id)
       if (!(error instanceof Error && error.message.includes('changed after durable'))) {
-        await this.record(accepted, 'failed', 'error', 'Provider process could not start')
+        await this.conclude(accepted, 'failed', 'error', 'Provider process could not start')
       }
       throw error
     }
@@ -261,14 +354,14 @@ export class RunService {
   async stop(runId: string, relativePath: string): Promise<RunSnapshot> {
     try {
       await this.deps.broker.stop(runId, 'user')
-      return await this.record(
+      return await this.conclude(
         { id: runId, relativePath },
         'stopped',
         'lifecycle',
         'Run stopped by user'
       )
     } catch (error) {
-      await this.record(
+      await this.conclude(
         { id: runId, relativePath },
         'supervision-failed',
         'error',
@@ -282,10 +375,71 @@ export class RunService {
     return this.deps.broker.stopAll(reason)
   }
 
+  /**
+   * Parses one raw provider chunk in Core, streams the normalized events to
+   * the window, and files whatever belongs in sanitized activity. Raw provider
+   * frames never leave Core, and nothing here can widen a Run's authority.
+   */
+  private async ingest(
+    run: Pick<RunSnapshot, 'id' | 'relativePath'>,
+    provider: StartRunInput['provider'],
+    workingDirectory: string,
+    chunk: string
+  ): Promise<void> {
+    const events = harnessEventSchema.array().parse(
+      await this.deps.core.send({
+        type: 'conversation/ingest',
+        relativePath: run.relativePath,
+        runId: run.id,
+        provider,
+        chunk
+      })
+    )
+    for (const event of events) {
+      if (event.type === 'failed') this.failures.set(run.id, event.category)
+      this.deps.onConversationEvent?.({
+        relativePath: run.relativePath,
+        runId: run.id,
+        messageId: assistantMessageId(run.id),
+        event
+      })
+      const activity = describeActivity(event)
+      if (activity) {
+        await this.record(
+          run,
+          undefined,
+          activity.kind,
+          sanitize(activity.summary, workingDirectory)
+        )
+      }
+    }
+  }
+
+  /** Records a Run's terminal state and closes its Conversation boundary. */
+  private async conclude(
+    run: Pick<RunSnapshot, 'id' | 'relativePath'>,
+    status: 'completed' | 'stopped' | 'failed' | 'policy-violation' | 'supervision-failed',
+    kind: RunActivityKind,
+    summary: string
+  ): Promise<RunSnapshot> {
+    const snapshot = await this.record(run, status, kind, summary)
+    const category = this.failures.get(run.id) ?? null
+    this.failures.delete(run.id)
+    const finalize: FinalizeConversationRunInput = {
+      relativePath: run.relativePath,
+      runId: run.id,
+      outcome: status,
+      category: status === 'failed' ? category : null,
+      summary
+    }
+    await this.deps.core.send({ type: 'conversation/finalize', input: finalize })
+    return snapshot
+  }
+
   private async record(
     run: Pick<RunSnapshot, 'id' | 'relativePath'>,
     status: RunSnapshot['status'] | undefined,
-    kind: 'lifecycle' | 'allowed' | 'blocked' | 'output' | 'error',
+    kind: RunActivityKind,
     summary: string
   ): Promise<RunSnapshot> {
     return runSnapshotSchema.parse(
@@ -338,11 +492,11 @@ export class RunService {
   }
 
   private async stopForPolicy(run: RunSnapshot, summary: string): Promise<void> {
-    await this.record(run, 'policy-violation', 'lifecycle', `Run stopped by policy: ${summary}`)
+    await this.conclude(run, 'policy-violation', 'lifecycle', `Run stopped by policy: ${summary}`)
     try {
       await this.deps.broker.stop(run.id, 'policy')
     } catch {
-      await this.record(
+      await this.conclude(
         run,
         'supervision-failed',
         'error',
@@ -436,8 +590,35 @@ async function hashFile(path: string): Promise<string> {
 }
 
 function sanitize(value: string, workingDirectory: string): string {
-  return value
-    .replaceAll(workingDirectory, '<WORKING_DIRECTORY>')
-    .replace(/(api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi, '$1=[REDACTED: credential]')
-    .slice(0, 2_000)
+  return redactCredentials(value.replaceAll(workingDirectory, '<WORKING_DIRECTORY>')).slice(
+    0,
+    2_000
+  )
+}
+
+/**
+ * What a normalized event contributes to the collapsed activity stream.
+ * Assistant text and Suggested Responses are Conversation content, not
+ * activity, so they deliberately produce nothing here.
+ */
+function describeActivity(
+  event: HarnessEvent
+): { kind: RunActivityKind; summary: string } | undefined {
+  switch (event.type) {
+    case 'reasoning':
+      return { kind: 'reasoning', summary: event.summary }
+    case 'tool':
+      // What the provider asked for, not a verdict: the authoritative allow
+      // or deny row comes from the planning tool host.
+      return { kind: 'output', summary: `${event.name}: ${event.summary}` }
+    case 'failed':
+      return { kind: 'error', summary: event.summary }
+    case 'assistant-delta':
+    case 'assistant-message':
+    case 'choices':
+    case 'usage':
+    case 'completed':
+    case 'unsupported':
+      return undefined
+  }
 }

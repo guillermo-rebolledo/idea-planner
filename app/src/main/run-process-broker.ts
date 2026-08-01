@@ -18,7 +18,8 @@ export interface RunLaunch {
   environment: Record<string, string>
   sandboxProfile: string
   onBeforeCleanup?: () => Promise<void>
-  onActivity?: (summary: string) => void
+  /** Raw provider bytes, by stream. Main never interprets them itself. */
+  onOutput?: (stream: 'stdout' | 'stderr', text: string) => void
   onExit?: (code: number | null, signal: NodeJS.Signals | null) => void
   onSupervisionFailure?: () => void
   onLimitViolation?: (summary: string) => void
@@ -113,12 +114,8 @@ export class RunProcessBroker {
         this.deps.monitorIntervalMs
       )
     }
-    child.stdout.on('data', (chunk) =>
-      this.observeOutput(launch, chunk, 'Provider produced output')
-    )
-    child.stderr.on('data', (chunk) =>
-      this.observeOutput(launch, chunk, 'Provider reported diagnostic activity')
-    )
+    child.stdout.on('data', (chunk) => this.observeOutput(launch, chunk, 'stdout'))
+    child.stderr.on('data', (chunk) => this.observeOutput(launch, chunk, 'stderr'))
     child.once('exit', (code, signal) => {
       if (this.active.get(launch.id)?.stopping) return
       void (async () => {
@@ -209,18 +206,22 @@ export class RunProcessBroker {
     if (monitor) clearInterval(monitor)
   }
 
-  private observeOutput(launch: RunLaunch, chunk: unknown, summary: string): void {
+  private observeOutput(launch: RunLaunch, chunk: unknown, stream: 'stdout' | 'stderr'): void {
     const entry = this.active.get(launch.id)
     if (!entry || entry.stopping) return
-    entry.outputBytes += Buffer.byteLength(
-      typeof chunk === 'string' || Buffer.isBuffer(chunk) ? chunk : String(chunk)
-    )
+    const text =
+      typeof chunk === 'string'
+        ? chunk
+        : Buffer.isBuffer(chunk)
+          ? chunk.toString('utf8')
+          : String(chunk)
+    entry.outputBytes += Buffer.byteLength(text)
     if (entry.outputBytes > (this.deps.outputLimitBytes ?? 10 * 1024 * 1024)) {
       entry.stopping = true
       launch.onLimitViolation?.('Provider output exceeded the 10 MB Run limit')
       void this.stop(launch.id, 'policy').catch(() => launch.onSupervisionFailure?.())
       return
     }
-    launch.onActivity?.(summary)
+    launch.onOutput?.(stream, text)
   }
 }

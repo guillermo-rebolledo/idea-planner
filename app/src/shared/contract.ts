@@ -1,4 +1,12 @@
 import { z } from 'zod'
+import {
+  finalizeConversationRunInputSchema,
+  submitConversationMessageInputSchema,
+  type ConversationSnapshot,
+  type ConversationStreamEvent,
+  type DevelopIdeaInput
+} from './conversation'
+import { providerIdSchema } from './readiness'
 import type { ChooseExecutableResult, ProviderId, ReadinessSnapshot } from './readiness'
 import { ideaRelativePathSchema, type IdeaRelativePath } from './portable-path'
 import {
@@ -406,7 +414,23 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('reference/remove-context'), contextId: z.string().min(1) }),
   z.object({ type: z.literal('run/accept'), input: acceptRunInputSchema }),
   z.object({ type: z.literal('run/list'), relativePath: ideaRelativePathSchema }),
-  z.object({ type: z.literal('run/event'), input: recordRunEventInputSchema })
+  z.object({ type: z.literal('run/event'), input: recordRunEventInputSchema }),
+  z.object({ type: z.literal('conversation/get'), relativePath: ideaRelativePathSchema }),
+  z.object({ type: z.literal('conversation/submit'), input: submitConversationMessageInputSchema }),
+  z.object({
+    type: z.literal('conversation/begin'),
+    relativePath: ideaRelativePathSchema,
+    runId: z.string().min(1),
+    submissionId: z.string().min(1)
+  }),
+  z.object({
+    type: z.literal('conversation/ingest'),
+    relativePath: ideaRelativePathSchema,
+    runId: z.string().min(1),
+    provider: providerIdSchema,
+    chunk: z.string()
+  }),
+  z.object({ type: z.literal('conversation/finalize'), input: finalizeConversationRunInputSchema })
 ])
 export type CoreCommand = z.infer<typeof coreCommandSchema>
 
@@ -480,8 +504,18 @@ export interface IdeaShellApi {
   startRun(input: StartRunInput): Promise<RunSnapshot>
   listRuns(relativePath: IdeaRelativePath): Promise<RunSnapshot[]>
   stopRun(input: StopRunInput): Promise<RunSnapshot>
+  /** The Idea's permanent Conversation, including partial and recovery state. */
+  getConversation(relativePath: IdeaRelativePath): Promise<ConversationSnapshot>
+  /**
+   * Accepts the user message durably, then starts one planning Run for it.
+   * The message survives even when the Run never reaches the provider.
+   */
+  developIdea(input: DevelopIdeaInput): Promise<ConversationSnapshot>
+  /** Assistant text and control events, delivered ahead of durable projection. */
+  onConversationEvent(listener: (event: ConversationStreamEvent) => void): () => void
 }
 
 export { IPC_CHANNELS } from './channels'
+export * from './conversation'
 export * from './readiness'
 export * from './run'
