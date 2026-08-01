@@ -300,12 +300,13 @@ describe('developing an Idea', () => {
     expect(capability(readiness).summary).toContain('0.146.0')
   })
 
-  it('explains an unsupported provider instead of leaving it out', async () => {
+  it('offers Claude when its stream protocol and Wayfinder skills are ready', async () => {
     await installSkills('.claude/skills', ['grill-me', 'grilling', 'wayfinder'])
     await fakeExecutable(
       'claude',
       `case "$1" in
   --version) echo "2.1.0 (Claude Code)"; exit 0;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
 esac
 exit 1`
     )
@@ -314,8 +315,7 @@ exit 1`
       homeDir,
       probeTimeoutMs: 2000
     })
-    expect(capability(readiness)).toMatchObject({ available: false, command: null })
-    expect(capability(readiness).summary).toContain('not supported yet')
+    expect(capability(readiness)).toMatchObject({ available: true, command: null })
   })
 
   it('points at the failing checks rather than a version when the provider is unready', async () => {

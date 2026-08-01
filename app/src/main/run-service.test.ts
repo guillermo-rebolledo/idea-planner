@@ -34,6 +34,15 @@ async function readyProviderRoot(prefix: string): Promise<string> {
   return root
 }
 
+async function readyClaudeRoot(prefix: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), prefix))
+  temporaryDirectories.push(root)
+  await mkdir(join(root, '.claude', 'skills', 'wayfinder'), { recursive: true })
+  await writeFile(join(root, '.claude', 'skills', 'wayfinder', 'SKILL.md'), '# Wayfinder')
+  await writeFile(join(root, 'claude'), '#!/bin/sh\n')
+  return root
+}
+
 interface FakeCore {
   send: ReturnType<typeof vi.fn>
   commands: string[]
@@ -54,6 +63,8 @@ function fakeCore(): FakeCore {
       entries: [],
       usage: { run: null, idea: emptyUsage() },
       recovery: null,
+      providerSessions: {},
+      workflowCompletionSuggested: false,
       activeRunId: null
     }
   }
@@ -139,6 +150,157 @@ afterEach(async () => {
 })
 
 describe('Run service', () => {
+  it('starts Claude Wayfinder with the documented stream protocol and native skill invocation', async () => {
+    const root = await readyClaudeRoot('run-claude-')
+    const core = fakeCore()
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            providers: [
+              {
+                provider: 'claude',
+                available: true,
+                executablePath: join(root, 'claude'),
+                version: '2.1.220 (Claude Code)'
+              }
+            ]
+          })
+        )
+      },
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js'
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      relativePath: 'idea',
+      prompt: 'Develop this idea',
+      provider: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'high',
+      workflow: 'wayfinder',
+      permissionMode: 'ask'
+    })
+    expect(broker.launch?.args).toEqual(
+      expect.arrayContaining([
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        '--include-partial-messages',
+        '--include-hook-events'
+      ])
+    )
+    expect(broker.launch?.args).not.toContain('--input-format')
+    expect(broker.launch?.args.at(-1)).toContain('/wayfinder Develop this idea')
+    expect(broker.launch?.args).not.toContain('--disable-slash-commands')
+  })
+
+  it('gives Wayfinder its own managed planning tree', async () => {
+    const root = await readyClaudeRoot('run-wayfinder-tree-')
+    const broker = fakeBroker()
+    const service = new RunService({
+      core: fakeCore(),
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            providers: [
+              {
+                provider: 'claude',
+                available: true,
+                executablePath: join(root, 'claude'),
+                version: '2.1.220 (Claude Code)'
+              }
+            ]
+          })
+        )
+      },
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js'
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      relativePath: 'idea',
+      prompt: 'Develop this',
+      provider: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      workflow: 'wayfinder',
+      permissionMode: 'ask'
+    })
+    expect(broker.launch?.args.at(-1)).toContain('.scratch/idea-wayfinding')
+  })
+
+  it('resumes compatible Claude continuity but hands off local history when switching providers', async () => {
+    const root = await readyClaudeRoot('run-claude-continuity-')
+    const core = fakeCore()
+    core.conversation = {
+      ...core.conversation,
+      providerSessions: { claude: 'saved-session' },
+      entries: [
+        {
+          kind: 'boundary',
+          id: 'boundary:old:started',
+          at: '2026-07-31T12:00:00.000Z',
+          runId: 'old',
+          boundary: 'run-started',
+          summary: 'Wayfinder via Claude',
+          submissionId: 'old-submission',
+          recovery: null,
+          provider: 'claude',
+          workflow: 'wayfinder',
+          model: 'claude-sonnet-4-5'
+        }
+      ]
+    }
+    const projectKey = join(root, 'library', 'idea').replaceAll('/', '-')
+    await mkdir(join(root, '.claude', 'projects', projectKey), { recursive: true })
+    await writeFile(join(root, '.claude', 'projects', projectKey, 'saved-session.jsonl'), '{}\n')
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            providers: [
+              {
+                provider: 'claude',
+                available: true,
+                executablePath: join(root, 'claude'),
+                version: '2.1.220 (Claude Code)'
+              }
+            ]
+          })
+        )
+      },
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js'
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      relativePath: 'idea',
+      prompt: 'Continue',
+      provider: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      workflow: 'wayfinder',
+      permissionMode: 'ask'
+    })
+    expect(broker.launch?.args).toEqual(expect.arrayContaining(['--resume', 'saved-session']))
+  })
   it('persists acceptance before starting provider contact and freezes provenance', async () => {
     const root = await mkdtemp(join(tmpdir(), 'run-service-'))
     temporaryDirectories.push(root)
@@ -156,6 +318,17 @@ describe('Run service', () => {
     const core = {
       send: vi.fn((command: { type: string; input?: unknown }) => {
         order.push(command.type)
+        if (command.type === 'conversation/get') {
+          return Promise.resolve({
+            relativePath: 'idea',
+            entries: [],
+            usage: { run: null, idea: emptyUsage() },
+            recovery: null,
+            providerSessions: {},
+            workflowCompletionSuggested: false,
+            activeRunId: null
+          })
+        }
         if (command.type === 'run/accept') {
           const input = command.input as Omit<
             RunSnapshot,
@@ -351,6 +524,54 @@ describe('Run service', () => {
     expect(activity).toContainEqual(
       expect.objectContaining({ kind: 'output', summary: 'planning.read_file: Read file idea.md' })
     )
+  })
+
+  it('keeps a correctness-critical protocol failure failed even when Claude exits zero', async () => {
+    const root = await readyClaudeRoot('run-protocol-failure-')
+    const core = fakeCore()
+    core.events = [{ type: 'failed', category: 'protocol', summary: 'Unsupported Claude event' }]
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            providers: [
+              {
+                provider: 'claude',
+                available: true,
+                executablePath: join(root, 'claude'),
+                version: '2.1.220 (Claude Code)'
+              }
+            ]
+          })
+        )
+      },
+      libraryPath: () => join(root, 'library'),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js'
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      relativePath: 'idea',
+      prompt: 'Develop',
+      provider: 'claude',
+      model: 'default',
+      effort: 'medium',
+      workflow: 'wayfinder',
+      permissionMode: 'ask'
+    })
+    broker.launch?.onOutput?.('stdout', '{"type":"system","subtype":"future"}\n')
+    broker.launch?.onExit?.(0, null)
+    await vi.waitFor(() => {
+      const terminal = (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
+        .filter(([command]) => command.type === 'run/event')
+        .at(-1)?.[0].input
+      expect(terminal?.status).toBe('failed')
+    })
   })
 
   it('keeps the message and offers recovery when the provider is never contacted', async () => {

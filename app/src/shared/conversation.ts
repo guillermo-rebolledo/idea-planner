@@ -68,6 +68,19 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
     options: z.array(suggestedResponseSchema).min(1).max(12)
   }),
   z.object({ type: z.literal('usage'), usage: harnessUsageSchema }),
+  z.object({
+    type: z.literal('session-ready'),
+    provider: providerIdSchema,
+    sessionId: z.string().min(1).max(200),
+    model: z.string().min(1).max(200)
+  }),
+  z.object({
+    type: z.literal('retrying'),
+    attempt: z.number().int().positive(),
+    delayMs: z.number().int().nonnegative(),
+    category: z.enum(['rate-limit', 'provider'])
+  }),
+  z.object({ type: z.literal('workflow-completion-suggested') }),
   z.object({ type: z.literal('completed') }),
   z.object({
     type: z.literal('failed'),
@@ -139,6 +152,10 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     runId: z.string().min(1),
     boundary: conversationBoundarySchema,
     summary: z.string().min(1).max(500),
+    provider: providerIdSchema.optional(),
+    workflow: workflowSchema.optional(),
+    model: z.string().min(1).max(200).optional(),
+    restorationNote: z.boolean().optional(),
     /** The submission that started this Run, so a resend stays idempotent. */
     submissionId: z.string().min(1).nullable().default(null),
     recovery: conversationRecoverySchema.nullable().default(null)
@@ -149,6 +166,21 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     at: z.string().datetime(),
     runId: z.string().min(1),
     usage: harnessUsageSchema
+  }),
+  z.object({
+    kind: z.literal('session'),
+    id: z.string().min(1),
+    at: z.string().datetime(),
+    runId: z.string().min(1),
+    provider: providerIdSchema,
+    sessionId: z.string().min(1).max(200),
+    model: z.string().min(1).max(200)
+  }),
+  z.object({
+    kind: z.literal('workflow-completion'),
+    id: z.string().min(1),
+    at: z.string().datetime(),
+    runId: z.string().min(1)
   })
 ])
 export type ConversationEntry = z.infer<typeof conversationEntrySchema>
@@ -159,6 +191,11 @@ export const conversationSnapshotSchema = z.object({
   /** Usage for the most recent Run, and the Idea's running total. */
   usage: z.object({ run: harnessUsageSchema.nullable(), idea: harnessUsageSchema }),
   recovery: conversationRecoverySchema.nullable(),
+  providerSessions: z.object({
+    codex: z.string().min(1).optional(),
+    claude: z.string().min(1).optional()
+  }),
+  workflowCompletionSuggested: z.boolean(),
   /** The Run the Conversation is currently waiting on, when there is one. */
   activeRunId: z.string().min(1).nullable()
 })

@@ -110,7 +110,9 @@ export const PROVIDER_SPECS: Record<ProviderId, ProviderSpec> = {
     command: 'claude',
     versionArgs: ['--version'],
     minimumVersion: '2.0.0',
-    conversation: null,
+    // Stream JSON partial messages, hook events, and effort selection are the
+    // protocol surface the Claude Adapter and Wayfinder bridge require.
+    conversation: { minimumVersion: '2.1.0' },
     untestedFrom: '2.2.0',
     // Print mode emits its system init line before any API request when the
     // CLI is signed in, and exits with a sign-in error when it is not. The

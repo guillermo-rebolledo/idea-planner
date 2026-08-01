@@ -14,6 +14,7 @@ interface PlanningToolHostCallbacks {
   onStop(summary: string): void
   /** Structured answers the provider offered for the current question. */
   onChoices?(question: string, options: { label: string; value: string }[]): void
+  onWorkflowCompletion?(): void
 }
 
 interface RpcRequest {
@@ -31,7 +32,8 @@ const callSchema = z.object({
     'write_planning_file',
     'rename_planning_file',
     'delete_planning_file',
-    'offer_response_options'
+    'offer_response_options',
+    'suggest_workflow_completion'
   ]),
   arguments: z.record(z.unknown()).default({})
 })
@@ -101,6 +103,11 @@ const TOOL_DEFINITIONS = [
       }
     },
     ['question', 'options']
+  ),
+  tool(
+    'suggest_workflow_completion',
+    'Signal that Wayfinder has no unresolved planning decisions and the person may create the MVP Spec',
+    {}
   )
 ]
 
@@ -298,6 +305,18 @@ export class PlanningToolHost {
           activity: { kind: 'allowed', summary: 'Offered Suggested Responses' }
         },
         text: 'offered'
+      }
+    }
+    if (name === 'suggest_workflow_completion') {
+      this.options.callbacks.onWorkflowCompletion?.()
+      return {
+        policy: {
+          decision: 'allow',
+          code: 'allowed',
+          overridable: false,
+          activity: { kind: 'allowed', summary: 'Suggested workflow completion' }
+        },
+        text: 'suggested'
       }
     }
     if (name === 'read_file') {

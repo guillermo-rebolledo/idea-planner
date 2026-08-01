@@ -6,7 +6,7 @@ export interface SpawnedProcess {
   pid?: number
   stdout: NodeJS.EventEmitter
   stderr: NodeJS.EventEmitter
-  once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this
+  once(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this
 }
 
 export interface RunLaunch {
@@ -119,7 +119,9 @@ export class RunProcessBroker {
     }
     child.stdout.on('data', (chunk) => this.observeOutput(launch, chunk, 'stdout'))
     child.stderr.on('data', (chunk) => this.observeOutput(launch, chunk, 'stderr'))
-    child.once('exit', (code, signal) => {
+    // `close` follows `exit` only after stdout/stderr have drained, so the
+    // adapter cannot miss a final protocol frame written during shutdown.
+    child.once('close', (code, signal) => {
       if (this.active.get(launch.id)?.stopping) return
       void (async () => {
         try {

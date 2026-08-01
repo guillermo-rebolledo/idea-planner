@@ -126,7 +126,7 @@ describe('Run process broker', () => {
       sandboxProfile: '/private/run-1/profile.sb',
       onExit
     })
-    child.emit('exit', 0, null)
+    child.emit('close', 0, null)
     await vi.waitFor(() => expect(onExit).toHaveBeenCalledWith(0, null))
     expect(waitForGroupExit).toHaveBeenCalledWith(4242)
     expect(killProcessGroup).toHaveBeenCalledWith(4242, 'SIGTERM')
@@ -153,7 +153,7 @@ describe('Run process broker', () => {
       onExit,
       onSupervisionFailure
     })
-    child.emit('exit', 0, null)
+    child.emit('close', 0, null)
     await vi.waitFor(() => expect(onSupervisionFailure).toHaveBeenCalledOnce())
     expect(onExit).not.toHaveBeenCalled()
     expect(broker.needsRecovery()).toBe(true)

@@ -13,6 +13,7 @@ let socket: Socket
 let nextId = 0
 const onActivity = vi.fn()
 const onStop = vi.fn()
+const onWorkflowCompletion = vi.fn()
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'planning-tools-'))
@@ -23,12 +24,13 @@ beforeEach(async () => {
   await writeFile(join(root, '.env'), 'SECRET=value')
   onActivity.mockReset()
   onStop.mockReset()
+  onWorkflowCompletion.mockReset()
   host = new PlanningToolHost({
     socketPath,
     capabilityToken: 'test-capability',
     workingDirectory: root,
     planningDirectory: planning,
-    callbacks: { onActivity, onStop }
+    callbacks: { onActivity, onStop, onWorkflowCompletion }
   })
   await host.start()
   socket = createConnection(socketPath)
@@ -43,6 +45,12 @@ afterEach(async () => {
 })
 
 describe('planning tool host', () => {
+  it('exposes workflow completion as an explicit authority-free signal', async () => {
+    await expect(call('suggest_workflow_completion', {})).resolves.toMatchObject({
+      result: { content: [{ text: 'suggested' }] }
+    })
+    expect(onWorkflowCompletion).toHaveBeenCalledOnce()
+  })
   it('is the production policy seam for safe reads and managed planning writes', async () => {
     const read = await call('read_file', { path: 'README.md' })
     const write = await call('write_planning_file', {

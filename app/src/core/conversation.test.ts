@@ -46,7 +46,14 @@ async function startRun(prompt: string, submissionId: string): Promise<string> {
       permissionProfile: 'planning-v1'
     }
   })
-  await core.beginConversationRun({ relativePath, runId: run.id, submissionId })
+  await core.beginConversationRun({
+    relativePath,
+    runId: run.id,
+    submissionId,
+    provider: 'codex',
+    workflow: 'grilling',
+    model: 'gpt-5-codex'
+  })
   return run.id
 }
 
@@ -368,6 +375,26 @@ describe('streaming a Run into the Conversation', () => {
     expect(snapshot.usage.run).toMatchObject({ totalTokens: 340, contextUsed: 340 })
     expect(snapshot.usage.idea).toMatchObject({ totalTokens: 460, contextWindow: 272_000 })
   })
+
+  it('keeps provider continuity and workflow completion as separate durable state', async () => {
+    const runId = await startRun('Develop this', 'submission-1')
+    await stream(runId, [
+      {
+        type: 'session-ready',
+        provider: 'codex',
+        sessionId: 'session-1',
+        model: 'gpt-5-codex'
+      },
+      { type: 'completed' }
+    ])
+    let snapshot = await core.getConversation(relativePath)
+    expect(snapshot.providerSessions).toEqual({ codex: 'session-1' })
+    expect(snapshot.workflowCompletionSuggested).toBe(false)
+
+    await stream(runId, [{ type: 'workflow-completion-suggested' }])
+    snapshot = await core.getConversation(relativePath)
+    expect(snapshot.workflowCompletionSuggested).toBe(true)
+  })
 })
 
 describe('ingesting raw provider output', () => {
@@ -490,11 +517,55 @@ describe('ingesting raw provider output', () => {
     })
   })
 
-  it('refuses a provider that has no harness Adapter rather than losing its answers', async () => {
-    const runId = await startRun('Grill me', 'submission-1')
-    await expect(
-      core.ingestProviderOutput({ relativePath, runId, provider: 'claude', chunk: 'anything\n' })
-    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  it('gives Claude the same durable Conversation behavior as Codex', async () => {
+    const run = await core.acceptRun({
+      submissionId: 'submission-1',
+      relativePath,
+      prompt: 'Develop this',
+      configuration: {
+        provider: 'claude',
+        executable: '/usr/local/bin/claude',
+        executableHash: 'a'.repeat(64),
+        providerVersion: '2.1.220',
+        model: 'claude-sonnet-4-5',
+        effort: 'medium',
+        workflow: 'wayfinder',
+        skill: { name: 'wayfinder', path: '/home/.claude/skills/wayfinder', hash: 'b'.repeat(64) },
+        environment: {},
+        workingDirectory: join(libraryDir, relativePath),
+        permissionMode: 'ask',
+        permissionProfile: 'planning-v1'
+      }
+    })
+    await core.beginConversationRun({
+      relativePath,
+      runId: run.id,
+      submissionId: 'submission-1',
+      provider: 'claude',
+      workflow: 'wayfinder',
+      model: 'claude-sonnet-4-5'
+    })
+    const runId = run.id
+    const seen = await core.ingestProviderOutput({
+      relativePath,
+      runId,
+      provider: 'claude',
+      chunk:
+        '{"type":"system","subtype":"init","session_id":"session-1","model":"claude-sonnet-4-5"}\n{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"What decision is blocking this idea?"}],"usage":{"input_tokens":10,"output_tokens":7}}}\n{"type":"result","subtype":"success","is_error":false,"result":"What decision is blocking this idea?","usage":{"input_tokens":10,"output_tokens":7}}\n'
+    })
+    expect(seen.at(-1)).toEqual({ type: 'completed' })
+    await core.finalizeConversationRun({
+      relativePath,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Provider process completed'
+    })
+    expect(messages((await core.getConversation(relativePath)).entries).at(-1)).toMatchObject({
+      role: 'assistant',
+      text: 'What decision is blocking this idea?',
+      completeness: 'complete'
+    })
   })
 })
 

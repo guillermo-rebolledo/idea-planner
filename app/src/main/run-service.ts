@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import type { CoreCommand } from '@shared/contract'
 import {
   PROVIDER_DEFAULT_MODEL,
@@ -67,6 +67,7 @@ export class RunService {
    * explanation there is, so it becomes what the person is told.
    */
   private readonly diagnostics = new Map<string, string>()
+  private readonly pendingIngest = new Map<string, Promise<void>>()
 
   constructor(private readonly deps: RunServiceDeps) {}
 
@@ -216,13 +217,46 @@ export class RunService {
         'Interrupted Run requires explicit recovery; the provider was not contacted again'
       )
     }
+    const conversation = await this.readConversation(input.relativePath)
+    const latestHarness = [...conversation.entries]
+      .reverse()
+      .find(
+        (entry): entry is Extract<typeof entry, { kind: 'boundary' }> =>
+          entry.kind === 'boundary' && entry.provider !== undefined
+      )?.provider
+    const savedSession = conversation.providerSessions[input.provider]
+    const switchedProvider = latestHarness !== undefined && latestHarness !== input.provider
+    const latestProviderBoundary = [...conversation.entries]
+      .reverse()
+      .find(
+        (entry): entry is Extract<typeof entry, { kind: 'boundary' }> =>
+          entry.kind === 'boundary' && entry.provider === input.provider
+      )
+    const sessionCompatible =
+      savedSession !== undefined &&
+      latestProviderBoundary?.workflow === input.workflow &&
+      latestProviderBoundary.model === input.model &&
+      (input.provider !== 'claude' ||
+        (await claudeSessionExists(this.deps.homeDirectory, workingDirectory, savedSession)))
+    const restoreFromHistory =
+      switchedProvider || (latestHarness === input.provider && !sessionCompatible)
+    const handoff = await deterministicHandoff(
+      conversation,
+      input.workflow,
+      join(workingDirectory, planningRelativePathFor(input)),
+      planningRelativePathFor(input)
+    )
     // The Conversation records the Run boundary before anything can fail, so
     // every later outcome has somewhere understandable to land.
     await this.deps.core.send({
       type: 'conversation/begin',
       relativePath: input.relativePath,
       runId: accepted.id,
-      submissionId: input.submissionId
+      submissionId: input.submissionId,
+      provider: input.provider,
+      workflow: input.workflow,
+      model: input.model,
+      restorationNote: latestHarness === input.provider && !sessionCompatible
     })
     await this.record(
       accepted,
@@ -239,7 +273,8 @@ export class RunService {
       )
     }
 
-    const planningDirectory = join(workingDirectory, '.scratch', input.relativePath)
+    const planningRelativePath = planningRelativePathFor(input)
+    const planningDirectory = join(workingDirectory, planningRelativePath)
     const policy = new PlanningPolicy({ workingDirectory, planningDirectory })
     const socketDirectory = join(
       tmpdir(),
@@ -274,6 +309,16 @@ export class RunService {
           },
           onChoices: (question, options) => {
             void this.offerChoices(accepted, question, options)
+          },
+          onWorkflowCompletion: () => {
+            if (input.workflow !== 'wayfinder') return
+            void hasCompletedWayfinderMap(planningDirectory).then((complete) => {
+              if (complete) {
+                void this.applyConversationEvent(accepted, {
+                  type: 'workflow-completion-suggested'
+                })
+              }
+            })
           }
         }
       })
@@ -332,7 +377,14 @@ export class RunService {
       await this.deps.broker.start({
         id: accepted.id,
         executable: provider.executablePath,
-        args: providerArguments(input, await readFile(skillFile, 'utf8'), runDirectory),
+        args: providerArguments(
+          input,
+          await readFile(skillFile, 'utf8'),
+          runDirectory,
+          planningRelativePath,
+          restoreFromHistory ? handoff : undefined,
+          sessionCompatible ? savedSession : undefined
+        ),
         workingDirectory,
         runDirectory,
         environment: configuration.environment,
@@ -344,7 +396,12 @@ export class RunService {
         },
         onOutput: (stream, text) => {
           if (stream === 'stdout') {
-            void this.ingest(accepted, input.provider, workingDirectory, text)
+            const pending = (this.pendingIngest.get(accepted.id) ?? Promise.resolve())
+              .then(() => this.ingest(accepted, input.provider, workingDirectory, text))
+              .catch(() => {
+                this.failures.set(accepted.id, 'protocol')
+              })
+            this.pendingIngest.set(accepted.id, pending)
             return
           }
           const summary = sanitize(text, workingDirectory).trim()
@@ -353,17 +410,21 @@ export class RunService {
           void this.record(accepted, undefined, 'output', summary)
         },
         onExit: (code, signal) => {
-          const stopped = signal === 'SIGTERM' || signal === 'SIGKILL'
-          void this.conclude(
-            accepted,
-            stopped ? 'stopped' : code === 0 ? 'completed' : 'failed',
-            code === 0 ? 'lifecycle' : 'error',
-            stopped
-              ? 'Provider process stopped'
-              : code === 0
-                ? 'Provider process completed'
-                : 'Provider process failed'
-          )
+          void (this.pendingIngest.get(accepted.id) ?? Promise.resolve()).then(() => {
+            this.pendingIngest.delete(accepted.id)
+            const stopped = signal === 'SIGTERM' || signal === 'SIGKILL'
+            const providerFailed = this.failures.has(accepted.id)
+            return this.conclude(
+              accepted,
+              stopped ? 'stopped' : code === 0 && !providerFailed ? 'completed' : 'failed',
+              code === 0 && !providerFailed ? 'lifecycle' : 'error',
+              stopped
+                ? 'Provider process stopped'
+                : code === 0 && !providerFailed
+                  ? 'Provider process completed'
+                  : 'Provider process failed'
+            )
+          })
         },
         onSupervisionFailure: () => {
           void this.conclude(
@@ -489,6 +550,19 @@ export class RunService {
     })
   }
 
+  private async applyConversationEvent(
+    run: Pick<RunSnapshot, 'id' | 'relativePath'>,
+    event: HarnessEvent
+  ): Promise<void> {
+    await this.deps.core.send({
+      type: 'conversation/apply',
+      relativePath: run.relativePath,
+      runId: run.id,
+      event
+    })
+    this.deps.onConversationEvent?.({ relativePath: run.relativePath, runId: run.id, event })
+  }
+
   /** Records a Run's terminal state and closes its Conversation boundary. */
   private async conclude(
     run: Pick<RunSnapshot, 'id' | 'relativePath'>,
@@ -604,7 +678,10 @@ function minimalEnvironment(
 function providerArguments(
   input: StartRunInput,
   skillText: string,
-  runDirectory: string
+  runDirectory: string,
+  planningRelativePath: string,
+  handoff?: string,
+  sessionId?: string
 ): string[] {
   const skillPrompt = `Verified planning workflow (${input.workflow}):\n\n${skillText}\n\nUser request:\n${input.prompt}`
   if (input.provider === 'codex') {
@@ -640,7 +717,6 @@ function providerArguments(
   }
   return [
     '--print',
-    '--disable-slash-commands',
     '--setting-sources',
     '',
     '--strict-mcp-config',
@@ -652,15 +728,78 @@ function providerArguments(
     'mcp__planning__*',
     '--permission-mode',
     'dontAsk',
-    '--no-session-persistence',
     '--no-chrome',
     '--output-format',
     'stream-json',
+    '--verbose',
+    '--include-partial-messages',
+    '--include-hook-events',
+    ...(sessionId ? ['--resume', sessionId] : []),
     ...(input.model === PROVIDER_DEFAULT_MODEL ? [] : ['--model', input.model]),
     '--effort',
     input.effort,
-    skillPrompt
+    `/${input.workflow} ${input.prompt}\n\nManaged planning location: ${planningRelativePath}\nThe verified skill source is available at ${input.workflow}'s recorded Run provenance. Use only the app-owned planning tools.${handoff ? `\n\nDeterministic handoff from canonical local history:\n${handoff}` : ''}`
   ]
+}
+
+function planningRelativePathFor(input: StartRunInput): string {
+  return input.workflow === 'wayfinder'
+    ? join('.scratch', `${input.relativePath}-wayfinding`)
+    : join('.scratch', input.relativePath)
+}
+
+async function deterministicHandoff(
+  conversation: ConversationSnapshot,
+  workflow: StartRunInput['workflow'],
+  planningDirectory: string,
+  planningRelativePath: string
+): Promise<string> {
+  const recent = conversation.entries
+    .filter((entry) => entry.kind === 'message')
+    .slice(-8)
+    .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.text}`)
+    .join('\n')
+  const decisions = await readFile(join(planningDirectory, 'map.md'), 'utf8').catch(
+    () => '(no Wayfinder decisions recorded)'
+  )
+  return [
+    'Phase: Developing',
+    `Workflow: ${workflow}`,
+    `Decisions:\n${decisions.slice(0, 8_000)}`,
+    `Planning artifacts: ${planningRelativePath}`,
+    `Complete conversation: planning/conversation.md`,
+    'Recent turns:',
+    recent || '(none)'
+  ].join('\n')
+}
+
+async function hasCompletedWayfinderMap(planningDirectory: string): Promise<boolean> {
+  const map = await readFile(join(planningDirectory, 'map.md'), 'utf8').catch(() => '')
+  if (!map.trim()) return false
+  if (/(?:^|\n)Status:\s*(?:open|claimed)\s*(?:\n|$)|(?:^|\n)- \[ \]/i.test(map)) return false
+  const issueDirectory = join(planningDirectory, 'issues')
+  const issueNames = await readdir(issueDirectory).catch((): string[] => [])
+  const linkedIssues = [...map.matchAll(/\]\(issues\/([^)]+\.md)\)/g)].flatMap((match) =>
+    match[1] ? [match[1]] : []
+  )
+  if (linkedIssues.some((name) => !issueNames.includes(name))) return false
+  const issues = await Promise.all(
+    linkedIssues.map((name) => readFile(join(issueDirectory, name), 'utf8').catch(() => ''))
+  )
+  return issues.every((issue) => /(?:^|\n)Status:\s*resolved\s*(?:\n|$)/i.test(issue))
+}
+
+async function claudeSessionExists(
+  homeDirectory: string,
+  workingDirectory: string,
+  sessionId: string
+): Promise<boolean> {
+  const projectKey = resolve(workingDirectory).replaceAll('/', '-')
+  const sessionPath = join(homeDirectory, '.claude', 'projects', projectKey, `${sessionId}.jsonl`)
+  return readFile(sessionPath, 'utf8').then(
+    () => true,
+    () => false
+  )
 }
 
 async function hashFile(path: string): Promise<string> {
@@ -693,8 +832,16 @@ function describeActivity(
       return { kind: 'output', summary: `${event.name}: ${event.summary}` }
     case 'failed':
       return { kind: 'error', summary: event.summary }
+    case 'session-ready':
+      return { kind: 'lifecycle', summary: `Provider session ready with ${event.model}` }
+    case 'retrying':
+      return {
+        kind: 'output',
+        summary: `Provider retry ${event.attempt} in ${event.delayMs} ms (${event.category})`
+      }
     case 'assistant-message':
     case 'choices':
+    case 'workflow-completion-suggested':
     case 'usage':
     case 'completed':
     case 'unsupported':
