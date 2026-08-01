@@ -2,8 +2,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { createServer } from 'node:net'
 import { promisify } from 'node:util'
+import electron from 'electron'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   emptyUsage,
@@ -13,6 +14,7 @@ import {
 } from '@shared/conversation'
 import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
 import { PlanningPolicy } from './planning-policy'
+import { mergeProviderLaunches, resolveProviderLaunch } from './provider-launch'
 import type { RunLaunch } from './run-process-broker'
 import { RunService } from './run-service'
 
@@ -143,6 +145,8 @@ function readyReadiness(executablePath: string): {
     )
   }
 }
+
+const fakeClaudeOauthToken = (): Promise<string> => Promise.resolve('test-oauth-token')
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true }))
@@ -150,6 +154,102 @@ afterEach(async () => {
 })
 
 describe('Run service', () => {
+  it.skipIf(process.platform !== 'darwin' || !process.env['HOME'])(
+    'starts the installed Claude CLI with its MCP config inside the native sandbox',
+    async () => {
+      const home = process.env['HOME'] ?? ''
+      const claude = join(home, '.local', 'bin', 'claude')
+      const electronExecutable = electron as unknown as string
+      const root = await mkdtemp(join(tmpdir(), 'claude-sandbox-repro-'))
+      temporaryDirectories.push(root)
+      const runDirectory = join(root, 'run')
+      const planningDirectory = join(root, '.scratch', 'idea')
+      const proxyScript = join(__dirname, 'planning-mcp-proxy.ts')
+      await Promise.all([mkdir(runDirectory), mkdir(planningDirectory, { recursive: true })])
+      const mcpConfig = join(runDirectory, 'mcp.json')
+      await writeFile(
+        mcpConfig,
+        JSON.stringify({
+          mcpServers: {
+            planning: {
+              command: electronExecutable,
+              env: {
+                ELECTRON_RUN_AS_NODE: '1',
+                NODE_OPTIONS: `--require=${proxyScript}`,
+                PLANNING_MCP_SOCKET: join(runDirectory, 'missing.sock'),
+                PLANNING_MCP_CAPABILITY: 'test'
+              }
+            }
+          }
+        })
+      )
+      const profile = join(runDirectory, 'planning.sb')
+      await writeFile(
+        profile,
+        new PlanningPolicy({ workingDirectory: root, planningDirectory }).renderSandboxProfile({
+          runDirectory,
+          launch: mergeProviderLaunches(
+            await resolveProviderLaunch(claude, [join(home, '.claude', 'skills')]),
+            await resolveProviderLaunch(electronExecutable),
+            await resolveProviderLaunch('/usr/bin/security')
+          ),
+          proxyScript,
+          socketPath: join(runDirectory, 'missing.sock')
+        })
+      )
+      const credentials = JSON.parse(
+        (
+          await promisify(execFile)('/usr/bin/security', [
+            'find-generic-password',
+            '-s',
+            'Claude Code-credentials',
+            '-w'
+          ])
+        ).stdout
+      ) as { claudeAiOauth: { accessToken: string } }
+      const result = await promisify(execFile)(
+        '/usr/bin/sandbox-exec',
+        [
+          '-f',
+          profile,
+          claude,
+          '--print',
+          '--setting-sources',
+          '',
+          '--strict-mcp-config',
+          '--mcp-config',
+          mcpConfig,
+          '--tools',
+          '',
+          '--allowedTools',
+          'mcp__planning__*',
+          '--permission-mode',
+          'dontAsk',
+          '--no-chrome',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+          'Reply with OK only'
+        ],
+        {
+          cwd: root,
+          env: {
+            PATH: `${dirname(claude)}:/usr/bin:/bin`,
+            HOME: home,
+            LANG: 'en_US.UTF-8',
+            LC_ALL: 'en_US.UTF-8',
+            TMPDIR: runDirectory,
+            CLAUDE_CODE_OAUTH_TOKEN: credentials.claudeAiOauth.accessToken
+          },
+          timeout: 20_000
+        }
+      ).catch((error: unknown) => error as { stdout?: string; stderr?: string })
+      expect(result.stdout).toContain('"subtype":"init"')
+      expect(result.stderr).not.toContain("posix_spawn 'security'")
+      expect(result.stdout).not.toContain('Not logged in')
+    },
+    30_000
+  )
   it('starts Claude Wayfinder with the documented stream protocol and native skill invocation', async () => {
     const root = await readyClaudeRoot('run-claude-')
     const core = fakeCore()
@@ -175,7 +275,8 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js'
+      proxyScript: '/tmp/planning-mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken
     })
     await service.start({
       submissionId: 'submission-1',
@@ -231,7 +332,8 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js'
+      proxyScript: '/tmp/planning-mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken
     })
     await service.start({
       submissionId: 'submission-1',
@@ -293,7 +395,8 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js'
+      proxyScript: '/tmp/planning-mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken
     })
     await service.start({
       submissionId: 'submission-1',

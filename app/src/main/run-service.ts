@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { chmod, copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { promisify } from 'node:util'
+import { z } from 'zod'
 import type { CoreCommand } from '@shared/contract'
 import {
   PROVIDER_DEFAULT_MODEL,
@@ -52,6 +55,7 @@ interface RunServiceDeps {
   privateRoot: string
   proxyExecutable: string
   proxyScript: string
+  claudeOauthToken?: () => Promise<string>
   /** Delivers normalized assistant and control events straight to the window. */
   onConversationEvent?: (event: ConversationStreamEvent) => void
 }
@@ -335,7 +339,10 @@ export class RunService {
             await resolveProviderLaunch(provider.executablePath, [
               join(this.deps.homeDirectory, spec.skillsRoot)
             ]),
-            await resolveProviderLaunch(this.deps.proxyExecutable)
+            await resolveProviderLaunch(this.deps.proxyExecutable),
+            ...(input.provider === 'claude'
+              ? [await resolveProviderLaunch('/usr/bin/security')]
+              : [])
           ),
           proxyScript: this.deps.proxyScript,
           socketPath
@@ -374,6 +381,13 @@ export class RunService {
         'lifecycle',
         'Provider process running'
       )
+      const providerEnvironment =
+        input.provider === 'claude'
+          ? {
+              ...configuration.environment,
+              CLAUDE_CODE_OAUTH_TOKEN: await (this.deps.claudeOauthToken ?? readClaudeOauthToken)()
+            }
+          : configuration.environment
       await this.deps.broker.start({
         id: accepted.id,
         executable: provider.executablePath,
@@ -387,7 +401,7 @@ export class RunService {
         ),
         workingDirectory,
         runDirectory,
-        environment: configuration.environment,
+        environment: providerEnvironment,
         sandboxProfile,
         onBeforeCleanup: async () => {
           await toolHost.close()
@@ -800,6 +814,20 @@ async function claudeSessionExists(
     () => true,
     () => false
   )
+}
+
+const claudeCredentialsSchema = z.object({
+  claudeAiOauth: z.object({ accessToken: z.string().min(1) })
+})
+
+async function readClaudeOauthToken(): Promise<string> {
+  const { stdout } = await promisify(execFile)('/usr/bin/security', [
+    'find-generic-password',
+    '-s',
+    'Claude Code-credentials',
+    '-w'
+  ])
+  return claudeCredentialsSchema.parse(JSON.parse(stdout)).claudeAiOauth.accessToken
 }
 
 async function hashFile(path: string): Promise<string> {
