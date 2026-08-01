@@ -1,6 +1,7 @@
 import { realpath } from 'node:fs/promises'
 import { realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import type { ProviderLaunch } from './provider-launch'
 
 export type PolicyRequest =
   | { kind: 'read' | 'write'; path: string; bytes?: number }
@@ -152,11 +153,18 @@ export class PlanningPolicy {
     return this.block(key, code, summary, highRisk)
   }
 
-  /** Provider containment is deliberately stricter; Main performs authorized planning writes. */
+  /**
+   * Provider containment is deliberately stricter than the model-visible tool
+   * boundary; Main performs every authorized planning write itself.
+   *
+   * The rules are ordered so the denies come last: Seatbelt applies the final
+   * matching rule, so secrets and Git internals stay denied no matter which
+   * tree an allow above them covers.
+   */
   renderSandboxProfile(paths: {
     runDirectory: string
-    executable: string
-    proxyExecutable: string
+    /** The provider and the planning proxy together: both must be able to start. */
+    launch: ProviderLaunch
     proxyScript: string
     socketPath: string
   }): string {
@@ -168,23 +176,33 @@ export class PlanningPolicy {
         return path
       }
     }
+    const list = (form: 'literal' | 'subpath', values: string[]): string =>
+      values.map((value) => `(${form} ${q(canonical(value))})`).join(' ')
     const workingDirectory = canonical(this.paths.workingDirectory)
     const runDirectory = canonical(paths.runDirectory)
     const socketPath = canonical(paths.socketPath)
     return `(version 1)
 (deny default)
 (import "system.sb")
-(allow process-exec (literal ${q(paths.executable)}) (literal ${q(paths.proxyExecutable)}))
+(allow process-exec ${list('literal', paths.launch.executables)} ${list('subpath', paths.launch.executableTrees)})
 (allow process-fork)
 (allow signal (target self))
 (allow file-read-metadata)
 (allow file-read* (subpath ${q(workingDirectory)}))
-(deny file-read* (subpath ${q(join(workingDirectory, '.git'))}) (regex #"(^|/)\\.env($|/)"))
-(deny file-read* (regex #"(^|/)(\\.ssh|\\.aws|credentials|private[-_.]?key)($|/)"))
-(allow file-read* (literal ${q(paths.executable)}) (literal ${q(paths.proxyExecutable)}) (literal ${q(paths.proxyScript)}) (subpath ${q(runDirectory)}) (subpath "/System") (subpath "/Library/Apple") (subpath "/usr/lib") (subpath "/usr/share") (subpath "/private/etc/ssl"))
+(allow file-read* ${list('literal', [paths.proxyScript])} ${list('subpath', [...paths.launch.readRoots, runDirectory])} (subpath "/System") (subpath "/Library/Apple") (subpath "/usr/lib") (subpath "/usr/share"))
+; Name resolution and certificate validation, without which no provider can
+; reach its own service. Both are read-only system facilities.
+(allow file-read* (subpath "/private/etc/ssl") (literal "/private/etc/hosts") (literal "/private/etc/resolv.conf") (literal "/private/etc/services") (subpath "/System/Library/Keychains") (subpath "/Library/Keychains") (subpath "/private/var/db/mds"))
+(allow mach-lookup (global-name "com.apple.dnssd.service") (global-name "com.apple.system.opendirectoryd.libinfo") (global-name "com.apple.SystemConfiguration.configd") (global-name "com.apple.trustd") (global-name "com.apple.trustd.agent") (global-name "com.apple.SecurityServer"))
 (allow file-write* (subpath ${q(runDirectory)}))
 (allow network-outbound (require-all (remote ip) (require-not (remote ip "localhost:*"))))
+; The only two local sockets: the system resolver, and this Run's capability
+; socket. Every other local socket stays denied.
+(allow network-outbound (literal "/private/var/run/mDNSResponder"))
 (allow network-outbound (remote unix-socket (path-literal ${q(socketPath)})))
+(deny file-write* (subpath ${q(workingDirectory)}))
+(deny file-read* (subpath ${q(join(workingDirectory, '.git'))}) (regex #"(^|/)\\.env($|/)"))
+(deny file-read* (regex #"(^|/)(\\.ssh|\\.aws|credentials|private[-_.]?key)($|/)"))
 `
   }
 

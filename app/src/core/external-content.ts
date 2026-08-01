@@ -503,7 +503,7 @@ class ExternalContentManager {
       const ideaDir = yield* this.ideaDir(input.relativePath)
       const file = yield* this.readReferences(ideaDir)
       const contextId = `reference-context-${input.runId}`
-      const contextDir = join(ideaDir, '.idea', 'runs', input.runId, 'references')
+      const contextDir = join(ideaDir, '.idea', 'run-contexts', input.runId, 'references')
       const result: ReferenceContext = { id: contextId, files: [], missing: [] }
       yield* updateMap(this.referenceContexts, contextId, contextDir)
       for (const referenceId of input.referenceIds) {
@@ -736,7 +736,9 @@ export function createExternalContentEffects(options: ExternalContentOptions) {
         Promise.all(paths.map((path) => rm(path, { recursive: true, force: true })))
       ).pipe(Effect.asVoid),
     cleanupRunContexts: (ideaDir) =>
-      promise(() => rm(join(ideaDir, '.idea', 'runs'), { recursive: true, force: true })),
+      // Temporary provider-facing derivatives only. Durable Run state lives in
+      // `.idea/runs` and is never touched here.
+      promise(() => rm(join(ideaDir, '.idea', 'run-contexts'), { recursive: true, force: true })),
     now: options.clock,
     nextId: options.nextReferenceId,
     schedule: (delayMs, task) => Effect.sync(() => setTimeout(task, delayMs)),

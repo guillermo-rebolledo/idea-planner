@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process'
-import { access, constants, stat } from 'node:fs/promises'
+import { access, constants, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
   PathSource,
   ProviderId,
+  ProviderCapability,
   ProviderReadiness,
   ReadinessCheck,
   ReadinessCode,
@@ -11,6 +12,8 @@ import type {
   ReadinessStatus,
   RemediationLink
 } from '@shared/readiness'
+import type { PlanningWorkflow } from '@shared/run'
+import { describeProviderUpdate } from './provider-install'
 
 /**
  * Provider and skill readiness probing. Discovery is deliberately narrow:
@@ -31,6 +34,16 @@ const SKILLS_LINKS: RemediationLink[] = [
 /** The workflows this product invokes plus their reviewed dependency closure. */
 const REQUIRED_SKILLS = ['grill-me', 'grilling', 'wayfinder']
 
+/**
+ * The exact skill identity each planning workflow is allowed to invoke. A
+ * workflow absent here has not been reviewed and verified, so the app refuses
+ * to start a Run for it rather than reaching for a plausible directory name.
+ */
+export const VERIFIED_WORKFLOW_SKILLS: Partial<Record<PlanningWorkflow, string>> = {
+  grilling: 'grilling',
+  wayfinder: 'wayfinder'
+}
+
 /** Hosts of every remediation link, so the open-link allowlist cannot drift. */
 export function readinessLinkHosts(): Set<string> {
   const links = [
@@ -50,6 +63,12 @@ export interface ProviderSpec {
   versionArgs: string[]
   /** Versions below this fail as incompatible. */
   minimumVersion: string
+  /**
+   * What this app can do with the provider. `null` means no harness Adapter
+   * exists for it yet, so the feature is declared unsupported rather than
+   * offered and then failing.
+   */
+  conversation: { minimumVersion: string } | null
   /** Versions at or above this are untested: usable, with a warning. */
   untestedFrom: string
   authProbe: AuthProbe
@@ -69,6 +88,13 @@ export const PROVIDER_SPECS: Record<ProviderId, ProviderSpec> = {
     command: 'codex',
     versionArgs: ['--version'],
     minimumVersion: '0.100.0',
+    // `codex exec --json` began emitting the thread/turn/item events this
+    // app's Adapter parses in 0.44.0 (openai/codex 7fc3edf, released as
+    // 0.44.0 on npm); earlier versions emit a shape it cannot read. This is
+    // below `minimumVersion`, so today it never binds — it is here so the
+    // Adapter's real requirement is recorded and enforced when either number
+    // moves.
+    conversation: { minimumVersion: '0.44.0' },
     untestedFrom: '0.147.0',
     authProbe: { kind: 'exit-code', args: ['login', 'status'] },
     authRemediationCommand: 'codex login',
@@ -84,6 +110,7 @@ export const PROVIDER_SPECS: Record<ProviderId, ProviderSpec> = {
     command: 'claude',
     versionArgs: ['--version'],
     minimumVersion: '2.0.0',
+    conversation: null,
     untestedFrom: '2.2.0',
     // Print mode emits its system init line before any API request when the
     // CLI is signed in, and exits with a sign-in error when it is not. The
@@ -517,6 +544,12 @@ export async function probeProvider(
     sandboxCheck,
     skillsCheck
   ]
+  const available = checks.every((entry) => entry.status === 'ready' || entry.status === 'warning')
+  // The command on PATH is usually a symlink, and only what it points at can
+  // say how the provider was installed.
+  const realExecutablePath = executablePath
+    ? await realpath(executablePath).catch(() => null)
+    : null
   return {
     provider: spec.id,
     displayName: spec.displayName,
@@ -525,8 +558,55 @@ export async function probeProvider(
     executableSource: source,
     version,
     checks,
+    capabilities: {
+      developIdea: describeConversationCapability(spec, {
+        available,
+        version,
+        paths: [executablePath, realExecutablePath]
+      })
+    },
     checkedAt: new Date().toISOString(),
-    available: checks.every((entry) => entry.status === 'ready' || entry.status === 'warning')
+    available
+  }
+}
+
+/**
+ * Whether this provider can develop an Idea, and if not, what the person can
+ * do about it. An unsupported provider stays visible with a reason: silently
+ * omitting it looks like a bug, and looks the same as a broken install.
+ */
+function describeConversationCapability(
+  spec: ProviderSpec,
+  state: { available: boolean; version: string | null; paths: (string | null)[] }
+): ProviderCapability {
+  if (!spec.conversation) {
+    return {
+      available: false,
+      summary: `Developing an Idea with ${spec.displayName} is not supported yet. Its harness Adapter arrives in a later milestone.`,
+      command: null
+    }
+  }
+  if (!state.available) {
+    return {
+      available: false,
+      summary: `${spec.displayName} is not ready yet. Open AI Providers to see which check needs repairing.`,
+      command: null
+    }
+  }
+  const required = spec.conversation.minimumVersion
+  if (state.version && compareVersions(state.version, required) < 0) {
+    return {
+      available: false,
+      // Below this version the provider reports its work in a shape this
+      // app's Adapter cannot read, so a Run would produce nothing usable.
+      summary: `Developing an Idea needs ${spec.displayName} ${required} or newer. You have ${state.version}.`,
+      command: describeProviderUpdate(spec.id, state.paths)
+    }
+  }
+  return {
+    available: true,
+    summary: `Ready to develop an Idea with ${spec.displayName}.`,
+    command: null
   }
 }
 

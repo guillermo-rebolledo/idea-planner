@@ -2,7 +2,12 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { ProviderReadiness, ReadinessCheck, ReadinessDimension } from '@shared/readiness'
+import type {
+  ProviderCapability,
+  ProviderReadiness,
+  ReadinessCheck,
+  ReadinessDimension
+} from '@shared/readiness'
 import { PROVIDER_SPECS, discoverPathEntries, probeProvider } from './readiness'
 
 /**
@@ -267,6 +272,56 @@ describe('skills', () => {
     await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
     const readiness = await probeCodex()
     expect(check(readiness, 'skills').status).toBe('ready')
+  })
+})
+
+function capability(readiness: ProviderReadiness): ProviderCapability {
+  return readiness.capabilities.developIdea
+}
+
+describe('developing an Idea', () => {
+  it('is available when the provider is ready and new enough', async () => {
+    await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
+    expect(capability(await probeCodex())).toMatchObject({ available: true, command: null })
+  })
+
+  it('names the version needed when the Adapter needs a newer provider', async () => {
+    await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
+    await fakeExecutable('codex', READY_CODEX_SCRIPT)
+    const readiness = await probeProvider(
+      // An Adapter whose requirement has outrun the installed CLI: the
+      // provider itself stays perfectly usable, only this capability does not.
+      { ...PROVIDER_SPECS.codex, conversation: { minimumVersion: '0.200.0' } },
+      { pathEntries: [binDir], homeDir, probeTimeoutMs: 5000 }
+    )
+    expect(readiness.available).toBe(true)
+    expect(capability(readiness)).toMatchObject({ available: false })
+    expect(capability(readiness).summary).toContain('0.200.0')
+    expect(capability(readiness).summary).toContain('0.146.0')
+  })
+
+  it('explains an unsupported provider instead of leaving it out', async () => {
+    await installSkills('.claude/skills', ['grill-me', 'grilling', 'wayfinder'])
+    await fakeExecutable(
+      'claude',
+      `case "$1" in
+  --version) echo "2.1.0 (Claude Code)"; exit 0;;
+esac
+exit 1`
+    )
+    const readiness = await probeProvider(PROVIDER_SPECS.claude, {
+      pathEntries: [binDir],
+      homeDir,
+      probeTimeoutMs: 2000
+    })
+    expect(capability(readiness)).toMatchObject({ available: false, command: null })
+    expect(capability(readiness).summary).toContain('not supported yet')
+  })
+
+  it('points at the failing checks rather than a version when the provider is unready', async () => {
+    const readiness = await probeCodex()
+    expect(readiness.available).toBe(false)
+    expect(capability(readiness).summary).toContain('not ready yet')
   })
 })
 

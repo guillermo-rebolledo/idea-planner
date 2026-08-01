@@ -124,6 +124,31 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.listRuns(command.relativePath)
     case 'run/event':
       return core.recordRunEvent(command.input)
+    case 'conversation/get':
+      return core.getConversation(command.relativePath)
+    case 'conversation/submit':
+      return core.submitConversationMessage(command.input)
+    case 'conversation/begin':
+      return core.beginConversationRun({
+        relativePath: command.relativePath,
+        runId: command.runId,
+        submissionId: command.submissionId
+      })
+    case 'conversation/ingest':
+      return core.ingestProviderOutput({
+        relativePath: command.relativePath,
+        runId: command.runId,
+        provider: command.provider,
+        chunk: command.chunk
+      })
+    case 'conversation/apply':
+      return core.applyHarnessEvent({
+        relativePath: command.relativePath,
+        runId: command.runId,
+        event: command.event
+      })
+    case 'conversation/finalize':
+      return core.finalizeConversationRun(command.input)
   }
 }
 
