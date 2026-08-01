@@ -15,6 +15,7 @@ import {
   type ConversationSnapshot,
   type FinalizeConversationRunInput,
   type HarnessEvent,
+  type HarnessFailureCategory,
   type HarnessUsage,
   type SuggestedResponse
 } from '@shared/conversation'
@@ -90,6 +91,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
   // than mutated so a checkpoint always writes a consistent message.
   const streams = Effect.runSync(Ref.make<ReadonlyMap<string, StreamState>>(new Map()))
   const adapters = Effect.runSync(Ref.make<ReadonlyMap<string, HarnessAdapter>>(new Map()))
+  // How much of a Run's protocol this app could not model. A Run that says
+  // nothing else is the only evidence the person will ever get.
+  const drift = Effect.runSync(Ref.make<ReadonlyMap<string, number>>(new Map()))
   // One writer at a time: a streaming checkpoint must never interleave with a
   // submission or a finalize on the same journal.
   const writeLock = Effect.runSync(Effect.makeSemaphore(1))
@@ -254,7 +258,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
         streams,
         (current) => new Map([...current].filter(([, state]) => state.runId !== runId))
       ),
-      Ref.update(adapters, (current) => without(current, runId))
+      Ref.update(adapters, (current) => without(current, runId)),
+      Ref.update(drift, (current) => without(current, runId))
     ]).pipe(Effect.asVoid)
 
   const loadStream = (
@@ -356,13 +361,17 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 })
               )
               return
+            case 'unsupported':
+              yield* Ref.update(drift, (current) =>
+                new Map(current).set(input.runId, (current.get(input.runId) ?? 0) + 1)
+              )
+              return
             case 'reasoning':
             case 'tool':
             case 'completed':
             case 'failed':
-            case 'unsupported':
-              // Reasoning summaries, tool calls, and unmodelled protocol
-              // belong to the sanitized activity stream only.
+              // Reasoning summaries and tool calls belong to the sanitized
+              // activity stream only.
               return
           }
         })
@@ -399,9 +408,11 @@ export function createConversationEffects(options: ConversationOptions): Convers
             (entry) => entry.kind === 'boundary' && entry.id === `boundary:${input.runId}:started`
           )
           const submissionId = started?.kind === 'boundary' ? started.submissionId : null
+          const producedAssistantText = open.some((state) => state.text !== '')
           const contacted =
-            open.some((state) => state.text !== '') ||
+            producedAssistantText ||
             entries.some((entry) => entry.kind === 'usage' && entry.runId === input.runId)
+          const unmodelled = (yield* Ref.get(drift)).get(input.runId) ?? 0
           yield* append(
             ideaDir,
             conversationEntrySchema.parse({
@@ -412,7 +423,12 @@ export function createConversationEffects(options: ConversationOptions): Convers
               boundary: BOUNDARY_FOR_OUTCOME[input.outcome],
               summary: redactCredentials(input.summary).slice(0, 500),
               submissionId,
-              recovery: describeRecovery(input, contacted, submissionId)
+              recovery: describeRecovery(input, {
+                contacted,
+                producedAssistantText,
+                unmodelled,
+                submissionId
+              })
             })
           )
           yield* forgetRun(input.runId)
@@ -470,6 +486,18 @@ const BOUNDARY_FOR_OUTCOME: Record<
   'supervision-failed': 'run-failed'
 }
 
+/** Causes the provider reports about itself, rather than ones this app infers. */
+type StatedCause = 'authentication' | 'rate-limit' | 'context-exhausted'
+const PROVIDER_STATED: Record<StatedCause, true> = {
+  authentication: true,
+  'rate-limit': true,
+  'context-exhausted': true
+}
+
+function isStatedCause(category: HarnessFailureCategory): category is StatedCause {
+  return Object.hasOwn(PROVIDER_STATED, category)
+}
+
 /** Categories whose cause is transient, so resending the same submission is safe. */
 const RESENDABLE = new Set<ConversationRecovery['category']>([
   'authentication',
@@ -480,26 +508,44 @@ const RESENDABLE = new Set<ConversationRecovery['category']>([
 
 function describeRecovery(
   input: FinalizeConversationRunInput,
-  contacted: boolean,
-  submissionId: string | null
+  run: {
+    contacted: boolean
+    producedAssistantText: boolean
+    /** Events the Adapter could not model. */
+    unmodelled: number
+    submissionId: string | null
+  }
 ): ConversationRecovery | null {
-  if (input.outcome === 'completed') return null
+  // A Run that ends without a single assistant message, having produced
+  // protocol this app could not read, has not really succeeded — whatever
+  // exit code the process gave. Saying so beats an empty Conversation.
+  const spokeUnreadably = !run.producedAssistantText && run.unmodelled > 0
+  if (input.outcome === 'completed') {
+    return spokeUnreadably
+      ? {
+          category: 'protocol-unsupported',
+          summary: redactCredentials(input.summary).slice(0, 500),
+          resumableSubmissionId: null
+        }
+      : null
+  }
   const category = ((): ConversationRecovery['category'] => {
     if (input.outcome === 'stopped') return 'stopped'
     if (input.outcome === 'policy-violation') return 'policy-violation'
     if (input.outcome === 'supervision-failed') return 'supervision-failed'
+    // What the provider said about itself beats anything inferred from the
+    // shape of the Run, so an expired sign-in is never reported as drift.
+    if (input.category !== null && isStatedCause(input.category)) return input.category
+    if (spokeUnreadably) return 'protocol-unsupported'
     // A Run that failed without producing anything leaves the submission's
     // fate genuinely unknown, which is what the person needs to be told.
-    if (!contacted) return 'uncertain-submission'
-    if (input.category === null || input.category === 'unknown' || input.category === 'protocol') {
-      return 'process-crash'
-    }
-    return input.category
+    if (!run.contacted) return 'uncertain-submission'
+    return 'process-crash'
   })()
   return {
     category,
     summary: redactCredentials(input.summary).slice(0, 500),
-    resumableSubmissionId: RESENDABLE.has(category) ? submissionId : null
+    resumableSubmissionId: RESENDABLE.has(category) ? run.submissionId : null
   }
 }
 

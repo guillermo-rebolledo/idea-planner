@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { ideaRelativePathSchema } from './portable-path'
-import { providerIdSchema, type ProviderId } from './readiness'
+import { providerIdSchema } from './readiness'
 import { permissionModeSchema, workflowSchema } from './run'
 
 /**
@@ -102,6 +102,7 @@ export const conversationRecoverySchema = z.object({
     'process-crash',
     'stopped',
     'uncertain-submission',
+    'protocol-unsupported',
     'policy-violation',
     'supervision-failed'
   ]),
@@ -207,13 +208,6 @@ export const conversationStreamEventSchema = z.object({
   event: harnessEventSchema
 })
 export type ConversationStreamEvent = z.infer<typeof conversationStreamEventSchema>
-
-/**
- * The providers that can currently stream into a Conversation. A provider
- * without a harness Adapter would start a Run whose answers never arrive, so
- * developing an Idea is offered only for the ones listed here.
- */
-export const CONVERSATION_PROVIDERS: readonly ProviderId[] = ['codex']
 
 /**
  * The model value meaning "whatever the provider is configured to use". The

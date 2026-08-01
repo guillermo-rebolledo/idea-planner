@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Bot, ChevronRight, Send, Square, User } from 'lucide-react'
 import {
-  CONVERSATION_PROVIDERS,
   PROVIDER_DEFAULT_MODEL,
   WORKFLOW_ATTRIBUTION,
   type ConversationEntry,
@@ -53,6 +52,8 @@ const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
   stopped: 'You stopped this Run. Everything up to that point is kept.',
   'uncertain-submission':
     'The Run ended before the provider answered, so its outcome is unknown. Your message is kept and safe to send again.',
+  'protocol-unsupported':
+    'The provider reported its work in a format this app does not understand, so nothing usable came back. Updating the provider — or this app — is what fixes it.',
   'policy-violation':
     'The Run was stopped because it attempted something outside planning authority. Review the activity below.',
   'supervision-failed':
@@ -207,6 +208,10 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
   const plainOptions =
     activeRunId === null && latestAssistant?.kind === 'message' && latestAssistant.plainOptions
   const activeRun = runs.find((run) => run.id === activeRunId) ?? runs[0]
+  const providers = readiness?.providers ?? []
+  const selected = providers.find((entry) => entry.provider === provider)
+  const canDevelop = selected?.capabilities.developIdea
+  const blocked = readiness !== null && canDevelop?.available !== true
   const resumable = phase.snapshot.recovery?.resumableSubmissionId ?? null
   const resumableText = entries.find(
     (entry) => entry.kind === 'message' && entry.submissionId === resumable
@@ -316,7 +321,7 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
                 <Button
                   size="sm"
                   variant="secondary"
-                  disabled={busy || activeRunId !== null}
+                  disabled={busy || blocked || activeRunId !== null}
                   onClick={() => void send(option.value, 'suggested-response')}
                 >
                   {option.label}
@@ -363,15 +368,13 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
               onChange={(event) => setProvider(event.target.value as ProviderId)}
               className="h-8 rounded-md border border-border bg-background px-2 text-xs"
             >
-              {CONVERSATION_PROVIDERS.map((id) => {
-                const entry = readiness?.providers.find((candidate) => candidate.provider === id)
-                return (
-                  <option key={id} value={id} disabled={readiness !== null && !entry?.available}>
-                    {entry?.displayName ?? 'Codex'}
-                    {readiness === null || entry?.available ? '' : ' — not ready'}
-                  </option>
-                )
-              })}
+              {providers.length === 0 && <option value="codex">Codex</option>}
+              {providers.map((entry) => (
+                <option key={entry.provider} value={entry.provider}>
+                  {entry.displayName}
+                  {entry.capabilities.developIdea.available ? '' : ' — unavailable'}
+                </option>
+              ))}
             </select>
           </Field>
           <Field label="Model">
@@ -413,12 +416,25 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
             className="ml-auto"
             size="sm"
             type="submit"
-            disabled={busy || activeRunId !== null || !draft.trim()}
+            disabled={busy || blocked || activeRunId !== null || !draft.trim()}
           >
             <Send aria-hidden="true" className="size-3.5" />
             {busy ? 'Sending…' : started ? 'Send' : 'Start developing'}
           </Button>
         </div>
+        {blocked && canDevelop && (
+          <div role="status" className="rounded-md border border-border bg-muted/50 p-2">
+            <p className="text-xs text-foreground">{canDevelop.summary}</p>
+            {canDevelop.command && (
+              <code className="mt-1 block font-mono text-[11px] break-all select-text">
+                {canDevelop.command}
+              </code>
+            )}
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              This app never installs or updates a provider for you.
+            </p>
+          </div>
+        )}
         <p className="text-[11px] text-muted-foreground">
           Auto stays inside the same fixed planning authority as Ask. Git, source edits, secrets,
           sockets, scripts, and package managers are always blocked.

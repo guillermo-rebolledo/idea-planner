@@ -407,6 +407,89 @@ describe('ingesting raw provider output', () => {
     })
   })
 
+  it('says the provider spoke unreadably rather than showing an empty Conversation', async () => {
+    const runId = await startRun('Grill me', 'submission-1')
+    // A provider whose protocol this app does not model: the process is
+    // perfectly happy and exits zero, but nothing usable ever arrives.
+    await core.ingestProviderOutput({
+      relativePath,
+      runId,
+      provider: 'codex',
+      chunk: '{"type":"some.future.event"}\n{"type":"another.one"}\n'
+    })
+    await core.finalizeConversationRun({
+      relativePath,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Provider process completed'
+    })
+    expect((await core.getConversation(relativePath)).recovery).toMatchObject({
+      category: 'protocol-unsupported'
+    })
+  })
+
+  it('stays silent when a Run it could read completes normally', async () => {
+    const runId = await startRun('Grill me', 'submission-1')
+    await core.ingestProviderOutput({
+      relativePath,
+      runId,
+      provider: 'codex',
+      chunk:
+        '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Who is this for?"}}\n'
+    })
+    await core.finalizeConversationRun({
+      relativePath,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Provider process completed'
+    })
+    expect((await core.getConversation(relativePath)).recovery).toBeNull()
+  })
+
+  it('reports what the provider said rather than blaming its protocol', async () => {
+    const runId = await startRun('Grill me', 'submission-1')
+    // Unmodelled protocol arrived, but the provider also said why it failed.
+    // The stated cause is the one the person can act on.
+    await core.ingestProviderOutput({
+      relativePath,
+      runId,
+      provider: 'codex',
+      chunk: '{"type":"some.future.event"}\n'
+    })
+    await core.finalizeConversationRun({
+      relativePath,
+      runId,
+      outcome: 'failed',
+      category: 'authentication',
+      summary: 'The provider reports it is no longer signed in'
+    })
+    expect((await core.getConversation(relativePath)).recovery).toMatchObject({
+      category: 'authentication'
+    })
+  })
+
+  it('keeps a stop a stop, whatever protocol arrived first', async () => {
+    const runId = await startRun('Grill me', 'submission-1')
+    await core.ingestProviderOutput({
+      relativePath,
+      runId,
+      provider: 'codex',
+      chunk: '{"type":"some.future.event"}\n'
+    })
+    await core.finalizeConversationRun({
+      relativePath,
+      runId,
+      outcome: 'stopped',
+      category: null,
+      summary: 'Run stopped by user'
+    })
+    expect((await core.getConversation(relativePath)).recovery).toMatchObject({
+      category: 'stopped'
+    })
+  })
+
   it('refuses a provider that has no harness Adapter rather than losing its answers', async () => {
     const runId = await startRun('Grill me', 'submission-1')
     await expect(

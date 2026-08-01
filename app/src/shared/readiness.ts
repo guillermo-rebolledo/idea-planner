@@ -65,6 +65,20 @@ export type ReadinessCheck = z.infer<typeof readinessCheckSchema>
 export const executableSourceSchema = z.enum(['path', 'explicit'])
 export type ExecutableSource = z.infer<typeof executableSourceSchema>
 
+/**
+ * A product capability a provider either supports or does not. Readiness
+ * reports these so a feature can be offered with an explanation rather than
+ * silently omitted, which is the difference between "I can't" and "I won't".
+ */
+export const providerCapabilitySchema = z.object({
+  available: z.boolean(),
+  /** One sentence saying why, in the person's terms. */
+  summary: z.string().min(1),
+  /** Copyable remediation. The app never runs it. */
+  command: z.string().nullable()
+})
+export type ProviderCapability = z.infer<typeof providerCapabilitySchema>
+
 export const providerReadinessSchema = z.object({
   provider: providerIdSchema,
   displayName: z.string().min(1),
@@ -75,6 +89,8 @@ export const providerReadinessSchema = z.object({
   executableSource: executableSourceSchema,
   version: z.string().nullable(),
   checks: z.array(readinessCheckSchema).length(5),
+  /** Keyed by capability so a new one is a new field, not a lookup. */
+  capabilities: z.object({ developIdea: providerCapabilitySchema }),
   checkedAt: z.string().datetime(),
   /** True when every dimension is ready or a warning. */
   available: z.boolean()

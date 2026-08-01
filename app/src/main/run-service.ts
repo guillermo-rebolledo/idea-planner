@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { CoreCommand } from '@shared/contract'
 import {
-  CONVERSATION_PROVIDERS,
   PROVIDER_DEFAULT_MODEL,
   conversationSnapshotSchema,
   developIdeaInputSchema,
@@ -78,8 +77,10 @@ export class RunService {
    */
   async develop(rawInput: DevelopIdeaInput): Promise<ConversationSnapshot> {
     const input = developIdeaInputSchema.parse(rawInput)
-    if (!CONVERSATION_PROVIDERS.includes(input.provider)) {
-      throw new Error(`${input.provider} cannot yet develop an Idea through a Conversation`)
+    if (!PROVIDER_SPECS[input.provider].conversation) {
+      throw new Error(
+        `Developing an Idea with ${PROVIDER_SPECS[input.provider].displayName} is not supported yet`
+      )
     }
     await this.deps.core.send({
       type: 'conversation/submit',
