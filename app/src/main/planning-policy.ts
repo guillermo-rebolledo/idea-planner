@@ -16,7 +16,7 @@ export interface PolicyResult {
 
 const SECRET_NAMES =
   /(^|\/)(\.env(?!\.example$)|\.ssh|\.aws|\.config\/gh|.*credentials?.*|.*private[-_.]?key.*)(\/|$)/i
-const DENIED_TREES = /(^|\/)(\.git|node_modules|dist|build|coverage|\.cache)(\/|$)/
+const DENIED_TREES = /(^|\/)(\.git|\.tombstones|node_modules|dist|build|coverage|\.cache)(\/|$)/
 const SAFE_INSPECTION_EXECUTABLES = new Set([
   'ls',
   'find',
@@ -25,6 +25,7 @@ const SAFE_INSPECTION_EXECUTABLES = new Set([
   'sed',
   'stat',
   'tail',
+  'touch',
   'wc'
 ])
 /** Fixed, non-overridable planning authority shared by Ask and Auto modes. */
@@ -95,9 +96,25 @@ export class PlanningPolicy {
         true
       )
     }
+    const resolvedPortable = relative(root, anchor).replaceAll('\\', '/')
+    if (SECRET_NAMES.test(resolvedPortable)) {
+      return this.block(
+        `secret:${resolvedPortable}`,
+        'secret-path',
+        'Blocked a secret or credential path',
+        true
+      )
+    }
+    if (DENIED_TREES.test(resolvedPortable)) {
+      return this.block(
+        `tree:${resolvedPortable}`,
+        'protected-tree',
+        `Blocked protected path: ${this.safePath(portable)}`
+      )
+    }
     if (request.kind === 'write') {
       const planningRoot = await realpath(this.paths.planningDirectory)
-      if (!isInside(planningRoot, absolute)) {
+      if (!isInside(planningRoot, anchor)) {
         return this.block(
           `write:${portable}`,
           'source-write',
@@ -131,12 +148,17 @@ export class PlanningPolicy {
     }
   }
 
-  /** The OS-enforced form of this same fixed policy. */
+  deny(key: string, code: string, summary: string, highRisk = false): PolicyResult {
+    return this.block(key, code, summary, highRisk)
+  }
+
+  /** Provider containment is deliberately stricter; Main performs authorized planning writes. */
   renderSandboxProfile(paths: {
     runDirectory: string
     executable: string
-    homeDirectory: string
-    skillDirectory: string
+    proxyExecutable: string
+    proxyScript: string
+    socketPath: string
   }): string {
     const q = (value: string): string => JSON.stringify(value)
     const canonical = (path: string): string => {
@@ -147,23 +169,22 @@ export class PlanningPolicy {
       }
     }
     const workingDirectory = canonical(this.paths.workingDirectory)
-    const planningDirectory = canonical(this.paths.planningDirectory)
     const runDirectory = canonical(paths.runDirectory)
-    const homeDirectory = canonical(paths.homeDirectory)
-    const skillDirectory = canonical(paths.skillDirectory)
+    const socketPath = canonical(paths.socketPath)
     return `(version 1)
 (deny default)
 (import "system.sb")
-(allow process-exec (literal ${q(paths.executable)}) (literal "/bin/sh") (literal "/bin/bash") (literal "/bin/zsh") (literal "/bin/ls") (literal "/usr/bin/find") (literal "/usr/bin/grep") (literal "/usr/bin/head") (literal "/usr/bin/sed") (literal "/usr/bin/stat") (literal "/usr/bin/tail") (literal "/usr/bin/wc"))
+(allow process-exec (literal ${q(paths.executable)}) (literal ${q(paths.proxyExecutable)}))
 (allow process-fork)
 (allow signal (target self))
 (allow file-read-metadata)
 (allow file-read* (subpath ${q(workingDirectory)}))
 (deny file-read* (subpath ${q(join(workingDirectory, '.git'))}) (regex #"(^|/)\\.env($|/)"))
 (deny file-read* (regex #"(^|/)(\\.ssh|\\.aws|credentials|private[-_.]?key)($|/)"))
-(allow file-read* (literal ${q(paths.executable)}) (subpath ${q(skillDirectory)}) (literal ${q(join(homeDirectory, '.codex', 'auth.json'))}) (literal ${q(join(homeDirectory, '.codex', 'config.toml'))}) (literal ${q(join(homeDirectory, '.claude.json'))}) (literal ${q(join(homeDirectory, '.claude', 'settings.json'))}) (subpath "/System") (subpath "/Library/Apple") (subpath "/usr/lib") (subpath "/usr/share") (subpath "/private/etc/ssl"))
-(allow file-write* (subpath ${q(planningDirectory)}) (subpath ${q(runDirectory)}))
-(allow network-outbound (require-not (remote ip "localhost:*")))
+(allow file-read* (literal ${q(paths.executable)}) (literal ${q(paths.proxyExecutable)}) (literal ${q(paths.proxyScript)}) (subpath ${q(runDirectory)}) (subpath "/System") (subpath "/Library/Apple") (subpath "/usr/lib") (subpath "/usr/share") (subpath "/private/etc/ssl"))
+(allow file-write* (subpath ${q(runDirectory)}))
+(allow network-outbound (require-all (remote ip) (require-not (remote ip "localhost:*"))))
+(allow network-outbound (remote unix-socket (path-literal ${q(socketPath)})))
 `
   }
 

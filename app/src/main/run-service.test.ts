@@ -1,10 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
+import { createServer } from 'node:net'
 import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { RunSnapshot } from '@shared/run'
+import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
 import { PlanningPolicy } from './planning-policy'
 import { RunService } from './run-service'
 
@@ -20,8 +21,14 @@ describe('Run service', () => {
     const root = await mkdtemp(join(tmpdir(), 'run-service-'))
     temporaryDirectories.push(root)
     const skillPath = join(root, '.agents', 'skills', 'grilling', 'SKILL.md')
-    await mkdir(join(skillPath, '..'), { recursive: true })
+    const executablePath = join(root, 'codex')
+    await Promise.all([
+      mkdir(join(skillPath, '..'), { recursive: true }),
+      mkdir(join(root, '.codex'), { recursive: true })
+    ])
     await writeFile(skillPath, '# Grilling')
+    await writeFile(executablePath, '#!/bin/sh\n')
+    await writeFile(join(root, '.codex', 'auth.json'), '{}')
     const order: string[] = []
     let accepted: RunSnapshot | undefined
     const core = {
@@ -48,9 +55,9 @@ describe('Run service', () => {
       })
     }
     const broker = {
-      start: vi.fn(() => {
+      start: vi.fn(async (_launch: { args: string[]; onBeforeCleanup?: () => Promise<void> }) => {
         order.push('provider/start')
-        return Promise.resolve()
+        await _launch.onBeforeCleanup?.()
       }),
       stop: vi.fn(() => Promise.resolve()),
       stopAll: vi.fn(() => Promise.resolve()),
@@ -63,13 +70,22 @@ describe('Run service', () => {
       readiness: {
         refresh: vi.fn(() =>
           Promise.resolve({
-            providers: [{ provider: 'codex', available: true, executablePath: '/opt/codex' }]
+            providers: [
+              {
+                provider: 'codex',
+                available: true,
+                executablePath,
+                version: 'codex-cli 0.146.0'
+              }
+            ]
           })
         )
       },
       libraryPath: () => join(root, 'library'),
       homeDirectory: root,
-      privateRoot: join(root, 'private')
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/planning-mcp-proxy.js'
     })
     await service.start({
       submissionId: 'submission-1',
@@ -85,11 +101,25 @@ describe('Run service', () => {
     const accept = core.send.mock.calls.find(([command]) => command.type === 'run/accept')?.[0]
     expect(accept).toBeDefined()
     const acceptance = accept as { input: { configuration: unknown } }
-    expect(acceptance.input.configuration).toMatchObject({
-      executable: '/opt/codex',
+    const configuration = runConfigurationSchema.parse(acceptance.input.configuration)
+    expect(configuration).toMatchObject({
+      executable: executablePath,
+      providerVersion: 'codex-cli 0.146.0',
       permissionProfile: 'planning-v1',
       skill: { name: 'grilling', path: join(root, '.agents', 'skills', 'grilling') }
     })
+    expect(configuration.executableHash).toMatch(/^[a-f0-9]{64}$/)
+    const launch = broker.start.mock.calls[0]?.[0]
+    expect(launch).toBeDefined()
+    for (const argument of [
+      '--ephemeral',
+      '--ignore-rules',
+      '--disable',
+      'shell_tool',
+      'unified_exec'
+    ]) {
+      expect(launch?.args).toContain(argument)
+    }
   })
 
   it.skipIf(process.platform !== 'darwin')(
@@ -109,8 +139,9 @@ describe('Run service', () => {
         new PlanningPolicy({ workingDirectory: root, planningDirectory }).renderSandboxProfile({
           runDirectory,
           executable: '/usr/bin/true',
-          homeDirectory: root,
-          skillDirectory: join(root, '.agents', 'skills', 'grilling')
+          proxyExecutable: '/usr/bin/true',
+          proxyScript: join(root, 'proxy.js'),
+          socketPath: join(runDirectory, 'planning.sock')
         })
       )
       await expect(
@@ -120,7 +151,7 @@ describe('Run service', () => {
   )
 
   it.skipIf(process.platform !== 'darwin')(
-    'enforces managed writes and secret-path denial in the native sandbox',
+    'denies direct provider writes and secret-path reads in the native sandbox',
     async () => {
       const root = await mkdtemp(join(tmpdir(), 'sandbox-enforcement-'))
       temporaryDirectories.push(root)
@@ -133,22 +164,66 @@ describe('Run service', () => {
         writeFile(join(root, 'README.md'), 'safe')
       ])
       const profile = join(runDirectory, 'planning.sb')
+      const policy = new PlanningPolicy({ workingDirectory: root, planningDirectory })
+      await writeFile(
+        profile,
+        policy.renderSandboxProfile({
+          runDirectory,
+          executable: '/usr/bin/touch',
+          proxyExecutable: '/usr/bin/true',
+          proxyScript: join(root, 'proxy.js'),
+          socketPath: join(runDirectory, 'planning.sock')
+        })
+      )
+      const sandbox = (executable: string, ...args: string[]) =>
+        promisify(execFile)('/usr/bin/sandbox-exec', ['-f', profile, executable, ...args])
+      await expect(
+        sandbox('/usr/bin/touch', join(planningDirectory, 'draft.md'))
+      ).rejects.toBeDefined()
+      await expect(sandbox('/usr/bin/touch', join(root, 'source.ts'))).rejects.toBeDefined()
+      await expect(sandbox('/usr/bin/head', join(root, '.env'))).rejects.toBeDefined()
+    }
+  )
+
+  it.skipIf(process.platform !== 'darwin')(
+    'allows only the capability socket through the native sandbox',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'sandbox-socket-'))
+      temporaryDirectories.push(root)
+      const runDirectory = join(root, 'run')
+      const planningDirectory = join(root, '.scratch', 'idea')
+      await Promise.all([
+        mkdir(runDirectory, { recursive: true }),
+        mkdir(planningDirectory, { recursive: true })
+      ])
+      const allowedSocket = join(root, 'allowed.sock')
+      const deniedSocket = join(root, 'denied.sock')
+      const allowedServer = createServer((connection) => connection.end('ok'))
+      const deniedServer = createServer((connection) => connection.end('unexpected'))
+      await Promise.all([
+        new Promise<void>((resolve) => allowedServer.listen(allowedSocket, resolve)),
+        new Promise<void>((resolve) => deniedServer.listen(deniedSocket, resolve))
+      ])
+      const profile = join(runDirectory, 'planning.sb')
       await writeFile(
         profile,
         new PlanningPolicy({ workingDirectory: root, planningDirectory }).renderSandboxProfile({
           runDirectory,
-          executable: '/bin/sh',
-          homeDirectory: root,
-          skillDirectory: join(root, '.agents', 'skills', 'grilling')
+          executable: '/usr/bin/nc',
+          proxyExecutable: '/usr/bin/true',
+          proxyScript: join(root, 'proxy.js'),
+          socketPath: allowedSocket
         })
       )
-      const sandbox = (script: string) =>
-        promisify(execFile)('/usr/bin/sandbox-exec', ['-f', profile, '/bin/sh', '-c', script])
-      await expect(
-        sandbox(`printf allowed > ${join(planningDirectory, 'draft.md')}`)
-      ).resolves.toBeDefined()
-      await expect(sandbox(`printf blocked > ${join(root, 'source.ts')}`)).rejects.toBeDefined()
-      await expect(sandbox(`IFS= read -r value < ${join(root, '.env')}`)).rejects.toBeDefined()
+      const connect = (path: string) =>
+        promisify(execFile)('/usr/bin/sandbox-exec', ['-f', profile, '/usr/bin/nc', '-U', path])
+      try {
+        await expect(connect(allowedSocket)).resolves.toMatchObject({ stdout: 'ok' })
+        await expect(connect(deniedSocket)).rejects.toBeDefined()
+      } finally {
+        allowedServer.close()
+        deniedServer.close()
+      }
     }
   )
 })

@@ -64,6 +64,21 @@ describe('planning policy', () => {
     await rm(outside, { recursive: true, force: true })
   })
 
+  it('blocks symlink aliases to protected and source paths inside the Idea', async () => {
+    await mkdir(join(workingDirectory, '.git'), { recursive: true })
+    await writeFile(join(workingDirectory, '.git', 'config'), 'private')
+    await mkdir(join(workingDirectory, 'src'), { recursive: true })
+    await symlink(join(workingDirectory, '.git'), join(workingDirectory, 'git-alias'))
+    await symlink(join(workingDirectory, 'src'), join(planningDirectory, 'source-alias'))
+
+    await expect(
+      policy.authorize({ kind: 'read', path: 'git-alias/config' })
+    ).resolves.toMatchObject({ decision: 'block', code: 'protected-tree' })
+    await expect(
+      policy.authorize({ kind: 'write', path: '.scratch/idea/source-alias/index.ts', bytes: 1 })
+    ).resolves.toMatchObject({ decision: 'block', code: 'source-write' })
+  })
+
   it('stops on the third repeated non-overridable violation', async () => {
     const first = await policy.authorize({ kind: 'execute', executable: 'node' })
     const second = await policy.authorize({ kind: 'execute', executable: 'node' })

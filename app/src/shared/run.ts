@@ -32,6 +32,8 @@ export type PermissionMode = z.infer<typeof permissionModeSchema>
 export const runConfigurationSchema = z.object({
   provider: providerIdSchema,
   executable: z.string().min(1),
+  executableHash: z.string().length(64),
+  providerVersion: z.string().min(1),
   model: z.string().min(1),
   effort: z.string().min(1),
   workflow: workflowSchema,

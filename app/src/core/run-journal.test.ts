@@ -30,6 +30,8 @@ describe('durable Run acceptance', () => {
       configuration: {
         provider: 'codex' as const,
         executable: '/opt/codex',
+        executableHash: 'c'.repeat(64),
+        providerVersion: 'codex-cli 0.146.0',
         model: 'gpt-5',
         effort: 'high',
         workflow: 'grilling' as const,
@@ -60,6 +62,13 @@ describe('durable Run acceptance', () => {
     await core.recordRunEvent({
       relativePath: idea.relativePath,
       runId: accepted.id,
+      status: 'starting',
+      kind: 'lifecycle',
+      summary: 'Starting provider'
+    })
+    await core.recordRunEvent({
+      relativePath: idea.relativePath,
+      runId: accepted.id,
       status: 'running',
       kind: 'lifecycle',
       summary: 'Provider process running'
@@ -76,6 +85,8 @@ describe('durable Run acceptance', () => {
       configuration: {
         provider: 'codex' as const,
         executable: '/opt/codex',
+        executableHash: 'c'.repeat(64),
+        providerVersion: 'codex-cli 0.146.0',
         model: 'gpt-5',
         effort: 'high',
         workflow: 'grilling' as const,
@@ -90,5 +101,46 @@ describe('durable Run acceptance', () => {
     await expect(core.acceptRun({ ...base, prompt: 'Changed' })).rejects.toMatchObject({
       code: 'INVALID_INPUT'
     })
+  })
+
+  it('rejects invalid lifecycle transitions in durable state', async () => {
+    const idea = await core.captureIdea({ kind: 'software', title: 'Transitions', notes: '' })
+    const accepted = await core.acceptRun({
+      submissionId: 'submission-transition',
+      relativePath: idea.relativePath,
+      prompt: 'Plan safely',
+      configuration: {
+        provider: 'codex',
+        executable: '/opt/codex',
+        executableHash: 'd'.repeat(64),
+        providerVersion: 'codex-cli 0.146.0',
+        model: 'gpt-5',
+        effort: 'high',
+        workflow: 'grilling',
+        skill: { name: 'grilling', path: '/skills/grilling', hash: 'e'.repeat(64) },
+        environment: { LANG: 'en_US.UTF-8' },
+        workingDirectory: join(libraryDir, idea.relativePath),
+        permissionMode: 'ask',
+        permissionProfile: 'planning-v1'
+      }
+    })
+
+    await expect(
+      core.recordRunEvent({
+        relativePath: idea.relativePath,
+        runId: accepted.id,
+        status: 'completed',
+        kind: 'lifecycle',
+        summary: 'Impossible direct completion'
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('maps malformed event payloads to a typed Core error', async () => {
+    const record = (input: unknown): Promise<unknown> =>
+      (core.recordRunEvent as (value: unknown) => Promise<unknown>)(input)
+    await expect(
+      record({ relativePath: 'idea', runId: 'run-1', kind: 'output', summary: '' })
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
   })
 })

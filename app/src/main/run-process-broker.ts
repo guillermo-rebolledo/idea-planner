@@ -17,6 +17,7 @@ export interface RunLaunch {
   runDirectory: string
   environment: Record<string, string>
   sandboxProfile: string
+  onBeforeCleanup?: () => Promise<void>
   onActivity?: (summary: string) => void
   onExit?: (code: number | null, signal: NodeJS.Signals | null) => void
   onSupervisionFailure?: () => void
@@ -34,7 +35,6 @@ interface BrokerDeps {
 }
 
 interface ActiveRun {
-  process: SpawnedProcess
   pid: number
   runDirectory: string
   outputBytes: number
@@ -100,7 +100,6 @@ export class RunProcessBroker {
     }
     const pid = child.pid
     const entry: ActiveRun = {
-      process: child,
       pid,
       runDirectory: launch.runDirectory,
       outputBytes: 0,
@@ -122,17 +121,19 @@ export class RunProcessBroker {
     )
     child.once('exit', (code, signal) => {
       if (this.active.get(launch.id)?.stopping) return
-      void this.terminateAndVerify(pid).then(
-        () => {
+      void (async () => {
+        try {
+          await this.terminateAndVerify(pid)
+          await launch.onBeforeCleanup?.()
+          await this.cleanup(launch.runDirectory)
           this.clearMonitor(launch.id)
           this.active.delete(launch.id)
-          void this.cleanup(launch.runDirectory).then(() => launch.onExit?.(code, signal))
-        },
-        () => {
+          launch.onExit?.(code, signal)
+        } catch {
           this.supervisionFailed = true
           launch.onSupervisionFailure?.()
         }
-      )
+      })()
     })
     return Promise.resolve()
   }
@@ -146,12 +147,13 @@ export class RunProcessBroker {
     entry.stopping = true
     try {
       await this.terminateAndVerify(entry.pid)
+      await entry.launch.onBeforeCleanup?.()
+      await this.cleanup(entry.runDirectory)
       this.clearMonitor(runId)
       this.active.delete(runId)
-      await this.cleanup(entry.runDirectory)
     } catch {
       this.supervisionFailed = true
-      throw new Error('Run supervision could not verify that the provider process group exited')
+      throw new Error('Run supervision could not verify process-group exit and private cleanup')
     }
   }
 

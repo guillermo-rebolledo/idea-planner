@@ -6,11 +6,14 @@ Date: 2026-07-31
 ## Context
 
 The Core utility process owns durable Run acceptance, normalized event state,
-managed-file writes, and product lifecycle decisions. Main alone can own native
-Codex/Claude process groups and the macOS sandbox. Hand-rolled promises inside
-Core would put durable cancellation and write-ordering guarantees on bespoke
-queues, while importing Effect into Electron authority wiring would enlarge the
-trusted surface without improving the narrow OS process contract.
+product-managed Idea-document writes, and product lifecycle decisions. Main
+alone can own native Codex/Claude process groups, the macOS sandbox, and the
+short-lived planning capability described below. Planning artifacts under an
+Idea's `.scratch/` tree are deliberately outside Core's managed-document and
+version-history contract. Hand-rolled promises inside Core would put durable
+cancellation and write-ordering guarantees on bespoke queues, while importing
+Effect into Electron authority wiring would enlarge the trusted surface without
+improving the narrow OS process contract.
 
 The existing Core already hand-rolls three things a structured-effect system
 provides: typed errors (`CoreError` codes), dependency injection (`CoreDeps`),
@@ -24,9 +27,10 @@ injection — exactly the shape of the upcoming Run supervision work.
 ## Decision
 
 Use Effect for all product behavior inside the **Core utility process**. Future
-Core subsystems (durable Run state, managed-file writes, and event journals) are
-written Effect-native from the start. Native process launch and reaping remain
-in Main as described by the follow-up decision below.
+Core subsystems (durable Run state, managed Idea-document writes, and event
+journals) are written Effect-native from the start. Native process launch,
+reaping, and capability-mediated `.scratch/` planning operations remain in Main
+as described by the follow-up decision below.
 
 Effect stays **contained behind the process boundary**:
 
@@ -76,12 +80,25 @@ Conventions inside Core:
 
 ## Follow-up decision: Main process supervision stays promise-based
 
-`RunService`, `PlanningPolicy`, and `RunProcessBroker` remain promise- and
-event-driven in **Main**. They form one native authority boundary: resolve the
-already-probed executable, freeze the launch configuration through Core,
-compile the fixed policy into a Seatbelt profile, then launch, terminate, reap,
-verify, and remove the private Run directory. Main may report observed native
-lifecycle events, but it does not own canonical state transitions: each one is
-validated and persisted by Core before presentation. Dependencies are injected
-and the boundary contract is tested directly. Revisit if orchestration expands
-beyond this fixed request/persist/launch/report sequence.
+`RunService`, `PlanningPolicy`, `PlanningToolHost`, and `RunProcessBroker` remain
+promise- and event-driven in **Main**. They form one native authority boundary:
+resolve the already-probed executable, freeze the launch configuration through
+Core, compile the provider containment profile, then launch, terminate, reap,
+verify, and remove the private Run directory.
+
+The provider has no general shell, file-write, browser, plugin, or ambient MCP
+surface. Its only model-visible operations are the typed tools advertised by a
+Main-owned MCP host through a per-Run capability socket and a tiny sandboxed
+stdio proxy. The provider sandbox cannot write the planning tree; Main performs
+an approved planning write only after `PlanningPolicy` validates the exact
+request. These `.scratch/` artifacts are serialized by `PlanningToolHost`,
+bounded per file and Run, and intentionally do not enter Core's managed-document
+version history. This separation also lets the provider read its private
+bootstrap authentication without exposing an operation capable of reading that
+path to the model.
+
+Main may report observed native lifecycle and policy events, but it does not
+own canonical state transitions: each one is validated and persisted by Core
+before presentation. Dependencies are injected and the boundary contract is
+tested directly. Revisit if orchestration expands beyond this fixed
+request/persist/launch/report sequence.

@@ -23,10 +23,12 @@ import {
 } from '@shared/contract'
 import {
   acceptRunInputSchema,
+  recordRunEventInputSchema,
   runSnapshotSchema,
   type AcceptRunInput,
   type RecordRunEventInput,
-  type RunSnapshot
+  type RunSnapshot,
+  type RunStatus
 } from '@shared/run'
 import { suggestIdeaTitle } from '@shared/title'
 import {
@@ -618,11 +620,17 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
         provide(
           writeLock.withPermits(1)(
             Effect.gen(function* () {
-              const parsedPath = ideaRelativePathSchema.safeParse(input.relativePath)
-              if (!parsedPath.success) {
-                return yield* Effect.fail(new CoreError('INVALID_INPUT', 'Invalid Idea reference'))
+              const parsedInput = recordRunEventInputSchema.safeParse(input)
+              if (!parsedInput.success) {
+                return yield* Effect.fail(
+                  new CoreError(
+                    'INVALID_INPUT',
+                    parsedInput.error.issues[0]?.message ?? 'Invalid Run event'
+                  )
+                )
               }
-              const path = join(library, parsedPath.data, '.idea', 'runs', `${input.runId}.json`)
+              const event = parsedInput.data
+              const path = join(library, event.relativePath, '.idea', 'runs', `${event.runId}.json`)
               const existing = yield* Effect.tryPromise({
                 try: () => readFile(path, 'utf8'),
                 catch: () => new CoreError('RUN_NOT_FOUND', 'The Run was not found')
@@ -632,17 +640,33 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
                 catch: () =>
                   new CoreError('UNRECOVERABLE_CONTENT', 'Durable Run state is unreadable')
               })
+              if (
+                event.status &&
+                event.status !== run.status &&
+                !RUN_STATUS_TRANSITIONS[run.status].includes(event.status)
+              ) {
+                return yield* Effect.fail(
+                  new CoreError(
+                    'INVALID_INPUT',
+                    `Run cannot transition from ${run.status} to ${event.status}`
+                  )
+                )
+              }
               const clock = yield* IdeaClock
               const ids = yield* IdGenerator
               const timestamp = clock.now().toISOString()
-              const next = runSnapshotSchema.parse({
-                ...run,
-                ...(input.status ? { status: input.status } : {}),
-                updatedAt: timestamp,
-                activity: [
-                  ...run.activity,
-                  { id: ids.nextId(), at: timestamp, kind: input.kind, summary: input.summary }
-                ]
+              const next = yield* Effect.try({
+                try: () =>
+                  runSnapshotSchema.parse({
+                    ...run,
+                    ...(event.status ? { status: event.status } : {}),
+                    updatedAt: timestamp,
+                    activity: [
+                      ...run.activity,
+                      { id: ids.nextId(), at: timestamp, kind: event.kind, summary: event.summary }
+                    ]
+                  }),
+                catch: () => new CoreError('INVALID_INPUT', 'Invalid Run event')
               })
               yield* Effect.tryPromise({
                 try: () => writeJsonAtomic(path, next),
@@ -686,6 +710,18 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     listRuns,
     recordRunEvent
   }
+}
+
+const RUN_STATUS_TRANSITIONS: Record<RunStatus, readonly RunStatus[]> = {
+  accepted: ['starting', 'failed', 'supervision-failed'],
+  starting: ['running', 'failed', 'stopped', 'policy-violation', 'supervision-failed'],
+  running: ['waiting', 'completed', 'failed', 'stopped', 'policy-violation', 'supervision-failed'],
+  waiting: ['running', 'completed', 'failed', 'stopped', 'policy-violation', 'supervision-failed'],
+  completed: ['supervision-failed'],
+  failed: ['supervision-failed'],
+  stopped: ['supervision-failed'],
+  'policy-violation': ['supervision-failed'],
+  'supervision-failed': []
 }
 
 export function createCore(deps: CoreDeps = {}): Core {

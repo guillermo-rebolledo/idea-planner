@@ -637,7 +637,9 @@ void app.whenReady().then(() => {
     readiness,
     libraryPath: () => libraryState?.path ?? settings.get().libraryPath,
     homeDirectory: app.getPath('home'),
-    privateRoot: join(app.getPath('userData'), 'runs')
+    privateRoot: join(app.getPath('userData'), 'runs'),
+    proxyExecutable: process.execPath,
+    proxyScript: join(__dirname, 'planning-mcp-proxy.js')
   })
 
   // Resolve appearance before any window exists so the first paint already

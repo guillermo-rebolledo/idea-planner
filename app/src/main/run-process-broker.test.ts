@@ -132,6 +132,33 @@ describe('Run process broker', () => {
     expect(killProcessGroup).toHaveBeenCalledWith(4242, 'SIGTERM')
   })
 
+  it('fails supervision when natural-exit cleanup cannot be verified', async () => {
+    const child = fakeProcess()
+    const onExit = vi.fn()
+    const onSupervisionFailure = vi.fn()
+    const broker = new RunProcessBroker({
+      spawn: () => child,
+      killProcessGroup: vi.fn(),
+      waitForGroupExit: vi.fn().mockResolvedValue(undefined),
+      cleanupRunDirectory: vi.fn().mockRejectedValue(new Error('cleanup failed'))
+    })
+    await broker.start({
+      id: 'run-1',
+      executable: '/opt/codex',
+      args: [],
+      workingDirectory: '/work',
+      runDirectory: '/private/run-1',
+      environment: {},
+      sandboxProfile: '/private/run-1/profile.sb',
+      onExit,
+      onSupervisionFailure
+    })
+    child.emit('exit', 0, null)
+    await vi.waitFor(() => expect(onSupervisionFailure).toHaveBeenCalledOnce())
+    expect(onExit).not.toHaveBeenCalled()
+    expect(broker.needsRecovery()).toBe(true)
+  })
+
   it('stops the process group when combined output exceeds its limit', async () => {
     const child = fakeProcess()
     const onLimitViolation = vi.fn()

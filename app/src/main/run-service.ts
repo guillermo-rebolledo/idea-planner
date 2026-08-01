@@ -1,5 +1,6 @@
-import { createHash } from 'node:crypto'
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { CoreCommand } from '@shared/contract'
 import {
@@ -10,6 +11,7 @@ import {
 } from '@shared/run'
 import { PROVIDER_SPECS } from './readiness'
 import { PlanningPolicy } from './planning-policy'
+import { PlanningToolHost } from './planning-tool-host'
 import type { RunProcessBroker } from './run-process-broker'
 
 interface CorePort {
@@ -17,7 +19,12 @@ interface CorePort {
 }
 interface ReadinessPort {
   refresh(provider?: 'codex' | 'claude'): Promise<{
-    providers: { provider: string; available: boolean; executablePath: string | null }[]
+    providers: {
+      provider: string
+      available: boolean
+      executablePath: string | null
+      version: string | null
+    }[]
   }>
 }
 
@@ -28,10 +35,14 @@ interface RunServiceDeps {
   libraryPath: () => string | undefined
   homeDirectory: string
   privateRoot: string
+  proxyExecutable: string
+  proxyScript: string
 }
 
 /** Coordinates durable Core acceptance with Main's native process authority. */
 export class RunService {
+  private readonly toolHosts = new Map<string, PlanningToolHost>()
+
   constructor(private readonly deps: RunServiceDeps) {}
 
   async start(rawInput: StartRunInput): Promise<RunSnapshot> {
@@ -43,21 +54,35 @@ export class RunService {
     if (!provider?.available || !provider.executablePath) {
       throw new Error(`${input.provider} is not ready for planning`)
     }
+    if (!provider.version) throw new Error(`${input.provider} version provenance is unavailable`)
     const spec = PROVIDER_SPECS[input.provider]
     const skillDirectory = join(this.deps.homeDirectory, spec.skillsRoot, input.workflow)
     const skillFile = join(skillDirectory, 'SKILL.md')
     const skillHash = createHash('sha256')
       .update(await readFile(skillFile))
       .digest('hex')
+    const executableHash = await hashFile(provider.executablePath)
     const workingDirectory = join(library, input.relativePath)
+    const runKey = createHash('sha256')
+      .update(`${workingDirectory}\0${input.submissionId}`)
+      .digest('hex')
+    const runDirectory = join(this.deps.privateRoot, runKey)
+    const environment = minimalEnvironment(
+      provider.executablePath,
+      this.deps.homeDirectory,
+      input.provider,
+      runDirectory
+    )
     const configuration = {
       provider: input.provider,
       executable: provider.executablePath,
+      executableHash,
+      providerVersion: provider.version,
       model: input.model,
       effort: input.effort,
       workflow: input.workflow,
       skill: { name: input.workflow, path: skillDirectory, hash: skillHash },
-      environment: minimalEnvironment(provider.executablePath, this.deps.homeDirectory),
+      environment,
       workingDirectory,
       permissionMode: input.permissionMode,
       permissionProfile: 'planning-v1' as const
@@ -98,38 +123,96 @@ export class RunService {
       )
     }
 
-    const runDirectory = join(this.deps.privateRoot, accepted.id)
     const planningDirectory = join(workingDirectory, '.scratch', input.relativePath)
     const policy = new PlanningPolicy({ workingDirectory, planningDirectory })
-    await mkdir(runDirectory, { recursive: true, mode: 0o700 })
-    await chmod(runDirectory, 0o700)
+    const socketDirectory = join(
+      tmpdir(),
+      `idea-planning-${createHash('sha256').update(accepted.id).digest('hex').slice(0, 16)}`
+    )
+    const socketPath = join(socketDirectory, 'p.sock')
+    const capabilityToken = randomUUID()
+    let toolHost: PlanningToolHost | undefined
     const sandboxProfile = join(runDirectory, 'planning.sb')
-    await writeFile(
-      sandboxProfile,
-      policy.renderSandboxProfile({
-        runDirectory,
-        executable: provider.executablePath,
-        homeDirectory: this.deps.homeDirectory,
-        skillDirectory
-      }),
-      { mode: 0o600 }
-    )
-
-    await this.record(
-      accepted,
-      'starting',
-      'lifecycle',
-      'Verified planning sandbox; starting provider'
-    )
     try {
+      await mkdir(runDirectory, { recursive: true, mode: 0o700 })
+      await chmod(runDirectory, 0o700)
+      await mkdir(planningDirectory, { recursive: true, mode: 0o700 })
+      await mkdir(socketDirectory, { recursive: true, mode: 0o700 })
+      await chmod(socketDirectory, 0o700)
+      await this.prepareProviderHome(input.provider, runDirectory, socketPath, capabilityToken)
+      toolHost = new PlanningToolHost({
+        socketPath,
+        capabilityToken,
+        workingDirectory,
+        planningDirectory,
+        callbacks: {
+          onActivity: (kind, summary) =>
+            this.record(accepted, undefined, kind, sanitize(summary, workingDirectory)).then(
+              () => undefined
+            ),
+          onStop: (summary) => {
+            void this.stopForPolicy(accepted, summary)
+          }
+        }
+      })
+      await toolHost.start()
+      this.toolHosts.set(accepted.id, toolHost)
+      await writeFile(
+        sandboxProfile,
+        policy.renderSandboxProfile({
+          runDirectory,
+          executable: provider.executablePath,
+          proxyExecutable: this.deps.proxyExecutable,
+          proxyScript: this.deps.proxyScript,
+          socketPath
+        }),
+        { mode: 0o600 }
+      )
+
+      await this.record(
+        accepted,
+        'starting',
+        'lifecycle',
+        'Verified planning sandbox; starting provider'
+      )
+    } catch (error) {
+      await toolHost?.close().catch(() => undefined)
+      await Promise.all([
+        rm(socketDirectory, { recursive: true, force: true }),
+        rm(runDirectory, { recursive: true, force: true })
+      ])
+      await this.record(accepted, 'failed', 'error', 'Planning sandbox could not be prepared')
+      throw error
+    }
+    try {
+      if ((await hashFile(provider.executablePath)) !== executableHash) {
+        await this.record(
+          accepted,
+          'failed',
+          'error',
+          'Provider executable changed after Run acceptance; provider was not contacted'
+        )
+        throw new Error('Provider executable changed after durable Run acceptance')
+      }
+      const running = await this.record(
+        accepted,
+        'running',
+        'lifecycle',
+        'Provider process running'
+      )
       await this.deps.broker.start({
         id: accepted.id,
         executable: provider.executablePath,
-        args: providerArguments(input),
+        args: providerArguments(input, await readFile(skillFile, 'utf8'), runDirectory),
         workingDirectory,
         runDirectory,
         environment: configuration.environment,
         sandboxProfile,
+        onBeforeCleanup: async () => {
+          await toolHost.close()
+          await rm(socketDirectory, { recursive: true, force: true })
+          this.toolHosts.delete(accepted.id)
+        },
         onActivity: (summary) =>
           void this.record(accepted, undefined, 'output', sanitize(summary, workingDirectory)),
         onExit: (code, signal) => {
@@ -157,9 +240,14 @@ export class RunService {
           void this.record(accepted, 'policy-violation', 'blocked', summary)
         }
       })
-      return await this.record(accepted, 'running', 'lifecycle', 'Provider process running')
+      return running
     } catch (error) {
-      await this.record(accepted, 'failed', 'error', 'Provider process could not start')
+      await toolHost.close().catch(() => undefined)
+      await rm(socketDirectory, { recursive: true, force: true })
+      this.toolHosts.delete(accepted.id)
+      if (!(error instanceof Error && error.message.includes('changed after durable'))) {
+        await this.record(accepted, 'failed', 'error', 'Provider process could not start')
+      }
       throw error
     }
   }
@@ -213,22 +301,98 @@ export class RunService {
       })
     )
   }
+
+  private async prepareProviderHome(
+    provider: StartRunInput['provider'],
+    runDirectory: string,
+    socketPath: string,
+    capabilityToken: string
+  ): Promise<void> {
+    const proxy = {
+      command: this.deps.proxyExecutable,
+      args: [this.deps.proxyScript],
+      env: {
+        ELECTRON_RUN_AS_NODE: '1',
+        PLANNING_MCP_SOCKET: socketPath,
+        PLANNING_MCP_CAPABILITY: capabilityToken
+      }
+    }
+    await writeFile(
+      join(runDirectory, 'mcp.json'),
+      JSON.stringify({ mcpServers: { planning: proxy } }),
+      { mode: 0o600 }
+    )
+    if (provider !== 'codex') return
+    const codexHome = join(runDirectory, 'codex-home')
+    await mkdir(codexHome, { recursive: true, mode: 0o700 })
+    await copyFile(
+      join(this.deps.homeDirectory, '.codex', 'auth.json'),
+      join(codexHome, 'auth.json')
+    )
+    await chmod(join(codexHome, 'auth.json'), 0o600)
+    await writeFile(
+      join(codexHome, 'config.toml'),
+      `[mcp_servers.planning]\ncommand = ${JSON.stringify(proxy.command)}\nargs = [${proxy.args.map((value) => JSON.stringify(value)).join(', ')}]\n\n[mcp_servers.planning.env]\nELECTRON_RUN_AS_NODE = "1"\nPLANNING_MCP_SOCKET = ${JSON.stringify(socketPath)}\nPLANNING_MCP_CAPABILITY = ${JSON.stringify(capabilityToken)}\n`,
+      { mode: 0o600 }
+    )
+  }
+
+  private async stopForPolicy(run: RunSnapshot, summary: string): Promise<void> {
+    await this.record(run, 'policy-violation', 'lifecycle', `Run stopped by policy: ${summary}`)
+    try {
+      await this.deps.broker.stop(run.id, 'policy')
+    } catch {
+      await this.record(
+        run,
+        'supervision-failed',
+        'error',
+        'Provider process cleanup could not be verified'
+      )
+    }
+  }
 }
 
-function minimalEnvironment(executable: string, home: string): Record<string, string> {
+function minimalEnvironment(
+  executable: string,
+  home: string,
+  provider: StartRunInput['provider'],
+  runDirectory: string
+): Record<string, string> {
   return {
     PATH: `${dirname(executable)}:/usr/bin:/bin`,
     HOME: home,
     LANG: 'en_US.UTF-8',
-    LC_ALL: 'en_US.UTF-8'
+    LC_ALL: 'en_US.UTF-8',
+    ...(provider === 'codex' ? { CODEX_HOME: join(runDirectory, 'codex-home') } : {})
   }
 }
 
-function providerArguments(input: StartRunInput): string[] {
-  const skillPrompt = `$${input.workflow} ${input.prompt}`
+function providerArguments(
+  input: StartRunInput,
+  skillText: string,
+  runDirectory: string
+): string[] {
+  const skillPrompt = `Verified planning workflow (${input.workflow}):\n\n${skillText}\n\nUser request:\n${input.prompt}`
   if (input.provider === 'codex') {
     return [
       'exec',
+      '--ephemeral',
+      '--ignore-rules',
+      '--disable',
+      'shell_tool',
+      '--disable',
+      'unified_exec',
+      '--disable',
+      'apps',
+      '--disable',
+      'browser_use',
+      '--disable',
+      'computer_use',
+      '--disable',
+      'hooks',
+      '--disable',
+      'plugins',
+      '--json',
       '--sandbox',
       'workspace-write',
       '--skip-git-repo-check',
@@ -241,14 +405,34 @@ function providerArguments(input: StartRunInput): string[] {
   }
   return [
     '--print',
+    '--disable-slash-commands',
+    '--setting-sources',
+    '',
+    '--strict-mcp-config',
+    '--mcp-config',
+    join(runDirectory, 'mcp.json'),
+    '--tools',
+    '',
+    '--allowedTools',
+    'mcp__planning__*',
+    '--permission-mode',
+    'dontAsk',
+    '--no-session-persistence',
+    '--no-chrome',
     '--output-format',
     'stream-json',
     '--model',
     input.model,
-    '--disallowedTools',
-    'Bash',
+    '--effort',
+    input.effort,
     skillPrompt
   ]
+}
+
+async function hashFile(path: string): Promise<string> {
+  return createHash('sha256')
+    .update(await readFile(path))
+    .digest('hex')
 }
 
 function sanitize(value: string, workingDirectory: string): string {
