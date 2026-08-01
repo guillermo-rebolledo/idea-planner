@@ -26,7 +26,7 @@ import {
 import { PROVIDER_SPECS, VERIFIED_WORKFLOW_SKILLS } from './readiness'
 import { PlanningPolicy } from './planning-policy'
 import { PlanningToolHost } from './planning-tool-host'
-import { resolveProviderLaunch } from './provider-launch'
+import { mergeProviderLaunches, resolveProviderLaunch } from './provider-launch'
 import type { RunProcessBroker } from './run-process-broker'
 
 interface CorePort {
@@ -283,12 +283,15 @@ export class RunService {
         sandboxProfile,
         policy.renderSandboxProfile({
           runDirectory,
-          // The verified skills location is readable: providers scan the root
-          // on start, and this Run's workflow lives inside it.
-          launch: await resolveProviderLaunch(provider.executablePath, [
-            join(this.deps.homeDirectory, spec.skillsRoot)
-          ]),
-          proxyExecutable: this.deps.proxyExecutable,
+          // The provider and the planning proxy both have to start inside
+          // this profile. The verified skills location is readable because
+          // providers scan the root, and this Run's workflow lives in it.
+          launch: mergeProviderLaunches(
+            await resolveProviderLaunch(provider.executablePath, [
+              join(this.deps.homeDirectory, spec.skillsRoot)
+            ]),
+            await resolveProviderLaunch(this.deps.proxyExecutable)
+          ),
           proxyScript: this.deps.proxyScript,
           socketPath
         }),

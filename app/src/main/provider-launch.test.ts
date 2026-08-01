@@ -4,8 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
+import electron from 'electron'
 import { PlanningPolicy } from './planning-policy'
-import { resolveProviderLaunch } from './provider-launch'
+import { mergeProviderLaunches, resolveProviderLaunch } from './provider-launch'
+
+/**
+ * Outside an Electron process the `electron` package's export is the path to
+ * the bundled binary, which is what this app launches as its planning proxy.
+ */
+const electronBinary = electron as unknown as string
 
 /**
  * Starting a real provider. The command on PATH is typically a symlink to a
@@ -62,6 +69,11 @@ describe('resolving a provider launch', () => {
     expect(launch.readRoots).toContain(await realish(root))
   })
 
+  it('reads a macOS bundle as the bundle, where its frameworks live', async () => {
+    const launch = await resolveProviderLaunch(electronBinary)
+    expect(launch.readRoots.some((root) => root.endsWith('.app'))).toBe(true)
+  })
+
   it('never offers the filesystem root as a readable tree', async () => {
     const launch = await resolveProviderLaunch('/usr/bin/true')
     expect(launch.readRoots).not.toContain('/')
@@ -84,7 +96,6 @@ describe.skipIf(process.platform !== 'darwin')('the generated profile', () => {
       }).renderSandboxProfile({
         runDirectory,
         launch: await resolveProviderLaunch(command),
-        proxyExecutable: '/usr/bin/true',
         proxyScript: join(root, 'proxy.js'),
         socketPath: join(runDirectory, 'planning.sock')
       })
@@ -92,6 +103,39 @@ describe.skipIf(process.platform !== 'darwin')('the generated profile', () => {
     await expect(
       promisify(execFile)('/usr/bin/sandbox-exec', ['-f', profile, command])
     ).resolves.toMatchObject({ stdout: 'ok' })
+  })
+
+  it('starts the planning proxy, which is this app’s own bundled runtime', async () => {
+    // The proxy is the Electron binary run as Node. Admitting only its
+    // executable leaves it unable to load its own framework, which macOS
+    // reports to the person as an unexplained "cannot be opened" alert.
+    const { root, command } = await installFakeProvider()
+    const runDirectory = join(root, 'run')
+    await mkdir(join(root, 'work', '.scratch'), { recursive: true })
+    await mkdir(runDirectory, { recursive: true })
+    const script = join(root, 'proxy.js')
+    await writeFile(script, 'process.stdout.write("proxy-ok")\n')
+    const profile = join(runDirectory, 'planning.sb')
+    await writeFile(
+      profile,
+      new PlanningPolicy({
+        workingDirectory: join(root, 'work'),
+        planningDirectory: join(root, 'work', '.scratch')
+      }).renderSandboxProfile({
+        runDirectory,
+        launch: mergeProviderLaunches(
+          await resolveProviderLaunch(command),
+          await resolveProviderLaunch(electronBinary)
+        ),
+        proxyScript: script,
+        socketPath: join(runDirectory, 'planning.sock')
+      })
+    )
+    await expect(
+      promisify(execFile)('/usr/bin/sandbox-exec', ['-f', profile, electronBinary, script], {
+        env: { ELECTRON_RUN_AS_NODE: '1', PATH: '/usr/bin:/bin', HOME: process.env['HOME'] ?? '' }
+      })
+    ).resolves.toMatchObject({ stdout: 'proxy-ok' })
   })
 
   it('still refuses to write inside the Working Directory', async () => {
@@ -112,7 +156,6 @@ describe.skipIf(process.platform !== 'darwin')('the generated profile', () => {
           ...(await resolveProviderLaunch(command)),
           executables: [...(await resolveProviderLaunch(command)).executables, '/usr/bin/touch']
         },
-        proxyExecutable: '/usr/bin/true',
         proxyScript: join(root, 'proxy.js'),
         socketPath: join(runDirectory, 'planning.sock')
       })

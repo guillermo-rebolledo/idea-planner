@@ -163,8 +163,8 @@ export class PlanningPolicy {
    */
   renderSandboxProfile(paths: {
     runDirectory: string
+    /** The provider and the planning proxy together: both must be able to start. */
     launch: ProviderLaunch
-    proxyExecutable: string
     proxyScript: string
     socketPath: string
   }): string {
@@ -184,12 +184,12 @@ export class PlanningPolicy {
     return `(version 1)
 (deny default)
 (import "system.sb")
-(allow process-exec ${list('literal', [...paths.launch.executables, paths.proxyExecutable])} ${list('subpath', paths.launch.executableTrees)})
+(allow process-exec ${list('literal', paths.launch.executables)} ${list('subpath', paths.launch.executableTrees)})
 (allow process-fork)
 (allow signal (target self))
 (allow file-read-metadata)
 (allow file-read* (subpath ${q(workingDirectory)}))
-(allow file-read* ${list('literal', [paths.proxyExecutable, paths.proxyScript])} ${list('subpath', [...paths.launch.readRoots, runDirectory])} (subpath "/System") (subpath "/Library/Apple") (subpath "/usr/lib") (subpath "/usr/share"))
+(allow file-read* ${list('literal', [paths.proxyScript])} ${list('subpath', [...paths.launch.readRoots, runDirectory])} (subpath "/System") (subpath "/Library/Apple") (subpath "/usr/lib") (subpath "/usr/share"))
 ; Name resolution and certificate validation, without which no provider can
 ; reach its own service. Both are read-only system facilities.
 (allow file-read* (subpath "/private/etc/ssl") (literal "/private/etc/hosts") (literal "/private/etc/resolv.conf") (literal "/private/etc/services") (subpath "/System/Library/Keychains") (subpath "/Library/Keychains") (subpath "/private/var/db/mds"))

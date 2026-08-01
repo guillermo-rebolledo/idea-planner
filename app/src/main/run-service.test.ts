@@ -508,7 +508,6 @@ describe('Run service', () => {
         new PlanningPolicy({ workingDirectory: root, planningDirectory }).renderSandboxProfile({
           runDirectory,
           launch: { executables: ['/usr/bin/true'], executableTrees: [], readRoots: [] },
-          proxyExecutable: '/usr/bin/true',
           proxyScript: join(root, 'proxy.js'),
           socketPath: join(runDirectory, 'planning.sock')
         })
@@ -539,7 +538,6 @@ describe('Run service', () => {
         policy.renderSandboxProfile({
           runDirectory,
           launch: { executables: ['/usr/bin/touch'], executableTrees: [], readRoots: [] },
-          proxyExecutable: '/usr/bin/true',
           proxyScript: join(root, 'proxy.js'),
           socketPath: join(runDirectory, 'planning.sock')
         })
@@ -579,7 +577,6 @@ describe('Run service', () => {
         new PlanningPolicy({ workingDirectory: root, planningDirectory }).renderSandboxProfile({
           runDirectory,
           launch: { executables: ['/usr/bin/nc'], executableTrees: [], readRoots: [] },
-          proxyExecutable: '/usr/bin/true',
           proxyScript: join(root, 'proxy.js'),
           socketPath: allowedSocket
         })

@@ -22,6 +22,15 @@ export interface ProviderLaunch {
   readRoots: string[]
 }
 
+/** Everything two launches need, so one profile can admit both. */
+export function mergeProviderLaunches(...launches: ProviderLaunch[]): ProviderLaunch {
+  return {
+    executables: unique(launches.flatMap((launch) => launch.executables)),
+    executableTrees: unique(launches.flatMap((launch) => launch.executableTrees)),
+    readRoots: unique(launches.flatMap((launch) => launch.readRoots))
+  }
+}
+
 export async function resolveProviderLaunch(
   executable: string,
   extraReadRoots: string[] = []
@@ -46,12 +55,17 @@ export async function resolveProviderLaunch(
 }
 
 /**
- * The tree a program loads from. A versioned package-manager layout
- * (`<prefix>/Cellar/<name>/<version>/bin/x`) resolves to its prefix, because
- * that is where its libraries and configuration live; anything else resolves
- * to the directory above `bin`.
+ * The tree a program loads from.
+ *
+ * A macOS bundle resolves to the bundle itself, which is where its frameworks
+ * live — without them the executable cannot start at all. A versioned
+ * package-manager layout (`<prefix>/Cellar/<name>/<version>/bin/x`) resolves
+ * to its prefix, because that is where its libraries and configuration live.
+ * Anything else resolves to the directory above `bin`.
  */
 function installRoot(path: string): string {
+  const bundle = path.indexOf(`.app${sep}`)
+  if (bundle > 0) return path.slice(0, bundle + 4)
   const cellar = path.indexOf(`${sep}Cellar${sep}`)
   if (cellar > 0) return path.slice(0, cellar)
   const parent = dirname(path)
