@@ -165,7 +165,13 @@ describe('Run service', () => {
       const runDirectory = join(root, 'run')
       const planningDirectory = join(root, '.scratch', 'idea')
       const proxyScript = join(__dirname, 'planning-mcp-proxy.ts')
+      const claudeConfig = join(runDirectory, 'claude-config')
       await Promise.all([mkdir(runDirectory), mkdir(planningDirectory, { recursive: true })])
+      await mkdir(join(claudeConfig, 'skills', 'grilling'), { recursive: true })
+      await writeFile(
+        join(claudeConfig, 'skills', 'grilling', 'SKILL.md'),
+        '---\nname: grilling\ndescription: Ask one question at a time.\n---\nAsk one question.'
+      )
       const mcpConfig = join(runDirectory, 'mcp.json')
       await writeFile(
         mcpConfig,
@@ -215,7 +221,7 @@ describe('Run service', () => {
           claude,
           '--print',
           '--setting-sources',
-          '',
+          'user',
           '--strict-mcp-config',
           '--mcp-config',
           mcpConfig,
@@ -229,7 +235,7 @@ describe('Run service', () => {
           '--output-format',
           'stream-json',
           '--verbose',
-          'Reply with OK only'
+          '/grilling hello'
         ],
         {
           cwd: root,
@@ -239,12 +245,14 @@ describe('Run service', () => {
             LANG: 'en_US.UTF-8',
             LC_ALL: 'en_US.UTF-8',
             TMPDIR: runDirectory,
-            CLAUDE_CODE_OAUTH_TOKEN: credentials.claudeAiOauth.accessToken
+            CLAUDE_CODE_OAUTH_TOKEN: credentials.claudeAiOauth.accessToken,
+            CLAUDE_CONFIG_DIR: claudeConfig
           },
           timeout: 20_000
         }
       ).catch((error: unknown) => error as { stdout?: string; stderr?: string })
       expect(result.stdout).toContain('"subtype":"init"')
+      expect(result.stdout).toContain('"grilling"')
       expect(result.stderr).not.toContain("posix_spawn 'security'")
       expect(result.stdout).not.toContain('Not logged in')
     },
@@ -298,6 +306,7 @@ describe('Run service', () => {
       ])
     )
     expect(broker.launch?.args).not.toContain('--input-format')
+    expect(broker.launch?.args).toEqual(expect.arrayContaining(['--setting-sources', 'user']))
     expect(broker.launch?.args.at(-1)).toContain('/wayfinder Develop this idea')
     expect(broker.launch?.args).not.toContain('--disable-slash-commands')
     const mcpConfigPath = broker.launch?.args[broker.launch.args.indexOf('--mcp-config') + 1]
@@ -306,6 +315,18 @@ describe('Run service', () => {
       mcpServers: { planning: Record<string, unknown> }
     }
     expect(mcpConfig.mcpServers.planning).not.toHaveProperty('args')
+    expect(broker.launch?.environment['CLAUDE_CONFIG_DIR']).toContain('claude-config')
+    await expect(
+      readFile(
+        join(
+          broker.launch?.environment['CLAUDE_CONFIG_DIR'] ?? '',
+          'skills',
+          'wayfinder',
+          'SKILL.md'
+        ),
+        'utf8'
+      )
+    ).resolves.toBe('# Wayfinder')
   })
 
   it('gives Wayfinder its own managed planning tree', async () => {

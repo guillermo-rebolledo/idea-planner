@@ -297,7 +297,14 @@ export class RunService {
       // A socket file left behind by a crash would otherwise make this Run's
       // capability socket unbindable; the path belongs to this Run alone.
       await rm(socketPath, { force: true })
-      await this.prepareProviderHome(input.provider, runDirectory, socketPath, capabilityToken)
+      await this.prepareProviderHome(
+        input.provider,
+        runDirectory,
+        socketPath,
+        capabilityToken,
+        skillName,
+        skillFile
+      )
       toolHost = new PlanningToolHost({
         socketPath,
         capabilityToken,
@@ -628,7 +635,9 @@ export class RunService {
     provider: StartRunInput['provider'],
     runDirectory: string,
     socketPath: string,
-    capabilityToken: string
+    capabilityToken: string,
+    skillName: string,
+    skillFile: string
   ): Promise<void> {
     const proxy = {
       command: this.deps.proxyExecutable,
@@ -644,7 +653,12 @@ export class RunService {
       JSON.stringify({ mcpServers: { planning: proxy } }),
       { mode: 0o600 }
     )
-    if (provider !== 'codex') return
+    if (provider === 'claude') {
+      const stagedSkill = join(runDirectory, 'claude-config', 'skills', skillName)
+      await mkdir(stagedSkill, { recursive: true, mode: 0o700 })
+      await copyFile(skillFile, join(stagedSkill, 'SKILL.md'))
+      return
+    }
     const codexHome = join(runDirectory, 'codex-home')
     await mkdir(codexHome, { recursive: true, mode: 0o700 })
     await copyFile(
@@ -685,7 +699,8 @@ function minimalEnvironment(
     HOME: home,
     LANG: 'en_US.UTF-8',
     LC_ALL: 'en_US.UTF-8',
-    ...(provider === 'codex' ? { CODEX_HOME: join(runDirectory, 'codex-home') } : {})
+    ...(provider === 'codex' ? { CODEX_HOME: join(runDirectory, 'codex-home') } : {}),
+    ...(provider === 'claude' ? { CLAUDE_CONFIG_DIR: join(runDirectory, 'claude-config') } : {})
   }
 }
 
@@ -732,7 +747,7 @@ function providerArguments(
   return [
     '--print',
     '--setting-sources',
-    '',
+    'user',
     '--strict-mcp-config',
     '--mcp-config',
     join(runDirectory, 'mcp.json'),
