@@ -8,9 +8,6 @@ const settingsSchema = z.object({
   themePreference: themePreferenceSchema.default('system'),
   /** Days without activity after which a pinned Idea shows as Dormant. */
   dormantAfterDays: z.number().int().positive().default(14),
-  workingDirectories: z
-    .record(z.object({ path: z.string().min(1), ideaId: z.string().min(1) }))
-    .default({}),
   /** Explicitly selected provider executables; absence means PATH resolution. */
   providerExecutables: z.record(z.string().min(1)).default({}),
   /** One-time informed consent for bounded login-shell PATH discovery. */
@@ -21,7 +18,6 @@ export interface Settings {
   libraryPath?: string
   themePreference: ThemePreference
   dormantAfterDays: number
-  workingDirectories: Record<string, { path: string; ideaId: string }>
   providerExecutables: Record<string, string>
   loginShellDiscovery: { grantedAt: string } | null
 }
@@ -62,7 +58,6 @@ export class SettingsStore {
     return {
       themePreference: 'system',
       dormantAfterDays: 14,
-      workingDirectories: {},
       providerExecutables: {},
       loginShellDiscovery: null
     }

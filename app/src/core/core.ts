@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, join, posix } from 'node:path'
 import { Cause, Context, Effect, Either, Exit, Layer, Option, Ref } from 'effect'
 import { z } from 'zod'
@@ -13,11 +13,6 @@ import {
   type MailboxCoreQuery,
   type MailboxSnapshot,
   type OpenedIdea,
-  type ReconcileIdeaInput,
-  type ReconciliationReason,
-  type ReconciliationState,
-  type ResolveDuplicateManagedDocumentInput,
-  type ReferenceAttachment,
   type IdeaSummary,
   type LibrarySnapshot
 } from '@shared/contract'
@@ -45,7 +40,6 @@ import {
   upsertIdea,
   type IndexedIdea
 } from './search-index'
-import { createExternalContentEffects, type ReferenceContext } from './external-content'
 import {
   createConversationEffects,
   type ApplyHarnessEventInput,
@@ -56,17 +50,7 @@ import {
 export interface CoreDeps {
   now?: () => Date
   randomId?: () => string
-  onTransactionBoundary?: (boundary: TransactionBoundary) => void
-  observeManagedPaths?: (
-    paths: string[],
-    onHint: (reason: ReconciliationReason) => void
-  ) => (() => void) | undefined
 }
-
-export type TransactionBoundary =
-  | { phase: 'prepared' }
-  | { phase: 'document-committed'; documentIndex: number }
-  | { phase: 'before-finalize' }
 
 /**
  * The deep product-behavior module. It owns the Idea lifecycle and canonical
@@ -85,50 +69,6 @@ export interface Core {
   setIdeaPinned(relativePath: string, pinned: boolean): Promise<IdeaSummary>
   setIdeaArchived(relativePath: string, archived: boolean): Promise<IdeaSummary>
   previewDeleteIdea(relativePath: string): Promise<DeleteIdeaPreview>
-  reconcileIdea(input: ReconcileIdeaInput): Promise<ReconciliationState>
-  latestReconciliation(relativePath: string): Promise<ReconciliationState | null>
-  locateIdea(
-    relativePath: string,
-    selectedDirectory: string,
-    expectedIdeaId?: string
-  ): Promise<ReconciliationState>
-  restoreManagedVersion(input: {
-    relativePath: string
-    documentId: string
-    version: number
-  }): Promise<ReconciliationState>
-  resolveManagedConflict(input: {
-    relativePath: string
-    documentId: string
-    choice: 'keep-disk' | 'keep-ai-draft'
-    aiDraft?: string
-  }): Promise<ReconciliationState>
-  resolveDuplicateManagedDocument(
-    input: ResolveDuplicateManagedDocumentInput
-  ): Promise<ReconciliationState>
-  endRunReconciliation(relativePath: string, runId: string): Promise<void>
-  addReferenceAttachment(input: {
-    relativePath: string
-    messageId: string
-    sourcePath: string
-  }): Promise<ReferenceAttachment>
-  listReferenceAttachments(relativePath: string): Promise<ReferenceAttachment[]>
-  prepareReferenceContext(input: {
-    relativePath: string
-    runId: string
-    referenceIds: string[]
-  }): Promise<ReferenceContext>
-  removeReferenceContext(contextId: string): Promise<void>
-  keepReferenceWithIdea(input: {
-    relativePath: string
-    referenceId: string
-  }): Promise<ReferenceAttachment>
-  locateReferenceAttachment(input: {
-    relativePath: string
-    referenceId: string
-    sourcePath: string
-  }): Promise<ReferenceAttachment>
-  continueWithoutReference(input: { relativePath: string; referenceId: string }): Promise<void>
   acceptRun(input: AcceptRunInput): Promise<RunSnapshot>
   listRuns(relativePath: string): Promise<RunSnapshot[]>
   recordRunEvent(input: RecordRunEventInput): Promise<RunSnapshot>
@@ -145,7 +85,6 @@ export interface Core {
  * (the utility-process dispatcher). Dependencies are already provided.
  */
 export interface CoreEffects {
-  shutdown: Effect.Effect<void, CoreError>
   openLibrary(path: string): Effect.Effect<LibrarySnapshot, CoreError>
   captureIdea(input: CaptureIdeaInput): Effect.Effect<IdeaSummary, CoreError>
   openIdea(relativePath: string): Effect.Effect<OpenedIdea, CoreError>
@@ -154,53 +93,6 @@ export interface CoreEffects {
   setIdeaPinned(relativePath: string, pinned: boolean): Effect.Effect<IdeaSummary, CoreError>
   setIdeaArchived(relativePath: string, archived: boolean): Effect.Effect<IdeaSummary, CoreError>
   previewDeleteIdea(relativePath: string): Effect.Effect<DeleteIdeaPreview, CoreError>
-  reconcileIdea(input: ReconcileIdeaInput): Effect.Effect<ReconciliationState, CoreError>
-  latestReconciliation(relativePath: string): Effect.Effect<ReconciliationState | null, CoreError>
-  locateIdea(
-    relativePath: string,
-    selectedDirectory: string,
-    expectedIdeaId?: string
-  ): Effect.Effect<ReconciliationState, CoreError>
-  restoreManagedVersion(input: {
-    relativePath: string
-    documentId: string
-    version: number
-  }): Effect.Effect<ReconciliationState, CoreError>
-  resolveManagedConflict(input: {
-    relativePath: string
-    documentId: string
-    choice: 'keep-disk' | 'keep-ai-draft'
-    aiDraft?: string
-  }): Effect.Effect<ReconciliationState, CoreError>
-  resolveDuplicateManagedDocument(
-    input: ResolveDuplicateManagedDocumentInput
-  ): Effect.Effect<ReconciliationState, CoreError>
-  endRunReconciliation(relativePath: string, runId: string): Effect.Effect<void, CoreError>
-  addReferenceAttachment(input: {
-    relativePath: string
-    messageId: string
-    sourcePath: string
-  }): Effect.Effect<ReferenceAttachment, CoreError>
-  listReferenceAttachments(relativePath: string): Effect.Effect<ReferenceAttachment[], CoreError>
-  prepareReferenceContext(input: {
-    relativePath: string
-    runId: string
-    referenceIds: string[]
-  }): Effect.Effect<ReferenceContext, CoreError>
-  removeReferenceContext(contextId: string): Effect.Effect<void, CoreError>
-  keepReferenceWithIdea(input: {
-    relativePath: string
-    referenceId: string
-  }): Effect.Effect<ReferenceAttachment, CoreError>
-  locateReferenceAttachment(input: {
-    relativePath: string
-    referenceId: string
-    sourcePath: string
-  }): Effect.Effect<ReferenceAttachment, CoreError>
-  continueWithoutReference(input: {
-    relativePath: string
-    referenceId: string
-  }): Effect.Effect<void, CoreError>
   acceptRun(input: AcceptRunInput): Effect.Effect<RunSnapshot, CoreError>
   listRuns(relativePath: string): Effect.Effect<RunSnapshot[], CoreError>
   recordRunEvent(input: RecordRunEventInput): Effect.Effect<RunSnapshot, CoreError>
@@ -224,29 +116,16 @@ const SCAN_CONCURRENCY = 8
 
 class IdeaClock extends Context.Tag('core/IdeaClock')<IdeaClock, { now(): Date }>() {}
 class IdGenerator extends Context.Tag('core/IdGenerator')<IdGenerator, { nextId(): string }>() {}
-class TransactionObserver extends Context.Tag('core/TransactionObserver')<
-  TransactionObserver,
-  { onBoundary(boundary: TransactionBoundary): void }
->() {}
 
-type CoreServices = IdeaClock | IdGenerator | TransactionObserver
+type CoreServices = IdeaClock | IdGenerator
 
 export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
   const services: Layer.Layer<CoreServices> = Layer.mergeAll(
     Layer.succeed(IdeaClock, { now: deps.now ?? (() => new Date()) }),
-    Layer.succeed(IdGenerator, { nextId: deps.randomId ?? (() => `idea-${randomUUID()}`) }),
-    Layer.succeed(TransactionObserver, {
-      onBoundary: deps.onTransactionBoundary ?? (() => undefined)
-    })
+    Layer.succeed(IdGenerator, { nextId: deps.randomId ?? (() => `idea-${randomUUID()}`) })
   )
 
   const libraryPath = Effect.runSync(Ref.make(Option.none<string>()))
-  const externalContent = createExternalContentEffects({
-    library: Ref.get(libraryPath).pipe(Effect.map(Option.getOrNull)),
-    observeManagedPaths: deps.observeManagedPaths,
-    clock: Effect.sync(deps.now ?? (() => new Date())),
-    nextReferenceId: Effect.sync(deps.randomId ?? (() => `reference-${randomUUID()}`))
-  })
   const conversation = createConversationEffects({
     library: Ref.get(libraryPath).pipe(Effect.map(Option.getOrNull)),
     clock: Effect.sync(deps.now ?? (() => new Date()))
@@ -279,10 +158,6 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       })
       if (!stats.isDirectory()) {
         return yield* Effect.fail(new CoreError('NOT_A_DIRECTORY', `${path} is not a folder`))
-      }
-      const previousLibrary = Option.getOrNull(yield* Ref.get(libraryPath))
-      if (previousLibrary !== null && previousLibrary !== path) {
-        yield* externalContent.resetForLibraryChange
       }
       yield* Ref.set(libraryPath, Option.some(path))
       const ideas = yield* provide(scanIdeas(path))
@@ -318,7 +193,6 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
             status: 'saved',
             createdAt: timestamp,
             updatedAt: timestamp,
-            openState: 'ready',
             relativePath: yield* reserveFolder(library, title),
             pinned: false,
             archivedAt: null
@@ -330,8 +204,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
             idea,
             input.notes,
             planningIndexId,
-            conversationId,
-            'capture'
+            conversationId
           )
           // Index exactly what was persisted so search answers cannot change
           // when the projection is later rebuilt from canonical content.
@@ -351,11 +224,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
 
   const openIdea = (relativePath: string): Effect.Effect<OpenedIdea, CoreError> =>
     requireLibrary('opening an Idea').pipe(
-      Effect.flatMap((library) =>
-        externalContent
-          .resolveIdeaDirectory(relativePath)
-          .pipe(Effect.flatMap((ideaDir) => provide(reopenIdea(library, relativePath, ideaDir))))
-      )
+      Effect.flatMap((library) => provide(reopenIdea(library, relativePath)))
     )
 
   const queryMailbox = (query: MailboxCoreQuery): Effect.Effect<MailboxSnapshot, CoreError> =>
@@ -389,7 +258,6 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
 
   const updateRootFlags = (
     relativePath: string,
-    transactionId: 'set-pinned' | 'set-archived',
     patch: { pinned?: boolean; archived?: boolean }
   ): Effect.Effect<IdeaSummary, CoreError> =>
     requireLibrary('updating an Idea').pipe(
@@ -404,32 +272,17 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
                 )
               }
               const folder = parsedPath.data
-              const summary = yield* readIdeaSummary(library, folder, false)
+              const summary = yield* readIdeaSummary(library, folder)
               if (!summary) {
                 return yield* Effect.fail(new CoreError('IDEA_NOT_FOUND', 'The Idea was not found'))
-              }
-              if (summary.openState === 'read-only-newer-format') {
-                return yield* Effect.fail(
-                  new CoreError(
-                    'INVALID_INPUT',
-                    'This Idea was written by a newer app format and is open read-only'
-                  )
-                )
-              }
-              if (summary.openState === 'unrecoverable-content') {
-                return yield* Effect.fail(
-                  new CoreError('UNRECOVERABLE_CONTENT', 'Canonical Idea content is unreadable')
-                )
               }
               const ideaDir = join(library, folder)
               const root = yield* Effect.tryPromise({
                 try: () => findRootDocument(ideaDir),
-                catch: () => new CoreError('UNRECOVERABLE_CONTENT', 'The root Idea is unreadable')
+                catch: () => new CoreError('IO_ERROR', 'The root Idea is unreadable')
               })
               if (!root) {
-                return yield* Effect.fail(
-                  new CoreError('UNRECOVERABLE_CONTENT', 'The root Idea is unreadable')
-                )
+                return yield* Effect.fail(new CoreError('IO_ERROR', 'The root Idea is unreadable'))
               }
               const clock = yield* IdeaClock
               const nextSummary: IdeaSummary = {
@@ -470,13 +323,9 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
                       }
                     }
                   }
-              yield* commitTransaction(
-                ideaDir,
-                identity,
-                [{ path: root.path, content: nextRaw }],
-                transactionId,
-                recovery?.events ?? []
-              )
+              yield* writeManagedDocuments(ideaDir, identity, [
+                { path: root.path, content: nextRaw }
+              ])
               yield* upsertProjection(library, nextSummary, markdownBody(nextRaw))
               return nextSummary
             })
@@ -497,7 +346,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
               )
             }
             const folder = parsedPath.data
-            const summary = yield* readIdeaSummary(library, folder, false)
+            const summary = yield* readIdeaSummary(library, folder)
             if (!summary) {
               return yield* Effect.fail(new CoreError('IDEA_NOT_FOUND', 'The Idea was not found'))
             }
@@ -539,7 +388,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
               }
               const input = parsed.data
               const ideaDir = join(library, input.relativePath)
-              const idea = yield* readIdeaSummary(library, input.relativePath, false)
+              const idea = yield* readIdeaSummary(library, input.relativePath)
               if (!idea) {
                 return yield* Effect.fail(new CoreError('IDEA_NOT_FOUND', 'The Idea was not found'))
               }
@@ -565,8 +414,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
                       run: runSnapshotSchema.parse(value.run)
                     }
                   },
-                  catch: () =>
-                    new CoreError('UNRECOVERABLE_CONTENT', 'Durable Run acceptance is unreadable')
+                  catch: () => new CoreError('IO_ERROR', 'Durable Run acceptance is unreadable')
                 })
                 if (saved.fingerprint !== fingerprint) {
                   return yield* Effect.fail(
@@ -583,8 +431,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
                 if (current === null) return acceptedRun
                 return yield* Effect.try({
                   try: () => runSnapshotSchema.parse(JSON.parse(current)),
-                  catch: () =>
-                    new CoreError('UNRECOVERABLE_CONTENT', 'Durable Run state is unreadable')
+                  catch: () => new CoreError('IO_ERROR', 'Durable Run state is unreadable')
                 })
               }
               const clock = yield* IdeaClock
@@ -671,8 +518,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
               })
               const run = yield* Effect.try({
                 try: () => runSnapshotSchema.parse(JSON.parse(existing)),
-                catch: () =>
-                  new CoreError('UNRECOVERABLE_CONTENT', 'Durable Run state is unreadable')
+                catch: () => new CoreError('IO_ERROR', 'Durable Run state is unreadable')
               })
               if (
                 event.status &&
@@ -714,32 +560,14 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     )
 
   return {
-    shutdown: externalContent.shutdown,
     openLibrary,
     captureIdea: (input) => provide(captureIdea(input)),
     openIdea,
     listIdeas: () => listIdeas,
     queryMailbox,
-    setIdeaPinned: (relativePath, pinned) =>
-      updateRootFlags(relativePath, 'set-pinned', { pinned }),
-    setIdeaArchived: (relativePath, archived) =>
-      updateRootFlags(relativePath, 'set-archived', { archived }),
+    setIdeaPinned: (relativePath, pinned) => updateRootFlags(relativePath, { pinned }),
+    setIdeaArchived: (relativePath, archived) => updateRootFlags(relativePath, { archived }),
     previewDeleteIdea,
-    reconcileIdea: (input) => externalContent.reconcile(input),
-    latestReconciliation: (relativePath) => externalContent.latestState(relativePath),
-    locateIdea: (relativePath, selectedDirectory, expectedIdeaId) =>
-      externalContent.locateIdea(relativePath, selectedDirectory, expectedIdeaId),
-    restoreManagedVersion: (input) => externalContent.restore(input),
-    resolveManagedConflict: (input) => externalContent.resolveConflict(input),
-    resolveDuplicateManagedDocument: (input) => externalContent.resolveDuplicate(input),
-    endRunReconciliation: (relativePath, runId) => externalContent.endRun(relativePath, runId),
-    addReferenceAttachment: (input) => externalContent.addReference(input),
-    listReferenceAttachments: (relativePath) => externalContent.listReferences(relativePath),
-    prepareReferenceContext: (input) => externalContent.prepareReferences(input),
-    removeReferenceContext: (contextId) => externalContent.removeReferenceContext(contextId),
-    keepReferenceWithIdea: (input) => externalContent.keepReference(input),
-    locateReferenceAttachment: (input) => externalContent.locateReference(input),
-    continueWithoutReference: (input) => externalContent.continueWithoutReference(input),
     acceptRun,
     listRuns,
     recordRunEvent,
@@ -782,22 +610,6 @@ export function createCore(deps: CoreDeps = {}): Core {
     setIdeaPinned: (relativePath, pinned) => run(core.setIdeaPinned(relativePath, pinned)),
     setIdeaArchived: (relativePath, archived) => run(core.setIdeaArchived(relativePath, archived)),
     previewDeleteIdea: (relativePath) => run(core.previewDeleteIdea(relativePath)),
-    reconcileIdea: (input) => run(core.reconcileIdea(input)),
-    latestReconciliation: (relativePath) => run(core.latestReconciliation(relativePath)),
-    locateIdea: (relativePath, selectedDirectory, expectedIdeaId) =>
-      run(core.locateIdea(relativePath, selectedDirectory, expectedIdeaId)),
-    restoreManagedVersion: (input) => run(core.restoreManagedVersion(input)),
-    resolveManagedConflict: (input) => run(core.resolveManagedConflict(input)),
-    resolveDuplicateManagedDocument: (input) => run(core.resolveDuplicateManagedDocument(input)),
-    endRunReconciliation: (relativePath, runId) =>
-      run(core.endRunReconciliation(relativePath, runId)),
-    addReferenceAttachment: (input) => run(core.addReferenceAttachment(input)),
-    listReferenceAttachments: (relativePath) => run(core.listReferenceAttachments(relativePath)),
-    prepareReferenceContext: (input) => run(core.prepareReferenceContext(input)),
-    removeReferenceContext: (contextId) => run(core.removeReferenceContext(contextId)),
-    keepReferenceWithIdea: (input) => run(core.keepReferenceWithIdea(input)),
-    locateReferenceAttachment: (input) => run(core.locateReferenceAttachment(input)),
-    continueWithoutReference: (input) => run(core.continueWithoutReference(input)),
     acceptRun: (input) => run(core.acceptRun(input)),
     listRuns: (relativePath) => run(core.listRuns(relativePath)),
     recordRunEvent: (input) => run(core.recordRunEvent(input)),
@@ -858,9 +670,8 @@ function writePortableIdea(
   idea: IdeaSummary,
   notes: string,
   planningIndexId: string,
-  conversationId: string,
-  transactionId: TransactionId
-): Effect.Effect<void, CoreError, TransactionObserver> {
+  conversationId: string
+): Effect.Effect<void, CoreError> {
   const root = renderRootDocument(idea, notes)
   const planningIndex = [
     '---',
@@ -901,93 +712,45 @@ function writePortableIdea(
     }
   }
 
-  return commitTransaction(
-    ideaDir,
-    identity,
-    [
-      { path: IDEA_FILE, content: root },
-      { path: 'planning/index.md', content: planningIndex },
-      { path: 'planning/conversation.md', content: conversation }
-    ],
-    transactionId,
-    []
-  )
+  return writeManagedDocuments(ideaDir, identity, [
+    { path: IDEA_FILE, content: root },
+    { path: 'planning/index.md', content: planningIndex },
+    { path: 'planning/conversation.md', content: conversation }
+  ])
 }
-
-type TransactionId =
-  'capture' | 'format-1-migration' | 'repair-links' | 'set-pinned' | 'set-archived'
 
 type RecoveryIdentity = Pick<RecoveryState, 'format' | 'ideaId' | 'summary' | 'documents'>
 
-function commitTransaction(
+/**
+ * Writes the managed documents and the private identity record together.
+ * Writes are direct; the caller holds the write permit, so the order here is
+ * the order on disk.
+ */
+function writeManagedDocuments(
   ideaDir: string,
   identity: RecoveryIdentity,
-  documents: { path: string; content: string }[],
-  transactionId: TransactionId,
-  priorEvents: RecoveryState['events']
-): Effect.Effect<void, CoreError, TransactionObserver> {
-  return Effect.gen(function* () {
-    const observer = yield* TransactionObserver
-    yield* Effect.tryPromise({
-      try: async () => {
-        await mkdir(join(ideaDir, '.idea'), { recursive: true })
-        const transactionDir = join(ideaDir, '.idea', 'transactions', transactionId)
-        for (const document of documents) {
-          const staged = join(transactionDir, document.path)
-          await mkdir(join(staged, '..'), { recursive: true })
-          await writeFile(staged, document.content, 'utf8')
-          const target = join(ideaDir, document.path)
-          const targetExists = await pathExists(target)
-          if (targetExists) await copyFile(target, `${staged}.previous`)
-        }
-        const recoveryPath = join(ideaDir, '.idea', 'recovery.json')
-        const previousRecovery = join(transactionDir, '.recovery.previous')
-        const hasPreviousRecovery = await pathExists(recoveryPath)
-        if (hasPreviousRecovery) await copyFile(recoveryPath, previousRecovery)
-        await writeJsonAtomic(recoveryPath, {
-          ...identity,
-          events: [...priorEvents, { type: 'transaction-prepared', transactionId }],
-          transaction: {
-            id: transactionId,
-            state: 'prepared',
-            previousRecovery: hasPreviousRecovery
-              ? `.idea/transactions/${transactionId}/.recovery.previous`
-              : undefined,
-            writes: documents.map((document) => ({
-              target: document.path,
-              staged: `.idea/transactions/${transactionId}/${document.path}`,
-              previous: `.idea/transactions/${transactionId}/${document.path}.previous`,
-              sha256: createHash('sha256').update(document.content).digest('hex')
-            }))
-          }
-        })
-        observer.onBoundary({ phase: 'prepared' })
-
-        for (const [documentIndex, document] of documents.entries()) {
-          await mkdir(join(ideaDir, document.path, '..'), { recursive: true })
-          await rename(join(transactionDir, document.path), join(ideaDir, document.path))
-          observer.onBoundary({ phase: 'document-committed', documentIndex })
-        }
-        observer.onBoundary({ phase: 'before-finalize' })
-        await writeJsonAtomic(recoveryPath, {
-          ...identity,
-          events: [...priorEvents, { type: 'transaction-completed', transactionId }],
-          transaction: null
-        })
-        await rm(transactionDir, { recursive: true, force: true })
-      },
-      catch: (error) =>
-        error instanceof CoreError
-          ? error
-          : new CoreError(
-              'IO_ERROR',
-              error instanceof Error ? error.message : `Could not save the Idea to ${ideaDir}`
-            )
-    })
+  documents: { path: string; content: string }[]
+): Effect.Effect<void, CoreError> {
+  return Effect.tryPromise({
+    try: async () => {
+      await mkdir(join(ideaDir, '.idea'), { recursive: true })
+      for (const document of documents) {
+        await mkdir(join(ideaDir, document.path, '..'), { recursive: true })
+        await writeFile(join(ideaDir, document.path), document.content, 'utf8')
+      }
+      await writeJsonAtomic(join(ideaDir, '.idea', 'recovery.json'), identity)
+    },
+    catch: (error) =>
+      error instanceof CoreError
+        ? error
+        : new CoreError(
+            'IO_ERROR',
+            error instanceof Error ? error.message : `Could not save the Idea to ${ideaDir}`
+          )
   })
 }
 
-function scanIdeas(library: string): Effect.Effect<IdeaSummary[], CoreError, TransactionObserver> {
+function scanIdeas(library: string): Effect.Effect<IdeaSummary[], CoreError> {
   return Effect.gen(function* () {
     const entries = yield* Effect.tryPromise({
       try: () => readdir(library, { withFileTypes: true }),
@@ -995,17 +758,12 @@ function scanIdeas(library: string): Effect.Effect<IdeaSummary[], CoreError, Tra
     })
     // Dot-folders (like the disposable .index projection) are never Ideas.
     const folders = entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
-    const recoveries = yield* Effect.forEach(
-      folders,
-      (entry) => recoverIdeaTransaction(join(library, entry.name)),
-      { concurrency: 1 }
-    )
     yield* Effect.forEach(folders, (entry) => migrateSupportedIdea(join(library, entry.name)), {
       concurrency: 1
     })
     const summaries = yield* Effect.forEach(
       folders,
-      (entry, index) => readIdeaSummary(library, entry.name, recoveries[index] ?? false),
+      (entry) => readIdeaSummary(library, entry.name),
       { concurrency: SCAN_CONCURRENCY }
     )
     return summaries
@@ -1023,20 +781,9 @@ interface RecoveryState {
     planningIndex: { id: string; path: string }
     conversation: { id: string; path: string }
   }
-  events: { type: string; transactionId: string }[]
-  transaction: null | {
-    id: string
-    state: 'prepared'
-    previousRecovery?: string
-    writes: { target: string; staged: string; previous?: string; sha256: string }[]
-  }
 }
 
-function reopenIdea(
-  library: string,
-  relativePath: string,
-  explicitIdeaDir?: string
-): Effect.Effect<OpenedIdea, CoreError, TransactionObserver> {
+function reopenIdea(library: string, relativePath: string): Effect.Effect<OpenedIdea, CoreError> {
   return Effect.gen(function* () {
     const parsedPath = ideaRelativePathSchema.safeParse(relativePath)
     if (!parsedPath.success) {
@@ -1044,60 +791,34 @@ function reopenIdea(
         new CoreError('INVALID_INPUT', 'The Idea reference is not portable')
       )
     }
-    const ideaDir = explicitIdeaDir ?? join(library, parsedPath.data)
-    const summary = yield* readIdeaSummary(library, parsedPath.data, false, ideaDir)
+    const ideaDir = join(library, parsedPath.data)
+    const summary = yield* readIdeaSummary(library, parsedPath.data)
     if (!summary)
       return yield* Effect.fail(new CoreError('IDEA_NOT_FOUND', 'The Idea was not found'))
 
     const rootDocument = yield* Effect.tryPromise({
       try: () => findRootDocument(ideaDir),
-      catch: () => new CoreError('UNRECOVERABLE_CONTENT', 'The root Idea is unreadable')
+      catch: () => new CoreError('IO_ERROR', 'The root Idea is unreadable')
     })
     if (!rootDocument) {
-      return yield* Effect.fail(
-        new CoreError('UNRECOVERABLE_CONTENT', 'The root Idea is unreadable')
-      )
-    }
-
-    if (summary.openState === 'read-only-newer-format') {
-      return {
-        idea: summary,
-        documents: {
-          root: { id: summary.id, kind: 'root' as const, path: rootDocument.path },
-          planningIndex: {
-            id: `${summary.id}:newer-planning-index`,
-            kind: 'planning-index' as const,
-            path: rootDocument.parsed.frontmatter['planning_index'] ?? 'planning/index.md'
-          },
-          conversation: {
-            id: `${summary.id}:newer-conversation`,
-            kind: 'conversation' as const,
-            path: rootDocument.parsed.frontmatter['conversation'] ?? 'planning/conversation.md'
-          }
-        },
-        notice: 'This Idea was written by a newer app format. Update the app to edit it.'
-      }
+      return yield* Effect.fail(new CoreError('IO_ERROR', 'The root Idea is unreadable'))
     }
 
     const recoveryPath = join(ideaDir, '.idea', 'recovery.json')
     const recovery = yield* Effect.tryPromise({
       try: async () => JSON.parse(await readFile(recoveryPath, 'utf8')) as RecoveryState,
-      catch: () =>
-        new CoreError('UNRECOVERABLE_CONTENT', 'The private recovery metadata is unreadable')
+      catch: () => new CoreError('IO_ERROR', 'The private recovery metadata is unreadable')
     })
     const identities = yield* Effect.tryPromise({
       try: () => collectManagedIdentities(ideaDir),
-      catch: () => new CoreError('UNRECOVERABLE_CONTENT', 'Managed content could not be read')
+      catch: () => new CoreError('IO_ERROR', 'Managed content could not be read')
     })
     const rootPath = identities.get(recovery.documents.root.id)
     const planningIndexPath = identities.get(recovery.documents.planningIndex.id)
     const conversationPath = identities.get(recovery.documents.conversation.id)
     if (!rootPath || !planningIndexPath || !conversationPath) {
       return yield* Effect.fail(
-        new CoreError(
-          'UNRECOVERABLE_CONTENT',
-          'One or more canonical planning documents could not be recovered'
-        )
+        new CoreError('IO_ERROR', 'One or more canonical planning documents could not be recovered')
       )
     }
     const documents = {
@@ -1128,11 +849,7 @@ function reopenIdea(
           kind: 'conversation' as const,
           path: conversationPath
         }
-      },
-      notice:
-        summary.openState === 'recovered'
-          ? 'An interrupted write was recovered from local content.'
-          : null
+      }
     }
   })
 }
@@ -1179,7 +896,7 @@ async function findRootDocument(ideaDir: string): Promise<{
 function repairPortableLinks(
   ideaDir: string,
   recovery: RecoveryState
-): Effect.Effect<boolean, CoreError, TransactionObserver> {
+): Effect.Effect<boolean, CoreError> {
   return Effect.gen(function* () {
     const rootPath = recovery.documents.root.path
     const indexPath = recovery.documents.planningIndex.path
@@ -1190,7 +907,7 @@ function repairPortableLinks(
           readFile(join(ideaDir, rootPath), 'utf8'),
           readFile(join(ideaDir, indexPath), 'utf8')
         ]),
-      catch: () => new CoreError('UNRECOVERABLE_CONTENT', 'Managed links could not be inspected')
+      catch: () => new CoreError('IO_ERROR', 'Managed links could not be inspected')
     })
     const fromRoot = posix.dirname(rootPath)
     const fromIndex = posix.dirname(indexPath)
@@ -1208,16 +925,10 @@ function repairPortableLinks(
       .replace(/^- \[Conversation\]\([^\n)]*\)/m, `- [Conversation](${indexToConversation})`)
     if (nextRoot === rootRaw && nextIndex === indexRaw) return false
 
-    yield* commitTransaction(
-      ideaDir,
-      recovery,
-      [
-        { path: rootPath, content: nextRoot },
-        { path: indexPath, content: nextIndex }
-      ],
-      'repair-links',
-      recovery.events
-    )
+    yield* writeManagedDocuments(ideaDir, recovery, [
+      { path: rootPath, content: nextRoot },
+      { path: indexPath, content: nextIndex }
+    ])
     return true
   })
 }
@@ -1238,118 +949,6 @@ async function listMarkdownPaths(root: string, prefix = ''): Promise<string[]> {
   return result
 }
 
-function recoverIdeaTransaction(ideaDir: string): Effect.Effect<boolean, CoreError> {
-  return Effect.tryPromise({
-    try: async () => {
-      const recoveryPath = join(ideaDir, '.idea', 'recovery.json')
-      const raw = await readFile(recoveryPath, 'utf8').catch(() => null)
-      if (raw === null) return false
-      const recovery = JSON.parse(raw) as RecoveryState
-      if (!recovery.transaction) return false
-      if (recovery.format > 1) return false
-      const rootDocument = await findRootDocument(ideaDir).catch(() => null)
-      const rootFormat = Number(rootDocument?.parsed.frontmatter['format'] ?? '0')
-      if (rootFormat > 1) return false
-      if (
-        recovery.transaction.writes.some(
-          (write) =>
-            !isPortableManagedPath(write.target) ||
-            !isPortableManagedPath(write.staged) ||
-            (write.previous !== undefined && !isPortableManagedPath(write.previous))
-        ) ||
-        (recovery.transaction.previousRecovery !== undefined &&
-          !isPortableManagedPath(recovery.transaction.previousRecovery))
-      ) {
-        return false
-      }
-
-      const cannotComplete = (
-        await Promise.all(
-          recovery.transaction.writes.map(async (write) => {
-            const stagedExists = await pathExists(join(ideaDir, write.staged))
-            if (stagedExists) return false
-            const target = join(ideaDir, write.target)
-            if (!(await pathExists(target))) return true
-            const targetHash = createHash('sha256')
-              .update(await readFile(target, 'utf8'))
-              .digest('hex')
-            return targetHash !== write.sha256
-          })
-        )
-      ).some(Boolean)
-      if (cannotComplete) {
-        if (recovery.transaction.id === 'capture') {
-          await rm(ideaDir, { recursive: true, force: true })
-          return true
-        }
-        for (const write of recovery.transaction.writes) {
-          const target = join(ideaDir, write.target)
-          const previous = write.previous ? join(ideaDir, write.previous) : null
-          if (previous && (await pathExists(previous))) await rename(previous, target)
-          else await rm(target, { force: true })
-        }
-        const previousRecovery = recovery.transaction.previousRecovery
-          ? join(ideaDir, recovery.transaction.previousRecovery)
-          : null
-        if (previousRecovery && (await pathExists(previousRecovery))) {
-          await rename(previousRecovery, recoveryPath)
-        } else {
-          await rm(recoveryPath, { force: true })
-        }
-        await rm(join(ideaDir, '.idea', 'transactions', recovery.transaction.id), {
-          recursive: true,
-          force: true
-        })
-        return true
-      }
-
-      for (const write of recovery.transaction.writes) {
-        const staged = join(ideaDir, write.staged)
-        const target = join(ideaDir, write.target)
-        const stagedExists = await pathExists(staged)
-        if (stagedExists) {
-          await mkdir(join(target, '..'), { recursive: true })
-          await rename(staged, target)
-        }
-      }
-      await writeJsonAtomic(recoveryPath, {
-        ...recovery,
-        events: [
-          ...recovery.events,
-          { type: 'transaction-recovered', transactionId: recovery.transaction.id }
-        ],
-        transaction: null
-      })
-      await rm(join(ideaDir, '.idea', 'transactions', recovery.transaction.id), {
-        recursive: true,
-        force: true
-      })
-      return true
-    },
-    catch: (error) =>
-      new CoreError(
-        'IO_ERROR',
-        error instanceof Error ? error.message : 'Could not recover an interrupted Idea write'
-      )
-  })
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  return stat(path).then(
-    () => true,
-    () => false
-  )
-}
-
-function isPortableManagedPath(path: string): boolean {
-  return (
-    path.length > 0 &&
-    !path.startsWith('/') &&
-    !path.includes('\\') &&
-    !path.split('/').some((part) => part === '' || part === '.' || part === '..')
-  )
-}
-
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   const staged = `${path}.staged`
   await writeFile(staged, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
@@ -1358,33 +957,15 @@ async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
 
 function readIdeaSummary(
   library: string,
-  folder: string,
-  recovered: boolean,
-  explicitIdeaDir?: string
+  folder: string
 ): Effect.Effect<IdeaSummary | null, CoreError> {
   return Effect.gen(function* () {
-    const ideaDir = explicitIdeaDir ?? join(library, folder)
+    const ideaDir = join(library, folder)
     const root = yield* Effect.tryPromise(() => findRootDocument(ideaDir)).pipe(
       Effect.orElseSucceed(() => null)
     )
-    if (!root) return yield* recoverySummary(library, folder, ideaDir)
+    if (!root) return null
     const parsed = root.parsed
-
-    const format = Number(parsed.frontmatter['format'] ?? '0')
-    const wasRecovered =
-      recovered ||
-      (yield* Effect.promise(async () => {
-        const recoveryRaw = await readFile(join(ideaDir, '.idea', 'recovery.json'), 'utf8').catch(
-          () => null
-        )
-        if (!recoveryRaw) return false
-        try {
-          const recovery = JSON.parse(recoveryRaw) as RecoveryState
-          return recovery.events.some((event) => event.type === 'transaction-recovered')
-        } catch {
-          return false
-        }
-      }))
     const archivedRaw = parsed.frontmatter['archived']
     const candidate = {
       id: parsed.frontmatter['id'],
@@ -1393,7 +974,6 @@ function readIdeaSummary(
       status: parsed.frontmatter['status'],
       createdAt: parsed.frontmatter['created'],
       updatedAt: parsed.frontmatter['updated'],
-      openState: format > 1 ? 'read-only-newer-format' : wasRecovered ? 'recovered' : 'ready',
       relativePath: folder,
       // pinned and archived accept external edits; junk reads as the default.
       pinned: parsed.frontmatter['pinned'] === 'true',
@@ -1402,50 +982,20 @@ function readIdeaSummary(
     }
     const validated = ideaSummarySchema.safeParse(candidate)
     if (!validated.success) return null
-    if (validated.data.openState === 'ready' || validated.data.openState === 'recovered') {
-      yield* Effect.tryPromise({
-        try: () =>
-          writeJsonAtomic(join(ideaDir, '.idea', 'projection.json'), {
-            format: 1,
-            source: 'canonical-markdown',
-            idea: validated.data
-          }),
-        catch: () => new CoreError('IO_ERROR', 'Could not rebuild the Idea projection')
-      })
-    }
+    yield* Effect.tryPromise({
+      try: () =>
+        writeJsonAtomic(join(ideaDir, '.idea', 'projection.json'), {
+          format: 1,
+          source: 'canonical-markdown',
+          idea: validated.data
+        }),
+      catch: () => new CoreError('IO_ERROR', 'Could not rebuild the Idea projection')
+    })
     return validated.data
   })
 }
 
-function recoverySummary(
-  library: string,
-  folder: string,
-  explicitIdeaDir?: string
-): Effect.Effect<IdeaSummary | null> {
-  return Effect.promise(async () => {
-    const raw = await readFile(
-      join(explicitIdeaDir ?? join(library, folder), '.idea', 'recovery.json'),
-      'utf8'
-    ).catch(() => null)
-    if (!raw) return null
-    try {
-      const recovery = JSON.parse(raw) as RecoveryState
-      const parsed = ideaSummarySchema.safeParse({
-        ...recovery.summary,
-        id: recovery.ideaId,
-        relativePath: folder,
-        openState: 'unrecoverable-content'
-      })
-      return parsed.success ? parsed.data : null
-    } catch {
-      return null
-    }
-  })
-}
-
-function migrateSupportedIdea(
-  ideaDir: string
-): Effect.Effect<void, CoreError, TransactionObserver> {
+function migrateSupportedIdea(ideaDir: string): Effect.Effect<void, CoreError> {
   return Effect.gen(function* () {
     const rootPath = join(ideaDir, IDEA_FILE)
     const raw = yield* Effect.tryPromise(() => readFile(rootPath, 'utf8')).pipe(
@@ -1464,7 +1014,6 @@ function migrateSupportedIdea(
       status: parsed.frontmatter['status'],
       createdAt: parsed.frontmatter['created'],
       updatedAt: parsed.frontmatter['updated'],
-      openState: 'ready',
       relativePath: basename(ideaDir)
     })
     if (!candidate.success) return
@@ -1497,8 +1046,7 @@ function migrateSupportedIdea(
       candidate.data,
       notes,
       `${candidate.data.id}:planning-index`,
-      `${candidate.data.id}:conversation`,
-      'format-1-migration'
+      `${candidate.data.id}:conversation`
     )
   })
 }

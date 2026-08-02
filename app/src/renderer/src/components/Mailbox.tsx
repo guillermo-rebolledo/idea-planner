@@ -6,7 +6,6 @@ import {
   CircleDashed,
   Clock3,
   Inbox,
-  ImagePlus,
   Lightbulb,
   PanelLeft,
   Bot,
@@ -27,8 +26,6 @@ import type {
   MailboxSnapshot,
   OpenedIdea,
   LibrarySnapshot,
-  ReconciliationState,
-  ReferenceAttachmentView,
   ThemePreference,
   ThemeState
 } from '@shared/contract'
@@ -50,11 +47,8 @@ type CenterSurface =
   | { kind: 'empty' }
   | { kind: 'capture' }
   | { kind: 'opening'; idea: IdeaSummary }
-  | { kind: 'idea'; openedIdea: OpenedIdea; reconciliation: ReconciliationState }
-  | { kind: 'unrecoverable'; idea: IdeaSummary }
-  | { kind: 'missing'; idea: IdeaSummary }
+  | { kind: 'idea'; openedIdea: OpenedIdea }
   | { kind: 'failed'; idea: IdeaSummary }
-  | { kind: 'reconciliation'; idea: IdeaSummary; state: ReconciliationState }
   | { kind: 'delete-preview'; idea: IdeaSummary; preview: DeleteIdeaPreview }
   | { kind: 'delete-result'; title: string; relativePath: string; result: DeleteIdeaResult }
 
@@ -163,61 +157,12 @@ export function Mailbox({
   async function openIdea(idea: IdeaSummary): Promise<void> {
     setSurface({ kind: 'opening', idea })
     try {
-      const reconciliation = await window.ideaShell.reconcileIdea({
-        relativePath: idea.relativePath,
-        reason: 'opened'
-      })
-      if (!['ready', 'changed'].includes(reconciliation.status)) {
-        if (reconciliation.status === 'location-missing') {
-          try {
-            await window.ideaShell.openIdea(idea.relativePath)
-          } catch (error) {
-            const message = error instanceof Error ? error.message : ''
-            if (message.includes('UNRECOVERABLE_CONTENT')) {
-              setSurface({ kind: 'unrecoverable', idea })
-              return
-            }
-          }
-        }
-        setSurface({ kind: 'reconciliation', idea, state: reconciliation })
-        return
-      }
       const openedIdea = await window.ideaShell.openIdea(idea.relativePath)
-      setSurface({ kind: 'idea', openedIdea, reconciliation })
-      if (reconciliation.status === 'changed') {
-        setAnnouncement(`External changes to “${idea.title}” were saved as a new local version.`)
-      }
-      if (openedIdea.idea.openState === 'recovered') {
-        setAnnouncement(`Recovered “${openedIdea.idea.title}” from canonical local content.`)
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ''
-      setSurface({
-        kind: message.includes('UNRECOVERABLE_CONTENT')
-          ? 'unrecoverable'
-          : message.includes('IDEA_NOT_FOUND')
-            ? 'missing'
-            : 'failed',
-        idea
-      })
+      setSurface({ kind: 'idea', openedIdea })
+    } catch {
+      setSurface({ kind: 'failed', idea })
     }
   }
-
-  useEffect(() => {
-    if (surface.kind !== 'idea') return
-    const idea = surface.openedIdea.idea
-    const timer = window.setInterval(() => {
-      void window.ideaShell.latestReconciliation(idea.relativePath).then((state) => {
-        if (!state) return
-        if (!['ready', 'changed'].includes(state.status)) {
-          setSurface({ kind: 'reconciliation', idea, state })
-        } else if (state.status === 'changed') {
-          void openIdea(idea)
-        }
-      })
-    }, 750)
-    return () => window.clearInterval(timer)
-  }, [surface])
 
   async function togglePinned(idea: IdeaSummary): Promise<void> {
     try {
@@ -287,15 +232,9 @@ export function Mailbox({
   const selectedIdea =
     surface.kind === 'idea'
       ? surface.openedIdea.idea
-      : surface.kind === 'opening' ||
-          surface.kind === 'unrecoverable' ||
-          surface.kind === 'missing' ||
-          surface.kind === 'failed' ||
-          surface.kind === 'reconciliation'
+      : surface.kind === 'opening' || surface.kind === 'failed' || surface.kind === 'delete-preview'
         ? surface.idea
-        : surface.kind === 'delete-preview'
-          ? surface.idea
-          : undefined
+        : undefined
 
   const snapshot = mailbox.state === 'ready' ? mailbox.snapshot : null
   const allIdeas = snapshot?.groups.flatMap((group) => group.ideas) ?? []
@@ -423,57 +362,12 @@ export function Mailbox({
             />
           ) : surface.kind === 'opening' ? (
             <IdeaOpening title={surface.idea.title} />
-          ) : surface.kind === 'unrecoverable' ? (
-            <CenterNotice
-              title={`“${surface.idea.title}” needs attention`}
-              body="Canonical Idea content is missing or unreadable. No partial content was opened."
-              actionLabel="Try again"
-              onAction={() => void openIdea(surface.idea)}
-            />
-          ) : surface.kind === 'missing' ? (
-            <CenterNotice
-              title={`“${surface.idea.title}” is not at its known location`}
-              body="Its folder was moved or deleted outside the app. Refresh the inbox to match what is on disk; nothing is deleted by refreshing."
-              actionLabel="Refresh inbox"
-              onAction={() => {
-                setSurface({ kind: 'empty' })
-                void refreshMailbox(query)
-              }}
-            />
           ) : surface.kind === 'failed' ? (
             <CenterNotice
               title={`“${surface.idea.title}” could not be opened`}
               body="The app could not finish reading local content. The Idea was not classified as corrupt."
               actionLabel="Try again"
               onAction={() => void openIdea(surface.idea)}
-            />
-          ) : surface.kind === 'reconciliation' ? (
-            <ReconciliationNotice
-              idea={surface.idea}
-              state={surface.state}
-              onRetry={() => void openIdea(surface.idea)}
-              onLocate={() => {
-                void window.ideaShell.locateIdea(surface.idea.relativePath).then((result) => {
-                  if (!result.canceled) void openIdea(surface.idea)
-                })
-              }}
-              onResolve={(documentId, choice, aiDraft) => {
-                void window.ideaShell
-                  .resolveManagedConflict({
-                    relativePath: surface.idea.relativePath,
-                    documentId,
-                    choice,
-                    ...(choice === 'keep-ai-draft' ? { aiDraft } : {})
-                  })
-                  .then(() => openIdea(surface.idea))
-              }}
-              onResolveDuplicate={(documentId) => {
-                void window.ideaShell
-                  .resolveDuplicateManagedDocument(surface.idea.relativePath, documentId)
-                  .then((result) => {
-                    if (!result.canceled) void openIdea(surface.idea)
-                  })
-              }}
             />
           ) : surface.kind === 'delete-preview' ? (
             <DeletePreviewSurface
@@ -503,16 +397,6 @@ export function Mailbox({
           ) : surface.kind === 'idea' ? (
             <IdeaDetail
               openedIdea={surface.openedIdea}
-              reconciliation={surface.reconciliation}
-              onRestore={(documentId, version) => {
-                void window.ideaShell
-                  .restoreManagedVersion({
-                    relativePath: surface.openedIdea.idea.relativePath,
-                    documentId,
-                    version
-                  })
-                  .then(() => openIdea(surface.openedIdea.idea))
-              }}
               onTogglePinned={(idea) => void togglePinned(idea)}
               onSetArchived={(idea, archived) => void setArchived(idea, archived)}
               onDelete={(idea) => void startDelete(idea)}
@@ -538,108 +422,6 @@ export function Mailbox({
 
       {readinessOpen && <ReadinessDialog onClose={() => setReadinessOpen(false)} />}
     </div>
-  )
-}
-
-function ReconciliationNotice({
-  idea,
-  state,
-  onRetry,
-  onLocate,
-  onResolve,
-  onResolveDuplicate
-}: {
-  idea: IdeaSummary
-  state: ReconciliationState
-  onRetry: () => void
-  onLocate: () => void
-  onResolve: (documentId: string, choice: 'keep-disk' | 'keep-ai-draft', aiDraft: string) => void
-  onResolveDuplicate: (documentId: string) => void
-}): React.JSX.Element {
-  const copy: Record<ReconciliationState['status'], { title: string; body: string }> = {
-    ready: { title: 'Local content is ready', body: 'Managed content is current.' },
-    changed: { title: 'External changes detected', body: 'A new local version is available.' },
-    conflict: {
-      title: 'Run paused for a content conflict',
-      body: 'Choose Keep disk version or Keep AI draft. Nothing was merged automatically.'
-    },
-    'location-missing': {
-      title: 'Location missing',
-      body: 'The app did not search elsewhere. Use Locate after reconnecting the volume or moving the folder.'
-    },
-    'unsafe-path': {
-      title: 'Unsafe managed-content path',
-      body: 'A managed path resolves outside the approved Working Directory and was not opened.'
-    },
-    'duplicate-identity': {
-      title: 'Duplicate managed-content identity',
-      body: 'Two local copies claim the same stable identity. Choose the intended copy before continuing.'
-    },
-    offline: {
-      title: 'Working Directory offline',
-      body: 'Local placeholders remain visible while the registered volume is unavailable.'
-    },
-    'sync-copy-ambiguous': {
-      title: 'Synced copies need attention',
-      body: 'Multiple sync copies are present. The app will not guess which one is authoritative.'
-    }
-  }
-  const message = copy[state.status]
-  return (
-    <section className="mx-auto flex w-full max-w-xl flex-col gap-4 p-6" role="alert">
-      <div className="rounded-md border border-notice-border bg-notice p-4 text-notice-foreground">
-        <h2 className="font-semibold">{message.title}</h2>
-        <p className="mt-1 text-sm">{message.body}</p>
-      </div>
-      {state.conflicts.map((conflict) => (
-        <div key={conflict.documentId} className="rounded-md border border-border bg-surface p-3">
-          <p className="text-xs font-medium">Managed document conflict</p>
-          <div className="mt-2 flex gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => onResolve(conflict.documentId, 'keep-disk', conflict.aiDraft)}
-            >
-              Keep disk version
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => onResolve(conflict.documentId, 'keep-ai-draft', conflict.aiDraft)}
-            >
-              Keep AI draft
-            </Button>
-          </div>
-        </div>
-      ))}
-      {state.duplicateCandidates.map((candidate) => (
-        <div key={candidate.documentId} className="rounded-md border border-border bg-surface p-3">
-          <p className="text-xs font-medium">Copies claiming {candidate.documentId}</p>
-          <ul className="mt-2 space-y-1 font-mono text-xs text-muted-foreground">
-            {candidate.paths.map((path) => (
-              <li key={path}>{path}</li>
-            ))}
-          </ul>
-          <Button
-            className="mt-3"
-            size="sm"
-            variant="secondary"
-            onClick={() => onResolveDuplicate(candidate.documentId)}
-          >
-            Choose intended copy…
-          </Button>
-        </div>
-      ))}
-      {state.duplicateCandidates.length === 0 && (
-        <Button
-          variant="secondary"
-          onClick={state.recoveryAction === 'locate' ? onLocate : onRetry}
-        >
-          {state.recoveryAction === 'locate' ? 'Locate…' : 'Check again'}
-        </Button>
-      )}
-      <p className="text-xs text-muted-foreground">“{idea.title}” was left unchanged.</p>
-    </section>
   )
 }
 
@@ -779,14 +561,6 @@ function IdeaRow({ idea, selectedId, ...props }: IdeaRowProps): React.JSX.Elemen
             Dormant
           </span>
         )}
-        {idea.openState === 'unrecoverable-content' ||
-        idea.openState === 'read-only-newer-format' ? (
-          <AlertTriangle
-            role="img"
-            aria-label="Needs attention"
-            className="size-3 text-amber-600 dark:text-amber-400"
-          />
-        ) : null}
       </button>
       <span className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
         <RowAction
@@ -1083,76 +857,16 @@ function DeleteResultSurface({
 
 function IdeaDetail({
   openedIdea,
-  reconciliation,
-  onRestore,
   onTogglePinned,
   onSetArchived,
   onDelete
 }: {
   openedIdea: OpenedIdea
-  reconciliation: ReconciliationState
-  onRestore: (documentId: string, version: number) => void
   onTogglePinned: (idea: IdeaSummary) => void
   onSetArchived: (idea: IdeaSummary, archived: boolean) => void
   onDelete: (idea: IdeaSummary) => void
 }): React.JSX.Element {
   const idea = openedIdea.idea
-  const [references, setReferences] = useState<ReferenceAttachmentView[]>([])
-  const [referenceError, setReferenceError] = useState<string | null>(null)
-  useEffect(() => {
-    void window.ideaShell
-      .listReferenceAttachments(idea.relativePath)
-      .then(setReferences, () => setReferenceError('Reference Attachments could not be read.'))
-  }, [idea.relativePath])
-
-  async function chooseReference(): Promise<void> {
-    setReferenceError(null)
-    try {
-      const result = await window.ideaShell.chooseReferenceAttachment({
-        relativePath: idea.relativePath,
-        messageId: `${idea.id}:manual-context`
-      })
-      if (!result.canceled) setReferences((current) => [...current, result.reference])
-    } catch {
-      setReferenceError('Choose a valid PNG or JPEG image.')
-    }
-  }
-
-  async function keepReference(referenceId: string): Promise<void> {
-    try {
-      const kept = await window.ideaShell.keepReferenceWithIdea({
-        relativePath: idea.relativePath,
-        referenceId
-      })
-      setReferences((current) =>
-        current.map((reference) => (reference.id === kept.id ? kept : reference))
-      )
-    } catch {
-      setReferenceError('Locate the image before keeping it with the Idea.')
-    }
-  }
-
-  async function locateReference(referenceId: string): Promise<void> {
-    const result = await window.ideaShell.locateReferenceAttachment({
-      relativePath: idea.relativePath,
-      referenceId
-    })
-    if (!result.canceled) {
-      setReferences((current) =>
-        current.map((reference) =>
-          reference.id === result.reference.id ? result.reference : reference
-        )
-      )
-    }
-  }
-
-  async function continueWithout(referenceId: string): Promise<void> {
-    await window.ideaShell.continueWithoutReference({
-      relativePath: idea.relativePath,
-      referenceId
-    })
-    setReferences((current) => current.filter((reference) => reference.id !== referenceId))
-  }
   const savedAt = new Date(idea.updatedAt)
   const archived = idea.archivedAt !== null
   return (
@@ -1181,151 +895,37 @@ function IdeaDetail({
         )}
       </div>
       <h2 className="mt-2 text-lg font-semibold select-text">{idea.title}</h2>
-      {openedIdea.notice && (
-        <div
-          className="mt-4 rounded-md border border-border bg-muted/50 p-3 text-sm text-foreground"
-          role={idea.openState === 'read-only-newer-format' ? 'alert' : 'status'}
-        >
-          <p>{openedIdea.notice}</p>
-          {idea.openState === 'read-only-newer-format' && (
-            <p className="mt-1 text-xs text-muted-foreground">
-              The content is open read-only; nothing on disk was changed.
-            </p>
-          )}
-        </div>
-      )}
       <p className="mt-4 rounded-md border border-border bg-surface p-3 font-mono text-xs break-all text-muted-foreground select-text">
         {openedIdea.documents.root.path}
       </p>
       <Conversation key={idea.relativePath} idea={idea} />
-      <section
-        className="mt-4 rounded-md border border-border bg-surface p-3"
-        aria-labelledby="references-heading"
-      >
-        <div className="flex items-center gap-2">
-          <div>
-            <h3 id="references-heading" className="text-sm font-medium">
-              Reference Attachments
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Images stay external unless you choose Keep with Idea.
-            </p>
-          </div>
-          <Button
-            className="ml-auto"
-            size="sm"
-            variant="secondary"
-            onClick={() => void chooseReference()}
-          >
-            <ImagePlus aria-hidden="true" className="size-3.5" /> Add image…
-          </Button>
-        </div>
-        {references.length > 0 && (
-          <ul className="mt-3 flex flex-col gap-2">
-            {references.map((reference) => (
-              <li
-                key={reference.id}
-                className="flex items-center gap-2 rounded border border-border p-2 text-xs"
-              >
-                <span className="min-w-0 flex-1 truncate">{reference.safeName}</span>
-                {reference.availability === 'missing' ? (
-                  <span className="flex items-center gap-1">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => void locateReference(reference.id)}
-                    >
-                      Locate image…
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => void continueWithout(reference.id)}
-                    >
-                      Continue without it
-                    </Button>
-                  </span>
-                ) : reference.durablePath ? (
-                  <span className="text-muted-foreground">Kept with Idea</span>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => void keepReference(reference.id)}
-                  >
-                    Keep with Idea
-                  </Button>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-        {referenceError && (
-          <p role="alert" className="mt-2 text-xs text-destructive">
-            {referenceError}
-          </p>
-        )}
-      </section>
-      {reconciliation.history.length > reconciliation.documents.length && (
-        <details className="mt-4 rounded-md border border-border bg-surface p-3">
-          <summary className="cursor-pointer text-sm font-medium">Version history</summary>
-          <ul className="mt-2 flex flex-col gap-1">
-            {reconciliation.history.map((entry) => {
-              const current = reconciliation.documents.find(
-                (document) => document.id === entry.documentId
-              )
-              return (
-                <li
-                  key={`${entry.documentId}:${entry.version}`}
-                  className="flex items-center gap-2 text-xs"
-                >
-                  <span className="min-w-0 flex-1 truncate">
-                    {current?.path ?? 'Managed document'} · version {entry.version}
-                  </span>
-                  {current && entry.version < current.version && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => onRestore(entry.documentId, entry.version)}
-                    >
-                      Restore as current
-                    </Button>
-                  )}
-                </li>
-              )
-            })}
-          </ul>
-        </details>
-      )}
-      {idea.openState !== 'read-only-newer-format' && (
-        <div className="mt-4 flex items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={() => onTogglePinned(idea)}>
-            {idea.pinned ? (
-              <>
-                <PinOff aria-hidden="true" className="size-3.5" /> Unpin
-              </>
-            ) : (
-              <>
-                <Pin aria-hidden="true" className="size-3.5" /> Pin
-              </>
-            )}
-          </Button>
-          <Button variant="secondary" size="sm" onClick={() => onSetArchived(idea, !archived)}>
-            {archived ? (
-              <>
-                <ArchiveRestore aria-hidden="true" className="size-3.5" /> Restore
-              </>
-            ) : (
-              <>
-                <Archive aria-hidden="true" className="size-3.5" /> Archive
-              </>
-            )}
-          </Button>
-          <Button variant="secondary" size="sm" onClick={() => onDelete(idea)}>
-            <Trash2 aria-hidden="true" className="size-3.5" /> Delete…
-          </Button>
-        </div>
-      )}
+      <div className="mt-4 flex items-center gap-2">
+        <Button variant="secondary" size="sm" onClick={() => onTogglePinned(idea)}>
+          {idea.pinned ? (
+            <>
+              <PinOff aria-hidden="true" className="size-3.5" /> Unpin
+            </>
+          ) : (
+            <>
+              <Pin aria-hidden="true" className="size-3.5" /> Pin
+            </>
+          )}
+        </Button>
+        <Button variant="secondary" size="sm" onClick={() => onSetArchived(idea, !archived)}>
+          {archived ? (
+            <>
+              <ArchiveRestore aria-hidden="true" className="size-3.5" /> Restore
+            </>
+          ) : (
+            <>
+              <Archive aria-hidden="true" className="size-3.5" /> Archive
+            </>
+          )}
+        </Button>
+        <Button variant="secondary" size="sm" onClick={() => onDelete(idea)}>
+          <Trash2 aria-hidden="true" className="size-3.5" /> Delete…
+        </Button>
+      </div>
       <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
         This Idea is plain Markdown inside your Idea Library. Developing it with AI is always a
         separate, explicit step you start yourself.

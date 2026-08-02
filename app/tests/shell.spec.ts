@@ -96,21 +96,14 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'captureIdea',
       'chooseLibraryLocation',
       'chooseProviderExecutable',
-      'chooseReferenceAttachment',
       'clearProviderExecutable',
-      'continueWithoutReference',
       'deleteIdeaPermanently',
       'developIdea',
       'getBootState',
       'getConversation',
       'getReadiness',
-      'keepReferenceWithIdea',
-      'latestReconciliation',
       'listIdeas',
-      'listReferenceAttachments',
       'listRuns',
-      'locateIdea',
-      'locateReferenceAttachment',
       'onConversationEvent',
       'onThemeChanged',
       'openExternalLink',
@@ -118,11 +111,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'openLibrary',
       'previewDeleteIdea',
       'queryMailbox',
-      'reconcileIdea',
       'refreshReadiness',
-      'resolveDuplicateManagedDocument',
-      'resolveManagedConflict',
-      'restoreManagedVersion',
       'setIdeaArchived',
       'setIdeaPinned',
       'setLoginShellDiscovery',
@@ -192,15 +181,6 @@ test('a person captures an Idea and it survives an application restart', async (
     await firstRun.close()
   }
 
-  // Model the normalized event left after Core completed an interrupted
-  // transaction during restart, so the shell must make recovery visible.
-  const recoveryPath = join(sandbox.libraryDir, 'offline-recipe-planner', '.idea', 'recovery.json')
-  const recovery = JSON.parse(await readFile(recoveryPath, 'utf8')) as {
-    events: { type: string; transactionId: string }[]
-  }
-  recovery.events.push({ type: 'transaction-recovered', transactionId: 'capture' })
-  await writeFile(recoveryPath, `${JSON.stringify(recovery, null, 2)}\n`)
-
   // Restart the application: the saved Idea reappears from local content.
   const secondRun = await launchShell()
   try {
@@ -208,7 +188,7 @@ test('a person captures an Idea and it survives an application restart', async (
     const inbox = page.getByRole('navigation', { name: 'Idea inbox' })
     await expect(inbox.getByText('Offline recipe planner')).toBeVisible()
     await inbox.getByText('Offline recipe planner').click()
-    await expect(page.getByText('interrupted write was recovered', { exact: false })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Offline recipe planner' })).toBeVisible()
   } finally {
     await secondRun.close()
   }
@@ -383,52 +363,5 @@ test('readiness reports Codex and Claude independently, with safe repair and re-
     await expect(page.getByText('Ready for AI planning: Codex, Claude Code.')).toBeVisible()
   } finally {
     await app.close()
-  }
-})
-
-test('reopen presents newer-format and unrecoverable states without absolute paths', async () => {
-  const setupRun = await launchShell()
-  try {
-    const page = await setupRun.firstWindow()
-    await chooseLibrary(page)
-
-    await page.getByRole('button', { name: 'New Idea' }).click()
-    await page.getByLabel('What’s the idea?').fill('A future format Idea')
-    await page.getByLabel('Title').fill('Future format')
-    await page.getByRole('button', { name: 'Save for later' }).click()
-    await expect(page.getByRole('heading', { name: 'Future format' })).toBeVisible()
-
-    await page.getByRole('button', { name: 'New Idea' }).click()
-    await page.getByLabel('What’s the idea?').fill('An Idea whose root will be damaged')
-    await page.getByLabel('Title').fill('Damaged Idea')
-    await page.getByRole('button', { name: 'Save for later' }).click()
-    await expect(page.getByRole('heading', { name: 'Damaged Idea' })).toBeVisible()
-  } finally {
-    await setupRun.close()
-  }
-
-  const futurePath = join(sandbox.libraryDir, 'future-format', 'idea.md')
-  await writeFile(
-    futurePath,
-    (await readFile(futurePath, 'utf8')).replace('format: 1', 'format: 99')
-  )
-  await writeFile(join(sandbox.libraryDir, 'damaged-idea', 'idea.md'), 'corrupt canonical content')
-
-  const reopenRun = await launchShell()
-  try {
-    const page = await reopenRun.firstWindow()
-    const inbox = page.getByRole('navigation', { name: 'Idea inbox' })
-
-    await inbox.getByText('Future format').click()
-    await expect(page.getByText('written by a newer app format', { exact: false })).toBeVisible()
-    await expect(page.getByText('open read-only', { exact: false })).toBeVisible()
-
-    await inbox.getByText('Damaged Idea').click()
-    await expect(
-      page.getByRole('heading', { name: '“Damaged Idea” needs attention' })
-    ).toBeVisible()
-    await expect(page.getByText(sandbox.libraryDir)).toHaveCount(0)
-  } finally {
-    await reopenRun.close()
   }
 })

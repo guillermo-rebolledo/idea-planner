@@ -51,7 +51,6 @@ function openIndex(library: string): DatabaseSync {
       status TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      open_state TEXT NOT NULL,
       pinned INTEGER NOT NULL,
       archived_at TEXT,
       body TEXT NOT NULL
@@ -72,8 +71,8 @@ function withIndex<A>(library: string, use: (db: DatabaseSync) => A): A {
 const UPSERT_SQL = `
   INSERT INTO ideas (
     id, relative_path, kind, title, status, created_at, updated_at,
-    open_state, pinned, archived_at, body
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    pinned, archived_at, body
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(id) DO UPDATE SET
     relative_path = excluded.relative_path,
     kind = excluded.kind,
@@ -81,7 +80,6 @@ const UPSERT_SQL = `
     status = excluded.status,
     created_at = excluded.created_at,
     updated_at = excluded.updated_at,
-    open_state = excluded.open_state,
     pinned = excluded.pinned,
     archived_at = excluded.archived_at,
     body = excluded.body
@@ -97,7 +95,6 @@ function upsertRow(db: DatabaseSync, idea: IndexedIdea): void {
     summary.status,
     summary.createdAt,
     summary.updatedAt,
-    summary.openState,
     summary.pinned ? 1 : 0,
     summary.archivedAt,
     body
@@ -137,7 +134,6 @@ interface IdeaRow {
   status: string
   created_at: string
   updated_at: string
-  open_state: string
   pinned: number
   archived_at: string | null
   body: string
@@ -151,7 +147,6 @@ function rowToIdea(row: IdeaRow, dormant: boolean): MailboxIdea | null {
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    openState: row.open_state,
     relativePath: row.relative_path,
     pinned: row.pinned === 1,
     archivedAt: row.archived_at
@@ -224,11 +219,7 @@ function groupIdeas(ideas: MailboxIdea[], view: MailboxCoreQuery['view']): Mailb
   ]
   const byKey = new Map(groups.map((group) => [group.key, group]))
   for (const idea of ideas) {
-    const key = idea.pinned
-      ? 'pinned'
-      : idea.openState === 'unrecoverable-content' || idea.openState === 'read-only-newer-format'
-        ? 'needs-attention'
-        : 'recent'
+    const key = idea.pinned ? 'pinned' : 'recent'
     byKey.get(key)?.ideas.push(idea)
   }
   return groups

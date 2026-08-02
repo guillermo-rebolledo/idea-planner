@@ -29,14 +29,6 @@ export const CONTRACT_VERSION = 1
 export const ideaKindSchema = z.enum(['software', 'general'])
 export type IdeaKind = z.infer<typeof ideaKindSchema>
 
-export const ideaOpenStateSchema = z.enum([
-  'ready',
-  'recovered',
-  'read-only-newer-format',
-  'unrecoverable-content'
-])
-export type IdeaOpenState = z.infer<typeof ideaOpenStateSchema>
-
 export const ideaSummarySchema = z.object({
   id: z.string().min(1),
   kind: ideaKindSchema,
@@ -44,7 +36,6 @@ export const ideaSummarySchema = z.object({
   status: z.literal('saved'),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
-  openState: ideaOpenStateSchema,
   /** Path of the Idea's folder relative to the Idea Library root. */
   relativePath: z.string().min(1),
   // Defaults keep summaries persisted before these fields existed readable.
@@ -61,143 +52,13 @@ export const managedDocumentSchema = z.object({
 })
 export type ManagedDocument = z.infer<typeof managedDocumentSchema>
 
-export const reconciliationStatusSchema = z.enum([
-  'ready',
-  'changed',
-  'conflict',
-  'location-missing',
-  'unsafe-path',
-  'duplicate-identity',
-  'offline',
-  'sync-copy-ambiguous'
-])
-export type ReconciliationStatus = z.infer<typeof reconciliationStatusSchema>
-
-export const reconcileIdeaInputSchema = z.object({
-  relativePath: z.string().min(1),
-  reason: z.enum(['opened', 'changed', 'atomic-replacement', 'overflow', 'missing-volume']),
-  activeRun: z
-    .object({
-      id: z.string().min(1),
-      documents: z.array(
-        z.object({
-          id: z.string().min(1),
-          baselineHash: z.string().length(64),
-          aiDraft: z.string()
-        })
-      )
-    })
-    .optional()
-})
-export type ReconcileIdeaInput = z.infer<typeof reconcileIdeaInputSchema>
-export type ReconciliationReason = ReconcileIdeaInput['reason']
-
-export const reconciledDocumentSchema = managedDocumentSchema.extend({
-  hash: z.string().length(64),
-  version: z.number().int().positive()
-})
-export type ReconciledDocument = z.infer<typeof reconciledDocumentSchema>
-
-export const managedVersionSchema = z.object({
-  documentId: z.string().min(1),
-  version: z.number().int().positive(),
-  hash: z.string().length(64),
-  createdAt: z.string().datetime()
-})
-export type ManagedVersion = z.infer<typeof managedVersionSchema>
-
-export const reconciliationStateSchema = z.object({
-  status: reconciliationStatusSchema,
-  documents: z.array(reconciledDocumentSchema),
-  history: z.array(managedVersionSchema),
-  conflicts: z.array(
-    z.object({
-      documentId: z.string().min(1),
-      disk: z.string(),
-      aiDraft: z.string(),
-      choices: z.tuple([z.literal('keep-disk'), z.literal('keep-ai-draft')])
-    })
-  ),
-  pausedRunId: z.string().nullable(),
-  recoveryAction: z.literal('locate').nullable(),
-  duplicateCandidates: z.array(
-    z.object({
-      documentId: z.string().min(1),
-      paths: z.array(z.string().min(1)).min(2)
-    })
-  )
-})
-export type ReconciliationState = z.infer<typeof reconciliationStateSchema>
-
-export const locateIdeaResultSchema = z.union([
-  z.object({ canceled: z.literal(true) }),
-  z.object({ canceled: z.literal(false), state: reconciliationStateSchema })
-])
-export type LocateIdeaResult = z.infer<typeof locateIdeaResultSchema>
-
-export const restoreManagedVersionInputSchema = z.object({
-  relativePath: z.string().min(1),
-  documentId: z.string().min(1),
-  version: z.number().int().positive()
-})
-export type RestoreManagedVersionInput = z.infer<typeof restoreManagedVersionInputSchema>
-
-export const resolveManagedConflictInputSchema = z.object({
-  relativePath: z.string().min(1),
-  documentId: z.string().min(1),
-  choice: z.enum(['keep-disk', 'keep-ai-draft']),
-  aiDraft: z.string().optional()
-})
-export type ResolveManagedConflictInput = z.infer<typeof resolveManagedConflictInputSchema>
-
-export const resolveDuplicateManagedDocumentInputSchema = z.object({
-  relativePath: z.string().min(1),
-  documentId: z.string().min(1),
-  selectedPath: z.string().min(1)
-})
-export type ResolveDuplicateManagedDocumentInput = z.infer<
-  typeof resolveDuplicateManagedDocumentInputSchema
->
-
-export const referenceAttachmentSchema = z.object({
-  id: z.string().min(1),
-  messageId: z.string().min(1),
-  sourcePath: z.string().min(1),
-  safeName: z.string().min(1),
-  sourceHash: z.string().length(64),
-  mediaType: z.enum(['image/png', 'image/jpeg']),
-  durablePath: z.string().nullable(),
-  omitted: z.boolean()
-})
-export type ReferenceAttachment = z.infer<typeof referenceAttachmentSchema>
-export const referenceAttachmentViewSchema = referenceAttachmentSchema
-  .omit({ sourcePath: true })
-  .extend({ availability: z.enum(['available', 'missing', 'kept', 'omitted']) })
-export type ReferenceAttachmentView = z.infer<typeof referenceAttachmentViewSchema>
-
-export const chooseReferenceAttachmentInputSchema = z.object({
-  relativePath: z.string().min(1),
-  messageId: z.string().min(1)
-})
-export const chooseReferenceAttachmentResultSchema = z.union([
-  z.object({ canceled: z.literal(true) }),
-  z.object({ canceled: z.literal(false), reference: referenceAttachmentViewSchema })
-])
-export type ChooseReferenceAttachmentResult = z.infer<typeof chooseReferenceAttachmentResultSchema>
-export const referenceActionInputSchema = z.object({
-  relativePath: z.string().min(1),
-  referenceId: z.string().min(1)
-})
-export type ReferenceActionInput = z.infer<typeof referenceActionInputSchema>
-
 export const openedIdeaSchema = z.object({
   idea: ideaSummarySchema,
   documents: z.object({
     root: managedDocumentSchema,
     planningIndex: managedDocumentSchema,
     conversation: managedDocumentSchema
-  }),
-  notice: z.string().nullable()
+  })
 })
 export type OpenedIdea = z.infer<typeof openedIdeaSchema>
 
@@ -339,7 +200,6 @@ export const coreErrorCodeSchema = z.enum([
   'NOT_A_DIRECTORY',
   'NO_LIBRARY_OPEN',
   'IDEA_NOT_FOUND',
-  'UNRECOVERABLE_CONTENT',
   'INVALID_INPUT',
   'IO_ERROR',
   'RUN_NOT_FOUND',
@@ -375,45 +235,6 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     archived: z.boolean()
   }),
   z.object({ type: z.literal('idea/delete-preview'), relativePath: ideaRelativePathSchema }),
-  z.object({ type: z.literal('idea/reconcile'), input: reconcileIdeaInputSchema }),
-  z.object({ type: z.literal('idea/reconciliation-latest'), relativePath: ideaRelativePathSchema }),
-  z.object({
-    type: z.literal('idea/locate'),
-    relativePath: ideaRelativePathSchema,
-    selectedDirectory: z.string().min(1),
-    expectedIdeaId: z.string().min(1)
-  }),
-  z.object({ type: z.literal('idea/restore-version'), input: restoreManagedVersionInputSchema }),
-  z.object({ type: z.literal('idea/resolve-conflict'), input: resolveManagedConflictInputSchema }),
-  z.object({
-    type: z.literal('idea/resolve-duplicate'),
-    input: resolveDuplicateManagedDocumentInputSchema
-  }),
-  z.object({
-    type: z.literal('run/reconciliation-end'),
-    relativePath: ideaRelativePathSchema,
-    runId: z.string().min(1)
-  }),
-  z.object({
-    type: z.literal('reference/add'),
-    relativePath: z.string().min(1),
-    messageId: z.string().min(1),
-    sourcePath: z.string().min(1)
-  }),
-  z.object({ type: z.literal('reference/list'), relativePath: z.string().min(1) }),
-  z.object({ type: z.literal('reference/keep'), input: referenceActionInputSchema }),
-  z.object({ type: z.literal('reference/continue-without'), input: referenceActionInputSchema }),
-  z.object({
-    type: z.literal('reference/locate'),
-    input: referenceActionInputSchema.extend({ sourcePath: z.string().min(1) })
-  }),
-  z.object({
-    type: z.literal('reference/prepare-context'),
-    relativePath: z.string().min(1),
-    runId: z.string().min(1),
-    referenceIds: z.array(z.string().min(1))
-  }),
-  z.object({ type: z.literal('reference/remove-context'), contextId: z.string().min(1) }),
   z.object({ type: z.literal('run/accept'), input: acceptRunInputSchema }),
   z.object({ type: z.literal('run/list'), relativePath: ideaRelativePathSchema }),
   z.object({ type: z.literal('run/event'), input: recordRunEventInputSchema }),
@@ -481,22 +302,6 @@ export interface IdeaShellApi {
   setIdeaArchived(input: SetIdeaArchivedInput): Promise<IdeaSummary>
   /** Enumerates the exact app-owned targets before any permanent delete. */
   previewDeleteIdea(relativePath: IdeaRelativePath): Promise<DeleteIdeaPreview>
-  reconcileIdea(input: ReconcileIdeaInput): Promise<ReconciliationState>
-  latestReconciliation(relativePath: IdeaRelativePath): Promise<ReconciliationState | null>
-  locateIdea(relativePath: IdeaRelativePath): Promise<LocateIdeaResult>
-  restoreManagedVersion(input: RestoreManagedVersionInput): Promise<ReconciliationState>
-  resolveManagedConflict(input: ResolveManagedConflictInput): Promise<ReconciliationState>
-  resolveDuplicateManagedDocument(
-    relativePath: IdeaRelativePath,
-    documentId: string
-  ): Promise<LocateIdeaResult>
-  chooseReferenceAttachment(
-    input: z.infer<typeof chooseReferenceAttachmentInputSchema>
-  ): Promise<ChooseReferenceAttachmentResult>
-  listReferenceAttachments(relativePath: IdeaRelativePath): Promise<ReferenceAttachmentView[]>
-  keepReferenceWithIdea(input: ReferenceActionInput): Promise<ReferenceAttachmentView>
-  locateReferenceAttachment(input: ReferenceActionInput): Promise<ChooseReferenceAttachmentResult>
-  continueWithoutReference(input: ReferenceActionInput): Promise<void>
   /** Moves only the previewed, confirmed app-owned targets to the macOS Trash. */
   deleteIdeaPermanently(input: DeleteIdeaInput): Promise<DeleteIdeaResult>
   setThemePreference(preference: ThemePreference): Promise<ThemeState>

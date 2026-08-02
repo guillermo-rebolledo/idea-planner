@@ -204,29 +204,6 @@ describe('the rebuildable index', () => {
   })
 })
 
-describe('needs attention', () => {
-  it('groups unrecoverable and newer-format Ideas under needs-attention', async () => {
-    const broken = await capture('Broken idea')
-    now = new Date(now.getTime() + 1000)
-    const future = await capture('Future idea')
-    now = new Date(now.getTime() + 1000)
-    await capture('Healthy idea')
-    await writeFile(join(libraryDir, broken.relativePath, 'idea.md'), 'corrupt content')
-    const futureRoot = join(libraryDir, future.relativePath, 'idea.md')
-    await writeFile(
-      futureRoot,
-      (await readFile(futureRoot, 'utf8')).replace('format: 1', 'format: 99')
-    )
-
-    const reborn = makeCore()
-    await reborn.openLibrary(libraryDir)
-    const snapshot = await reborn.queryMailbox(query())
-    expect(group(snapshot, 'needs-attention').sort()).toEqual(['Broken idea', 'Future idea'])
-    expect(group(snapshot, 'recent')).toEqual(['Healthy idea'])
-    expect(group(snapshot, 'running')).toEqual([])
-  })
-})
-
 describe('permanent delete preview', () => {
   it('targets the whole folder when it only holds app-owned content', async () => {
     const idea = await capture('Cleanly deletable')
