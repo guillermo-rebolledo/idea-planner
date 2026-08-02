@@ -587,6 +587,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
                   id: `file-change:${input.runId}:${ordinal}`,
                   at: now.toISOString(),
                   runId: input.runId,
+                  // Only what the Harness actually said: guessing a deletion
+                  // from an empty diff would name something it never claimed.
+                  changeKind: event.changeKind ?? 'changed',
                   ...describeChange(
                     event.path,
                     event.hunks,
@@ -647,8 +650,12 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 at: now.toISOString(),
                 runId: input.runId,
                 source: 'checkout',
-                change: file.change,
-                ...described
+                changeKind: file.changeKind,
+                ...described,
+                // A change git listed but whose patch could not be read is not
+                // a change with no text in it: the lines exist, and nothing
+                // here has them.
+                shortened: described.shortened || file.diff === ''
               })
             )
           }
@@ -916,7 +923,7 @@ function tally(
     removed: (known?.removed ?? 0) + entry.removed,
     // The latest thing to happen to it is what it is now: a file created and
     // then deleted in one Session is gone.
-    change: entry.change,
+    changeKind: entry.changeKind,
     shortened: (known?.shortened ?? false) || entry.shortened,
     // One report from the agent is enough to account for the file; a Checkout
     // comparison only ever adds what nothing accounted for.

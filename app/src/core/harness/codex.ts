@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   redactCredentials,
+  type ChangeKind,
   type HarnessEvent,
   type HarnessFailureCategory
 } from '@shared/conversation'
@@ -85,8 +86,17 @@ const notificationSchema = z.object({
 /** One file Codex changed, with the patch it computed for it. */
 const changeSchema = z.object({
   path: z.string().min(1),
+  /** Codex says which of the three this was; nothing here has to guess. */
+  kind: z.object({ type: z.string() }).optional(),
   diff: z.string().default('')
 })
+
+/** Codex's own words for what happened to a file, in this app's. */
+const CODEX_CHANGE_KINDS: Record<string, ChangeKind | undefined> = {
+  add: 'added',
+  delete: 'deleted',
+  update: 'changed'
+}
 
 const itemSchema = z.object({
   type: z.string().default(''),
@@ -415,6 +425,7 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
         return (item.changes ?? []).map((change) => ({
           type: 'file-change' as const,
           path: change.path,
+          changeKind: CODEX_CHANGE_KINDS[change.kind?.type ?? ''] ?? 'changed',
           hunks: parseCodexPatch(change.diff)
         }))
       case 'userMessage':

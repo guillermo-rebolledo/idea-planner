@@ -14,23 +14,23 @@ Renames stay out of scope. Without rename detection git reports one as a deletio
 
 **Status:** done
 
-- [x] A deleted file says it was deleted, and a created one says it was created
+- [x] A deleted file says it was deleted, and a created one says it was created — from git, and from Codex about its own changes; Claude does not say, and is not guessed at
 - [x] A change with no text says why there is nothing to show, rather than showing `+0 −0`
 - [x] A Run that changed more files than it lists says how many it did not list
 - [x] A diff that was shortened for storage says it was shortened
 - [x] `pnpm verify` passes
 
-## Answer — git already knew
+## Answer — every source is asked, and none is guessed
 
-The comparison asks `--name-status -z` rather than `--name-only -z`, so which files were created, changed and deleted comes from git rather than being guessed from the shape of a patch. A deleted row is struck through and says `deleted`; a created one says `created`.
+The Checkout comparison asks git `--name-status -z`, so created, changed and deleted come from git rather than from the shape of a patch. Codex says which of the three each of its own changes was, and that is carried through too. Claude does not say, and its changes stay `changed`: inventing a deletion from an empty diff would name something the Harness never claimed.
 
-The latest thing to happen to a file is what the row says it is: a file created and then removed in one Session reads as deleted, because that is what is true of it now.
+The row says the latest thing that happened to the file, so a file created and later deleted reads as deleted. Within a single Run this does not arise — a Run reports one entry per file per source, and a path the Harness already accounted for is not compared again — so it is a Session-level truth, across Runs.
 
-Harness-reported changes stay `changed` unless the Harness itself says otherwise. Neither Adapter says today, and inventing it from an empty original would guess.
+A deleted row is struck through and says `deleted`; a created one says `created`.
 
-## Answer — nothing to show, and why
+## Answer — nothing to show, and two reasons
 
-A change with no lines at all — a binary file, a mode, a rename of either — says `no text change` instead of `+0 −0`, and opening it says why there is nothing there. Not inventing lines was already right; saying nothing about it was what made it look broken.
+A change with no lines at all says why, rather than showing `+0 −0`. There are two whys and they are not the same thing: a binary file or a mode change has no text to diff and says `no text change`, while a change whose patch was too large to read back has text that this app does not have and says `diff not kept`. The first version conflated them, and would have told somebody a forty-thousand-line change had no text in it.
 
 ## Answer — both truncations speak
 

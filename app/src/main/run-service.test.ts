@@ -1531,8 +1531,12 @@ describe('a Run the app never got to finish', () => {
 
     expect(deps.core.commands).toContain('conversation/checkout-changes')
     const recorded = deps.core.send.mock.calls
-      .map(([command]) => command as { type: string; input?: { files?: { path: string }[] } })
+      .map(
+        ([command]) =>
+          command as { type: string; input?: { runId?: string; files?: { path: string }[] } }
+      )
       .find((command) => command.type === 'conversation/checkout-changes')
+    expect(recorded?.input?.runId).toBe('run-abandoned')
     expect(recorded?.input?.files?.map((file) => file.path)).toEqual(['tracked.ts'])
     await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([])
   })

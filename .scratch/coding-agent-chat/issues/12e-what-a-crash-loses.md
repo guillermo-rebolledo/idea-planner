@@ -31,4 +31,6 @@ The startup sweep reads it rather than deleting blindly. A directory it can read
 
 It measures the Checkout as it is when the app reopens, so anything the person changed between the crash and reopening lands in that Run. That is the cost of answering at all, and it is only paid by Runs that never concluded — a Run that ended normally is still compared the moment it ends.
 
-The entries land after that Run's ending boundary in the Conversation, which is exactly what happened: the app learned this after the Run was over.
+The entries land inside a Run that has no ending boundary, because nothing finalizes a Run the app never got to finish — which also leaves the Session reading as `running` for as long as nobody develops it again. That is not this ticket's doing and not its fix; it is [12g](12g-a-run-nobody-closed.md).
+
+Recording the same comparison twice is harmless, so a crash between recording one and cleaning up after it costs nothing: Core keeps only the paths a Run has not already accounted for, and a test holds that.

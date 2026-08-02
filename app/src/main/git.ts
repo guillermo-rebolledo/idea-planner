@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { ChangeKind } from '@shared/conversation'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
@@ -77,18 +78,12 @@ export async function initRepository(
  */
 export type CheckoutSnapshot = { status: 'taken'; tree: string } | { status: 'unavailable' }
 
-/**
- * What happened to a file between two snapshots. Git says which of the three
- * it was, and a deletion shown as a change is a row nobody can read: all its
- * lines are removed either way.
- */
-export type ChangeKind = 'added' | 'changed' | 'deleted'
-
 /** One file that changed between two snapshots, and how. */
 export interface SnapshotChange {
   /** Relative to the Checkout, as git names it. */
   path: string
-  change: ChangeKind
+  /** Git says which of the three it was, so nothing here has to guess. */
+  changeKind: ChangeKind
   /** The unified diff between the two snapshots, as git rendered it. */
   diff: string
 }
@@ -199,7 +194,7 @@ function readNameStatus(stdout: string): SnapshotChange[] {
     if (!status || !path) continue
     changes.push({
       path,
-      change: status.startsWith('A') ? 'added' : status.startsWith('D') ? 'deleted' : 'changed',
+      changeKind: status.startsWith('A') ? 'added' : status.startsWith('D') ? 'deleted' : 'changed',
       diff: ''
     })
   }

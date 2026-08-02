@@ -234,11 +234,26 @@ describe('snapshotting a Checkout', () => {
     const { changes: changed } = await diffSnapshots(root, appOwned, before, after)
     expect(changed).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ path: 'doomed.ts', change: 'deleted' }),
-        expect.objectContaining({ path: 'fresh.ts', change: 'added' }),
-        expect.objectContaining({ path: 'tracked.ts', change: 'changed' })
+        expect.objectContaining({ path: 'doomed.ts', changeKind: 'deleted' }),
+        expect.objectContaining({ path: 'fresh.ts', changeKind: 'added' }),
+        expect.objectContaining({ path: 'tracked.ts', changeKind: 'changed' })
       ])
     )
+  })
+
+  it('caps how many files it lists, and says how many it did not', async () => {
+    const before = await snapshotCheckout(root, appOwned)
+    await mkdir(join(root, 'generated'), { recursive: true })
+    await Promise.all(
+      Array.from({ length: 505 }, (_, index) =>
+        writeFile(join(root, 'generated', `file-${String(index)}.ts`), 'export const x = 1\n')
+      )
+    )
+    const after = await snapshotCheckout(root, appOwned)
+
+    const comparison = await diffSnapshots(root, appOwned, before, after)
+    expect(comparison.changes).toHaveLength(500)
+    expect(comparison.unlisted).toBe(5)
   })
 
   it('says so rather than failing when the Checkout is not a repository', async () => {

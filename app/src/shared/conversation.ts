@@ -58,11 +58,6 @@ export const harnessUsageSchema = z.object({
 })
 export type HarnessUsage = z.infer<typeof harnessUsageSchema>
 
-/**
- * One normalized Harness event. `unsupported` is how an Adapter reports a
- * frame it does not model: unknown protocol never fails a Run and never
- * reaches Conversation content.
- */
 /** What happened to a file: it appeared, its text changed, or it went. */
 export const changeKindSchema = z.enum(['added', 'changed', 'deleted'])
 export type ChangeKind = z.infer<typeof changeKindSchema>
@@ -91,6 +86,11 @@ export function countDiffLines(hunks: DiffHunk[]): { added: number; removed: num
   }
 }
 
+/**
+ * One normalized Harness event. `unsupported` is how an Adapter reports a
+ * frame it does not model: unknown protocol never fails a Run and never
+ * reaches Conversation content.
+ */
 export const harnessEventSchema = z.discriminatedUnion('type', [
   /**
    * One assistant message, identified by the Harness's own item id. A Run may
@@ -113,6 +113,8 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('file-change'),
     path: z.string().min(1),
+    /** What the Harness says happened to it, when it says at all. */
+    changeKind: changeKindSchema.optional(),
     hunks: z.array(diffHunkSchema).min(1)
   }),
   z.object({ type: z.literal('tool'), name: z.string().min(1), summary: z.string().min(1) }),
@@ -369,7 +371,7 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
      * What happened to the file. A deletion shown as a change is a row nobody
      * can read: every line of it is removed either way.
      */
-    change: changeKindSchema.default('changed'),
+    changeKind: changeKindSchema.default('changed'),
     /**
      * True when the diff kept is only the start of the one that happened. The
      * counts are still the whole change; the lines on screen are not.
@@ -406,7 +408,7 @@ export const changedFileSchema = z.object({
   changes: z.number().int().positive(),
   added: z.number().int().nonnegative(),
   removed: z.number().int().nonnegative(),
-  change: changeKindSchema,
+  changeKind: changeKindSchema,
   /** True when any of the diffs behind this row were shortened for storage. */
   shortened: z.boolean(),
   /**
@@ -421,7 +423,7 @@ export type ChangedFile = z.infer<typeof changedFileSchema>
 /** One file a Checkout comparison found changed, with git's own patch. */
 export const checkoutChangeSchema = z.object({
   path: z.string().min(1),
-  change: changeKindSchema,
+  changeKind: changeKindSchema,
   diff: z.string()
 })
 

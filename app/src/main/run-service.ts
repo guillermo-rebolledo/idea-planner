@@ -199,9 +199,9 @@ export class RunService {
    * never reaches the Harness leaves the message and a recovery choice.
    */
   async develop(rawInput: DevelopSessionInput): Promise<ConversationSnapshot> {
-    // Before this Run takes a snapshot of its own: the sweep removes whatever
-    // it finds, and a Run resent under the same key would be swept out from
-    // under itself.
+    // Before this Run takes a snapshot of its own. The sweep happens once per
+    // launch and removes whatever it finds, so a Run that starts while it is
+    // still running could have its own baseline deleted underneath it.
     await this.recoverAbandonedSnapshots().catch(() => undefined)
     const input = developSessionInputSchema.parse(rawInput)
     if (!HARNESS_SPECS[input.harness].conversation) {
@@ -514,7 +514,9 @@ export class RunService {
       }
       this.baselines.set(accepted.id, baseline)
       // Written beside its own objects, so a Run the app never gets to finish
-      // can still be compared on the next start (ticket 12e).
+      // can still be compared on the next start (ticket 12e). A write that
+      // fails costs only that: this Run is still compared when it ends, from
+      // the baseline held in memory.
       await writeFile(
         join(snapshotDirectory, BASELINE),
         JSON.stringify({
@@ -1010,29 +1012,30 @@ export class RunService {
     baseline: CheckoutBaseline
   ): Promise<void> {
     if (baseline.snapshot.status !== 'taken') return
-    {
-      const comparison = await diffSnapshots(
-        baseline.checkout,
-        baseline.directory,
-        baseline.snapshot,
-        await snapshotCheckout(baseline.checkout, baseline.directory)
+    const comparison = await diffSnapshots(
+      baseline.checkout,
+      baseline.directory,
+      baseline.snapshot,
+      await snapshotCheckout(baseline.checkout, baseline.directory)
+    )
+    if (comparison.changes.length === 0) return
+    // Recording the same comparison twice is safe: Core keeps only paths this
+    // Run has not already accounted for, so a replay after a crash between
+    // this and the cleanup adds nothing.
+    await this.deps.core.send({
+      type: 'conversation/checkout-changes',
+      input: { sessionId: run.sessionId, runId: run.id, files: comparison.changes }
+    })
+    // A cap nobody is told about turns a partial answer into a wrong one.
+    if (comparison.unlisted > 0) {
+      await this.record(
+        run,
+        undefined,
+        'output',
+        `${String(comparison.changes.length)} of ${String(
+          comparison.changes.length + comparison.unlisted
+        )} changed files are listed; the rest changed too`
       )
-      if (comparison.changes.length === 0) return
-      await this.deps.core.send({
-        type: 'conversation/checkout-changes',
-        input: { sessionId: run.sessionId, runId: run.id, files: comparison.changes }
-      })
-      // A cap nobody is told about turns a partial answer into a wrong one.
-      if (comparison.unlisted > 0) {
-        await this.record(
-          run,
-          undefined,
-          'output',
-          `${String(comparison.changes.length)} of ${String(
-            comparison.changes.length + comparison.unlisted
-          )} changed files are listed; the rest changed too`
-        )
-      }
     }
   }
 

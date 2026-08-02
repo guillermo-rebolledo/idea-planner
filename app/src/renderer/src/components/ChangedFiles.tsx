@@ -84,10 +84,13 @@ function ChangedFileRow({
   onToggle: () => void
   changes: FileChange[]
 }): React.JSX.Element {
-  const { icon: Icon, tone } = CHANGE_LOOK[file.change]
-  // A change with no lines at all is a binary file, or a mode, or a rename of
-  // one — never a change that did nothing.
-  const textless = file.added === 0 && file.removed === 0
+  const { icon: Icon, tone } = CHANGE_LOOK[file.changeKind]
+  // A change with no lines at all is a binary file, or a mode — never a change
+  // that did nothing. Unless its diff was simply too big to keep, in which
+  // case the lines exist and this does not have them, which is a different
+  // thing to say.
+  const textless = file.added === 0 && file.removed === 0 && !file.shortened
+  const unreadable = file.added === 0 && file.removed === 0 && file.shortened
   return (
     <li className="border-b border-border last:border-b-0">
       <button
@@ -102,16 +105,18 @@ function ChangedFileRow({
             'min-w-0 flex-1 font-mono text-xs break-all',
             // A path that is no longer there should not read as one you could
             // go and open.
-            file.change === 'deleted' && 'text-muted-foreground line-through'
+            file.changeKind === 'deleted' && 'text-muted-foreground line-through'
           )}
         >
           {file.path}
         </span>
         <span className="shrink-0 text-[11px]">
-          {textless ? (
+          {textless || unreadable ? (
             // No lines to show, and a reason: `+0 −0` on its own reads as a
-            // bug rather than as a binary file or a mode.
-            <span className="text-muted-foreground">no text change</span>
+            // bug rather than as a binary file or a diff nobody kept.
+            <span className="text-muted-foreground">
+              {textless ? 'no text change' : 'diff not kept'}
+            </span>
           ) : (
             <>
               <span className="text-positive">+{file.added}</span>{' '}
@@ -120,9 +125,11 @@ function ChangedFileRow({
           )}
         </span>
         <span className="shrink-0 text-[11px] text-muted-foreground">
-          {CHANGE_WORD[file.change]}
+          {CHANGE_WORD[file.changeKind]}
           {file.reported
-            ? file.changes > 1 && `, ${String(file.changes)} times`
+            ? file.changes > 1
+              ? `, ${String(file.changes)} times`
+              : ''
             : // Found on disk with nothing in the Conversation accounting for
               // it: a command the agent ran changed this, and said nothing.
               ', not reported'}
@@ -135,11 +142,16 @@ function ChangedFileRow({
               Nothing to show: this file has no text to diff.
             </p>
           )}
+          {unreadable && (
+            <p className="text-[11px] text-muted-foreground">
+              This file changed, and its diff was too large to keep.
+            </p>
+          )}
           {/* Every change to this file, newest last, exactly as it was made. */}
           {changes.map((entry) => (
             <DiffView key={entry.id} hunks={entry.hunks} />
           ))}
-          {file.shortened && (
+          {file.shortened && !unreadable && (
             <p className="text-[11px] text-muted-foreground">
               This diff is longer than what is kept; the counts above are the whole change.
             </p>

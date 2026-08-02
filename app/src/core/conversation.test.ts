@@ -829,12 +829,12 @@ describe('what this Session changed', () => {
       files: [
         {
           path: 'reported.ts',
-          change: 'changed',
+          changeKind: 'changed',
           diff: 'diff --git a/reported.ts b/reported.ts\n@@ -1 +1 @@\n-const a = 0\n+const a = 1'
         },
         {
           path: 'codemodded.ts',
-          change: 'added',
+          changeKind: 'added',
           diff: 'diff --git a/codemodded.ts b/codemodded.ts\n@@ -0,0 +1,2 @@\n+const b = 2\n+const c = 3'
         }
       ]
@@ -849,6 +849,65 @@ describe('what this Session changed', () => {
     ])
   })
 
+  it('records the same comparison twice as once', async () => {
+    // A crash between recording a comparison and cleaning up after it means
+    // the next start makes the same comparison again (ticket 12e).
+    const runId = await startRun('Run the codemod', 'submission-twice')
+    const files = [
+      {
+        path: 'quiet.ts',
+        changeKind: 'changed' as const,
+        diff: 'diff --git a/quiet.ts b/quiet.ts\n@@ -1 +1 @@\n-const a = 0\n+const a = 1'
+      }
+    ]
+    await core.recordCheckoutChanges({ sessionId, runId, files })
+    await core.recordCheckoutChanges({ sessionId, runId, files })
+
+    const changed = (await makeCore().getConversation(sessionId)).changedFiles
+    expect(changed).toMatchObject([{ path: 'quiet.ts', changes: 1, added: 1, removed: 1 }])
+  })
+
+  it('tells a change with no text apart from one whose diff was not kept', async () => {
+    const runId = await startRun('Add the logo', 'submission-binary')
+    await core.recordCheckoutChanges({
+      sessionId,
+      runId,
+      files: [
+        // A binary file: git named it and its patch says nothing about lines.
+        {
+          path: 'logo.png',
+          changeKind: 'added',
+          diff: 'diff --git a/logo.png b/logo.png\nBinary files /dev/null and b/logo.png differ'
+        },
+        // A change git named and could not hand back a patch for.
+        { path: 'huge.ts', changeKind: 'changed', diff: '' }
+      ]
+    })
+
+    const changed = (await makeCore().getConversation(sessionId)).changedFiles
+    expect(changed).toMatchObject([
+      { path: 'logo.png', added: 0, removed: 0, shortened: false },
+      { path: 'huge.ts', added: 0, removed: 0, shortened: true }
+    ])
+  })
+
+  it('takes the Harness at its word about what it did to a file', async () => {
+    const runId = await startRun('Delete the old one', 'submission-harness-kind')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'file-change',
+        path: `${projectRoot}/old.ts`,
+        changeKind: 'deleted',
+        hunks: [hunk(['-const old = true'])]
+      }
+    })
+
+    const [file] = (await makeCore().getConversation(sessionId)).changedFiles
+    expect(file).toMatchObject({ path: 'old.ts', changeKind: 'deleted' })
+  })
+
   it('says a file is gone rather than showing it as changed', async () => {
     const runId = await startRun('Remove the old one', 'submission-delete')
     await core.recordCheckoutChanges({
@@ -857,14 +916,14 @@ describe('what this Session changed', () => {
       files: [
         {
           path: 'doomed.ts',
-          change: 'deleted',
+          changeKind: 'deleted',
           diff: 'diff --git a/doomed.ts b/doomed.ts\n@@ -1 +0,0 @@\n-const gone = true'
         }
       ]
     })
 
     const [file] = (await makeCore().getConversation(sessionId)).changedFiles
-    expect(file).toMatchObject({ path: 'doomed.ts', change: 'deleted', removed: 1, added: 0 })
+    expect(file).toMatchObject({ path: 'doomed.ts', changeKind: 'deleted', removed: 1, added: 0 })
   })
 
   it('says when the diff it kept is only the start of the one that happened', async () => {
