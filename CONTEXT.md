@@ -1,77 +1,55 @@
-# Idea Development
+# Coding Agent Chat
 
-This context describes how a person develops a loosely formed thought into a concrete, actionable outcome with optional AI assistance.
+This context describes how a developer works with an AI coding agent on a local git repository — chatting with it, letting it change code, and controlling what it is allowed to do.
 
 ## Language
 
-**Idea**:
-The top-level container for a thought being developed, from its initial capture through its resulting specifications, requirements, and actionable issues.
-_Avoid_: Effort, project
+### Work
+
+**Repository**:
+A local git repository the user has added to the app. Owns its Sessions and its Standing Approvals, and is identified by the resolved path of its root.
+_Avoid_: Project, folder, workspace
+
+**Session**:
+One unit of work with the agent against a Repository. Owns a Checkout, a Conversation, and the changes made, and appears as a single item in the inbox.
+_Avoid_: Idea, task, thread, chat
+
+**Checkout**:
+The directory a Session operates on — either the **primary checkout**, the Repository's own working directory edited in place, or an **isolated checkout**, a linked git worktree created for the Session from a chosen base branch.
+_Avoid_: Working Directory, workspace, worktree, sandbox
+
+### Conversation
 
 **Conversation**:
-A permanent, user-visible history belonging to one Idea. It spans every planning phase and contains the Idea's user messages, AI responses, and Run boundaries.
-_Avoid_: Agent session, chat
-
-**Proposal**:
-A change to an Idea's durable content suggested through a Conversation. A Proposal has no effect until the user explicitly accepts it.
-_Avoid_: Automatic edit, agent action
-
-**Artifact**:
-A durable Markdown document promoted from a Draft Artifact when the user accepts the Planning Package. The user may edit it directly; later AI changes require approval as Proposals.
-_Avoid_: File, item
-
-**Draft Artifact**:
-A Markdown document created and revised during planning. It remains read-only inside the application until the user accepts the complete Planning Package.
-_Avoid_: Artifact, Proposal
-
-**MVP Spec**:
-A user-reviewed specification synthesized from an Idea's accepted Artifacts and Conversation context. It remains open to discussion and revision until the user explicitly accepts it as the basis for implementation planning.
-_Avoid_: PRD, plan
-
-**Implementation Ticket**:
-A user-approved, dependency-aware vertical slice of an accepted MVP Spec, represented as a durable Markdown document.
-_Avoid_: Task, issue
+The permanent message history belonging to one Session, containing its user messages, agent responses, and Run boundaries.
+_Avoid_: Session, chat, transcript
 
 **Run**:
-One user submission followed by AI work until the application is waiting for the user, completes, fails, or is stopped. A Run is configured with a harness, model, and reasoning effort.
-_Avoid_: Conversation, Harness Session
+One user submission followed by agent work until the application is waiting for the user, completes, fails, or is stopped. A Run is configured with a Harness, model, reasoning effort, and Permission Mode.
+_Avoid_: Conversation, turn, Harness Thread
 
-**Harness Session**:
-The provider-specific continuity record behind a Conversation, such as a Codex thread or Claude session. A Conversation may cross Harness Sessions when the user switches harnesses.
-_Avoid_: Conversation, Run
+**Harness**:
+A locally installed CLI coding agent the app drives as a child process, such as Codex or Claude Code. The app never provides inference itself.
+_Avoid_: Provider, model, backend
 
-**Suggested Response**:
-A selectable answer offered by the AI during a Conversation. Selecting it submits that answer on the user's behalf, while the user may always write a custom response instead.
-_Avoid_: Command, action
+**Harness Thread**:
+The Harness-specific continuity record behind a Conversation, such as a Codex thread or Claude session. A Conversation may cross Harness Threads when the user switches Harness.
+_Avoid_: Conversation, Run, Harness Session
 
-**Idea Library**:
-The user-selected, local folder containing Ideas and their Markdown artifacts. Its contents remain visible and usable outside the application.
-_Avoid_: Workspace, vault, app database
+**Skill**:
+An installed instruction document that gives the agent a defined methodology for a Run, such as test-driven development or bug diagnosis. Discovered from the user's global skill directories or from the Repository, and never installed by the app. A Repository's own Skills stay inert until the user trusts that Repository.
+_Avoid_: Workflow, command, prompt
 
-**Working Directory**:
-The user-approved local directory containing an Idea's root Markdown file and managed planning files. It may be a folder in the Idea Library or an attached existing project.
-_Avoid_: Idea Library, repository
+### Permission
 
-**Planning Package**:
-The complete set of planning Markdown accepted when an Idea becomes Ready, including its Conversation transcript and, for a Software Idea, its MVP Spec and Implementation Tickets.
-_Avoid_: Export, deliverable
+**Permission Mode**:
+The posture the user selects for a Run: **Ask**, where the agent requests consent before changing files or running commands, or **Full access**, where it does not.
+_Avoid_: Approval policy, sandbox mode, YOLO
 
-**Planning Index**:
-The managed Markdown guide that inventories an Idea's planning documents, their purposes, lifecycle states, and accepted baselines for people and AI harnesses.
-_Avoid_: README, manifest
+**Standing Approval**:
+A permission the user has granted permanently for a Repository — a command the agent may run, or a class of file changes it may make, without asking. Applies across all Sessions in that Repository and is revocable.
+_Avoid_: Allowlist, whitelist, permission
 
-**Reference Attachment**:
-User-selected external context associated with a Conversation message but not copied into the Idea unless the user explicitly keeps it.
-_Avoid_: Asset, upload
-
-**Idea Asset**:
-Durable non-Markdown content generated for or explicitly copied into an Idea and included in its Planning Package.
-_Avoid_: Reference Attachment, attachment
-
-**Software Idea**:
-An Idea intended to produce an MVP Spec and Implementation Tickets.
-_Avoid_: Project
-
-**General Idea**:
-An Idea that may use Grill Me or Wayfinder but does not require an engineering spec or Implementation Tickets to become Ready.
-_Avoid_: Note
+**Readiness**:
+Whether a Harness is installed, compatible, and authenticated on this machine. A Harness clearing all three is **usable**, and at least one usable Harness is required before the app can be used at all. Reported per Harness and repaired by the user, never by the app.
+_Avoid_: Health, status, setup

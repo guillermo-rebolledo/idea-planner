@@ -80,6 +80,12 @@ Conventions inside Core:
 
 ## Follow-up decision: Main process supervision stays promise-based
 
+> **Partially superseded by [ADR 0003](./0003-harness-native-permissions.md).**
+> The promise-based Main supervision boundary stands. The model-visible tool
+> surface described below does not: `PlanningPolicy` is removed and the
+> Harness's native tools and permission system replace the app-owned planning
+> sandbox.
+
 `RunService`, `PlanningPolicy`, `PlanningToolHost`, and `RunProcessBroker` remain
 promise- and event-driven in **Main**. They form one native authority boundary:
 resolve the already-probed executable, freeze the launch configuration through
