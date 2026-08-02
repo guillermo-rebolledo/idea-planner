@@ -22,7 +22,9 @@ import {
   setSessionPinnedInputSchema,
   themePreferenceSchema,
   resolveApprovalInputSchema,
+  revokeStandingApprovalInputSchema,
   runSnapshotSchema,
+  standingApprovalSchema,
   startRunInputSchema,
   stopRunInputSchema,
   conversationSnapshotSchema,
@@ -205,6 +207,23 @@ function registerIpc(): void {
   handleInvoke(IPC_CHANNELS.removeProject, z.string().min(1), async (root) => {
     await coreClient.send({ type: 'project/remove', root })
   })
+
+  handleInvoke(IPC_CHANNELS.listStandingApprovals, z.string().min(1), async (projectRoot) =>
+    standingApprovalSchema
+      .array()
+      .parse(await coreClient.send({ type: 'approval/list', projectRoot }))
+  )
+
+  // Revoking is the only way a rule leaves the store. Granting is not exposed
+  // here: a rule reaches the store by answering the request that proposed it,
+  // never as a string the window composes for itself.
+  handleInvoke(
+    IPC_CHANNELS.revokeStandingApproval,
+    revokeStandingApprovalInputSchema,
+    async (input) => {
+      await coreClient.send({ type: 'approval/revoke', input })
+    }
+  )
 
   // Reached only from the offer the person accepted for this exact folder.
   // `git init` is the one Git mutation the app performs.

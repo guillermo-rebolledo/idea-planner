@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { proposedRuleSchema } from './approval'
 import { harnessIdSchema } from './readiness'
 import { permissionModeSchema, skillNameSchema } from './run'
 
@@ -130,14 +131,22 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
     /** What is being asked for, in one line: the command, or the path. */
     summary: z.string().min(1).max(2_000),
     /** The rest of the tool input, so the person judges the real request. */
-    detail: z.string().max(MAX_APPROVAL_DETAIL)
+    detail: z.string().max(MAX_APPROVAL_DETAIL),
+    /**
+     * The Standing Approval that would stop this being asked again, when one
+     * can be narrowed honestly. Null means the person answers this every time,
+     * which is a better answer than a rule too broad to judge.
+     */
+    proposedRule: proposedRuleSchema.nullable().default(null)
   }),
   z.object({
     type: z.literal('approval-resolved'),
     id: z.string().min(1).max(200),
     decision: approvalDecisionSchema,
     /** What the agent is told when the person declines. */
-    message: z.string().max(2_000).default('')
+    message: z.string().max(2_000).default(''),
+    /** True when the person also granted the Standing Approval on offer. */
+    remembered: z.boolean().default(false)
   }),
   z.object({ type: z.literal('usage'), usage: harnessUsageSchema }),
   z.object({
@@ -289,9 +298,13 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     tool: z.string().min(1).max(200),
     summary: z.string().min(1).max(2_000),
     detail: z.string().max(MAX_APPROVAL_DETAIL),
+    /** The rule the person was offered, and could still be offered again. */
+    proposedRule: proposedRuleSchema.nullable().default(null),
     /** Null while the request stands, which is what blocks the Run. */
     decision: approvalDecisionSchema.nullable().default(null),
-    message: z.string().max(2_000).default('')
+    message: z.string().max(2_000).default(''),
+    /** True when answering it also granted the Standing Approval on offer. */
+    remembered: z.boolean().default(false)
   }),
   /**
    * A file the Harness changed, kept in the Conversation because it is part of

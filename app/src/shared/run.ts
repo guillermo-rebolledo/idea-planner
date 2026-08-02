@@ -149,7 +149,13 @@ export const resolveApprovalInputSchema = z.object({
   runId: z.string().min(1),
   approvalId: z.string().min(1).max(200),
   decision: z.enum(['allow', 'deny']),
-  message: z.string().max(2_000).optional()
+  message: z.string().max(2_000).optional(),
+  /**
+   * Also grant the Standing Approval this request proposed, so the same thing
+   * stops being asked. Only an allow can be remembered, and only a request the
+   * app could narrow into a rule.
+   */
+  remember: z.boolean().optional()
 })
 export type ResolveApprovalInput = z.infer<typeof resolveApprovalInputSchema>
 

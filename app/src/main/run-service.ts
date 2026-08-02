@@ -20,6 +20,7 @@ import {
   type HarnessEvent,
   type HarnessFailureCategory
 } from '@shared/conversation'
+import { proposeStandingApproval, type ProposedRule } from '@shared/approval'
 import {
   APPROVAL_TOOL,
   APP_TOOLS,
@@ -66,6 +67,14 @@ interface RunServiceDeps {
   onConversationEvent?: (event: ConversationStreamEvent) => void
 }
 
+/** What one outstanding request could be turned into, if the person asks. */
+interface RequestProposal {
+  projectRoot: string
+  harness: StartRunInput['harness']
+  proposed: ProposedRule | null
+  summary: string
+}
+
 /** Coordinates durable Core acceptance with Main's native process authority. */
 export class RunService {
   private readonly toolHosts = new Map<string, ToolHost>()
@@ -78,6 +87,14 @@ export class RunService {
    */
   private readonly diagnostics = new Map<string, string>()
   private readonly pendingIngest = new Map<string, Promise<void>>()
+  /**
+   * What each outstanding request could become, by Run and request id. Only
+   * this app knows it: the rule was synthesised here, from input the durable
+   * record deliberately bounds.
+   */
+  private readonly proposals = new Map<string, Map<string, RequestProposal>>()
+  /** Rules granted mid-Run, which the Run's own staged settings predate. */
+  private readonly granted = new Map<string, Set<string>>()
 
   constructor(private readonly deps: RunServiceDeps) {}
 
@@ -314,7 +331,8 @@ export class RunService {
         runDirectory,
         socketPath,
         capabilityToken,
-        input.permissionMode
+        input.permissionMode,
+        await this.standingRules(checkout, input.harness)
       )
       toolHost = new ToolHost({
         socketPath,
@@ -331,7 +349,7 @@ export class RunService {
           onChoices: (question, options) => {
             void this.offerChoices(accepted, question, options)
           },
-          onApproval: (request) => this.requestApproval(accepted, checkout, request)
+          onApproval: (request) => this.requestApproval(accepted, checkout, input.harness, request)
         }
       })
       await toolHost.start()
@@ -541,16 +559,43 @@ export class RunService {
    */
   private async requestApproval(
     run: Pick<RunSnapshot, 'id' | 'sessionId'>,
-    checkout: string,
+    /**
+     * The Project this Run works in, which is also its Checkout while a
+     * Session edits its Project in place (ADR 0004). A Standing Approval
+     * belongs to the Project, so it is named as the Project here.
+     */
+    projectRoot: string,
+    harness: StartRunInput['harness'],
     request: ApprovalRequest
   ): Promise<void> {
     const described = describeApproval(request.tool, request.input)
+    const proposedRule = proposeStandingApproval(request.tool, request.input, projectRoot)
+    const summary = sanitize(described.summary, projectRoot)
+    // A Standing Approval granted mid-Run reaches the Harness only in the next
+    // Run's staged settings, so without this the person would grant "never ask
+    // again" and immediately be asked again. What is auto-allowed here is a
+    // subset of what the stored rule permits: the same request, proposing the
+    // same rule.
+    if (proposedRule && this.granted.get(run.id)?.has(proposedRule.rule)) {
+      this.toolHosts.get(run.id)?.resolveApproval(request.id, { behavior: 'allow' })
+      await this.record(
+        run,
+        undefined,
+        'allowed',
+        `Allowed by your Standing Approval ${proposedRule.rule}: ${summary}`
+      )
+      return
+    }
+    const proposals = this.proposals.get(run.id) ?? new Map<string, RequestProposal>()
+    proposals.set(request.id, { projectRoot, harness, proposed: proposedRule, summary })
+    this.proposals.set(run.id, proposals)
     const event: HarnessEvent = {
       type: 'approval-request',
       id: request.id,
       tool: request.tool,
-      summary: sanitize(described.summary, checkout),
-      detail: sanitize(described.detail, checkout).slice(0, MAX_APPROVAL_DETAIL)
+      summary,
+      detail: sanitize(described.detail, projectRoot).slice(0, MAX_APPROVAL_DETAIL),
+      proposedRule
     }
     await this.deps.core.send({
       type: 'conversation/apply',
@@ -574,21 +619,45 @@ export class RunService {
     const message =
       written === '' ? 'You declined this in the app. Ask before trying it again.' : written
     const allowed = input.decision === 'allow'
-    const answered =
-      host?.resolveApproval(
-        input.approvalId,
-        allowed ? { behavior: 'allow' } : { behavior: 'deny', message }
-      ) ?? false
-    if (!answered || !host) {
+    const proposal = this.proposals.get(input.runId)?.get(input.approvalId)
+    if (!host?.hasOutstandingApproval(input.approvalId)) {
       // The Run ended, or somebody already answered. Either way the agent has
       // moved on, and saying so beats silently pretending this took effect.
       throw new Error('That request is no longer waiting for an answer')
     }
+    // Granted before the agent is told, and never on a request this app cannot
+    // narrow: a permission that outlives the Run has to be durable before the
+    // Run acts on it, or a crash in between leaves it granted in appearance only.
+    const remembered = Boolean(input.remember && allowed && proposal?.proposed)
+    if (input.remember && !remembered) {
+      throw new Error('That request cannot be turned into a Standing Approval')
+    }
+    if (remembered && proposal?.proposed) {
+      await this.deps.core.send({
+        type: 'approval/grant',
+        input: {
+          projectRoot: proposal.projectRoot,
+          harness: proposal.harness,
+          kind: proposal.proposed.kind,
+          rule: proposal.proposed.rule,
+          summary: proposal.summary
+        }
+      })
+      const granted = this.granted.get(input.runId) ?? new Set<string>()
+      granted.add(proposal.proposed.rule)
+      this.granted.set(input.runId, granted)
+    }
+    this.proposals.get(input.runId)?.delete(input.approvalId)
+    host.resolveApproval(
+      input.approvalId,
+      allowed ? { behavior: 'allow' } : { behavior: 'deny', message }
+    )
     const event: HarnessEvent = {
       type: 'approval-resolved',
       id: input.approvalId,
       decision: allowed ? 'allowed' : 'denied',
-      message: allowed ? '' : message
+      message: allowed ? '' : message,
+      remembered
     }
     await this.deps.core.send({
       type: 'conversation/apply',
@@ -609,7 +678,11 @@ export class RunService {
       { id: input.runId, sessionId: input.sessionId },
       host.hasOutstandingApprovals() ? undefined : 'running',
       allowed ? 'allowed' : 'blocked',
-      allowed ? 'You approved the request' : `You declined: ${message}`
+      allowed
+        ? remembered && proposal?.proposed
+          ? `You approved the request, and always allow ${proposal.proposed.rule}`
+          : 'You approved the request'
+        : `You declined: ${message}`
     )
     return await this.readConversation(input.sessionId)
   }
@@ -625,6 +698,8 @@ export class RunService {
     const diagnostic = this.diagnostics.get(run.id)
     this.failures.delete(run.id)
     this.diagnostics.delete(run.id)
+    this.granted.delete(run.id)
+    this.proposals.delete(run.id)
     // A bare "it failed" helps nobody. When the Harness said nothing the app
     // could categorize, its own last diagnostic line is the explanation.
     const explained =
@@ -661,12 +736,23 @@ export class RunService {
     )
   }
 
+  /** What this Project has permanently allowed, as the Harness's own rules. */
+  private async standingRules(
+    projectRoot: string,
+    harness: StartRunInput['harness']
+  ): Promise<string[]> {
+    return z
+      .array(z.string().min(1))
+      .parse(await this.deps.core.send({ type: 'approval/rules', projectRoot, harness }))
+  }
+
   private async prepareHarnessHome(
     harness: StartRunInput['harness'],
     runDirectory: string,
     socketPath: string,
     capabilityToken: string,
-    permissionMode: PermissionMode
+    permissionMode: PermissionMode,
+    standingRules: string[]
   ): Promise<void> {
     const proxy = {
       command: this.deps.proxyExecutable,
@@ -690,12 +776,17 @@ export class RunService {
       // the app may offer you a menu is not a permission decision anybody has.
       // An allow rule short-circuits the prompt for exactly those, and nothing
       // else. What the agent does to the Checkout still comes to the person.
+      //
+      // The Project's Standing Approvals join them. The Harness consults these
+      // rules before it asks, so a standing-approved call never reaches this
+      // app at all — which is the whole point, and the reason the rules were
+      // narrowed when they were written rather than when they are used.
       const settings = this.deps.stageSettings
         ? this.deps.stageSettings(permissionMode)
         : {
             permissions: {
               defaultMode: CLAUDE_PERMISSION_MODES[permissionMode],
-              allow: [...APP_TOOLS]
+              allow: [...APP_TOOLS, ...standingRules]
             }
           }
       // Checked before the Harness sees them: invalid settings are ignored in

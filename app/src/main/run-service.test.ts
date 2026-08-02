@@ -103,6 +103,8 @@ interface FakeCore {
   commands: string[]
   events: HarnessEvent[]
   conversation: ConversationSnapshot
+  /** What the Project has already permanently allowed. */
+  standingRules: string[]
 }
 
 let nextRunId = 0
@@ -134,7 +136,8 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       harnessThreads: {},
       activeRunId: null,
       pendingApprovalId: null
-    }
+    },
+    standingRules: []
   }
   const run: RunSnapshot = {
     id: runId,
@@ -161,6 +164,8 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
   state.send.mockImplementation((command: { type: string }) => {
     state.commands.push(command.type)
     if (command.type === 'session/get') return Promise.resolve(fakeSession(projectRoot))
+    if (command.type === 'approval/rules') return Promise.resolve(state.standingRules)
+    if (command.type === 'approval/grant') return Promise.resolve(undefined)
     if (command.type === 'conversation/ingest') return Promise.resolve(state.events)
     if (command.type.startsWith('conversation/')) return Promise.resolve(state.conversation)
     if (command.type === 'run/accept') return Promise.resolve(run)
@@ -370,6 +375,7 @@ describe('Run service', () => {
         if (command.type === 'session/get') {
           return Promise.resolve(fakeSession(join(root, 'a-project')))
         }
+        if (command.type === 'approval/rules') return Promise.resolve([])
         if (command.type === 'conversation/get') {
           return Promise.resolve({
             sessionId: 'session',
@@ -927,6 +933,128 @@ describe('Ask mode', () => {
         decision: 'allow'
       })
     ).rejects.toThrow(/no longer waiting/)
+  })
+
+  it('offers the rule that would stop the same thing being asked again', async () => {
+    const root = await readyClaudeRoot('run-claude-propose-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    const service = new RunService({ ...claudeDeps(root, broker), core })
+    await service.start({ ...startInput(), permissionMode: 'ask' })
+
+    await requestApproval(root, {
+      tool_name: 'Bash',
+      input: { command: 'pnpm test --watch' },
+      tool_use_id: 'toolu_propose'
+    })
+
+    await vi.waitFor(() => {
+      // Narrow by construction: the rule names this command, not the family
+      // `pnpm` belongs to. Once stored there is no interception point left.
+      expect(applied(core, 'approval-request')).toMatchObject({
+        proposedRule: { kind: 'command', rule: 'Bash(pnpm test:*)' }
+      })
+    })
+  })
+
+  it('grants the Standing Approval before the agent is told, and stops asking', async () => {
+    const root = await readyClaudeRoot('run-claude-remember-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    const service = new RunService({ ...claudeDeps(root, broker), core })
+    const run = await service.start({ ...startInput(), permissionMode: 'ask' })
+
+    const first = await requestApproval(root, {
+      tool_name: 'Bash',
+      input: { command: 'pnpm test' },
+      tool_use_id: 'toolu_remember'
+    })
+    await vi.waitFor(() => expect(applied(core, 'approval-request')).toBeDefined())
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId: run.id,
+      approvalId: 'toolu_remember',
+      decision: 'allow',
+      remember: true
+    })
+
+    expect(JSON.parse(await first.answer)).toMatchObject({ behavior: 'allow' })
+    const grant = (core.send.mock.calls as [{ type: string; input?: unknown }][])
+      .filter(([command]) => command.type === 'approval/grant')
+      .at(-1)?.[0].input
+    // Scoped to the Session's Project, and durable before the agent acts on it.
+    expect(grant).toMatchObject({
+      projectRoot: join(root, 'a-project'),
+      kind: 'command',
+      rule: 'Bash(pnpm test:*)'
+    })
+    expect(applied(core, 'approval-resolved')).toMatchObject({ remembered: true })
+
+    // This Run's settings were staged before the grant existed, so without
+    // honouring it here the person would grant "never ask again" and be asked
+    // again by the very next command.
+    const second = await requestApproval(root, {
+      tool_name: 'Bash',
+      input: { command: 'pnpm test src/app.test.ts' },
+      tool_use_id: 'toolu_again'
+    })
+    expect(JSON.parse(await second.answer)).toMatchObject({ behavior: 'allow' })
+    expect(
+      (core.send.mock.calls as [{ type: string; event?: { id?: string } }][]).filter(
+        ([command]) => command.type === 'conversation/apply' && command.event?.id === 'toolu_again'
+      )
+    ).toHaveLength(0)
+  })
+
+  it('refuses to remember what it could not narrow into a rule', async () => {
+    const root = await readyClaudeRoot('run-claude-unnarrowable-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    const service = new RunService({ ...claudeDeps(root, broker), core })
+    const run = await service.start({ ...startInput(), permissionMode: 'ask' })
+
+    await requestApproval(root, {
+      tool_name: 'Bash',
+      // Every subcommand must match a rule independently, so no single rule
+      // covers this one.
+      input: { command: 'pnpm test && rm -rf /' },
+      tool_use_id: 'toolu_compound'
+    })
+    await vi.waitFor(() => expect(applied(core, 'approval-request')).toBeDefined())
+
+    await expect(
+      service.resolveApproval({
+        sessionId: 'session',
+        runId: run.id,
+        approvalId: 'toolu_compound',
+        decision: 'allow',
+        remember: true
+      })
+    ).rejects.toThrow(/Standing Approval/)
+    expect(core.commands).not.toContain('approval/grant')
+  })
+
+  it("stages the Project's Standing Approvals as the Harness's own rules", async () => {
+    const root = await readyClaudeRoot('run-claude-standing-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    core.standingRules = ['Bash(pnpm test:*)', `Edit(/${join(root, 'a-project')}/**)`]
+    const service = new RunService({ ...claudeDeps(root, broker), core })
+
+    await service.start({ ...startInput(), permissionMode: 'ask' })
+
+    const args = broker.launch?.args ?? []
+    const settingsPath = args[args.indexOf('--settings') + 1] ?? ''
+    expect(JSON.parse(await readFile(settingsPath, 'utf8'))).toMatchObject({
+      permissions: {
+        allow: [
+          'mcp__app__offer_response_options',
+          'mcp__app__approval_request',
+          'Bash(pnpm test:*)',
+          `Edit(/${join(root, 'a-project')}/**)`
+        ]
+      }
+    })
   })
 
   it('refuses Ask on Codex, whose transport cannot carry an approval', async () => {

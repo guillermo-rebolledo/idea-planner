@@ -159,6 +159,11 @@ export class ToolHost {
     return this.approvals.size > 0
   }
 
+  /** Whether this particular request is still waiting to be answered. */
+  hasOutstandingApproval(id: string): boolean {
+    return this.approvals.has(id)
+  }
+
   async close(): Promise<void> {
     // Whatever is still outstanding is declined rather than left hanging: the
     // Harness is blocked in a tool call, and a socket closing under it is not

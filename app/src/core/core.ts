@@ -29,10 +29,18 @@ import type {
   SubmitConversationMessageInput
 } from '@shared/conversation'
 import type { ProjectView } from '@shared/project'
+import type { HarnessId } from '@shared/readiness'
+import {
+  grantStandingApprovalInputSchema,
+  type GrantStandingApprovalInput,
+  type RevokeStandingApprovalInput,
+  type StandingApproval
+} from '@shared/approval'
 import { writeJsonAtomic } from './atomic'
 import { suggestSessionTitle } from '@shared/title'
 import { ProjectStore } from './projects'
 import { SessionStore } from './sessions'
+import { StandingApprovalStore } from './approvals'
 import {
   createConversationEffects,
   type ApplyHarnessEventInput,
@@ -64,6 +72,10 @@ export interface Core {
   addProject(root: string): Promise<ProjectView>
   listProjects(): Promise<ProjectView[]>
   removeProject(root: string): Promise<void>
+  grantStandingApproval(input: GrantStandingApprovalInput): Promise<StandingApproval>
+  listStandingApprovals(projectRoot: string): Promise<StandingApproval[]>
+  standingApprovalRules(projectRoot: string, harness: HarnessId): Promise<string[]>
+  revokeStandingApproval(input: RevokeStandingApprovalInput): Promise<void>
   queryMailbox(query: MailboxCoreQuery): Promise<MailboxSnapshot>
   setSessionPinned(sessionId: string, pinned: boolean): Promise<SessionSummary>
   setSessionArchived(sessionId: string, archived: boolean): Promise<SessionSummary>
@@ -91,6 +103,12 @@ export interface CoreEffects {
   addProject(root: string): Effect.Effect<ProjectView, CoreError>
   listProjects(): Effect.Effect<ProjectView[], CoreError>
   removeProject(root: string): Effect.Effect<void, CoreError>
+  grantStandingApproval(
+    input: GrantStandingApprovalInput
+  ): Effect.Effect<StandingApproval, CoreError>
+  listStandingApprovals(projectRoot: string): Effect.Effect<StandingApproval[], CoreError>
+  standingApprovalRules(projectRoot: string, harness: HarnessId): Effect.Effect<string[], CoreError>
+  revokeStandingApproval(input: RevokeStandingApprovalInput): Effect.Effect<void, CoreError>
   queryMailbox(query: MailboxCoreQuery): Effect.Effect<MailboxSnapshot, CoreError>
   setSessionPinned(sessionId: string, pinned: boolean): Effect.Effect<SessionSummary, CoreError>
   setSessionArchived(sessionId: string, archived: boolean): Effect.Effect<SessionSummary, CoreError>
@@ -132,6 +150,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
   // than in any repository (ADR 0002, ADR 0005).
   const projects = new ProjectStore(deps.stateDirectory, now)
   const sessions = new SessionStore(deps.stateDirectory, now, nextId)
+  const approvals = new StandingApprovalStore(deps.stateDirectory, now, nextId)
 
   const conversation = createConversationEffects({
     directoryFor: (sessionId) => sessions.directoryFor(sessionId),
@@ -333,6 +352,29 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       )
     )
 
+  /**
+   * A permission granted for one Project, for good. The Project must be one
+   * the app has: a rule stored against a root nobody added would be a rule
+   * nobody can see, and therefore nobody can revoke.
+   */
+  const grantStandingApproval = (
+    rawInput: GrantStandingApprovalInput
+  ): Effect.Effect<StandingApproval, CoreError> =>
+    Effect.gen(function* () {
+      const parsed = grantStandingApprovalInputSchema.safeParse(rawInput)
+      if (!parsed.success) {
+        return yield* Effect.fail(
+          new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid approval')
+        )
+      }
+      const input = parsed.data
+      const known = yield* projects.list()
+      if (!known.some((project) => project.root === input.projectRoot)) {
+        return yield* Effect.fail(new CoreError('INVALID_INPUT', 'That Project has not been added'))
+      }
+      return yield* approvals.grant(input)
+    })
+
   const recordRunEvent = (input: RecordRunEventInput): Effect.Effect<RunSnapshot, CoreError> =>
     provide(
       writeLock.withPermits(1)(
@@ -399,7 +441,14 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     deleteSession: (sessionId) => sessions.delete(sessionId),
     addProject: (root) => projects.add(root),
     listProjects: () => projects.list(),
-    removeProject: (root) => projects.remove(root),
+    // A Project's permissions go with the Project: what it was allowed to do
+    // is part of what removing it forgets.
+    removeProject: (root) =>
+      projects.remove(root).pipe(Effect.flatMap(() => approvals.forgetProject(root))),
+    grantStandingApproval,
+    listStandingApprovals: (projectRoot) => approvals.list(projectRoot),
+    standingApprovalRules: (projectRoot, harness) => approvals.rules(projectRoot, harness),
+    revokeStandingApproval: (input) => approvals.revoke(input),
     queryMailbox,
     setSessionPinned: (sessionId, pinned) => sessions.update(sessionId, { pinned }),
     setSessionArchived: (sessionId, archived) => sessions.update(sessionId, { archived }),
@@ -464,6 +513,11 @@ export function createCore(deps: CoreDeps = {}): Core {
     addProject: (root) => run(core.addProject(root)),
     listProjects: () => run(core.listProjects()),
     removeProject: (root) => run(core.removeProject(root)),
+    grantStandingApproval: (input) => run(core.grantStandingApproval(input)),
+    listStandingApprovals: (projectRoot) => run(core.listStandingApprovals(projectRoot)),
+    standingApprovalRules: (projectRoot, harness) =>
+      run(core.standingApprovalRules(projectRoot, harness)),
+    revokeStandingApproval: (input) => run(core.revokeStandingApproval(input)),
     queryMailbox: (query) => run(core.queryMailbox(query)),
     setSessionPinned: (sessionId, pinned) => run(core.setSessionPinned(sessionId, pinned)),
     setSessionArchived: (sessionId, archived) => run(core.setSessionArchived(sessionId, archived)),

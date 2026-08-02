@@ -72,6 +72,17 @@ Both Harnesses expose enough to render diffs in the Conversation, satisfying ADR
 - `--settings`, `--mcp-config`, and `--add-dir` are not restored on `--resume`; persist full argv, not just the session id. `bypassPermissions` is never restored.
 - Invalid staged settings are silently ignored in `-p` with no error.
 
-## Unverified
+## Verified: allow rules short-circuit the prompt tool
 
-Whether Claude's `permissions.allow` rules short-circuit `--permission-prompt-tool`. If they do not, Standing Approvals have no effect in Ask mode and the prompt tool must consult them itself. Verify before building.
+They do. A `permissions.allow` rule delivered through `--settings` is consulted **before** `--permission-prompt-tool`, per call rather than wholesale, and an allowed call never reaches the app's tool at all. Reproduced on 2.1.220 for both `Bash(...)` and `Edit(//abs/path/**)`, with controls; method and captures are in `.scratch/research/claude-code-permissions-and-protocol.md`.
+
+Three consequences the app is built on:
+
+- The approval tool never consults the Standing Approval store, and must not. It only ever sees calls the rules did not match, so Claude Code's Bash-matching and gitignore-path semantics — word boundaries, compound splitting, wrapper stripping, four path anchors — are never reimplemented here.
+- **A too-broad rule is unrecoverable at runtime**, because there is no interception point left after it matches. Breadth is therefore constrained where the rule is written: `app/src/shared/approval.ts` synthesises the narrowest rule that would stop the same question, refuses anything it cannot narrow honestly, and the literal string is shown before it is accepted.
+- `system/init` does not report the effective rules, so the app cannot read back that its own rules loaded. Validate the staged JSON in-process before spawning — invalid settings are ignored in silence.
+
+Two consequences of rules being staged per Run:
+
+- **A rule granted mid-Run is not in that Run's settings**, which were written at spawn. The app therefore answers a later request in the same Run itself when that request proposes a rule it has just granted. This compares one synthesised rule string with another; it is not a second matcher and it never consults the store, so the Harness's own semantics stay the only thing deciding what a rule covers.
+- **A Project root reached through a symlink may keep prompting.** Allow rules require both the link path and its target to match, and the app writes one `Edit(//…/**)` rule from the Project root as git resolved it. The failure is a grant that goes on asking, never a grant that reaches further than it said.

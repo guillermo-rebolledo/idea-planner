@@ -12,13 +12,13 @@ Two shapes are needed: a command approval, and blanket edit permission for the P
 
 **Blocked by:** 07b
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] An approval prompt offers "always allow" alongside allow and deny
-- [ ] Accepting stores a Standing Approval scoped to the Session's Project
-- [ ] The literal rule being stored is shown before the user accepts it, and is narrow by construction
-- [ ] Repo-wide edit approval is expressible and makes subsequent edits stop prompting
-- [ ] Standing Approvals are listed per Project and individually revocable
-- [ ] Approvals never leak across Projects, including between two clones of the same remote
-- [ ] The app writes no rules into the user's own provider configuration
-- [ ] `pnpm verify` passes
+- [x] An approval prompt offers "always allow" alongside allow and deny
+- [x] Accepting stores a Standing Approval scoped to the Session's Project
+- [x] The literal rule being stored is shown before the user accepts it, and is narrow by construction
+- [x] Repo-wide edit approval is expressible and makes subsequent edits stop prompting
+- [x] Standing Approvals are listed per Project and individually revocable
+- [x] Approvals never leak across Projects, including between two clones of the same remote
+- [x] The app writes no rules into the user's own provider configuration
+- [x] `pnpm verify` passes

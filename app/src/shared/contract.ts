@@ -7,6 +7,12 @@ import {
   type ConversationStreamEvent,
   type DevelopSessionInput
 } from './conversation'
+import {
+  grantStandingApprovalInputSchema,
+  revokeStandingApprovalInputSchema,
+  type RevokeStandingApprovalInput,
+  type StandingApproval
+} from './approval'
 import { harnessIdSchema } from './readiness'
 import type { ChooseExecutableResult, HarnessId, ReadinessSnapshot } from './readiness'
 import type { ChooseProjectResult, ProjectView } from './project'
@@ -156,6 +162,14 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('project/add'), root: z.string().min(1) }),
   z.object({ type: z.literal('project/list') }),
   z.object({ type: z.literal('project/remove'), root: z.string().min(1) }),
+  z.object({ type: z.literal('approval/grant'), input: grantStandingApprovalInputSchema }),
+  z.object({ type: z.literal('approval/list'), projectRoot: z.string().min(1) }),
+  z.object({
+    type: z.literal('approval/rules'),
+    projectRoot: z.string().min(1),
+    harness: harnessIdSchema
+  }),
+  z.object({ type: z.literal('approval/revoke'), input: revokeStandingApprovalInputSchema }),
   z.object({ type: z.literal('session/start'), input: startSessionInputSchema }),
   z.object({ type: z.literal('session/list') }),
   z.object({ type: z.literal('session/list-damaged') }),
@@ -235,8 +249,15 @@ export interface ShellApi {
    */
   chooseProject(): Promise<ChooseProjectResult>
   listProjects(): Promise<ProjectView[]>
-  /** Forgets the Project. The directory on disk is never touched. */
+  /**
+   * Forgets the Project, and with it the Standing Approvals it owned. The
+   * directory on disk is never touched.
+   */
   removeProject(root: string): Promise<void>
+  /** What this Project has permanently allowed, newest grant last. */
+  listStandingApprovals(projectRoot: string): Promise<StandingApproval[]>
+  /** Takes one back. The next Run in that Project asks about it again. */
+  revokeStandingApproval(input: RevokeStandingApprovalInput): Promise<void>
   /**
    * Runs `git init` in a folder the user has just been offered it for, then
    * adds it. The only Git mutation the app performs.
@@ -287,6 +308,7 @@ export interface ShellApi {
 }
 
 export { IPC_CHANNELS } from './channels'
+export * from './approval'
 export * from './conversation'
 export * from './project'
 export * from './readiness'

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, FolderGit2, FolderPlus, Plus, X } from 'lucide-react'
-import type { ChooseProjectResult, ProjectView } from '@shared/contract'
+import type { ChooseProjectResult, ProjectView, StandingApproval } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
 
@@ -226,6 +226,87 @@ function ProjectListContent({
   )
 }
 
+/**
+ * What this Project has permanently allowed the agent to do. It lives beside
+ * the Project because that is what owns it: the rules are stored per Project
+ * and never shared, so this is the one place they can all be seen and taken
+ * back.
+ */
+function StandingApprovals({ project }: { project: ProjectView }): React.JSX.Element | null {
+  const [granted, setGranted] = useState<StandingApproval[] | null>(null)
+  const [open, setOpen] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => {
+    try {
+      setGranted(await window.shell.listStandingApprovals(project.root))
+    } catch {
+      setFailure('These could not be read.')
+    }
+  }, [project.root])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  async function revoke(approval: StandingApproval): Promise<void> {
+    setFailure(null)
+    try {
+      await window.shell.revokeStandingApproval({ projectRoot: project.root, id: approval.id })
+    } catch {
+      setFailure('That could not be revoked.')
+    }
+    await refresh()
+  }
+
+  if (!granted || granted.length === 0) return null
+
+  return (
+    <div className="pr-2 pb-1 pl-7">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        className="text-[10px] text-muted-foreground underline-offset-2 hover:underline"
+      >
+        {granted.length === 1
+          ? '1 Standing Approval'
+          : `${String(granted.length)} Standing Approvals`}
+      </button>
+      {open && (
+        <ul className="mt-1 flex flex-col gap-1">
+          {granted.map((approval) => (
+            <li key={approval.id} className="flex items-start gap-1">
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[10px] text-muted-foreground">
+                  {approval.summary}
+                </span>
+                {/* The rule itself, because the rule is what actually decides. */}
+                <span className="block font-mono text-[10px] break-all select-text">
+                  {approval.rule}
+                </span>
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-5 shrink-0 px-1 text-[10px]"
+                onClick={() => void revoke(approval)}
+              >
+                Revoke
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {failure && (
+        <p role="status" className="text-[10px] text-destructive">
+          {failure}
+        </p>
+      )}
+    </div>
+  )
+}
+
 function ProjectRow({
   project,
   onRemove,
@@ -278,6 +359,7 @@ function ProjectRow({
       >
         <X aria-hidden="true" className="size-3.5" />
       </button>
+      <StandingApprovals project={project} />
     </li>
   )
 }

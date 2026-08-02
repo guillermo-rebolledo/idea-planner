@@ -491,8 +491,10 @@ export function createConversationEffects(options: ConversationOptions): Convers
                   tool: event.tool,
                   summary: redactCredentials(event.summary).slice(0, 2_000),
                   detail: redactCredentials(event.detail).slice(0, MAX_APPROVAL_DETAIL),
+                  proposedRule: event.proposedRule,
                   decision: null,
-                  message: ''
+                  message: '',
+                  remembered: false
                 })
               )
               return
@@ -510,7 +512,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 ...requested,
                 at: now.toISOString(),
                 decision: event.decision,
-                message: redactCredentials(event.message).slice(0, 2_000)
+                message: redactCredentials(event.message).slice(0, 2_000),
+                remembered: event.remembered
               })
               return
             }

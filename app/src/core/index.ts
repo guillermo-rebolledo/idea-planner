@@ -72,6 +72,14 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.listProjects()
     case 'project/remove':
       return core.removeProject(command.root)
+    case 'approval/grant':
+      return core.grantStandingApproval(command.input)
+    case 'approval/list':
+      return core.listStandingApprovals(command.projectRoot)
+    case 'approval/rules':
+      return core.standingApprovalRules(command.projectRoot, command.harness)
+    case 'approval/revoke':
+      return core.revokeStandingApproval(command.input)
     case 'session/start':
       return core.startSession(command.input)
     case 'session/list':

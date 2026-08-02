@@ -849,7 +849,8 @@ describe('an approval from request to answer', () => {
     id: 'toolu_approve_1',
     tool: 'Bash',
     summary: 'pnpm test',
-    detail: '{"command":"pnpm test"}'
+    detail: '{"command":"pnpm test"}',
+    proposedRule: { kind: 'command', rule: 'Bash(pnpm test:*)' }
   }
 
   it('blocks the Run on the request and leaves that state when it is answered', async () => {
@@ -860,7 +861,13 @@ describe('an approval from request to answer', () => {
     expect(blocked.pendingApprovalId).toBe(`approval:${runId}:toolu_approve_1`)
 
     await stream(runId, [
-      { type: 'approval-resolved', id: 'toolu_approve_1', decision: 'allowed', message: '' }
+      {
+        type: 'approval-resolved',
+        id: 'toolu_approve_1',
+        decision: 'allowed',
+        message: '',
+        remembered: false
+      }
     ])
     const resolved = await makeCore().getConversation(sessionId)
     expect(resolved.pendingApprovalId).toBeNull()
@@ -878,7 +885,8 @@ describe('an approval from request to answer', () => {
         type: 'approval-resolved',
         id: 'toolu_approve_1',
         decision: 'denied',
-        message: 'Run the unit tests instead'
+        message: 'Run the unit tests instead',
+        remembered: false
       }
     ])
 
@@ -904,6 +912,34 @@ describe('an approval from request to answer', () => {
     if (approval?.kind !== 'approval') throw new Error('expected an approval entry')
     expect(approval.summary).not.toContain('sk-live-1234567890')
     expect(approval.detail.length).toBeLessThanOrEqual(4_000)
+  })
+
+  it('keeps the rule the person was offered, and says when they took it', async () => {
+    const runId = await startRun('Run the tests', 'submission-remembered')
+    await stream(runId, [
+      request,
+      {
+        type: 'approval-resolved',
+        id: 'toolu_approve_1',
+        decision: 'allowed',
+        message: '',
+        remembered: true
+      }
+    ])
+
+    // The Conversation is where the person can go back and read exactly what
+    // they granted, which matters most for the grants that never ask again.
+    expect(
+      (await makeCore().getConversation(sessionId)).entries.filter(
+        (entry) => entry.kind === 'approval'
+      )
+    ).toMatchObject([
+      {
+        decision: 'allowed',
+        remembered: true,
+        proposedRule: { kind: 'command', rule: 'Bash(pnpm test:*)' }
+      }
+    ])
   })
 
   it('settles an unanswered request when the Run ends, so nothing reads as allowed', async () => {

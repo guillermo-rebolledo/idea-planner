@@ -23,6 +23,7 @@ import {
   type ReadinessSnapshot,
   type RunSnapshot,
   type SessionSummary,
+  type StandingApprovalKind,
   type SuggestedResponse
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
@@ -250,7 +251,8 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
   const decide = useCallback(
     async (
       approval: Extract<ConversationEntry, { kind: 'approval' }>,
-      decision: 'allow' | 'deny'
+      decision: 'allow' | 'deny',
+      remember = false
     ) => {
       setDeciding(true)
       setError(null)
@@ -260,7 +262,8 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           runId: approval.runId,
           approvalId: approval.requestId,
           decision,
-          message: denyMessage.trim()
+          message: denyMessage.trim(),
+          remember
         })
         setPhase({ state: 'ready', snapshot: next })
         setDenyMessage('')
@@ -467,6 +470,34 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           <p className="mt-2 text-[11px] text-muted-foreground">
             Declining is not a stop: the agent is told why and carries on without it.
           </p>
+          {pendingApproval.proposedRule && (
+            <div className="mt-2 border-t border-border pt-2">
+              <p className="text-[11px] text-muted-foreground">
+                {STANDING_EXPLANATION[pendingApproval.proposedRule.kind]}. The agent stops asking,
+                so this is the exact rule that gets stored:
+              </p>
+              {/* Shown before it is accepted, and never paraphrased. Once a rule
+                  is stored the Harness answers with it before this app is asked
+                  anything, so this line is the last chance to read it. */}
+              <p className="mt-1 font-mono text-[11px] break-all select-text">
+                {pendingApproval.proposedRule.rule}
+              </p>
+              <Button
+                className="mt-2"
+                size="sm"
+                variant="secondary"
+                disabled={deciding}
+                onClick={() => void decide(pendingApproval, 'allow', true)}
+              >
+                Always allow this
+              </Button>
+              <p className="mt-1 text-[11px] break-all text-muted-foreground">
+                {/* Named in full, because which Project this applies to is the
+                    whole scope of what is being granted. */}
+                Only in {session.projectRoot}, and you can take it back at any time.
+              </p>
+            </div>
+          )}
         </div>
       )}
 
@@ -795,6 +826,12 @@ function FileChangeRow({ path, hunks }: { path: string; hunks: DiffHunk[] }): Re
   )
 }
 
+/** What granting the offered rule would actually mean, in plain words. */
+const STANDING_EXPLANATION: Record<StandingApprovalKind, string> = {
+  command: 'You can always allow commands like this one',
+  edit: 'You can always allow file changes anywhere in this Project'
+}
+
 /** What the agent asked for, and what the person decided about it. */
 const APPROVAL_OUTCOME: Record<ApprovalDecision, string> = {
   allowed: 'You approved this',
@@ -821,6 +858,9 @@ function ApprovalRow({
         <p className="text-[11px] text-muted-foreground">
           {entry.decision === null ? 'Waiting for your answer' : APPROVAL_OUTCOME[entry.decision]}
           {entry.decision === 'denied' && entry.message ? ` — “${entry.message}”` : ''}
+          {entry.remembered && entry.proposedRule
+            ? ` — and always allow ${entry.proposedRule.rule}`
+            : ''}
         </p>
       </div>
     </li>
