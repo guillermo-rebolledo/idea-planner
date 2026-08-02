@@ -5,15 +5,15 @@ import {
   submitConversationMessageInputSchema,
   type ConversationSnapshot,
   type ConversationStreamEvent,
-  type DevelopIdeaInput
+  type DevelopSessionInput
 } from './conversation'
-import { providerIdSchema } from './readiness'
-import type { ChooseExecutableResult, ProviderId, ReadinessSnapshot } from './readiness'
-import { ideaRelativePathSchema, type IdeaRelativePath } from './portable-path'
+import { harnessIdSchema } from './readiness'
+import type { ChooseExecutableResult, HarnessId, ReadinessSnapshot } from './readiness'
+import { sessionRelativePathSchema, type SessionRelativePath } from './portable-path'
 import {
   acceptRunInputSchema,
   recordRunEventInputSchema,
-  workflowSchema,
+  skillNameSchema,
   type RunSnapshot,
   type StartRunInput,
   type StopRunInput
@@ -24,55 +24,46 @@ import {
  * Every payload crossing a process boundary is validated against these
  * schemas before it is acted on or presented.
  */
-export const CONTRACT_VERSION = 1
+export const CONTRACT_VERSION = 2
 
-export const ideaKindSchema = z.enum(['software', 'general'])
-export type IdeaKind = z.infer<typeof ideaKindSchema>
-
-export const ideaSummarySchema = z.object({
+export const sessionSummarySchema = z.object({
   id: z.string().min(1),
-  kind: ideaKindSchema,
   title: z.string().min(1),
-  status: z.literal('saved'),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
-  /** Path of the Idea's folder relative to the Idea Library root. */
+  /** Path of the Session's folder relative to the library root. */
   relativePath: z.string().min(1),
   // Defaults keep summaries persisted before these fields existed readable.
   pinned: z.boolean().default(false),
-  /** When set, the Idea is archived in place; canonical files never move. */
+  /** When set, the Session is archived in place; canonical files never move. */
   archivedAt: z.string().datetime().nullable().default(null)
 })
-export type IdeaSummary = z.infer<typeof ideaSummarySchema>
+export type SessionSummary = z.infer<typeof sessionSummarySchema>
 
 export const managedDocumentSchema = z.object({
   id: z.string().min(1),
-  kind: z.enum(['root', 'planning-index', 'conversation']),
+  kind: z.enum(['root', 'conversation']),
   path: z.string().min(1)
 })
 export type ManagedDocument = z.infer<typeof managedDocumentSchema>
 
-export const openedIdeaSchema = z.object({
-  idea: ideaSummarySchema,
+export const openedSessionSchema = z.object({
+  session: sessionSummarySchema,
   documents: z.object({
     root: managedDocumentSchema,
-    planningIndex: managedDocumentSchema,
     conversation: managedDocumentSchema
   })
 })
-export type OpenedIdea = z.infer<typeof openedIdeaSchema>
+export type OpenedSession = z.infer<typeof openedSessionSchema>
 
 export const librarySnapshotSchema = z.object({
   path: z.string().min(1),
-  ideas: z.array(ideaSummarySchema)
+  sessions: z.array(sessionSummarySchema)
 })
 export type LibrarySnapshot = z.infer<typeof librarySnapshotSchema>
 
-export { ideaRelativePathSchema }
-export type { IdeaRelativePath }
-
-export const mailboxKindFilterSchema = z.enum(['all', 'software', 'general'])
-export type MailboxKindFilter = z.infer<typeof mailboxKindFilterSchema>
+export { sessionRelativePathSchema }
+export type { SessionRelativePath }
 
 export const mailboxViewSchema = z.enum(['active', 'archived'])
 export type MailboxView = z.infer<typeof mailboxViewSchema>
@@ -80,21 +71,20 @@ export type MailboxView = z.infer<typeof mailboxViewSchema>
 /** The Renderer's mailbox request; Main adds the configured thresholds. */
 export const mailboxQuerySchema = z.object({
   search: z.string().max(500),
-  kind: mailboxKindFilterSchema,
   view: mailboxViewSchema
 })
 export type MailboxQuery = z.infer<typeof mailboxQuerySchema>
 
 export const mailboxCoreQuerySchema = mailboxQuerySchema.extend({
-  /** Days without activity after which a pinned Idea shows as Dormant. */
+  /** Days without activity after which a pinned Session shows as Dormant. */
   dormantAfterDays: z.number().int().positive()
 })
 export type MailboxCoreQuery = z.infer<typeof mailboxCoreQuerySchema>
 
-export const mailboxIdeaSchema = ideaSummarySchema.extend({
+export const mailboxSessionSchema = sessionSummarySchema.extend({
   dormant: z.boolean()
 })
-export type MailboxIdea = z.infer<typeof mailboxIdeaSchema>
+export type MailboxSession = z.infer<typeof mailboxSessionSchema>
 
 export const mailboxGroupKeySchema = z.enum([
   'pinned',
@@ -107,15 +97,15 @@ export type MailboxGroupKey = z.infer<typeof mailboxGroupKeySchema>
 
 export const mailboxGroupSchema = z.object({
   key: mailboxGroupKeySchema,
-  ideas: z.array(mailboxIdeaSchema)
+  sessions: z.array(mailboxSessionSchema)
 })
 export type MailboxGroup = z.infer<typeof mailboxGroupSchema>
 
 export const mailboxSnapshotSchema = z.object({
   view: mailboxViewSchema,
-  /** Ideas in this view before search and kind filters: 0 means truly empty. */
+  /** Sessions in this view before the search filter: 0 means truly empty. */
   total: z.number().int().nonnegative(),
-  /** Ideas matching the search and filters across all groups. */
+  /** Sessions matching the search across all groups. */
   matched: z.number().int().nonnegative(),
   /** Whether this answer required rebuilding the disposable search index. */
   index: z.enum(['ready', 'rebuilt']),
@@ -123,19 +113,19 @@ export const mailboxSnapshotSchema = z.object({
 })
 export type MailboxSnapshot = z.infer<typeof mailboxSnapshotSchema>
 
-export const setIdeaPinnedInputSchema = z.object({
+export const setSessionPinnedInputSchema = z.object({
   relativePath: z.string().min(1),
   pinned: z.boolean()
 })
-export type SetIdeaPinnedInput = z.infer<typeof setIdeaPinnedInputSchema>
+export type SetSessionPinnedInput = z.infer<typeof setSessionPinnedInputSchema>
 
-export const setIdeaArchivedInputSchema = z.object({
+export const setSessionArchivedInputSchema = z.object({
   relativePath: z.string().min(1),
   archived: z.boolean()
 })
-export type SetIdeaArchivedInput = z.infer<typeof setIdeaArchivedInputSchema>
+export type SetSessionArchivedInput = z.infer<typeof setSessionArchivedInputSchema>
 
-export const deleteIdeaPreviewSchema = z.object({
+export const deleteSessionPreviewSchema = z.object({
   relativePath: z.string().min(1),
   title: z.string().min(1),
   /** Library-relative app-owned paths that permanent delete moves to Trash. */
@@ -143,31 +133,30 @@ export const deleteIdeaPreviewSchema = z.object({
   /** Library-relative content inside the folder that is kept untouched. */
   keeps: z.array(z.string().min(1))
 })
-export type DeleteIdeaPreview = z.infer<typeof deleteIdeaPreviewSchema>
+export type DeleteSessionPreview = z.infer<typeof deleteSessionPreviewSchema>
 
-export const deleteIdeaInputSchema = z.object({
+export const deleteSessionInputSchema = z.object({
   relativePath: z.string().min(1),
   /**
    * The exact previewed targets to move to Trash. Delete acts only on what
    * the person confirmed, so a retry after a partial failure can finish the
-   * remaining targets even when the Idea itself is no longer recognizable.
+   * remaining targets even when the Session itself is no longer recognizable.
    */
   targets: z.array(z.string().min(1)).min(1)
 })
-export type DeleteIdeaInput = z.infer<typeof deleteIdeaInputSchema>
+export type DeleteSessionInput = z.infer<typeof deleteSessionInputSchema>
 
-export const deleteIdeaResultSchema = z.object({
+export const deleteSessionResultSchema = z.object({
   trashed: z.array(z.string().min(1)),
   failed: z.array(z.object({ path: z.string().min(1), message: z.string() }))
 })
-export type DeleteIdeaResult = z.infer<typeof deleteIdeaResultSchema>
+export type DeleteSessionResult = z.infer<typeof deleteSessionResultSchema>
 
-export const captureIdeaInputSchema = z.object({
-  kind: ideaKindSchema,
+export const captureSessionInputSchema = z.object({
   title: z.string().max(300),
   notes: z.string().max(100_000)
 })
-export type CaptureIdeaInput = z.infer<typeof captureIdeaInputSchema>
+export type CaptureSessionInput = z.infer<typeof captureSessionInputSchema>
 
 export const themePreferenceSchema = z.enum(['system', 'light', 'dark'])
 export type ThemePreference = z.infer<typeof themePreferenceSchema>
@@ -199,7 +188,7 @@ export const coreErrorCodeSchema = z.enum([
   'LIBRARY_MISSING',
   'NOT_A_DIRECTORY',
   'NO_LIBRARY_OPEN',
-  'IDEA_NOT_FOUND',
+  'SESSION_NOT_FOUND',
   'INVALID_INPUT',
   'IO_ERROR',
   'RUN_NOT_FOUND',
@@ -220,46 +209,46 @@ export class CoreError extends Error {
 /** Commands Main may send to the Core utility process. */
 export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('library/open'), path: z.string().min(1) }),
-  z.object({ type: z.literal('idea/capture'), input: captureIdeaInputSchema }),
-  z.object({ type: z.literal('idea/open'), relativePath: ideaRelativePathSchema }),
-  z.object({ type: z.literal('idea/list') }),
+  z.object({ type: z.literal('session/capture'), input: captureSessionInputSchema }),
+  z.object({ type: z.literal('session/open'), relativePath: sessionRelativePathSchema }),
+  z.object({ type: z.literal('session/list') }),
   z.object({ type: z.literal('mailbox/query'), query: mailboxCoreQuerySchema }),
   z.object({
-    type: z.literal('idea/set-pinned'),
-    relativePath: ideaRelativePathSchema,
+    type: z.literal('session/set-pinned'),
+    relativePath: sessionRelativePathSchema,
     pinned: z.boolean()
   }),
   z.object({
-    type: z.literal('idea/set-archived'),
-    relativePath: ideaRelativePathSchema,
+    type: z.literal('session/set-archived'),
+    relativePath: sessionRelativePathSchema,
     archived: z.boolean()
   }),
-  z.object({ type: z.literal('idea/delete-preview'), relativePath: ideaRelativePathSchema }),
+  z.object({ type: z.literal('session/delete-preview'), relativePath: sessionRelativePathSchema }),
   z.object({ type: z.literal('run/accept'), input: acceptRunInputSchema }),
-  z.object({ type: z.literal('run/list'), relativePath: ideaRelativePathSchema }),
+  z.object({ type: z.literal('run/list'), relativePath: sessionRelativePathSchema }),
   z.object({ type: z.literal('run/event'), input: recordRunEventInputSchema }),
-  z.object({ type: z.literal('conversation/get'), relativePath: ideaRelativePathSchema }),
+  z.object({ type: z.literal('conversation/get'), relativePath: sessionRelativePathSchema }),
   z.object({ type: z.literal('conversation/submit'), input: submitConversationMessageInputSchema }),
   z.object({
     type: z.literal('conversation/begin'),
-    relativePath: ideaRelativePathSchema,
+    relativePath: sessionRelativePathSchema,
     runId: z.string().min(1),
     submissionId: z.string().min(1),
-    provider: providerIdSchema.optional(),
-    workflow: workflowSchema.optional(),
+    harness: harnessIdSchema.optional(),
+    skill: skillNameSchema.optional(),
     model: z.string().min(1).optional(),
     restorationNote: z.boolean().optional()
   }),
   z.object({
     type: z.literal('conversation/ingest'),
-    relativePath: ideaRelativePathSchema,
+    relativePath: sessionRelativePathSchema,
     runId: z.string().min(1),
-    provider: providerIdSchema,
+    harness: harnessIdSchema,
     chunk: z.string()
   }),
   z.object({
     type: z.literal('conversation/apply'),
-    relativePath: ideaRelativePathSchema,
+    relativePath: sessionRelativePathSchema,
     runId: z.string().min(1),
     event: harnessEventSchema
   }),
@@ -288,46 +277,46 @@ export const coreResponseSchema = z.object({
 export type CoreResponse = z.infer<typeof coreResponseSchema>
 
 /** The complete surface Preload exposes to the sandboxed Renderer. */
-export interface IdeaShellApi {
+export interface ShellApi {
   getBootState(): Promise<BootState>
   /** Opens the native picker. Reads nothing and writes nothing. */
   chooseLibraryLocation(): Promise<ChooseLibraryResult>
   /** Opens (and remembers) the confirmed library location. */
   openLibrary(path: string): Promise<LibrarySnapshot>
-  captureIdea(input: CaptureIdeaInput): Promise<IdeaSummary>
-  openIdea(relativePath: IdeaRelativePath): Promise<OpenedIdea>
-  listIdeas(): Promise<IdeaSummary[]>
+  captureSession(input: CaptureSessionInput): Promise<SessionSummary>
+  openSession(relativePath: SessionRelativePath): Promise<OpenedSession>
+  listSessions(): Promise<SessionSummary[]>
   queryMailbox(query: MailboxQuery): Promise<MailboxSnapshot>
-  setIdeaPinned(input: SetIdeaPinnedInput): Promise<IdeaSummary>
-  setIdeaArchived(input: SetIdeaArchivedInput): Promise<IdeaSummary>
+  setSessionPinned(input: SetSessionPinnedInput): Promise<SessionSummary>
+  setSessionArchived(input: SetSessionArchivedInput): Promise<SessionSummary>
   /** Enumerates the exact app-owned targets before any permanent delete. */
-  previewDeleteIdea(relativePath: IdeaRelativePath): Promise<DeleteIdeaPreview>
+  previewDeleteSession(relativePath: SessionRelativePath): Promise<DeleteSessionPreview>
   /** Moves only the previewed, confirmed app-owned targets to the macOS Trash. */
-  deleteIdeaPermanently(input: DeleteIdeaInput): Promise<DeleteIdeaResult>
+  deleteSessionPermanently(input: DeleteSessionInput): Promise<DeleteSessionResult>
   setThemePreference(preference: ThemePreference): Promise<ThemeState>
   onThemeChanged(listener: (theme: ThemeState) => void): () => void
   /** Returns the latest readiness snapshot, probing on first demand. */
   getReadiness(): Promise<ReadinessSnapshot>
-  /** Re-probes one provider or all of them (“Check again”). */
-  refreshReadiness(provider?: ProviderId): Promise<ReadinessSnapshot>
+  /** Re-probes one Harness or all of them (“Check again”). */
+  refreshReadiness(harness?: HarnessId): Promise<ReadinessSnapshot>
   /** Native picker for an explicit executable; the native probe still runs. */
-  chooseProviderExecutable(provider: ProviderId): Promise<ChooseExecutableResult>
-  /** Returns the provider to ordinary PATH resolution. */
-  clearProviderExecutable(provider: ProviderId): Promise<ReadinessSnapshot>
+  chooseHarnessExecutable(harness: HarnessId): Promise<ChooseExecutableResult>
+  /** Returns the Harness to ordinary PATH resolution. */
+  clearHarnessExecutable(harness: HarnessId): Promise<ReadinessSnapshot>
   /** Grants or revokes the one-time login-shell discovery consent. */
   setLoginShellDiscovery(consent: boolean): Promise<ReadinessSnapshot>
   /** Opens one of the fixed readiness-guidance URLs in the default browser. */
   openExternalLink(url: string): Promise<void>
   startRun(input: StartRunInput): Promise<RunSnapshot>
-  listRuns(relativePath: IdeaRelativePath): Promise<RunSnapshot[]>
+  listRuns(relativePath: SessionRelativePath): Promise<RunSnapshot[]>
   stopRun(input: StopRunInput): Promise<RunSnapshot>
-  /** The Idea's permanent Conversation, including partial and recovery state. */
-  getConversation(relativePath: IdeaRelativePath): Promise<ConversationSnapshot>
+  /** The Session's permanent Conversation, including partial and recovery state. */
+  getConversation(relativePath: SessionRelativePath): Promise<ConversationSnapshot>
   /**
-   * Accepts the user message durably, then starts one planning Run for it.
-   * The message survives even when the Run never reaches the provider.
+   * Accepts the user message durably, then starts one Run for it. The message
+   * survives even when the Run never reaches the Harness.
    */
-  developIdea(input: DevelopIdeaInput): Promise<ConversationSnapshot>
+  developSession(input: DevelopSessionInput): Promise<ConversationSnapshot>
   /** Assistant text and control events, delivered ahead of durable projection. */
   onConversationEvent(listener: (event: ConversationStreamEvent) => void): () => void
 }

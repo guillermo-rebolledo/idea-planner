@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type {
-  ProviderCapability,
-  ProviderReadiness,
+  HarnessCapability,
+  HarnessReadiness,
   ReadinessCheck,
   ReadinessDimension
 } from '@shared/readiness'
-import { PROVIDER_SPECS, discoverPathEntries, probeProvider } from './readiness'
+import { HARNESS_SPECS, discoverPathEntries, probeHarness } from './readiness'
 
 /**
  * The probe engine is exercised against scriptable fake executables: real
@@ -43,7 +43,7 @@ async function installSkills(root: string, names: string[]): Promise<void> {
   }
 }
 
-function check(readiness: ProviderReadiness, dimension: ReadinessDimension): ReadinessCheck {
+function check(readiness: HarnessReadiness, dimension: ReadinessDimension): ReadinessCheck {
   const found = readiness.checks.find((entry) => entry.dimension === dimension)
   if (!found) throw new Error(`missing ${dimension} check`)
   return found
@@ -59,9 +59,9 @@ exit 1`
 async function probeCodex(overrides?: {
   script?: string
   timeoutMs?: number
-}): Promise<ProviderReadiness> {
+}): Promise<HarnessReadiness> {
   await fakeExecutable('codex', overrides?.script ?? READY_CODEX_SCRIPT)
-  return probeProvider(PROVIDER_SPECS.codex, {
+  return probeHarness(HARNESS_SPECS.codex, {
     pathEntries: [binDir],
     homeDir,
     probeTimeoutMs: overrides?.timeoutMs ?? 5000
@@ -70,7 +70,7 @@ async function probeCodex(overrides?: {
 
 describe('executable discovery', () => {
   it('reports a missing executable and leaves dependent probes unprobed', async () => {
-    const readiness = await probeProvider(PROVIDER_SPECS.codex, {
+    const readiness = await probeHarness(HARNESS_SPECS.codex, {
       pathEntries: [binDir],
       homeDir
     })
@@ -87,7 +87,7 @@ describe('executable discovery', () => {
 
   it('resolves only the exact command name against the provided PATH entries', async () => {
     await fakeExecutable('codex-nightly', READY_CODEX_SCRIPT)
-    const readiness = await probeProvider(PROVIDER_SPECS.codex, {
+    const readiness = await probeHarness(HARNESS_SPECS.codex, {
       pathEntries: [binDir],
       homeDir
     })
@@ -97,7 +97,7 @@ describe('executable discovery', () => {
   it('rejects an explicitly selected file that is not executable', async () => {
     const selected = join(binDir, 'codex')
     await writeFile(selected, 'not a binary', { mode: 0o644 })
-    const readiness = await probeProvider(PROVIDER_SPECS.codex, {
+    const readiness = await probeHarness(HARNESS_SPECS.codex, {
       pathEntries: [],
       explicitExecutable: selected,
       homeDir
@@ -109,7 +109,7 @@ describe('executable discovery', () => {
   it('still runs the native probes for an explicitly selected executable', async () => {
     const selected = await fakeExecutable('codex-anywhere', READY_CODEX_SCRIPT)
     await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
-    const readiness = await probeProvider(PROVIDER_SPECS.codex, {
+    const readiness = await probeHarness(HARNESS_SPECS.codex, {
       pathEntries: [],
       explicitExecutable: selected,
       homeDir
@@ -138,7 +138,7 @@ describe('compatibility', () => {
     expect(readiness.available).toBe(false)
   })
 
-  it('warns about an untested newer version without disabling the provider', async () => {
+  it('warns about an untested newer version without disabling the Harness', async () => {
     await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
     const readiness = await probeCodex({
       script: `case "$1" in
@@ -171,7 +171,7 @@ describe('compatibility', () => {
 })
 
 describe('authentication', () => {
-  it('reports unauthenticated when the provider says so', async () => {
+  it('reports unauthenticated when the Harness says so', async () => {
     const readiness = await probeCodex({
       script: `case "$1" in
         --version) echo "codex-cli 0.146.0"; exit 0;;
@@ -195,7 +195,7 @@ describe('authentication', () => {
         -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
       esac`
     )
-    const readiness = await probeProvider(PROVIDER_SPECS.claude, {
+    const readiness = await probeHarness(HARNESS_SPECS.claude, {
       pathEntries: [binDir],
       homeDir,
       sandboxExecPath: join(binDir, 'claude'),
@@ -212,7 +212,7 @@ describe('authentication', () => {
         -p) echo "Please run /login" >&2; exit 1;;
       esac`
     )
-    const readiness = await probeProvider(PROVIDER_SPECS.claude, {
+    const readiness = await probeHarness(HARNESS_SPECS.claude, {
       pathEntries: [binDir],
       homeDir,
       sandboxExecPath: join(binDir, 'claude'),
@@ -246,7 +246,7 @@ describe('sandbox', () => {
         -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
       esac`
     )
-    const readiness = await probeProvider(PROVIDER_SPECS.claude, {
+    const readiness = await probeHarness(HARNESS_SPECS.claude, {
       pathEntries: [binDir],
       homeDir,
       sandboxExecPath: join(homeDir, 'no-such-sandbox-exec'),
@@ -275,23 +275,23 @@ describe('skills', () => {
   })
 })
 
-function capability(readiness: ProviderReadiness): ProviderCapability {
-  return readiness.capabilities.developIdea
+function capability(readiness: HarnessReadiness): HarnessCapability {
+  return readiness.capabilities.developSession
 }
 
-describe('developing an Idea', () => {
-  it('is available when the provider is ready and new enough', async () => {
+describe('developing a Session', () => {
+  it('is available when the Harness is ready and new enough', async () => {
     await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
     expect(capability(await probeCodex())).toMatchObject({ available: true, command: null })
   })
 
-  it('names the version needed when the Adapter needs a newer provider', async () => {
+  it('names the version needed when the Adapter needs a newer Harness', async () => {
     await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
     await fakeExecutable('codex', READY_CODEX_SCRIPT)
-    const readiness = await probeProvider(
+    const readiness = await probeHarness(
       // An Adapter whose requirement has outrun the installed CLI: the
-      // provider itself stays perfectly usable, only this capability does not.
-      { ...PROVIDER_SPECS.codex, conversation: { minimumVersion: '0.200.0' } },
+      // Harness itself stays perfectly usable, only this capability does not.
+      { ...HARNESS_SPECS.codex, conversation: { minimumVersion: '0.200.0' } },
       { pathEntries: [binDir], homeDir, probeTimeoutMs: 5000 }
     )
     expect(readiness.available).toBe(true)
@@ -310,7 +310,7 @@ describe('developing an Idea', () => {
 esac
 exit 1`
     )
-    const readiness = await probeProvider(PROVIDER_SPECS.claude, {
+    const readiness = await probeHarness(HARNESS_SPECS.claude, {
       pathEntries: [binDir],
       homeDir,
       probeTimeoutMs: 2000
@@ -318,7 +318,7 @@ exit 1`
     expect(capability(readiness)).toMatchObject({ available: true, command: null })
   })
 
-  it('points at the failing checks rather than a version when the provider is unready', async () => {
+  it('points at the failing checks rather than a version when the Harness is unready', async () => {
     const readiness = await probeCodex()
     expect(readiness.available).toBe(false)
     expect(capability(readiness).summary).toContain('not ready yet')
@@ -327,7 +327,7 @@ exit 1`
 
 describe('restored readiness', () => {
   it('reports ready after the person repairs a previously failing setup', async () => {
-    const before = await probeProvider(PROVIDER_SPECS.codex, {
+    const before = await probeHarness(HARNESS_SPECS.codex, {
       pathEntries: [binDir],
       homeDir
     })
@@ -336,7 +336,7 @@ describe('restored readiness', () => {
     await fakeExecutable('codex', READY_CODEX_SCRIPT)
     await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
 
-    const after = await probeProvider(PROVIDER_SPECS.codex, {
+    const after = await probeHarness(HARNESS_SPECS.codex, {
       pathEntries: [binDir],
       homeDir
     })

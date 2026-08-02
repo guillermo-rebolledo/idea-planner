@@ -19,7 +19,7 @@ interface Sandbox {
   userDataDir: string
   libraryDir: string
   trashDir: string
-  /** PATH used for readiness discovery; empty means no provider is found. */
+  /** PATH used for readiness discovery; empty means no Harness is found. */
   readinessBinDir: string
   /** HOME used for readiness skill discovery. */
   readinessHomeDir: string
@@ -33,22 +33,22 @@ async function launchShell(): Promise<ElectronApplication> {
     args: [mainEntry],
     env: {
       ...process.env,
-      IDEA_SHELL_TEST_USER_DATA: sandbox.userDataDir,
-      IDEA_SHELL_TEST_CHOOSE_DIR: sandbox.libraryDir,
-      IDEA_SHELL_TEST_TRASH_DIR: sandbox.trashDir,
-      IDEA_SHELL_TEST_READINESS_PATH: sandbox.readinessBinDir,
-      IDEA_SHELL_TEST_READINESS_HOME: sandbox.readinessHomeDir
+      APP_TEST_USER_DATA: sandbox.userDataDir,
+      APP_TEST_CHOOSE_DIR: sandbox.libraryDir,
+      APP_TEST_TRASH_DIR: sandbox.trashDir,
+      APP_TEST_READINESS_PATH: sandbox.readinessBinDir,
+      APP_TEST_READINESS_HOME: sandbox.readinessHomeDir
     }
   })
 }
 
 test.beforeEach(async () => {
   sandbox = {
-    userDataDir: await mkdtemp(join(tmpdir(), 'idea-shell-userdata-')),
-    libraryDir: await mkdtemp(join(tmpdir(), 'idea-shell-library-')),
-    trashDir: await mkdtemp(join(tmpdir(), 'idea-shell-trash-')),
-    readinessBinDir: await mkdtemp(join(tmpdir(), 'idea-shell-readiness-bin-')),
-    readinessHomeDir: await mkdtemp(join(tmpdir(), 'idea-shell-readiness-home-'))
+    userDataDir: await mkdtemp(join(tmpdir(), 'app-shell-userdata-')),
+    libraryDir: await mkdtemp(join(tmpdir(), 'app-shell-library-')),
+    trashDir: await mkdtemp(join(tmpdir(), 'app-shell-trash-')),
+    readinessBinDir: await mkdtemp(join(tmpdir(), 'app-shell-readiness-bin-')),
+    readinessHomeDir: await mkdtemp(join(tmpdir(), 'app-shell-readiness-home-'))
   }
 })
 
@@ -60,7 +60,7 @@ test.afterEach(async () => {
   await rm(sandbox.readinessHomeDir, { recursive: true, force: true })
 })
 
-async function installFakeProvider(name: string, script: string): Promise<void> {
+async function installFakeHarness(name: string, script: string): Promise<void> {
   await writeFile(join(sandbox.readinessBinDir, name), `#!/bin/sh\n${script}\n`, { mode: 0o755 })
 }
 
@@ -76,7 +76,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
-    await page.getByRole('heading', { name: 'Choose your Idea Library' }).waitFor()
+    await page.getByRole('heading', { name: 'Choose your library' }).waitFor()
 
     const exposure = await page.evaluate(() => ({
       requireType: typeof (window as never as Record<string, unknown>)['require'],
@@ -84,7 +84,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       moduleType: typeof (window as never as Record<string, unknown>)['module'],
       electronType: typeof (window as never as Record<string, unknown>)['electron'],
       ipcRendererType: typeof (window as never as Record<string, unknown>)['ipcRenderer'],
-      shellKeys: Object.keys(window.ideaShell as unknown as Record<string, unknown>).sort()
+      shellKeys: Object.keys(window.shell as unknown as Record<string, unknown>).sort()
     }))
 
     expect(exposure.requireType).toBe('undefined')
@@ -93,28 +93,28 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
     expect(exposure.electronType).toBe('undefined')
     expect(exposure.ipcRendererType).toBe('undefined')
     expect(exposure.shellKeys).toEqual([
-      'captureIdea',
+      'captureSession',
+      'chooseHarnessExecutable',
       'chooseLibraryLocation',
-      'chooseProviderExecutable',
-      'clearProviderExecutable',
-      'deleteIdeaPermanently',
-      'developIdea',
+      'clearHarnessExecutable',
+      'deleteSessionPermanently',
+      'developSession',
       'getBootState',
       'getConversation',
       'getReadiness',
-      'listIdeas',
       'listRuns',
+      'listSessions',
       'onConversationEvent',
       'onThemeChanged',
       'openExternalLink',
-      'openIdea',
       'openLibrary',
-      'previewDeleteIdea',
+      'openSession',
+      'previewDeleteSession',
       'queryMailbox',
       'refreshReadiness',
-      'setIdeaArchived',
-      'setIdeaPinned',
       'setLoginShellDiscovery',
+      'setSessionArchived',
+      'setSessionPinned',
       'setThemePreference',
       'startRun',
       'stopRun'
@@ -136,29 +136,29 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
   }
 })
 
-test('a person captures an Idea and it survives an application restart', async () => {
+test('a person captures a Session and it survives an application restart', async () => {
   const firstRun = await launchShell()
   try {
     const page = await firstRun.firstWindow()
 
-    // First launch: choose the Idea Library, with the exact location visible
+    // First launch: choose the library, with the exact location visible
     // before anything is written.
     await page.getByRole('button', { name: 'Choose or create a folder…' }).click()
     await expect(page.getByText(sandbox.libraryDir)).toBeVisible()
-    await page.getByRole('button', { name: 'Use this Idea Library' }).click()
+    await page.getByRole('button', { name: 'Use this library' }).click()
 
     // The optional readiness step never blocks capture-only onboarding.
-    await page.getByRole('heading', { name: 'Check AI readiness' }).waitFor()
+    await page.getByRole('heading', { name: 'Check Harness readiness' }).waitFor()
     await page.getByRole('button', { name: 'Continue with capture only' }).click()
 
     // The mailbox opens empty.
-    await expect(page.getByText('No Ideas yet', { exact: false })).toBeVisible()
+    await expect(page.getByText('No Sessions yet', { exact: false })).toBeVisible()
 
-    // Capture a Software Idea with the no-secrets guidance visible.
-    await page.getByRole('button', { name: 'New Idea' }).click()
+    // Capture a Session with the no-secrets guidance visible.
+    await page.getByRole('button', { name: 'New Session' }).click()
     await expect(page.getByText('Don’t include passwords', { exact: false })).toBeVisible()
     await page
-      .getByLabel('What’s the idea?')
+      .getByLabel('What’s this Session about?')
       .fill('An offline recipe planner\n\nIt plans weekly meals without any accounts.')
 
     // The locally generated title suggestion is editable.
@@ -169,23 +169,23 @@ test('a person captures an Idea and it survives an application restart', async (
     await page.getByRole('button', { name: 'Save for later' }).click()
     await expect(page.getByRole('heading', { name: 'Offline recipe planner' })).toBeVisible()
 
-    // The Idea is canonical local Markdown on disk.
+    // The Session is canonical local Markdown on disk.
     const markdown = await readFile(
-      join(sandbox.libraryDir, 'offline-recipe-planner', 'idea.md'),
+      join(sandbox.libraryDir, 'offline-recipe-planner', 'session.md'),
       'utf8'
     )
-    expect(markdown).toContain('kind: software')
+    expect(markdown).toContain('format: 2')
     expect(markdown).toContain('# Offline recipe planner')
     expect(markdown).toContain('It plans weekly meals without any accounts.')
   } finally {
     await firstRun.close()
   }
 
-  // Restart the application: the saved Idea reappears from local content.
+  // Restart the application: the saved Session reappears from local content.
   const secondRun = await launchShell()
   try {
     const page = await secondRun.firstWindow()
-    const inbox = page.getByRole('navigation', { name: 'Idea inbox' })
+    const inbox = page.getByRole('navigation', { name: 'Session inbox' })
     await expect(inbox.getByText('Offline recipe planner')).toBeVisible()
     await inbox.getByText('Offline recipe planner').click()
     await expect(page.getByRole('heading', { name: 'Offline recipe planner' })).toBeVisible()
@@ -196,21 +196,17 @@ test('a person captures an Idea and it survives an application restart', async (
 
 async function chooseLibrary(page: Awaited<ReturnType<ElectronApplication['firstWindow']>>) {
   await page.getByRole('button', { name: 'Choose or create a folder…' }).click()
-  await page.getByRole('button', { name: 'Use this Idea Library' }).click()
+  await page.getByRole('button', { name: 'Use this library' }).click()
   await page.getByRole('button', { name: 'Continue with capture only' }).click()
 }
 
-async function captureIdea(
+async function captureSession(
   page: Awaited<ReturnType<ElectronApplication['firstWindow']>>,
   title: string,
-  notes: string,
-  kind: 'Software Idea' | 'General Idea' = 'Software Idea'
+  notes: string
 ) {
-  await page.getByRole('button', { name: 'New Idea' }).click()
-  if (kind !== 'Software Idea') {
-    await page.getByRole('form', { name: 'New Idea' }).getByText(kind, { exact: true }).click()
-  }
-  await page.getByLabel('What’s the idea?').fill(notes)
+  await page.getByRole('button', { name: 'New Session' }).click()
+  await page.getByLabel('What’s this Session about?').fill(notes)
   await page.getByLabel('Title').fill(title)
   await page.getByRole('button', { name: 'Save for later' }).click()
   await expect(page.getByRole('heading', { name: title })).toBeVisible()
@@ -221,10 +217,10 @@ test('a person organizes the mailbox: pin, search, archive, restore, compact rai
   try {
     const page = await app.firstWindow()
     await chooseLibrary(page)
-    await captureIdea(page, 'Offline recipe planner', 'Plans weekly meals without accounts.')
-    await captureIdea(page, 'Community tool library', 'Neighbors share tools.', 'General Idea')
+    await captureSession(page, 'Offline recipe planner', 'Plans weekly meals without accounts.')
+    await captureSession(page, 'Community tool library', 'Neighbors share tools.')
 
-    const inbox = page.getByRole('navigation', { name: 'Idea inbox' })
+    const inbox = page.getByRole('navigation', { name: 'Session inbox' })
     const pinnedGroup = inbox.getByRole('region', { name: 'Pinned' })
     const recentGroup = inbox.getByRole('region', { name: 'Recent' })
 
@@ -233,18 +229,18 @@ test('a person organizes the mailbox: pin, search, archive, restore, compact rai
     await expect(inbox.getByRole('region', { name: 'Needs attention' })).toBeVisible()
     await expect(inbox.getByRole('region', { name: 'Running' })).toBeVisible()
 
-    // Pin groups the Idea first, out of the Recent list.
+    // Pin groups the Session first, out of the Recent list.
     await inbox.getByRole('button', { name: 'Pin “Offline recipe planner”' }).click()
     await expect(pinnedGroup.getByText('Offline recipe planner')).toBeVisible()
     await expect(recentGroup.getByText('Offline recipe planner')).toHaveCount(0)
 
-    // Search narrows to matching Ideas; no-results is a visible, recoverable state.
-    const search = page.getByRole('searchbox', { name: 'Search Ideas' })
+    // Search narrows to matching Sessions; no-results is a visible, recoverable state.
+    const search = page.getByRole('searchbox', { name: 'Search Sessions' })
     await search.fill('recipe')
     await expect(inbox.getByText('Community tool library')).toHaveCount(0)
     await expect(pinnedGroup.getByText('Offline recipe planner')).toBeVisible()
     await search.fill('zeppelin')
-    await expect(inbox.getByText('No Ideas match', { exact: false })).toBeVisible()
+    await expect(inbox.getByText('No Sessions match', { exact: false })).toBeVisible()
     await inbox.getByRole('button', { name: 'Clear search' }).click()
     await expect(inbox.getByText('Community tool library')).toBeVisible()
 
@@ -254,16 +250,16 @@ test('a person organizes the mailbox: pin, search, archive, restore, compact rai
     await page.getByRole('button', { name: 'Archive', exact: true }).click()
     await expect(inbox.getByText('Community tool library')).toBeVisible()
     expect(
-      await readFile(join(sandbox.libraryDir, 'community-tool-library', 'idea.md'), 'utf8')
+      await readFile(join(sandbox.libraryDir, 'community-tool-library', 'session.md'), 'utf8')
     ).toContain('archived:')
     await inbox.getByRole('button', { name: 'Restore “Community tool library”' }).click()
     await page.getByRole('button', { name: 'Inbox', exact: true }).click()
     await expect(inbox.getByText('Community tool library')).toBeVisible()
 
-    // The inbox collapses to a compact rail that keeps Ideas reachable while
-    // the central Focus Deck stays in place.
+    // The inbox collapses to a compact rail that keeps Sessions reachable
+    // while the central Focus Deck stays in place.
     await page.getByRole('button', { name: 'Collapse inbox to rail' }).click()
-    const rail = page.getByRole('navigation', { name: 'Idea inbox (compact)' })
+    const rail = page.getByRole('navigation', { name: 'Session inbox (compact)' })
     await expect(rail.getByRole('button', { name: 'Offline recipe planner' })).toBeVisible()
     await expect(page.getByRole('main')).toBeVisible()
     await rail.getByRole('button', { name: 'Community tool library' }).click()
@@ -278,28 +274,28 @@ test('permanent delete previews exact app-owned targets and moves them to the Tr
   try {
     const page = await app.firstWindow()
     await chooseLibrary(page)
-    await captureIdea(page, 'Doomed idea', 'This one goes away.')
+    await captureSession(page, 'Doomed session', 'This one goes away.')
 
-    const inbox = page.getByRole('navigation', { name: 'Idea inbox' })
-    await inbox.getByRole('button', { name: 'Delete “Doomed idea” permanently…' }).click()
+    const inbox = page.getByRole('navigation', { name: 'Session inbox' })
+    await inbox.getByRole('button', { name: 'Delete “Doomed session” permanently…' }).click()
 
     // The preview names the exact app-owned targets before anything happens.
     await expect(
-      page.getByRole('heading', { name: 'Delete “Doomed idea” permanently?' })
+      page.getByRole('heading', { name: 'Delete “Doomed session” permanently?' })
     ).toBeVisible()
     await expect(
-      page.getByRole('list', { name: 'Items that move to the Trash' }).getByText('doomed-idea')
+      page.getByRole('list', { name: 'Items that move to the Trash' }).getByText('doomed-session')
     ).toBeVisible()
 
     await page.getByRole('button', { name: 'Move to Trash' }).click()
-    await expect(inbox.getByText('Doomed idea')).toHaveCount(0)
-    await expect(page.getByText('No Ideas yet', { exact: false })).toBeVisible()
+    await expect(inbox.getByText('Doomed session')).toHaveCount(0)
+    await expect(page.getByText('No Sessions yet', { exact: false })).toBeVisible()
 
     // The folder moved to the (test) Trash instead of being destroyed.
     const { readdir } = await import('node:fs/promises')
-    expect(await readdir(sandbox.libraryDir)).not.toContain('doomed-idea')
+    expect(await readdir(sandbox.libraryDir)).not.toContain('doomed-session')
     const trashed = await readdir(sandbox.trashDir)
-    expect(trashed.some((entry) => entry.endsWith('doomed-idea'))).toBe(true)
+    expect(trashed.some((entry) => entry.endsWith('doomed-session'))).toBe(true)
   } finally {
     await app.close()
   }
@@ -318,49 +314,49 @@ const READY_CLAUDE_FAKE = `case "$1" in
 esac`
 
 test('readiness reports Codex and Claude independently, with safe repair and re-check', async () => {
-  await installFakeProvider('codex', READY_CODEX_FAKE)
+  await installFakeHarness('codex', READY_CODEX_FAKE)
   await installFakeSkills('.agents/skills')
 
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
     await page.getByRole('button', { name: 'Choose or create a folder…' }).click()
-    await page.getByRole('button', { name: 'Use this Idea Library' }).click()
-    await page.getByRole('heading', { name: 'Check AI readiness' }).waitFor()
+    await page.getByRole('button', { name: 'Use this library' }).click()
+    await page.getByRole('heading', { name: 'Check Harness readiness' }).waitFor()
 
     const codexCard = page.getByRole('region', { name: 'Codex readiness' })
     const claudeCard = page.getByRole('region', { name: 'Claude Code readiness' })
 
     // Codex is fully ready; the resolved absolute path is visible.
-    await expect(codexCard.getByText('Ready for planning')).toBeVisible()
+    await expect(codexCard.getByText('Usable', { exact: true })).toBeVisible()
     await expect(
       codexCard.getByText(join(sandbox.readinessBinDir, 'codex'), { exact: true })
     ).toBeVisible()
 
     // Claude stays visible but not ready, with only the approved remediation.
-    await expect(claudeCard.getByText('Not ready — capture still works')).toBeVisible()
+    await expect(claudeCard.getByText('Not usable — capture still works')).toBeVisible()
     await expect(claudeCard.getByText('npx skills@latest add mattpocock/skills')).toBeVisible()
 
     // The person repairs Claude in their own terminal; Check again recovers.
-    await installFakeProvider('claude', READY_CLAUDE_FAKE)
+    await installFakeHarness('claude', READY_CLAUDE_FAKE)
     await installFakeSkills('.claude/skills')
     await claudeCard.getByRole('button', { name: 'Check Claude Code again' }).click()
-    await expect(claudeCard.getByText('Ready for planning')).toBeVisible()
+    await expect(claudeCard.getByText('Usable', { exact: true })).toBeVisible()
 
-    // With a ready provider the continue action stops calling itself capture-only.
+    // With a ready Harness the continue action stops calling itself capture-only.
     await page.getByRole('button', { name: 'Continue', exact: true }).click()
 
-    // The same readiness module is reachable from Settings (AI Providers).
-    await page.getByRole('button', { name: 'AI Providers' }).click()
-    const dialog = page.getByRole('dialog', { name: 'AI Providers' })
+    // The same readiness module is reachable from Settings (Harnesses).
+    await page.getByRole('button', { name: 'Harnesses' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Harnesses' })
     await expect(
-      dialog.getByRole('region', { name: 'Codex readiness' }).getByText('Ready for planning')
+      dialog.getByRole('region', { name: 'Codex readiness' }).getByText('Usable', { exact: true })
     ).toBeVisible()
-    await dialog.getByRole('button', { name: 'Close AI Providers' }).click()
+    await dialog.getByRole('button', { name: 'Close Harnesses' }).click()
 
     // And it is restated immediately before any Run could start.
-    await page.getByRole('button', { name: 'New Idea' }).click()
-    await expect(page.getByText('Ready for AI planning: Codex, Claude Code.')).toBeVisible()
+    await page.getByRole('button', { name: 'New Session' }).click()
+    await expect(page.getByText('Ready Harnesses: Codex, Claude Code.')).toBeVisible()
   } finally {
     await app.close()
   }

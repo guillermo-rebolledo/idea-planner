@@ -20,15 +20,17 @@ function makeCore(): Core {
 }
 
 function query(overrides: Partial<MailboxCoreQuery> = {}): MailboxCoreQuery {
-  return { search: '', kind: 'all', view: 'active', dormantAfterDays: 14, ...overrides }
+  return { search: '', view: 'active', dormantAfterDays: 14, ...overrides }
 }
 
 function group(snapshot: MailboxSnapshot, key: string): string[] {
-  return (snapshot.groups.find((g) => g.key === key)?.ideas ?? []).map((idea) => idea.title)
+  return (snapshot.groups.find((g) => g.key === key)?.sessions ?? []).map(
+    (session) => session.title
+  )
 }
 
 beforeEach(async () => {
-  libraryDir = await mkdtemp(join(tmpdir(), 'idea-mailbox-'))
+  libraryDir = await mkdtemp(join(tmpdir(), 'session-mailbox-'))
   now = new Date('2026-07-31T12:00:00.000Z')
   core = makeCore()
   await core.openLibrary(libraryDir)
@@ -38,24 +40,24 @@ afterEach(async () => {
   await rm(libraryDir, { recursive: true, force: true })
 })
 
-async function capture(title: string, kind: 'software' | 'general' = 'software', notes = '') {
-  return core.captureIdea({ kind, title, notes })
+async function capture(title: string, notes = '') {
+  return core.captureSession({ title, notes })
 }
 
 describe('pinning', () => {
-  it('persists a pin in canonical frontmatter and groups pinned Ideas first', async () => {
-    const pinnedIdea = await capture('Pinned older idea')
+  it('persists a pin in canonical frontmatter and groups pinned Sessions first', async () => {
+    const pinnedSession = await capture('Pinned older Session')
     now = new Date(now.getTime() + DAY_MS)
-    await capture('Newer unpinned idea')
+    await capture('Newer unpinned Session')
 
-    const updated = await core.setIdeaPinned(pinnedIdea.relativePath, true)
+    const updated = await core.setSessionPinned(pinnedSession.relativePath, true)
     expect(updated.pinned).toBe(true)
-    const raw = await readFile(join(libraryDir, pinnedIdea.relativePath, 'idea.md'), 'utf8')
+    const raw = await readFile(join(libraryDir, pinnedSession.relativePath, 'session.md'), 'utf8')
     expect(raw).toContain('pinned: true')
 
     const snapshot = await core.queryMailbox(query())
-    expect(group(snapshot, 'pinned')).toEqual(['Pinned older idea'])
-    expect(group(snapshot, 'recent')).toEqual(['Newer unpinned idea'])
+    expect(group(snapshot, 'pinned')).toEqual(['Pinned older Session'])
+    expect(group(snapshot, 'recent')).toEqual(['Newer unpinned Session'])
     expect(snapshot.groups.map((g) => g.key)).toEqual([
       'pinned',
       'needs-attention',
@@ -65,8 +67,8 @@ describe('pinning', () => {
   })
 
   it('survives a restart and honors an external pinned edit', async () => {
-    const idea = await capture('Hand pinned')
-    const rootPath = join(libraryDir, idea.relativePath, 'idea.md')
+    const session = await capture('Hand pinned')
+    const rootPath = join(libraryDir, session.relativePath, 'session.md')
     await writeFile(
       rootPath,
       (await readFile(rootPath, 'utf8')).replace('pinned: false', 'pinned: true')
@@ -79,60 +81,63 @@ describe('pinning', () => {
   })
 
   it('unpins reversibly', async () => {
-    const idea = await capture('Toggle pin')
-    await core.setIdeaPinned(idea.relativePath, true)
-    const unpinned = await core.setIdeaPinned(idea.relativePath, false)
+    const session = await capture('Toggle pin')
+    await core.setSessionPinned(session.relativePath, true)
+    const unpinned = await core.setSessionPinned(session.relativePath, false)
     expect(unpinned.pinned).toBe(false)
     const snapshot = await core.queryMailbox(query())
     expect(group(snapshot, 'pinned')).toEqual([])
     expect(group(snapshot, 'recent')).toEqual(['Toggle pin'])
   })
 
-  it('marks a pinned Idea Dormant after the configured threshold without reordering it', async () => {
-    const dormantIdea = await capture('Sleepy pinned idea')
-    await core.setIdeaPinned(dormantIdea.relativePath, true)
+  it('marks a pinned Session Dormant after the configured threshold without reordering it', async () => {
+    const dormantSession = await capture('Sleepy pinned Session')
+    await core.setSessionPinned(dormantSession.relativePath, true)
     now = new Date(now.getTime() + 20 * DAY_MS)
-    await capture('Fresh unpinned idea')
+    await capture('Fresh unpinned Session')
 
     const snapshot = await core.queryMailbox(query({ dormantAfterDays: 14 }))
     const pinnedGroup = snapshot.groups.find((g) => g.key === 'pinned')
-    expect(pinnedGroup?.ideas[0]).toMatchObject({ title: 'Sleepy pinned idea', dormant: true })
-    // Still presented in the pinned group, ahead of unpinned Ideas.
+    expect(pinnedGroup?.sessions[0]).toMatchObject({
+      title: 'Sleepy pinned Session',
+      dormant: true
+    })
+    // Still presented in the pinned group, ahead of unpinned Sessions.
     expect(snapshot.groups[0]?.key).toBe('pinned')
 
     const relaxed = await core.queryMailbox(query({ dormantAfterDays: 30 }))
-    expect(relaxed.groups.find((g) => g.key === 'pinned')?.ideas[0]?.dormant).toBe(false)
+    expect(relaxed.groups.find((g) => g.key === 'pinned')?.sessions[0]?.dormant).toBe(false)
   })
 })
 
 describe('archiving', () => {
   it('archives in place, reversibly, without moving canonical content', async () => {
-    const idea = await capture('Archivable idea', 'general', 'Some notes to keep.')
-    const before = await readdir(join(libraryDir, idea.relativePath), { recursive: true })
+    const session = await capture('Archivable Session', 'Some notes to keep.')
+    const before = await readdir(join(libraryDir, session.relativePath), { recursive: true })
 
-    const archived = await core.setIdeaArchived(idea.relativePath, true)
+    const archived = await core.setSessionArchived(session.relativePath, true)
     expect(archived.archivedAt).toBe(now.toISOString())
-    const raw = await readFile(join(libraryDir, idea.relativePath, 'idea.md'), 'utf8')
+    const raw = await readFile(join(libraryDir, session.relativePath, 'session.md'), 'utf8')
     expect(raw).toContain(`archived: ${now.toISOString()}`)
-    const after = await readdir(join(libraryDir, idea.relativePath), { recursive: true })
-    expect(after.filter((f) => !f.startsWith('.idea'))).toEqual(
-      before.filter((f) => !f.startsWith('.idea'))
+    const after = await readdir(join(libraryDir, session.relativePath), { recursive: true })
+    expect(after.filter((f) => !f.startsWith('.session'))).toEqual(
+      before.filter((f) => !f.startsWith('.session'))
     )
 
     const active = await core.queryMailbox(query())
     expect(active.matched).toBe(0)
     const archivedView = await core.queryMailbox(query({ view: 'archived' }))
-    expect(group(archivedView, 'archived')).toEqual(['Archivable idea'])
+    expect(group(archivedView, 'archived')).toEqual(['Archivable Session'])
 
-    const restored = await core.setIdeaArchived(idea.relativePath, false)
+    const restored = await core.setSessionArchived(session.relativePath, false)
     expect(restored.archivedAt).toBeNull()
     const activeAgain = await core.queryMailbox(query())
-    expect(group(activeAgain, 'recent')).toEqual(['Archivable idea'])
+    expect(group(activeAgain, 'recent')).toEqual(['Archivable Session'])
   })
 
   it('keeps archive state across restarts from canonical content alone', async () => {
-    const idea = await capture('Stays archived')
-    await core.setIdeaArchived(idea.relativePath, true)
+    const session = await capture('Stays archived')
+    await core.setSessionArchived(session.relativePath, true)
 
     const reborn = makeCore()
     await reborn.openLibrary(libraryDir)
@@ -145,9 +150,9 @@ describe('archiving', () => {
 
 describe('search and filters', () => {
   beforeEach(async () => {
-    await capture('Offline recipe planner', 'software', 'Plans weekly meals without accounts.')
+    await capture('Offline recipe planner', 'Plans weekly meals without accounts.')
     now = new Date(now.getTime() + 1000)
-    await capture('Community tool library', 'general', 'Neighbors share rarely used tools.')
+    await capture('Community tool library', 'Neighbors share rarely used tools.')
   })
 
   it('matches title and body text', async () => {
@@ -155,13 +160,6 @@ describe('search and filters', () => {
     expect(group(byTitle, 'recent')).toEqual(['Offline recipe planner'])
     const byBody = await core.queryMailbox(query({ search: 'neighbors share' }))
     expect(group(byBody, 'recent')).toEqual(['Community tool library'])
-  })
-
-  it('filters by kind', async () => {
-    const software = await core.queryMailbox(query({ kind: 'software' }))
-    expect(group(software, 'recent')).toEqual(['Offline recipe planner'])
-    const general = await core.queryMailbox(query({ kind: 'general' }))
-    expect(group(general, 'recent')).toEqual(['Community tool library'])
   })
 
   it('distinguishes no results from an empty library', async () => {
@@ -178,7 +176,7 @@ describe('search and filters', () => {
 
 describe('the rebuildable index', () => {
   it('answers identically after the index is deleted', async () => {
-    await capture('Index survivor', 'software', 'Canonical content is the truth.')
+    await capture('Index survivor', 'Canonical content is the truth.')
     const before = await core.queryMailbox(query({ search: 'canonical' }))
     await rm(join(libraryDir, '.index'), { recursive: true, force: true })
     const after = await core.queryMailbox(query({ search: 'canonical' }))
@@ -187,8 +185,8 @@ describe('the rebuildable index', () => {
   })
 
   it('answers identically after the index is corrupted', async () => {
-    const idea = await capture('Corruption survivor')
-    await core.setIdeaPinned(idea.relativePath, true)
+    const session = await capture('Corruption survivor')
+    await core.setSessionPinned(session.relativePath, true)
     const before = await core.queryMailbox(query())
     await writeFile(join(libraryDir, '.index', 'mailbox.sqlite'), 'not a database at all')
     const after = await core.queryMailbox(query())
@@ -196,38 +194,38 @@ describe('the rebuildable index', () => {
     expect(after.index).toBe('rebuilt')
   })
 
-  it('does not list the private index folder as an Idea', async () => {
-    await capture('Only idea')
+  it('does not list the private index folder as a Session', async () => {
+    await capture('Only Session')
     await core.queryMailbox(query())
     const snapshot = await makeCore().openLibrary(libraryDir)
-    expect(snapshot.ideas.map((idea) => idea.title)).toEqual(['Only idea'])
+    expect(snapshot.sessions.map((session) => session.title)).toEqual(['Only Session'])
   })
 })
 
 describe('permanent delete preview', () => {
   it('targets the whole folder when it only holds app-owned content', async () => {
-    const idea = await capture('Cleanly deletable')
-    const preview = await core.previewDeleteIdea(idea.relativePath)
+    const session = await capture('Cleanly deletable')
+    const preview = await core.previewDeleteSession(session.relativePath)
     expect(preview.title).toBe('Cleanly deletable')
-    expect(preview.targets).toEqual([idea.relativePath])
+    expect(preview.targets).toEqual([session.relativePath])
     expect(preview.keeps).toEqual([])
   })
 
   it('targets only app-owned files when the folder holds foreign content', async () => {
-    const idea = await capture('Shared folder idea')
-    await writeFile(join(libraryDir, idea.relativePath, 'my-own-notes.md'), 'user content')
-    const preview = await core.previewDeleteIdea(idea.relativePath)
+    const session = await capture('Shared folder Session')
+    await writeFile(join(libraryDir, session.relativePath, 'my-own-notes.md'), 'user content')
+    const preview = await core.previewDeleteSession(session.relativePath)
     expect(preview.targets.sort()).toEqual([
-      `${idea.relativePath}/.idea`,
-      `${idea.relativePath}/idea.md`,
-      `${idea.relativePath}/planning`
+      `${session.relativePath}/.session`,
+      `${session.relativePath}/conversation.md`,
+      `${session.relativePath}/session.md`
     ])
-    expect(preview.keeps).toEqual([`${idea.relativePath}/my-own-notes.md`])
+    expect(preview.keeps).toEqual([`${session.relativePath}/my-own-notes.md`])
   })
 
-  it('refuses to preview an unknown Idea', async () => {
-    await expect(core.previewDeleteIdea('nowhere')).rejects.toMatchObject({
-      code: 'IDEA_NOT_FOUND'
+  it('refuses to preview an unknown Session', async () => {
+    await expect(core.previewDeleteSession('nowhere')).rejects.toMatchObject({
+      code: 'SESSION_NOT_FOUND'
     })
   })
 })

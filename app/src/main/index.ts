@@ -15,38 +15,38 @@ import {
   CONTRACT_VERSION,
   CoreError,
   IPC_CHANNELS,
-  ideaSummarySchema,
-  ideaRelativePathSchema,
-  openedIdeaSchema,
+  sessionSummarySchema,
+  sessionRelativePathSchema,
+  openedSessionSchema,
   librarySnapshotSchema,
-  captureIdeaInputSchema,
-  deleteIdeaInputSchema,
-  deleteIdeaPreviewSchema,
+  captureSessionInputSchema,
+  deleteSessionInputSchema,
+  deleteSessionPreviewSchema,
   mailboxQuerySchema,
   mailboxSnapshotSchema,
-  setIdeaArchivedInputSchema,
-  setIdeaPinnedInputSchema,
+  setSessionArchivedInputSchema,
+  setSessionPinnedInputSchema,
   themePreferenceSchema,
   runSnapshotSchema,
   startRunInputSchema,
   stopRunInputSchema,
   conversationSnapshotSchema,
-  developIdeaInputSchema,
-  WORKFLOW_ATTRIBUTION,
+  developSessionInputSchema,
+  SKILL_ATTRIBUTION,
   type BootState,
   type ChooseLibraryResult,
-  type DeleteIdeaResult,
+  type DeleteSessionResult,
   type LibrarySnapshot,
   type ThemeState
 } from '@shared/contract'
 import {
   chooseExecutableResultSchema,
-  providerIdSchema,
+  harnessIdSchema,
   readinessSnapshotSchema,
   refreshReadinessInputSchema
 } from '@shared/readiness'
 import { CoreClient } from './core-client'
-import { PROVIDER_SPECS, readinessLinkHosts } from './readiness'
+import { HARNESS_SPECS, readinessLinkHosts } from './readiness'
 import { ReadinessService } from './readiness-service'
 import { SettingsStore } from './settings'
 import { RunProcessBroker } from './run-process-broker'
@@ -60,12 +60,12 @@ import { RunService } from './run-service'
 
 // Test-only seams, ignored in packaged builds: redirect userData so test runs
 // are hermetic, and answer the native folder picker without a real dialog.
-const testUserData = process.env['IDEA_SHELL_TEST_USER_DATA']
-const testChooseDir = process.env['IDEA_SHELL_TEST_CHOOSE_DIR']
-const testTrashDir = process.env['IDEA_SHELL_TEST_TRASH_DIR']
-const testReadinessPath = process.env['IDEA_SHELL_TEST_READINESS_PATH']
-const testReadinessHome = process.env['IDEA_SHELL_TEST_READINESS_HOME']
-const testChooseExecutable = process.env['IDEA_SHELL_TEST_CHOOSE_EXECUTABLE']
+const testUserData = process.env['APP_TEST_USER_DATA']
+const testChooseDir = process.env['APP_TEST_CHOOSE_DIR']
+const testTrashDir = process.env['APP_TEST_TRASH_DIR']
+const testReadinessPath = process.env['APP_TEST_READINESS_PATH']
+const testReadinessHome = process.env['APP_TEST_READINESS_HOME']
+const testChooseExecutable = process.env['APP_TEST_CHOOSE_EXECUTABLE']
 const devServerUrl = process.env['ELECTRON_RENDERER_URL']
 if (testUserData && !app.isPackaged) {
   app.setPath('userData', testUserData)
@@ -160,8 +160,8 @@ function registerIpc(): void {
       }
       if (!mainWindow) return { canceled: true }
       const result = await dialog.showOpenDialog(mainWindow, {
-        title: 'Choose or create your Idea Library',
-        message: 'Ideas are saved as plain Markdown folders inside this location.',
+        title: 'Choose or create your library',
+        message: 'Sessions are saved as plain Markdown folders inside this location.',
         buttonLabel: 'Use this folder',
         properties: ['openDirectory', 'createDirectory']
       })
@@ -173,22 +173,26 @@ function registerIpc(): void {
 
   handleInvoke(IPC_CHANNELS.openLibrary, z.string().min(1), openLibrary)
 
-  handleInvoke(IPC_CHANNELS.captureIdea, captureIdeaInputSchema, async (input) => {
-    const idea = ideaSummarySchema.parse(await coreClient.send({ type: 'idea/capture', input }))
+  handleInvoke(IPC_CHANNELS.captureSession, captureSessionInputSchema, async (input) => {
+    const session = sessionSummarySchema.parse(
+      await coreClient.send({ type: 'session/capture', input })
+    )
     if (libraryState) {
-      libraryState = { ...libraryState, ideas: [idea, ...libraryState.ideas] }
+      libraryState = { ...libraryState, sessions: [session, ...libraryState.sessions] }
     }
-    return idea
+    return session
   })
 
-  handleInvoke(IPC_CHANNELS.openIdea, ideaRelativePathSchema, async (relativePath) =>
-    openedIdeaSchema.parse(await coreClient.send({ type: 'idea/open', relativePath }))
+  handleInvoke(IPC_CHANNELS.openSession, sessionRelativePathSchema, async (relativePath) =>
+    openedSessionSchema.parse(await coreClient.send({ type: 'session/open', relativePath }))
   )
 
-  handleInvoke(IPC_CHANNELS.listIdeas, z.undefined(), async () => {
-    const ideas = z.array(ideaSummarySchema).parse(await coreClient.send({ type: 'idea/list' }))
-    if (libraryState) libraryState = { ...libraryState, ideas }
-    return ideas
+  handleInvoke(IPC_CHANNELS.listSessions, z.undefined(), async () => {
+    const sessions = z
+      .array(sessionSummarySchema)
+      .parse(await coreClient.send({ type: 'session/list' }))
+    if (libraryState) libraryState = { ...libraryState, sessions }
+    return sessions
   })
 
   handleInvoke(IPC_CHANNELS.queryMailbox, mailboxQuerySchema, async (query) =>
@@ -200,50 +204,50 @@ function registerIpc(): void {
     )
   )
 
-  handleInvoke(IPC_CHANNELS.setIdeaPinned, setIdeaPinnedInputSchema, async (input) =>
-    ideaSummarySchema.parse(
+  handleInvoke(IPC_CHANNELS.setSessionPinned, setSessionPinnedInputSchema, async (input) =>
+    sessionSummarySchema.parse(
       await coreClient.send({
-        type: 'idea/set-pinned',
-        relativePath: ideaRelativePathSchema.parse(input.relativePath),
+        type: 'session/set-pinned',
+        relativePath: sessionRelativePathSchema.parse(input.relativePath),
         pinned: input.pinned
       })
     )
   )
 
-  handleInvoke(IPC_CHANNELS.setIdeaArchived, setIdeaArchivedInputSchema, async (input) =>
-    ideaSummarySchema.parse(
+  handleInvoke(IPC_CHANNELS.setSessionArchived, setSessionArchivedInputSchema, async (input) =>
+    sessionSummarySchema.parse(
       await coreClient.send({
-        type: 'idea/set-archived',
-        relativePath: ideaRelativePathSchema.parse(input.relativePath),
+        type: 'session/set-archived',
+        relativePath: sessionRelativePathSchema.parse(input.relativePath),
         archived: input.archived
       })
     )
   )
 
-  handleInvoke(IPC_CHANNELS.previewDeleteIdea, ideaRelativePathSchema, async (relativePath) =>
-    deleteIdeaPreviewSchema.parse(
-      await coreClient.send({ type: 'idea/delete-preview', relativePath })
+  handleInvoke(IPC_CHANNELS.previewDeleteSession, sessionRelativePathSchema, async (relativePath) =>
+    deleteSessionPreviewSchema.parse(
+      await coreClient.send({ type: 'session/delete-preview', relativePath })
     )
   )
 
   handleInvoke(
-    IPC_CHANNELS.deleteIdeaPermanently,
-    deleteIdeaInputSchema,
-    async ({ relativePath, targets }): Promise<DeleteIdeaResult> => {
+    IPC_CHANNELS.deleteSessionPermanently,
+    deleteSessionInputSchema,
+    async ({ relativePath, targets }): Promise<DeleteSessionResult> => {
       const libraryPath = libraryState?.path ?? settings.get().libraryPath
       if (!libraryPath) {
-        throw new CoreError('NO_LIBRARY_OPEN', 'Open an Idea Library before deleting an Idea')
+        throw new CoreError('NO_LIBRARY_OPEN', 'Open a library before deleting a Session')
       }
       // Delete acts only on the previewed, confirmed app-owned targets. That
       // keeps what happens identical to what the person read, and lets a
       // retry finish the remaining targets after a partial failure even when
-      // the Idea is no longer recognizable on disk.
-      const folder = ideaRelativePathSchema.parse(relativePath)
-      if (!targets.every((target) => isConfirmedIdeaTarget(target, folder))) {
-        throw new CoreError('INVALID_INPUT', 'Delete targets must stay inside the Idea folder')
+      // the Session is no longer recognizable on disk.
+      const folder = sessionRelativePathSchema.parse(relativePath)
+      if (!targets.every((target) => isConfirmedSessionTarget(target, folder))) {
+        throw new CoreError('INVALID_INPUT', 'Delete targets must stay inside the Session folder')
       }
       const trashed: string[] = []
-      const failed: DeleteIdeaResult['failed'] = []
+      const failed: DeleteSessionResult['failed'] = []
       for (const target of targets) {
         try {
           await trashTarget(join(libraryPath, target))
@@ -277,20 +281,20 @@ function registerIpc(): void {
     readinessSnapshotSchema.parse(await readiness.get())
   )
 
-  handleInvoke(IPC_CHANNELS.refreshReadiness, refreshReadinessInputSchema, async ({ provider }) =>
-    readinessSnapshotSchema.parse(await readiness.refresh(provider))
+  handleInvoke(IPC_CHANNELS.refreshReadiness, refreshReadinessInputSchema, async ({ harness }) =>
+    readinessSnapshotSchema.parse(await readiness.refresh(harness))
   )
 
-  handleInvoke(IPC_CHANNELS.chooseProviderExecutable, providerIdSchema, async (provider) => {
+  handleInvoke(IPC_CHANNELS.chooseHarnessExecutable, harnessIdSchema, async (harness) => {
     let selected: string | undefined
     if (testChooseExecutable && !app.isPackaged) {
       selected = testChooseExecutable
     } else {
       if (!mainWindow) return { canceled: true as const }
       const result = await dialog.showOpenDialog(mainWindow, {
-        title: `Choose the ${PROVIDER_SPECS[provider].displayName} executable`,
+        title: `Choose the ${HARNESS_SPECS[harness].displayName} executable`,
         message:
-          'The selected program is verified and must still pass the provider’s own readiness checks. Nothing is installed or changed.',
+          'The selected program is verified and must still pass the Harness’s own readiness checks. Nothing is installed or changed.',
         buttonLabel: 'Use this executable',
         properties: ['openFile', 'showHiddenFiles']
       })
@@ -299,12 +303,12 @@ function registerIpc(): void {
     if (!selected) return { canceled: true as const }
     return chooseExecutableResultSchema.parse({
       canceled: false,
-      snapshot: await readiness.setExplicitExecutable(provider, selected)
+      snapshot: await readiness.setExplicitExecutable(harness, selected)
     })
   })
 
-  handleInvoke(IPC_CHANNELS.clearProviderExecutable, providerIdSchema, async (provider) =>
-    readinessSnapshotSchema.parse(await readiness.clearExplicitExecutable(provider))
+  handleInvoke(IPC_CHANNELS.clearHarnessExecutable, harnessIdSchema, async (harness) =>
+    readinessSnapshotSchema.parse(await readiness.clearExplicitExecutable(harness))
   )
 
   handleInvoke(IPC_CHANNELS.setLoginShellDiscovery, z.boolean(), async (consent) =>
@@ -316,8 +320,8 @@ function registerIpc(): void {
   // redirect.
   const externalLinkHosts = new Set([
     ...readinessLinkHosts(),
-    new URL(WORKFLOW_ATTRIBUTION.website).hostname,
-    new URL(WORKFLOW_ATTRIBUTION.repository).hostname
+    new URL(SKILL_ATTRIBUTION.website).hostname,
+    new URL(SKILL_ATTRIBUTION.repository).hostname
   ])
   handleInvoke(IPC_CHANNELS.openExternalLink, z.string().url(), async (url) => {
     const parsed = new URL(url)
@@ -328,23 +332,23 @@ function registerIpc(): void {
   })
 
   handleInvoke(IPC_CHANNELS.startRun, startRunInputSchema, (input) => runService.start(input))
-  handleInvoke(IPC_CHANNELS.listRuns, ideaRelativePathSchema, async (relativePath) =>
+  handleInvoke(IPC_CHANNELS.listRuns, sessionRelativePathSchema, async (relativePath) =>
     runSnapshotSchema.array().parse(await runService.list(relativePath))
   )
   handleInvoke(IPC_CHANNELS.stopRun, stopRunInputSchema, ({ runId, relativePath }) =>
     runService.stop(runId, relativePath)
   )
 
-  handleInvoke(IPC_CHANNELS.getConversation, ideaRelativePathSchema, async (relativePath) =>
+  handleInvoke(IPC_CHANNELS.getConversation, sessionRelativePathSchema, async (relativePath) =>
     conversationSnapshotSchema.parse(await runService.conversation(relativePath))
   )
-  handleInvoke(IPC_CHANNELS.developIdea, developIdeaInputSchema, async (input) =>
+  handleInvoke(IPC_CHANNELS.developSession, developSessionInputSchema, async (input) =>
     conversationSnapshotSchema.parse(await runService.develop(input))
   )
 }
 
-/** A previewed target: the Idea folder itself or a portable path inside it. */
-function isConfirmedIdeaTarget(target: string, folder: string): boolean {
+/** A previewed target: the Session folder itself or a portable path inside it. */
+function isConfirmedSessionTarget(target: string, folder: string): boolean {
   if (target === folder) return true
   if (!target.startsWith(`${folder}/`)) return false
   return target
@@ -441,7 +445,7 @@ void app.whenReady().then(() => {
     homeDirectory: app.getPath('home'),
     privateRoot: join(app.getPath('userData'), 'runs'),
     proxyExecutable: process.execPath,
-    proxyScript: join(__dirname, 'planning-mcp-proxy.js'),
+    proxyScript: join(__dirname, 'mcp-proxy.js'),
     // Assistant text and control events take the direct path to the window so
     // streaming stays responsive; durable projection follows behind it.
     onConversationEvent: (event) => {
@@ -504,8 +508,7 @@ app.on('before-quit', (event) => {
       await dialog.showMessageBox({
         type: 'error',
         title: 'Could not verify Run cleanup',
-        message:
-          'Idea Development stayed open because a provider process group may still be running.',
+        message: 'The app stayed open because a Harness process group may still be running.',
         detail:
           'Check Activity Monitor, then try Quit again. New Runs remain blocked until supervision is recovered.',
         buttons: ['Keep app open']

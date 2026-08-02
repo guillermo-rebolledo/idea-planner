@@ -40,6 +40,8 @@ The existing set predates the new domain and is missing roles the product now ne
 
 The reference is dark-mode-native: its identity lives in translucent white at 2–5% opacity over near-black, which has no light-mode equivalent. Light mode must be designed to the same principles rather than derived by inversion, and it will not look like the reference. Both themes are first-class — a macOS app that ignores system appearance reads as unfinished.
 
+One placeholder to replace: ticket 03 deleted the Software/General kind icons, which were the only content of the compact rail's buttons, and substituted a single generic message icon so the buttons kept a label. That was a stopgap, not a design decision.
+
 **Blocked by:** None — can start immediately.
 
 **Status:** ready-for-agent

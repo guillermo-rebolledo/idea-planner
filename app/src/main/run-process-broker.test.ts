@@ -124,7 +124,7 @@ describe('Run process broker', () => {
     expect(onSupervisionFailure).not.toHaveBeenCalled()
   })
 
-  it('verifies the process group after the provider root exits', async () => {
+  it('verifies the process group after the Harness root exits', async () => {
     const child = fakeProcess()
     const waitForGroupExit = vi.fn().mockResolvedValue(undefined)
     const killProcessGroup = vi.fn()
@@ -222,7 +222,7 @@ describe('Run process broker', () => {
     })
     await broker.inspectLimits('run-1')
     expect(onLimitViolation).toHaveBeenCalledWith(
-      'Provider process tree exceeded the 16-process Run limit'
+      'Harness process tree exceeded the 16-process Run limit'
     )
     expect(broker.activeRunIds()).toEqual([])
   })

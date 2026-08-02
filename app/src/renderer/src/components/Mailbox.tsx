@@ -6,7 +6,7 @@ import {
   CircleDashed,
   Clock3,
   Inbox,
-  Lightbulb,
+  MessageSquare,
   PanelLeft,
   Bot,
   Pin,
@@ -17,14 +17,14 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import type {
-  DeleteIdeaPreview,
-  DeleteIdeaResult,
-  IdeaSummary,
+  DeleteSessionPreview,
+  DeleteSessionResult,
+  SessionSummary,
   MailboxGroupKey,
-  MailboxIdea,
+  MailboxSession,
   MailboxQuery,
   MailboxSnapshot,
-  OpenedIdea,
+  OpenedSession,
   LibrarySnapshot,
   ThemePreference,
   ThemeState
@@ -33,7 +33,6 @@ import { Button } from '@renderer/components/ui/button'
 import { CaptureForm } from '@renderer/components/CaptureForm'
 import { Conversation } from '@renderer/components/Conversation'
 import { ReadinessDialog } from '@renderer/components/Readiness'
-import { IDEA_KIND_META, IdeaKindIcon } from '@renderer/components/idea-kind'
 import { cn } from '@renderer/lib/utils'
 
 interface MailboxProps {
@@ -46,11 +45,11 @@ interface MailboxProps {
 type CenterSurface =
   | { kind: 'empty' }
   | { kind: 'capture' }
-  | { kind: 'opening'; idea: IdeaSummary }
-  | { kind: 'idea'; openedIdea: OpenedIdea }
-  | { kind: 'failed'; idea: IdeaSummary }
-  | { kind: 'delete-preview'; idea: IdeaSummary; preview: DeleteIdeaPreview }
-  | { kind: 'delete-result'; title: string; relativePath: string; result: DeleteIdeaResult }
+  | { kind: 'opening'; session: SessionSummary }
+  | { kind: 'session'; openedSession: OpenedSession }
+  | { kind: 'failed'; session: SessionSummary }
+  | { kind: 'delete-preview'; session: SessionSummary; preview: DeleteSessionPreview }
+  | { kind: 'delete-result'; title: string; relativePath: string; result: DeleteSessionResult }
 
 type MailboxData =
   { state: 'indexing' } | { state: 'ready'; snapshot: MailboxSnapshot } | { state: 'failed' }
@@ -73,14 +72,8 @@ const GROUP_META: Record<MailboxGroupKey, GroupMeta> = {
   archived: { label: 'Archived', icon: Archive, colorClass: 'text-muted-foreground' }
 }
 
-const KIND_FILTER_OPTIONS: { value: MailboxQuery['kind']; label: string }[] = [
-  { value: 'all', label: 'All kinds' },
-  { value: 'software', label: 'Software' },
-  { value: 'general', label: 'General' }
-]
-
 /**
- * The Focus Mailbox production frame: a collapsible Idea inbox on the left
+ * The Focus Mailbox production frame: a collapsible Session inbox on the left
  * (expanded list or compact rail) and the primary center surface, which this
  * slice uses for capture, reading, and the permanent-delete flow.
  */
@@ -94,7 +87,7 @@ export function Mailbox({
   const [inboxCollapsed, setInboxCollapsed] = useState(false)
   const [readinessOpen, setReadinessOpen] = useState(false)
   const [announcement, setAnnouncement] = useState('')
-  const [query, setQuery] = useState<MailboxQuery>({ search: '', kind: 'all', view: 'active' })
+  const [query, setQuery] = useState<MailboxQuery>({ search: '', view: 'active' })
   const [mailbox, setMailbox] = useState<MailboxData>({ state: 'indexing' })
   const searchRef = useRef<HTMLInputElement>(null)
   const requestSequenceRef = useRef(0)
@@ -102,11 +95,11 @@ export function Mailbox({
   const refreshMailbox = useCallback(async (nextQuery: MailboxQuery) => {
     const requestId = ++requestSequenceRef.current
     try {
-      const snapshot = await window.ideaShell.queryMailbox(nextQuery)
+      const snapshot = await window.shell.queryMailbox(nextQuery)
       if (requestSequenceRef.current === requestId) {
         setMailbox({ state: 'ready', snapshot })
         if (snapshot.index === 'rebuilt') {
-          setAnnouncement('The search index was rebuilt from your canonical Idea content.')
+          setAnnouncement('The search index was rebuilt from your canonical Session content.')
         }
       }
     } catch {
@@ -147,62 +140,65 @@ export function Mailbox({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [startCapture])
 
-  function handleSaved(idea: IdeaSummary): void {
-    onLibraryChanged({ ...library, ideas: [idea, ...library.ideas] })
+  function handleSaved(session: SessionSummary): void {
+    onLibraryChanged({ ...library, sessions: [session, ...library.sessions] })
     void refreshMailbox(query)
-    void openIdea(idea)
-    setAnnouncement(`Saved “${idea.title}” for later.`)
+    void openSession(session)
+    setAnnouncement(`Saved “${session.title}” for later.`)
   }
 
-  async function openIdea(idea: IdeaSummary): Promise<void> {
-    setSurface({ kind: 'opening', idea })
+  async function openSession(session: SessionSummary): Promise<void> {
+    setSurface({ kind: 'opening', session })
     try {
-      const openedIdea = await window.ideaShell.openIdea(idea.relativePath)
-      setSurface({ kind: 'idea', openedIdea })
+      const openedSession = await window.shell.openSession(session.relativePath)
+      setSurface({ kind: 'session', openedSession })
     } catch {
-      setSurface({ kind: 'failed', idea })
+      setSurface({ kind: 'failed', session })
     }
   }
 
-  async function togglePinned(idea: IdeaSummary): Promise<void> {
+  async function togglePinned(session: SessionSummary): Promise<void> {
     try {
-      const updated = await window.ideaShell.setIdeaPinned({
-        relativePath: idea.relativePath,
-        pinned: !idea.pinned
+      const updated = await window.shell.setSessionPinned({
+        relativePath: session.relativePath,
+        pinned: !session.pinned
       })
-      setAnnouncement(updated.pinned ? `Pinned “${idea.title}”.` : `Unpinned “${idea.title}”.`)
+      setAnnouncement(
+        updated.pinned ? `Pinned “${session.title}”.` : `Unpinned “${session.title}”.`
+      )
     } catch {
-      setAnnouncement(`Could not update the pin on “${idea.title}”.`)
+      setAnnouncement(`Could not update the pin on “${session.title}”.`)
     }
     void refreshMailbox(query)
   }
 
-  async function setArchived(idea: IdeaSummary, archived: boolean): Promise<void> {
+  async function setArchived(session: SessionSummary, archived: boolean): Promise<void> {
     try {
-      await window.ideaShell.setIdeaArchived({ relativePath: idea.relativePath, archived })
+      await window.shell.setSessionArchived({ relativePath: session.relativePath, archived })
       setAnnouncement(
         archived
-          ? `Archived “${idea.title}”. Nothing moved on disk; restore it any time.`
-          : `Restored “${idea.title}” to the inbox.`
+          ? `Archived “${session.title}”. Nothing moved on disk; restore it any time.`
+          : `Restored “${session.title}” to the inbox.`
       )
       setSurface((current) =>
-        (current.kind === 'idea' && current.openedIdea.idea.relativePath === idea.relativePath) ||
-        (current.kind === 'opening' && current.idea.relativePath === idea.relativePath)
+        (current.kind === 'session' &&
+          current.openedSession.session.relativePath === session.relativePath) ||
+        (current.kind === 'opening' && current.session.relativePath === session.relativePath)
           ? { kind: 'empty' }
           : current
       )
     } catch {
-      setAnnouncement(`Could not ${archived ? 'archive' : 'restore'} “${idea.title}”.`)
+      setAnnouncement(`Could not ${archived ? 'archive' : 'restore'} “${session.title}”.`)
     }
     void refreshMailbox(query)
   }
 
-  async function startDelete(idea: IdeaSummary): Promise<void> {
+  async function startDelete(session: SessionSummary): Promise<void> {
     try {
-      const preview = await window.ideaShell.previewDeleteIdea(idea.relativePath)
-      setSurface({ kind: 'delete-preview', idea, preview })
+      const preview = await window.shell.previewDeleteSession(session.relativePath)
+      setSurface({ kind: 'delete-preview', session, preview })
     } catch {
-      setAnnouncement(`Could not prepare “${idea.title}” for deletion.`)
+      setAnnouncement(`Could not prepare “${session.title}” for deletion.`)
     }
   }
 
@@ -214,7 +210,7 @@ export function Mailbox({
     targets: string[]
   ): Promise<void> {
     try {
-      const result = await window.ideaShell.deleteIdeaPermanently({ relativePath, targets })
+      const result = await window.shell.deleteSessionPermanently({ relativePath, targets })
       void refreshMailbox(query)
       if (result.failed.length > 0) {
         setAnnouncement(`Some of “${title}” could not be moved to the Trash.`)
@@ -229,15 +225,15 @@ export function Mailbox({
     }
   }
 
-  const selectedIdea =
-    surface.kind === 'idea'
-      ? surface.openedIdea.idea
+  const selectedSession =
+    surface.kind === 'session'
+      ? surface.openedSession.session
       : surface.kind === 'opening' || surface.kind === 'failed' || surface.kind === 'delete-preview'
-        ? surface.idea
+        ? surface.session
         : undefined
 
   const snapshot = mailbox.state === 'ready' ? mailbox.snapshot : null
-  const allIdeas = snapshot?.groups.flatMap((group) => group.ideas) ?? []
+  const allSessions = snapshot?.groups.flatMap((group) => group.sessions) ?? []
 
   return (
     <div className="relative flex h-full flex-col">
@@ -251,21 +247,21 @@ export function Mailbox({
         >
           <PanelLeft aria-hidden="true" className="size-4" />
         </Button>
-        <h1 className="text-[13px] font-semibold">Ideas</h1>
+        <h1 className="text-[13px] font-semibold">Sessions</h1>
         <div className="ml-auto flex items-center gap-2">
           <ThemeSelect theme={theme} onChange={onThemePreferenceChange} />
           <Button
             variant="ghost"
             size="sm"
-            aria-label="AI Providers"
+            aria-label="Harnesses"
             onClick={() => setReadinessOpen(true)}
           >
             <Bot aria-hidden="true" className="size-3.5" />
-            AI Providers
+            Harnesses
           </Button>
           <Button onClick={startCapture} size="sm">
             <Plus aria-hidden="true" className="size-3.5" />
-            New Idea
+            New Session
           </Button>
         </div>
       </header>
@@ -273,15 +269,15 @@ export function Mailbox({
       <div className="flex min-h-0 flex-1">
         {inboxCollapsed ? (
           <CompactRail
-            ideas={allIdeas}
-            selectedId={selectedIdea?.id}
-            onOpen={(idea) => void openIdea(idea)}
+            sessions={allSessions}
+            selectedId={selectedSession?.id}
+            onOpen={(session) => void openSession(session)}
             onExpand={() => setInboxCollapsed(false)}
             onCapture={startCapture}
           />
         ) : (
           <nav
-            aria-label="Idea inbox"
+            aria-label="Session inbox"
             className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/40"
           >
             <div className="flex flex-col gap-2 border-b border-border p-2">
@@ -290,8 +286,8 @@ export function Mailbox({
                 <input
                   ref={searchRef}
                   type="search"
-                  aria-label="Search Ideas"
-                  placeholder="Search Ideas"
+                  aria-label="Search Sessions"
+                  placeholder="Search Sessions"
                   value={query.search}
                   onChange={(event) =>
                     setQuery((current) => ({ ...current, search: event.target.value }))
@@ -316,23 +312,6 @@ export function Mailbox({
                     onClick={() => setQuery((current) => ({ ...current, view: 'archived' }))}
                   />
                 </div>
-                <select
-                  aria-label="Filter by kind"
-                  value={query.kind}
-                  onChange={(event) =>
-                    setQuery((current) => ({
-                      ...current,
-                      kind: event.target.value as MailboxQuery['kind']
-                    }))
-                  }
-                  className="ml-auto h-6 rounded-md border border-border bg-surface px-1 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {KIND_FILTER_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
               </div>
             </div>
 
@@ -340,14 +319,14 @@ export function Mailbox({
               <InboxContent
                 mailbox={mailbox}
                 query={query}
-                selectedId={selectedIdea?.id}
-                onOpen={(idea) => void openIdea(idea)}
+                selectedId={selectedSession?.id}
+                onOpen={(session) => void openSession(session)}
                 onCapture={startCapture}
                 onClearSearch={() => setQuery((current) => ({ ...current, search: '' }))}
                 onRetry={() => void refreshMailbox(query)}
-                onTogglePinned={(idea) => void togglePinned(idea)}
-                onSetArchived={(idea, archived) => void setArchived(idea, archived)}
-                onDelete={(idea) => void startDelete(idea)}
+                onTogglePinned={(session) => void togglePinned(session)}
+                onSetArchived={(session, archived) => void setArchived(session, archived)}
+                onDelete={(session) => void startDelete(session)}
               />
             </div>
           </nav>
@@ -361,13 +340,13 @@ export function Mailbox({
               onShowReadiness={() => setReadinessOpen(true)}
             />
           ) : surface.kind === 'opening' ? (
-            <IdeaOpening title={surface.idea.title} />
+            <SessionOpening title={surface.session.title} />
           ) : surface.kind === 'failed' ? (
             <CenterNotice
-              title={`“${surface.idea.title}” could not be opened`}
-              body="The app could not finish reading local content. The Idea was not classified as corrupt."
+              title={`“${surface.session.title}” could not be opened`}
+              body="The app could not finish reading local content. The Session was not classified as corrupt."
               actionLabel="Try again"
-              onAction={() => void openIdea(surface.idea)}
+              onAction={() => void openSession(surface.session)}
             />
           ) : surface.kind === 'delete-preview' ? (
             <DeletePreviewSurface
@@ -394,21 +373,21 @@ export function Mailbox({
               }
               onClose={() => setSurface({ kind: 'empty' })}
             />
-          ) : surface.kind === 'idea' ? (
-            <IdeaDetail
-              openedIdea={surface.openedIdea}
-              onTogglePinned={(idea) => void togglePinned(idea)}
-              onSetArchived={(idea, archived) => void setArchived(idea, archived)}
-              onDelete={(idea) => void startDelete(idea)}
+          ) : surface.kind === 'session' ? (
+            <SessionDetail
+              openedSession={surface.openedSession}
+              onTogglePinned={(session) => void togglePinned(session)}
+              onSetArchived={(session, archived) => void setArchived(session, archived)}
+              onDelete={(session) => void startDelete(session)}
             />
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
-              <Lightbulb aria-hidden="true" className="size-6 text-muted-foreground" />
+              <MessageSquare aria-hidden="true" className="size-6 text-muted-foreground" />
               <div>
-                <p className="font-medium">Capture an Idea before it fades</p>
+                <p className="font-medium">Start a Session before the thought fades</p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   Press <kbd className="rounded border border-border px-1 font-mono">N</kbd> or use
-                  New Idea. Saving never starts AI.
+                  New Session. Saving never starts a Run.
                 </p>
               </div>
             </div>
@@ -429,13 +408,13 @@ interface InboxContentProps {
   mailbox: MailboxData
   query: MailboxQuery
   selectedId: string | undefined
-  onOpen: (idea: MailboxIdea) => void
+  onOpen: (session: MailboxSession) => void
   onCapture: () => void
   onClearSearch: () => void
   onRetry: () => void
-  onTogglePinned: (idea: MailboxIdea) => void
-  onSetArchived: (idea: MailboxIdea, archived: boolean) => void
-  onDelete: (idea: MailboxIdea) => void
+  onTogglePinned: (session: MailboxSession) => void
+  onSetArchived: (session: MailboxSession, archived: boolean) => void
+  onDelete: (session: MailboxSession) => void
 }
 
 function InboxContent(props: InboxContentProps): React.JSX.Element {
@@ -448,7 +427,7 @@ function InboxContent(props: InboxContentProps): React.JSX.Element {
         aria-live="polite"
         className="px-4 py-6 text-center text-xs text-muted-foreground"
       >
-        Indexing Ideas from local content…
+        Indexing Sessions from local content…
       </p>
     )
   }
@@ -456,7 +435,7 @@ function InboxContent(props: InboxContentProps): React.JSX.Element {
   if (mailbox.state === 'failed') {
     return (
       <div role="alert" className="flex flex-col items-center gap-2 px-4 py-6 text-center">
-        <p className="text-xs text-muted-foreground">The Idea inbox could not be read.</p>
+        <p className="text-xs text-muted-foreground">The Session inbox could not be read.</p>
         <Button variant="secondary" size="sm" onClick={props.onRetry}>
           Try again
         </Button>
@@ -469,16 +448,16 @@ function InboxContent(props: InboxContentProps): React.JSX.Element {
   if (snapshot.total === 0) {
     return snapshot.view === 'archived' ? (
       <p className="px-4 py-6 text-center text-xs text-muted-foreground">
-        No archived Ideas. Archiving keeps every file in place.
+        No archived Sessions. Archiving keeps every file in place.
       </p>
     ) : (
       <div className="flex flex-col items-center gap-2 px-4 py-6 text-center">
         <Inbox aria-hidden="true" className="size-5 text-muted-foreground" />
         <p className="text-xs text-muted-foreground">
-          No Ideas yet. Press <kbd className="font-mono">N</kbd> to capture one.
+          No Sessions yet. Press <kbd className="font-mono">N</kbd> to start one.
         </p>
         <Button variant="secondary" size="sm" onClick={props.onCapture}>
-          Capture an Idea
+          Start a Session
         </Button>
       </div>
     )
@@ -488,7 +467,7 @@ function InboxContent(props: InboxContentProps): React.JSX.Element {
     return (
       <div role="status" className="flex flex-col items-center gap-2 px-4 py-6 text-center">
         <p className="text-xs text-muted-foreground">
-          No Ideas match {query.search ? `“${query.search}”` : 'the current filters'}.
+          No Sessions match {query.search ? `“${query.search}”` : 'the current filters'}.
         </p>
         <Button variant="secondary" size="sm" onClick={props.onClearSearch}>
           Clear search
@@ -500,34 +479,34 @@ function InboxContent(props: InboxContentProps): React.JSX.Element {
   return (
     <div className="flex flex-col gap-3">
       {snapshot.groups.map((group) => (
-        <IdeaGroup key={group.key} groupKey={group.key} ideas={group.ideas} {...props} />
+        <SessionGroup key={group.key} groupKey={group.key} sessions={group.sessions} {...props} />
       ))}
     </div>
   )
 }
 
-interface IdeaGroupProps extends Omit<InboxContentProps, 'mailbox' | 'query'> {
+interface SessionGroupProps extends Omit<InboxContentProps, 'mailbox' | 'query'> {
   groupKey: MailboxGroupKey
-  ideas: MailboxIdea[]
+  sessions: MailboxSession[]
 }
 
-function IdeaGroup({ groupKey, ideas, ...props }: IdeaGroupProps): React.JSX.Element {
+function SessionGroup({ groupKey, sessions, ...props }: SessionGroupProps): React.JSX.Element {
   const meta = GROUP_META[groupKey]
   return (
     <section aria-label={meta.label} className="px-2">
       <h2 className="flex items-center gap-1.5 px-2 pb-1 text-[10px] font-semibold tracking-wide uppercase">
         <meta.icon aria-hidden="true" className={cn('size-3', meta.colorClass)} />
         <span className={meta.colorClass}>{meta.label}</span>
-        <span className="text-muted-foreground">{ideas.length}</span>
+        <span className="text-muted-foreground">{sessions.length}</span>
       </h2>
-      {ideas.length === 0 ? (
+      {sessions.length === 0 ? (
         <p className="px-2 pb-1 text-[11px] text-muted-foreground italic">
           {groupKey === 'running' ? 'No Runs yet' : 'None'}
         </p>
       ) : (
         <ul className="flex flex-col gap-px">
-          {ideas.map((idea) => (
-            <IdeaRow key={idea.id} idea={idea} {...props} />
+          {sessions.map((session) => (
+            <SessionRow key={session.id} session={session} {...props} />
           ))}
         </ul>
       )}
@@ -535,28 +514,28 @@ function IdeaGroup({ groupKey, ideas, ...props }: IdeaGroupProps): React.JSX.Ele
   )
 }
 
-interface IdeaRowProps extends Omit<IdeaGroupProps, 'groupKey' | 'ideas'> {
-  idea: MailboxIdea
+interface SessionRowProps extends Omit<SessionGroupProps, 'groupKey' | 'sessions'> {
+  session: MailboxSession
 }
 
-function IdeaRow({ idea, selectedId, ...props }: IdeaRowProps): React.JSX.Element {
-  const archived = idea.archivedAt !== null
+function SessionRow({ session, selectedId, ...props }: SessionRowProps): React.JSX.Element {
+  const archived = session.archivedAt !== null
   return (
     <li className="group relative">
       <button
         type="button"
-        onClick={() => props.onOpen(idea)}
-        aria-current={selectedId === idea.id ? 'true' : undefined}
+        onClick={() => props.onOpen(session)}
+        aria-current={selectedId === session.id ? 'true' : undefined}
         className={cn(
           'flex w-full items-center gap-2 rounded-md py-1.5 pr-20 pl-2 text-left transition-colors',
-          selectedId === idea.id
+          selectedId === session.id
             ? 'bg-accent text-foreground'
             : 'text-muted-foreground hover:bg-accent hover:text-foreground'
         )}
       >
-        <IdeaKindIcon kind={idea.kind} />
-        <span className="min-w-0 flex-1 truncate">{idea.title}</span>
-        {idea.dormant && (
+        <MessageSquare aria-hidden="true" className="size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1 truncate">{session.title}</span>
+        {session.dormant && (
           <span className="rounded-sm bg-notice px-1 text-[10px] font-medium text-notice-foreground">
             Dormant
           </span>
@@ -564,19 +543,19 @@ function IdeaRow({ idea, selectedId, ...props }: IdeaRowProps): React.JSX.Elemen
       </button>
       <span className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
         <RowAction
-          label={idea.pinned ? `Unpin “${idea.title}”` : `Pin “${idea.title}”`}
-          icon={idea.pinned ? PinOff : Pin}
-          onClick={() => props.onTogglePinned(idea)}
+          label={session.pinned ? `Unpin “${session.title}”` : `Pin “${session.title}”`}
+          icon={session.pinned ? PinOff : Pin}
+          onClick={() => props.onTogglePinned(session)}
         />
         <RowAction
-          label={archived ? `Restore “${idea.title}”` : `Archive “${idea.title}”`}
+          label={archived ? `Restore “${session.title}”` : `Archive “${session.title}”`}
           icon={archived ? ArchiveRestore : Archive}
-          onClick={() => props.onSetArchived(idea, !archived)}
+          onClick={() => props.onSetArchived(session, !archived)}
         />
         <RowAction
-          label={`Delete “${idea.title}” permanently…`}
+          label={`Delete “${session.title}” permanently…`}
           icon={Trash2}
-          onClick={() => props.onDelete(idea)}
+          onClick={() => props.onDelete(session)}
         />
       </span>
     </li>
@@ -632,19 +611,19 @@ function ViewToggle({
 }
 
 interface CompactRailProps {
-  ideas: MailboxIdea[]
+  sessions: MailboxSession[]
   selectedId: string | undefined
-  onOpen: (idea: MailboxIdea) => void
+  onOpen: (session: MailboxSession) => void
   onExpand: () => void
   onCapture: () => void
 }
 
 /**
- * The collapsed inbox: a narrow rail that keeps every Idea reachable without
- * displacing the central Focus Deck.
+ * The collapsed inbox: a narrow rail that keeps every Session reachable
+ * without displacing the central Focus Deck.
  */
 function CompactRail({
-  ideas,
+  sessions,
   selectedId,
   onOpen,
   onExpand,
@@ -652,13 +631,13 @@ function CompactRail({
 }: CompactRailProps): React.JSX.Element {
   return (
     <nav
-      aria-label="Idea inbox (compact)"
+      aria-label="Session inbox (compact)"
       className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-border bg-muted/40 py-2"
     >
       <button
         type="button"
-        aria-label="New Idea"
-        title="New Idea"
+        aria-label="New Session"
+        title="New Session"
         onClick={onCapture}
         className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
       >
@@ -675,24 +654,24 @@ function CompactRail({
       </button>
       <div aria-hidden="true" className="my-1 h-px w-6 bg-border" />
       <ul className="flex flex-col items-center gap-1">
-        {ideas.map((idea) => (
-          <li key={idea.id} className="relative">
+        {sessions.map((session) => (
+          <li key={session.id} className="relative">
             <button
               type="button"
-              aria-label={idea.title}
-              title={idea.title}
-              aria-current={selectedId === idea.id ? 'true' : undefined}
-              onClick={() => onOpen(idea)}
+              aria-label={session.title}
+              title={session.title}
+              aria-current={selectedId === session.id ? 'true' : undefined}
+              onClick={() => onOpen(session)}
               className={cn(
                 'rounded-md p-2 transition-colors focus-visible:ring-2 focus-visible:ring-ring',
-                selectedId === idea.id
+                selectedId === session.id
                   ? 'bg-accent text-foreground'
                   : 'text-muted-foreground hover:bg-accent hover:text-foreground'
               )}
             >
-              <IdeaKindIcon kind={idea.kind} />
+              <MessageSquare aria-hidden="true" className="size-3.5 shrink-0" />
             </button>
-            {idea.pinned && (
+            {session.pinned && (
               <Pin
                 aria-hidden="true"
                 className="absolute -top-0.5 -right-0.5 size-2.5 text-primary"
@@ -705,7 +684,7 @@ function CompactRail({
   )
 }
 
-function IdeaOpening({ title }: { title: string }): React.JSX.Element {
+function SessionOpening({ title }: { title: string }): React.JSX.Element {
   return (
     <div className="flex flex-1 items-center justify-center p-8" role="status" aria-live="polite">
       <p className="text-sm text-muted-foreground">Opening “{title}” from local content…</p>
@@ -745,7 +724,7 @@ function DeletePreviewSurface({
   onCancel,
   onConfirm
 }: {
-  preview: DeleteIdeaPreview
+  preview: DeleteSessionPreview
   onCancel: () => void
   onConfirm: () => void
 }): React.JSX.Element {
@@ -764,8 +743,8 @@ function DeletePreviewSurface({
           Delete “{preview.title}” permanently?
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Exactly these app-owned items move to the macOS Trash. Nothing else in your Idea Library
-          is touched, and you can put them back from the Trash.
+          Exactly these app-owned items move to the macOS Trash. Nothing else in your library is
+          touched, and you can put them back from the Trash.
         </p>
       </div>
       <ul
@@ -809,7 +788,7 @@ function DeleteResultSurface({
   onClose
 }: {
   title: string
-  result: DeleteIdeaResult
+  result: DeleteSessionResult
   onRetry: () => void
   onClose: () => void
 }): React.JSX.Element {
@@ -855,26 +834,23 @@ function DeleteResultSurface({
   )
 }
 
-function IdeaDetail({
-  openedIdea,
+function SessionDetail({
+  openedSession,
   onTogglePinned,
   onSetArchived,
   onDelete
 }: {
-  openedIdea: OpenedIdea
-  onTogglePinned: (idea: IdeaSummary) => void
-  onSetArchived: (idea: IdeaSummary, archived: boolean) => void
-  onDelete: (idea: IdeaSummary) => void
+  openedSession: OpenedSession
+  onTogglePinned: (session: SessionSummary) => void
+  onSetArchived: (session: SessionSummary, archived: boolean) => void
+  onDelete: (session: SessionSummary) => void
 }): React.JSX.Element {
-  const idea = openedIdea.idea
-  const savedAt = new Date(idea.updatedAt)
-  const archived = idea.archivedAt !== null
+  const session = openedSession.session
+  const savedAt = new Date(session.updatedAt)
+  const archived = session.archivedAt !== null
   return (
-    <article className="mx-auto w-full max-w-xl p-6" aria-label={idea.title}>
+    <article className="mx-auto w-full max-w-xl p-6" aria-label={session.title}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <IdeaKindIcon kind={idea.kind} />
-        <span>{IDEA_KIND_META[idea.kind].label}</span>
-        <span aria-hidden="true">·</span>
         <span>
           Saved for later on{' '}
           {savedAt.toLocaleDateString(undefined, {
@@ -883,7 +859,7 @@ function IdeaDetail({
             day: 'numeric'
           })}
         </span>
-        {idea.pinned && (
+        {session.pinned && (
           <span className="flex items-center gap-1 text-primary">
             <Pin aria-hidden="true" className="size-3" /> Pinned
           </span>
@@ -894,14 +870,14 @@ function IdeaDetail({
           </span>
         )}
       </div>
-      <h2 className="mt-2 text-lg font-semibold select-text">{idea.title}</h2>
+      <h2 className="mt-2 text-lg font-semibold select-text">{session.title}</h2>
       <p className="mt-4 rounded-md border border-border bg-surface p-3 font-mono text-xs break-all text-muted-foreground select-text">
-        {openedIdea.documents.root.path}
+        {openedSession.documents.root.path}
       </p>
-      <Conversation key={idea.relativePath} idea={idea} />
+      <Conversation key={session.relativePath} session={session} />
       <div className="mt-4 flex items-center gap-2">
-        <Button variant="secondary" size="sm" onClick={() => onTogglePinned(idea)}>
-          {idea.pinned ? (
+        <Button variant="secondary" size="sm" onClick={() => onTogglePinned(session)}>
+          {session.pinned ? (
             <>
               <PinOff aria-hidden="true" className="size-3.5" /> Unpin
             </>
@@ -911,7 +887,7 @@ function IdeaDetail({
             </>
           )}
         </Button>
-        <Button variant="secondary" size="sm" onClick={() => onSetArchived(idea, !archived)}>
+        <Button variant="secondary" size="sm" onClick={() => onSetArchived(session, !archived)}>
           {archived ? (
             <>
               <ArchiveRestore aria-hidden="true" className="size-3.5" /> Restore
@@ -922,12 +898,12 @@ function IdeaDetail({
             </>
           )}
         </Button>
-        <Button variant="secondary" size="sm" onClick={() => onDelete(idea)}>
+        <Button variant="secondary" size="sm" onClick={() => onDelete(session)}>
           <Trash2 aria-hidden="true" className="size-3.5" /> Delete…
         </Button>
       </div>
       <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-        This Idea is plain Markdown inside your Idea Library. Developing it with AI is always a
+        This Session is plain Markdown inside your library. Developing it with a Harness is always a
         separate, explicit step you start yourself.
       </p>
     </article>

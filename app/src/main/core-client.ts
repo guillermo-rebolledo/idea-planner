@@ -59,7 +59,7 @@ export class CoreClient {
 
   private spawn(): void {
     const child = utilityProcess.fork(join(__dirname, 'core.js'), [], {
-      serviceName: 'idea-development-core'
+      serviceName: 'app-core'
     })
     this.child = child
 

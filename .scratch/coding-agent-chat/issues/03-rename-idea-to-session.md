@@ -22,6 +22,16 @@ Every Run also freezes `permissionProfile: 'planning-v1'` into its durable confi
 
 - [ ] `CONTEXT.md` terms are the only domain vocabulary in the contract, Core, Renderer, and tests
 - [ ] No occurrence of Idea, workflow, Draft Artifact, Proposal, MVP Spec, Implementation Ticket, or Planning Package remains outside `.scratch/research/` and git history
-- [ ] The contract version is incremented and existing on-disk state is either migrated or explicitly discarded on launch — decide which and say so in the ticket comments
-- [ ] Session status is `running | blocked | idle | failed`, with pinned and archived as separate user flags
+- [ ] The contract version is incremented, and a library holding the previous format is ignored rather than migrated, read, or altered
+- [ ] The unreachable `workflow-completion` plumbing and the frozen `planning-v1` permission profile are gone
 - [ ] `pnpm verify` passes and the packaged-shell acceptance suite passes
+
+## Comments
+
+**On-disk state is discarded, not migrated.** There are no users, and ticket 05 abolishes this storage format entirely, so a migration would be written only to be deleted two tickets later. A library holding the previous format is left untouched on disk and simply not read.
+
+**The rename reaches the disk**: `idea.md`, `.idea/`, and the frontmatter keys change with the code. Those files die in ticket 05, so this is knowingly throwaway — but a half-renamed codebase is the confusion this ticket exists to end, and it is a handful of constants beside sixteen hundred identifiers.
+
+**Session status is deliberately not introduced.** The original criterion asked for `running | blocked | idle | failed`. Nothing can produce those yet: `blocked` arrives with approvals in ticket 07, and the inbox groups in ticket 12. Shipping a four-value status with one reachable value would repeat ticket 01's `openState` mistake — a field admitting a single value, kept alive by a test that hand-injects the rest. The single-valued `status: 'saved'` is deleted here instead, and ticket 12 introduces Session status when there are states to hold.
+
+**The container of Sessions is called the library** for now. It has no glossary entry because ticket 05 abolishes it, and inventing a term for something with a two-ticket lifespan is cost without payoff. `Project` is not that term — a Project is a git repository the user works in, which is a different thing.

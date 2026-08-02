@@ -40,23 +40,23 @@ describe('Codex harness Adapter', () => {
     ])
   })
 
-  it('keeps reasoning to the provider’s finished summary and names the tools used', async () => {
+  it('keeps reasoning to the Harness’s finished summary and names the tools used', async () => {
     const events = await replay('codex-grilling.jsonl')
     expect(events).toContainEqual({
       type: 'reasoning',
-      summary: 'Reading the Idea before asking the first question.'
+      summary: 'Reading the Session before asking the first question.'
     })
-    // One activity row per tool, raised when the provider asks for it.
+    // One activity row per tool, raised when the Harness asks for it.
     expect(events.filter((event) => event.type === 'tool')).toEqual([
       {
         type: 'tool',
-        name: 'planning.read_file',
-        summary: 'Called planning tool read_file'
+        name: 'app.read_file',
+        summary: 'Called MCP tool read_file'
       }
     ])
   })
 
-  it('reports provider usage without inventing a window or a quota', async () => {
+  it('reports Harness usage without inventing a window or a quota', async () => {
     const events = await replay('codex-grilling.jsonl')
     expect(events).toContainEqual({
       type: 'usage',
@@ -77,7 +77,7 @@ describe('Codex harness Adapter', () => {
     expect(events.some((event) => event.type === 'failed')).toBe(false)
   })
 
-  it('surfaces the provider’s own words when a turn fails', async () => {
+  it('surfaces the Harness’s own words when a turn fails', async () => {
     const events = await replay('codex-failures.jsonl')
     const failures = events.filter((event) => event.type === 'failed')
     expect(failures.at(-1)).toEqual({

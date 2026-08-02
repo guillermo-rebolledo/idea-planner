@@ -7,14 +7,14 @@ import { promisify } from 'node:util'
 import { z } from 'zod'
 import type { CoreCommand } from '@shared/contract'
 import {
-  PROVIDER_DEFAULT_MODEL,
+  HARNESS_DEFAULT_MODEL,
   conversationSnapshotSchema,
-  developIdeaInputSchema,
+  developSessionInputSchema,
   harnessEventSchema,
   redactCredentials,
   type ConversationSnapshot,
   type ConversationStreamEvent,
-  type DevelopIdeaInput,
+  type DevelopSessionInput,
   type FinalizeConversationRunInput,
   type HarnessEvent,
   type HarnessFailureCategory
@@ -26,17 +26,17 @@ import {
   type RunSnapshot,
   type StartRunInput
 } from '@shared/run'
-import { PROVIDER_SPECS, VERIFIED_WORKFLOW_SKILLS } from './readiness'
-import { PlanningToolHost } from './planning-tool-host'
+import { HARNESS_SPECS, VERIFIED_SKILLS } from './readiness'
+import { ToolHost } from './tool-host'
 import type { RunProcessBroker } from './run-process-broker'
 
 interface CorePort {
   send(command: CoreCommand): Promise<unknown>
 }
 interface ReadinessPort {
-  refresh(provider?: 'codex' | 'claude'): Promise<{
-    providers: {
-      provider: string
+  refresh(harness?: 'codex' | 'claude'): Promise<{
+    harnesses: {
+      harness: string
       available: boolean
       executablePath: string | null
       version: string | null
@@ -60,11 +60,11 @@ interface RunServiceDeps {
 
 /** Coordinates durable Core acceptance with Main's native process authority. */
 export class RunService {
-  private readonly toolHosts = new Map<string, PlanningToolHost>()
-  /** The last failure a Run's provider reported, used when the Run ends. */
+  private readonly toolHosts = new Map<string, ToolHost>()
+  /** The last failure a Run's Harness reported, used when the Run ends. */
   private readonly failures = new Map<string, HarnessFailureCategory>()
   /**
-   * The last thing a Run's provider wrote to its diagnostic stream. When a
+   * The last thing a Run's Harness wrote to its diagnostic stream. When a
    * process dies without reporting a failure of its own, this is the only
    * explanation there is, so it becomes what the person is told.
    */
@@ -74,15 +74,15 @@ export class RunService {
   constructor(private readonly deps: RunServiceDeps) {}
 
   /**
-   * Develops an Idea through its Conversation: the person's message is
-   * accepted durably first, and only then does one planning Run start. A Run
-   * that never reaches the provider leaves the message and a recovery choice.
+   * Develops a Session through its Conversation: the person's message is
+   * accepted durably first, and only then does one Run start. A Run that
+   * never reaches the Harness leaves the message and a recovery choice.
    */
-  async develop(rawInput: DevelopIdeaInput): Promise<ConversationSnapshot> {
-    const input = developIdeaInputSchema.parse(rawInput)
-    if (!PROVIDER_SPECS[input.provider].conversation) {
+  async develop(rawInput: DevelopSessionInput): Promise<ConversationSnapshot> {
+    const input = developSessionInputSchema.parse(rawInput)
+    if (!HARNESS_SPECS[input.harness].conversation) {
       throw new Error(
-        `Developing an Idea with ${PROVIDER_SPECS[input.provider].displayName} is not supported yet`
+        `Developing a Session with ${HARNESS_SPECS[input.harness].displayName} is not supported yet`
       )
     }
     await this.deps.core.send({
@@ -99,16 +99,16 @@ export class RunService {
         submissionId: input.submissionId,
         relativePath: input.relativePath,
         prompt: input.text,
-        provider: input.provider,
+        harness: input.harness,
         model: input.model,
         effort: input.effort,
-        workflow: input.workflow,
+        skill: input.skill,
         permissionMode: input.permissionMode
       })
     } catch (error) {
       const snapshot = await this.readConversation(input.relativePath)
       // A failure the Conversation already explains becomes recovery state the
-      // person can act on. Anything else — an unready provider, say — is not
+      // person can act on. Anything else — an unready Harness, say — is not
       // about this Run and has to reach them as an error.
       if (snapshot.recovery === null && snapshot.activeRunId === null) throw error
       return snapshot
@@ -120,7 +120,7 @@ export class RunService {
    * Reads the Conversation, reconciling a Run the app no longer supervises.
    * After a crash or a forced quit the durable history can still name an
    * active Run; leaving it that way would block the person out of their own
-   * Idea, so it is closed as interrupted and offered back for resending.
+   * Session, so it is closed as interrupted and offered back for resending.
    */
   async conversation(relativePath: string): Promise<ConversationSnapshot> {
     const snapshot = await this.readConversation(relativePath)
@@ -149,48 +149,46 @@ export class RunService {
   async start(rawInput: StartRunInput): Promise<RunSnapshot> {
     const input = startRunInputSchema.parse(rawInput)
     const library = this.deps.libraryPath()
-    if (!library) throw new Error('Open an Idea Library before starting a Run')
-    const readiness = await this.deps.readiness.refresh(input.provider)
-    const provider = readiness.providers.find((entry) => entry.provider === input.provider)
-    if (!provider?.available || !provider.executablePath) {
-      throw new Error(`${input.provider} is not ready for planning`)
+    if (!library) throw new Error('Open a library before starting a Run')
+    const readiness = await this.deps.readiness.refresh(input.harness)
+    const harness = readiness.harnesses.find((entry) => entry.harness === input.harness)
+    if (!harness?.available || !harness.executablePath) {
+      throw new Error(`${input.harness} is not ready`)
     }
-    if (!provider.version) throw new Error(`${input.provider} version provenance is unavailable`)
-    const skillName = VERIFIED_WORKFLOW_SKILLS[input.workflow]
-    if (!skillName) {
-      throw new Error(`${input.workflow} is not a verified planning workflow`)
+    if (!harness.version) throw new Error(`${input.harness} version provenance is unavailable`)
+    const skillName = input.skill
+    if (!VERIFIED_SKILLS.includes(skillName)) {
+      throw new Error(`${skillName} is not a verified Skill`)
     }
-    const spec = PROVIDER_SPECS[input.provider]
+    const spec = HARNESS_SPECS[input.harness]
     const skillDirectory = join(this.deps.homeDirectory, spec.skillsRoot, skillName)
     const skillFile = join(skillDirectory, 'SKILL.md')
     const skillHash = createHash('sha256')
       .update(await readFile(skillFile))
       .digest('hex')
-    const executableHash = await hashFile(provider.executablePath)
+    const executableHash = await hashFile(harness.executablePath)
     const workingDirectory = join(library, input.relativePath)
     const runKey = createHash('sha256')
       .update(`${workingDirectory}\0${input.submissionId}`)
       .digest('hex')
     const runDirectory = join(this.deps.privateRoot, runKey)
     const environment = minimalEnvironment(
-      provider.executablePath,
+      harness.executablePath,
       this.deps.homeDirectory,
-      input.provider,
+      input.harness,
       runDirectory
     )
     const configuration = {
-      provider: input.provider,
-      executable: provider.executablePath,
+      harness: input.harness,
+      executable: harness.executablePath,
       executableHash,
-      providerVersion: provider.version,
+      harnessVersion: harness.version,
       model: input.model,
       effort: input.effort,
-      workflow: input.workflow,
       skill: { name: skillName, path: skillDirectory, hash: skillHash },
       environment,
       workingDirectory,
-      permissionMode: input.permissionMode,
-      permissionProfile: 'planning-v1' as const
+      permissionMode: input.permissionMode
     }
     const accepted = runSnapshotSchema.parse(
       await this.deps.core.send({
@@ -216,7 +214,7 @@ export class RunService {
         accepted,
         'failed',
         'error',
-        'Interrupted Run requires explicit recovery; the provider was not contacted again'
+        'Interrupted Run requires explicit recovery; the Harness was not contacted again'
       )
     }
     const conversation = await this.readConversation(input.relativePath)
@@ -224,29 +222,29 @@ export class RunService {
       .reverse()
       .find(
         (entry): entry is Extract<typeof entry, { kind: 'boundary' }> =>
-          entry.kind === 'boundary' && entry.provider !== undefined
-      )?.provider
-    const savedSession = conversation.providerSessions[input.provider]
-    const switchedProvider = latestHarness !== undefined && latestHarness !== input.provider
-    const latestProviderBoundary = [...conversation.entries]
+          entry.kind === 'boundary' && entry.harness !== undefined
+      )?.harness
+    const savedThread = conversation.harnessThreads[input.harness]
+    const switchedHarness = latestHarness !== undefined && latestHarness !== input.harness
+    const latestHarnessBoundary = [...conversation.entries]
       .reverse()
       .find(
         (entry): entry is Extract<typeof entry, { kind: 'boundary' }> =>
-          entry.kind === 'boundary' && entry.provider === input.provider
+          entry.kind === 'boundary' && entry.harness === input.harness
       )
-    const sessionCompatible =
-      savedSession !== undefined &&
-      latestProviderBoundary?.workflow === input.workflow &&
-      latestProviderBoundary.model === input.model &&
-      (input.provider !== 'claude' ||
-        (await claudeSessionExists(this.deps.homeDirectory, workingDirectory, savedSession)))
+    const threadCompatible =
+      savedThread !== undefined &&
+      latestHarnessBoundary?.skill === input.skill &&
+      latestHarnessBoundary.model === input.model &&
+      (input.harness !== 'claude' ||
+        (await claudeThreadExists(this.deps.homeDirectory, workingDirectory, savedThread)))
     const restoreFromHistory =
-      switchedProvider || (latestHarness === input.provider && !sessionCompatible)
+      switchedHarness || (latestHarness === input.harness && !threadCompatible)
     const handoff = await deterministicHandoff(
       conversation,
-      input.workflow,
-      join(workingDirectory, planningRelativePathFor(input)),
-      planningRelativePathFor(input)
+      input.skill,
+      join(workingDirectory, scratchRelativePathFor(input)),
+      scratchRelativePathFor(input)
     )
     // The Conversation records the Run boundary before anything can fail, so
     // every later outcome has somewhere understandable to land.
@@ -255,10 +253,10 @@ export class RunService {
       relativePath: input.relativePath,
       runId: accepted.id,
       submissionId: input.submissionId,
-      provider: input.provider,
-      workflow: input.workflow,
+      harness: input.harness,
+      skill: input.skill,
       model: input.model,
-      restorationNote: latestHarness === input.provider && !sessionCompatible
+      restorationNote: latestHarness === input.harness && !threadCompatible
     })
     await this.record(
       accepted,
@@ -275,14 +273,14 @@ export class RunService {
       )
     }
 
-    const planningRelativePath = planningRelativePathFor(input)
+    const scratchRelativePath = scratchRelativePathFor(input)
     const socketDirectory = join(
       tmpdir(),
-      `idea-planning-${createHash('sha256').update(accepted.id).digest('hex').slice(0, 16)}`
+      `run-tools-${createHash('sha256').update(accepted.id).digest('hex').slice(0, 16)}`
     )
     const socketPath = join(socketDirectory, 'p.sock')
     const capabilityToken = randomUUID()
-    let toolHost: PlanningToolHost | undefined
+    let toolHost: ToolHost | undefined
     try {
       await mkdir(runDirectory, { recursive: true, mode: 0o700 })
       await chmod(runDirectory, 0o700)
@@ -291,15 +289,15 @@ export class RunService {
       // A socket file left behind by a crash would otherwise make this Run's
       // capability socket unbindable; the path belongs to this Run alone.
       await rm(socketPath, { force: true })
-      await this.prepareProviderHome(
-        input.provider,
+      await this.prepareHarnessHome(
+        input.harness,
         runDirectory,
         socketPath,
         capabilityToken,
         skillName,
         skillFile
       )
-      toolHost = new PlanningToolHost({
+      toolHost = new ToolHost({
         socketPath,
         capabilityToken,
         callbacks: {
@@ -318,7 +316,7 @@ export class RunService {
       await toolHost.start()
       this.toolHosts.set(accepted.id, toolHost)
 
-      await this.record(accepted, 'starting', 'lifecycle', 'Prepared the Run; starting provider')
+      await this.record(accepted, 'starting', 'lifecycle', 'Prepared the Run; starting the Harness')
     } catch (error) {
       await toolHost?.close().catch(() => undefined)
       await Promise.all([
@@ -329,23 +327,18 @@ export class RunService {
       throw error
     }
     try {
-      if ((await hashFile(provider.executablePath)) !== executableHash) {
+      if ((await hashFile(harness.executablePath)) !== executableHash) {
         await this.conclude(
           accepted,
           'failed',
           'error',
-          'Provider executable changed after Run acceptance; provider was not contacted'
+          'Harness executable changed after Run acceptance; the Harness was not contacted'
         )
-        throw new Error('Provider executable changed after durable Run acceptance')
+        throw new Error('Harness executable changed after durable Run acceptance')
       }
-      const running = await this.record(
-        accepted,
-        'running',
-        'lifecycle',
-        'Provider process running'
-      )
-      const providerEnvironment =
-        input.provider === 'claude'
+      const running = await this.record(accepted, 'running', 'lifecycle', 'Harness process running')
+      const harnessEnvironment =
+        input.harness === 'claude'
           ? {
               ...configuration.environment,
               CLAUDE_CODE_OAUTH_TOKEN: await (this.deps.claudeOauthToken ?? readClaudeOauthToken)()
@@ -353,18 +346,18 @@ export class RunService {
           : configuration.environment
       await this.deps.broker.start({
         id: accepted.id,
-        executable: provider.executablePath,
-        args: providerArguments(
+        executable: harness.executablePath,
+        args: harnessArguments(
           input,
           await readFile(skillFile, 'utf8'),
           runDirectory,
-          planningRelativePath,
+          scratchRelativePath,
           restoreFromHistory ? handoff : undefined,
-          sessionCompatible ? savedSession : undefined
+          threadCompatible ? savedThread : undefined
         ),
         workingDirectory,
         runDirectory,
-        environment: providerEnvironment,
+        environment: harnessEnvironment,
         onBeforeCleanup: async () => {
           await toolHost.close()
           await rm(socketDirectory, { recursive: true, force: true })
@@ -373,7 +366,7 @@ export class RunService {
         onOutput: (stream, text) => {
           if (stream === 'stdout') {
             const pending = (this.pendingIngest.get(accepted.id) ?? Promise.resolve())
-              .then(() => this.ingest(accepted, input.provider, workingDirectory, text))
+              .then(() => this.ingest(accepted, input.harness, workingDirectory, text))
               .catch(() => {
                 this.failures.set(accepted.id, 'protocol')
               })
@@ -389,16 +382,16 @@ export class RunService {
           void (this.pendingIngest.get(accepted.id) ?? Promise.resolve()).then(() => {
             this.pendingIngest.delete(accepted.id)
             const stopped = signal === 'SIGTERM' || signal === 'SIGKILL'
-            const providerFailed = this.failures.has(accepted.id)
+            const harnessFailed = this.failures.has(accepted.id)
             return this.conclude(
               accepted,
-              stopped ? 'stopped' : code === 0 && !providerFailed ? 'completed' : 'failed',
-              code === 0 && !providerFailed ? 'lifecycle' : 'error',
+              stopped ? 'stopped' : code === 0 && !harnessFailed ? 'completed' : 'failed',
+              code === 0 && !harnessFailed ? 'lifecycle' : 'error',
               stopped
-                ? 'Provider process stopped'
-                : code === 0 && !providerFailed
-                  ? 'Provider process completed'
-                  : 'Provider process failed'
+                ? 'Harness process stopped'
+                : code === 0 && !harnessFailed
+                  ? 'Harness process completed'
+                  : 'Harness process failed'
             )
           })
         },
@@ -407,7 +400,7 @@ export class RunService {
             accepted,
             'supervision-failed',
             'error',
-            'Provider process cleanup could not be verified'
+            'Harness process cleanup could not be verified'
           )
         },
         onLimitViolation: (summary) => {
@@ -420,7 +413,7 @@ export class RunService {
       await rm(socketDirectory, { recursive: true, force: true })
       this.toolHosts.delete(accepted.id)
       if (!(error instanceof Error && error.message.includes('changed after durable'))) {
-        await this.conclude(accepted, 'failed', 'error', 'Provider process could not start')
+        await this.conclude(accepted, 'failed', 'error', 'The Harness process could not start')
       }
       throw error
     }
@@ -446,7 +439,7 @@ export class RunService {
         { id: runId, relativePath },
         'supervision-failed',
         'error',
-        'Provider process cleanup could not be verified'
+        'Harness process cleanup could not be verified'
       )
       throw error
     }
@@ -457,13 +450,13 @@ export class RunService {
   }
 
   /**
-   * Parses one raw provider chunk in Core, streams the normalized events to
-   * the window, and files whatever belongs in sanitized activity. Raw provider
+   * Parses one raw Harness chunk in Core, streams the normalized events to
+   * the window, and files whatever belongs in sanitized activity. Raw Harness
    * frames never leave Core, and nothing here can widen a Run's authority.
    */
   private async ingest(
     run: Pick<RunSnapshot, 'id' | 'relativePath'>,
-    provider: StartRunInput['provider'],
+    harness: StartRunInput['harness'],
     workingDirectory: string,
     chunk: string
   ): Promise<void> {
@@ -472,7 +465,7 @@ export class RunService {
         type: 'conversation/ingest',
         relativePath: run.relativePath,
         runId: run.id,
-        provider,
+        harness,
         chunk
       })
     )
@@ -496,8 +489,8 @@ export class RunService {
   }
 
   /**
-   * Records provider-native structured choices. Only the planning tool host
-   * sees the offered options, so it is what tells the Conversation.
+   * Records Harness-native structured choices. Only the app's tool host sees
+   * the offered options, so it is what tells the Conversation.
    */
   private async offerChoices(
     run: Pick<RunSnapshot, 'id' | 'relativePath'>,
@@ -537,7 +530,7 @@ export class RunService {
     const diagnostic = this.diagnostics.get(run.id)
     this.failures.delete(run.id)
     this.diagnostics.delete(run.id)
-    // A bare "it failed" helps nobody. When the provider said nothing the app
+    // A bare "it failed" helps nobody. When the Harness said nothing the app
     // could categorize, its own last diagnostic line is the explanation.
     const explained =
       status === 'failed' && category === null && diagnostic ? `${summary}: ${diagnostic}` : summary
@@ -573,8 +566,8 @@ export class RunService {
     )
   }
 
-  private async prepareProviderHome(
-    provider: StartRunInput['provider'],
+  private async prepareHarnessHome(
+    harness: StartRunInput['harness'],
     runDirectory: string,
     socketPath: string,
     capabilityToken: string,
@@ -586,16 +579,16 @@ export class RunService {
       env: {
         ELECTRON_RUN_AS_NODE: '1',
         NODE_OPTIONS: `--require=${this.deps.proxyScript}`,
-        PLANNING_MCP_SOCKET: socketPath,
-        PLANNING_MCP_CAPABILITY: capabilityToken
+        APP_MCP_SOCKET: socketPath,
+        APP_MCP_CAPABILITY: capabilityToken
       }
     }
     await writeFile(
       join(runDirectory, 'mcp.json'),
-      JSON.stringify({ mcpServers: { planning: proxy } }),
+      JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: proxy } }),
       { mode: 0o600 }
     )
-    if (provider === 'claude') {
+    if (harness === 'claude') {
       const stagedSkill = join(runDirectory, 'claude-config', 'skills', skillName)
       await mkdir(stagedSkill, { recursive: true, mode: 0o700 })
       await copyFile(skillFile, join(stagedSkill, 'SKILL.md'))
@@ -610,7 +603,7 @@ export class RunService {
     await chmod(join(codexHome, 'auth.json'), 0o600)
     await writeFile(
       join(codexHome, 'config.toml'),
-      `[mcp_servers.planning]\ncommand = ${JSON.stringify(proxy.command)}\n\n[mcp_servers.planning.env]\nELECTRON_RUN_AS_NODE = "1"\nNODE_OPTIONS = ${JSON.stringify(proxy.env.NODE_OPTIONS)}\nPLANNING_MCP_SOCKET = ${JSON.stringify(socketPath)}\nPLANNING_MCP_CAPABILITY = ${JSON.stringify(capabilityToken)}\n`,
+      `[mcp_servers.${MCP_SERVER_NAME}]\ncommand = ${JSON.stringify(proxy.command)}\n\n[mcp_servers.${MCP_SERVER_NAME}.env]\nELECTRON_RUN_AS_NODE = "1"\nNODE_OPTIONS = ${JSON.stringify(proxy.env.NODE_OPTIONS)}\nAPP_MCP_SOCKET = ${JSON.stringify(socketPath)}\nAPP_MCP_CAPABILITY = ${JSON.stringify(capabilityToken)}\n`,
       { mode: 0o600 }
     )
   }
@@ -624,16 +617,23 @@ export class RunService {
         run,
         'supervision-failed',
         'error',
-        'Provider process cleanup could not be verified'
+        'Harness process cleanup could not be verified'
       )
     }
   }
 }
 
+/**
+ * The name of the app's own MCP server, and therefore the prefix a Harness
+ * gives its tools. Claude's `--allowedTools` filter below is derived from it,
+ * so the two can never drift apart.
+ */
+const MCP_SERVER_NAME = 'app'
+
 function minimalEnvironment(
   executable: string,
   home: string,
-  provider: StartRunInput['provider'],
+  harness: StartRunInput['harness'],
   runDirectory: string
 ): Record<string, string> {
   return {
@@ -641,21 +641,21 @@ function minimalEnvironment(
     HOME: home,
     LANG: 'en_US.UTF-8',
     LC_ALL: 'en_US.UTF-8',
-    ...(provider === 'codex' ? { CODEX_HOME: join(runDirectory, 'codex-home') } : {}),
-    ...(provider === 'claude' ? { CLAUDE_CONFIG_DIR: join(runDirectory, 'claude-config') } : {})
+    ...(harness === 'codex' ? { CODEX_HOME: join(runDirectory, 'codex-home') } : {}),
+    ...(harness === 'claude' ? { CLAUDE_CONFIG_DIR: join(runDirectory, 'claude-config') } : {})
   }
 }
 
-function providerArguments(
+function harnessArguments(
   input: StartRunInput,
   skillText: string,
   runDirectory: string,
-  planningRelativePath: string,
+  scratchRelativePath: string,
   handoff?: string,
-  sessionId?: string
+  threadId?: string
 ): string[] {
-  const skillPrompt = `Verified planning workflow (${input.workflow}):\n\n${skillText}\n\nUser request:\n${input.prompt}`
-  if (input.provider === 'codex') {
+  const skillPrompt = `Verified Skill (${input.skill}):\n\n${skillText}\n\nUser request:\n${input.prompt}`
+  if (input.harness === 'codex') {
     return [
       'exec',
       '--ephemeral',
@@ -678,9 +678,9 @@ function providerArguments(
       '--sandbox',
       'workspace-write',
       '--skip-git-repo-check',
-      // `default` means the provider's own configured model: passing a guess
+      // `default` means the Harness's own configured model: passing a guess
       // would fail on accounts that cannot use it.
-      ...(input.model === PROVIDER_DEFAULT_MODEL ? [] : ['--model', input.model]),
+      ...(input.model === HARNESS_DEFAULT_MODEL ? [] : ['--model', input.model]),
       '-c',
       `model_reasoning_effort=${JSON.stringify(input.effort)}`,
       skillPrompt
@@ -696,7 +696,7 @@ function providerArguments(
     '--tools',
     'ToolSearch',
     '--allowedTools',
-    'mcp__planning__*',
+    `mcp__${MCP_SERVER_NAME}__*`,
     '--permission-mode',
     'dontAsk',
     '--no-chrome',
@@ -705,53 +705,52 @@ function providerArguments(
     '--verbose',
     '--include-partial-messages',
     '--include-hook-events',
-    ...(sessionId ? ['--resume', sessionId] : []),
-    ...(input.model === PROVIDER_DEFAULT_MODEL ? [] : ['--model', input.model]),
+    ...(threadId ? ['--resume', threadId] : []),
+    ...(input.model === HARNESS_DEFAULT_MODEL ? [] : ['--model', input.model]),
     '--effort',
     input.effort,
-    `/${input.workflow} ${input.prompt}\n\nManaged planning location: ${planningRelativePath}\nThe verified skill source is available at ${input.workflow}'s recorded Run provenance. Use only the app-owned planning tools.${handoff ? `\n\nDeterministic handoff from canonical local history:\n${handoff}` : ''}`
+    `/${input.skill} ${input.prompt}\n\nManaged scratch location: ${scratchRelativePath}\nThe verified Skill source is available at ${input.skill}'s recorded Run provenance. Use only the app-owned tools.${handoff ? `\n\nDeterministic handoff from canonical local history:\n${handoff}` : ''}`
   ]
 }
 
-function planningRelativePathFor(input: StartRunInput): string {
-  return input.workflow === 'wayfinder'
+function scratchRelativePathFor(input: StartRunInput): string {
+  return input.skill === 'wayfinder'
     ? join('.scratch', `${input.relativePath}-wayfinding`)
     : join('.scratch', input.relativePath)
 }
 
 async function deterministicHandoff(
   conversation: ConversationSnapshot,
-  workflow: StartRunInput['workflow'],
-  planningDirectory: string,
-  planningRelativePath: string
+  skill: StartRunInput['skill'],
+  scratchDirectory: string,
+  scratchRelativePath: string
 ): Promise<string> {
   const recent = conversation.entries
     .filter((entry) => entry.kind === 'message')
     .slice(-8)
     .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.text}`)
     .join('\n')
-  const decisions = await readFile(join(planningDirectory, 'map.md'), 'utf8').catch(
+  const decisions = await readFile(join(scratchDirectory, 'map.md'), 'utf8').catch(
     () => '(no Wayfinder decisions recorded)'
   )
   return [
-    'Phase: Developing',
-    `Workflow: ${workflow}`,
+    `Skill: ${skill}`,
     `Decisions:\n${decisions.slice(0, 8_000)}`,
-    `Planning artifacts: ${planningRelativePath}`,
-    `Complete conversation: planning/conversation.md`,
+    `Scratch artifacts: ${scratchRelativePath}`,
+    `Complete conversation: conversation.md`,
     'Recent turns:',
     recent || '(none)'
   ].join('\n')
 }
 
-async function claudeSessionExists(
+async function claudeThreadExists(
   homeDirectory: string,
   workingDirectory: string,
-  sessionId: string
+  threadId: string
 ): Promise<boolean> {
   const projectKey = resolve(workingDirectory).replaceAll('/', '-')
-  const sessionPath = join(homeDirectory, '.claude', 'projects', projectKey, `${sessionId}.jsonl`)
-  return readFile(sessionPath, 'utf8').then(
+  const threadPath = join(homeDirectory, '.claude', 'projects', projectKey, `${threadId}.jsonl`)
+  return readFile(threadPath, 'utf8').then(
     () => true,
     () => false
   )
@@ -801,16 +800,15 @@ function describeActivity(
       return { kind: 'output', summary: `${event.name}: ${event.summary}` }
     case 'failed':
       return { kind: 'error', summary: event.summary }
-    case 'session-ready':
-      return { kind: 'lifecycle', summary: `Provider session ready with ${event.model}` }
+    case 'thread-ready':
+      return { kind: 'lifecycle', summary: `Harness Thread ready with ${event.model}` }
     case 'retrying':
       return {
         kind: 'output',
-        summary: `Provider retry ${event.attempt} in ${event.delayMs} ms (${event.category})`
+        summary: `Harness retry ${event.attempt} in ${event.delayMs} ms (${event.category})`
       }
     case 'assistant-message':
     case 'choices':
-    case 'workflow-completion-suggested':
     case 'usage':
     case 'completed':
     case 'unsupported':

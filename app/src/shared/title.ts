@@ -1,12 +1,12 @@
 const MAX_TITLE_LENGTH = 60
-const FALLBACK_TITLE = 'Untitled Idea'
+const FALLBACK_TITLE = 'Untitled Session'
 
 /**
  * Deterministic, local title suggestion derived from captured notes.
  * No AI involvement: first meaningful line, markdown markers stripped,
  * trimmed to a word boundary.
  */
-export function suggestIdeaTitle(notes: string): string {
+export function suggestSessionTitle(notes: string): string {
   const firstLine = notes
     .split('\n')
     .map((line) => stripMarkdownMarkers(line).trim())

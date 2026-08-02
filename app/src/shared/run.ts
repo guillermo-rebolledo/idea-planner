@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { ideaRelativePathSchema } from './portable-path'
-import { providerIdSchema } from './readiness'
+import { sessionRelativePathSchema } from './portable-path'
+import { harnessIdSchema } from './readiness'
 
 export const runStatusSchema = z.enum([
   'accepted',
@@ -15,16 +15,17 @@ export const runStatusSchema = z.enum([
 ])
 export type RunStatus = z.infer<typeof runStatusSchema>
 
-export const workflowSchema = z.enum([
-  'setup',
-  'grilling',
-  'wayfinder',
-  'domain-modeling',
-  'research',
-  'to-spec',
-  'to-tickets'
-])
-export type PlanningWorkflow = z.infer<typeof workflowSchema>
+/**
+ * The name of the Skill a Run is configured with. It names an installed
+ * instruction document, so it stays a plain validated string: which Skills
+ * exist is discovered, never enumerated by the contract.
+ */
+export const skillNameSchema = z
+  .string()
+  .min(1)
+  .max(100)
+  .regex(/^[a-z0-9][a-z0-9-]*$/)
+export type SkillName = z.infer<typeof skillNameSchema>
 
 export const permissionModeSchema = z.enum(['ask', 'auto'])
 export type PermissionMode = z.infer<typeof permissionModeSchema>
@@ -32,7 +33,7 @@ export type PermissionMode = z.infer<typeof permissionModeSchema>
 /**
  * The collapsed activity stream. It is sanitized and deliberately separate
  * from portable Conversation content: `reasoning` carries only
- * provider-supplied summaries, never requested hidden chain-of-thought.
+ * Harness-supplied summaries, never requested hidden chain-of-thought.
  */
 export const runActivityKindSchema = z.enum([
   'lifecycle',
@@ -45,22 +46,20 @@ export const runActivityKindSchema = z.enum([
 export type RunActivityKind = z.infer<typeof runActivityKindSchema>
 
 export const runConfigurationSchema = z.object({
-  provider: providerIdSchema,
+  harness: harnessIdSchema,
   executable: z.string().min(1),
   executableHash: z.string().length(64),
-  providerVersion: z.string().min(1),
+  harnessVersion: z.string().min(1),
   model: z.string().min(1),
   effort: z.string().min(1),
-  workflow: workflowSchema,
   skill: z.object({
-    name: z.string().min(1),
+    name: skillNameSchema,
     path: z.string().min(1),
     hash: z.string().length(64)
   }),
   environment: z.record(z.string()),
   workingDirectory: z.string().min(1),
-  permissionMode: permissionModeSchema,
-  permissionProfile: z.literal('planning-v1')
+  permissionMode: permissionModeSchema
 })
 export type RunConfiguration = z.infer<typeof runConfigurationSchema>
 
@@ -70,7 +69,7 @@ export const acceptRunInputSchema = z.object({
     .min(1)
     .max(200)
     .regex(/^[a-zA-Z0-9._:-]+$/),
-  relativePath: ideaRelativePathSchema,
+  relativePath: sessionRelativePathSchema,
   prompt: z.string().min(1).max(100_000),
   configuration: runConfigurationSchema
 })
@@ -79,7 +78,7 @@ export type AcceptRunInput = z.infer<typeof acceptRunInputSchema>
 export const runSnapshotSchema = z.object({
   id: z.string().min(1),
   submissionId: z.string().min(1),
-  relativePath: ideaRelativePathSchema,
+  relativePath: sessionRelativePathSchema,
   prompt: z.string(),
   configuration: runConfigurationSchema,
   status: runStatusSchema,
@@ -103,22 +102,22 @@ export const startRunInputSchema = acceptRunInputSchema
     prompt: true
   })
   .extend({
-    provider: providerIdSchema,
+    harness: harnessIdSchema,
     model: z.string().min(1),
     effort: z.string().min(1),
-    workflow: workflowSchema,
+    skill: skillNameSchema,
     permissionMode: permissionModeSchema
   })
 export type StartRunInput = z.infer<typeof startRunInputSchema>
 
 export const stopRunInputSchema = z.object({
   runId: z.string().min(1),
-  relativePath: ideaRelativePathSchema
+  relativePath: sessionRelativePathSchema
 })
 export type StopRunInput = z.infer<typeof stopRunInputSchema>
 
 export const recordRunEventInputSchema = z.object({
-  relativePath: ideaRelativePathSchema,
+  relativePath: sessionRelativePathSchema,
   runId: z.string().min(1),
   status: runStatusSchema.optional(),
   kind: runActivityKindSchema,

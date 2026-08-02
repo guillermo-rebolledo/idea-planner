@@ -1,25 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Bot, ChevronRight, Send, Square, User } from 'lucide-react'
 import {
-  PROVIDER_DEFAULT_MODEL,
-  WORKFLOW_ATTRIBUTION,
+  HARNESS_DEFAULT_MODEL,
+  SKILL_ATTRIBUTION,
   type ConversationEntry,
   type ConversationRecovery,
   type ConversationSnapshot,
+  type HarnessId,
   type HarnessUsage,
-  type IdeaSummary,
   type PermissionMode,
-  type PlanningWorkflow,
-  type ProviderId,
   type ReadinessSnapshot,
   type RunSnapshot,
+  type SessionSummary,
   type SuggestedResponse
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
 
 /**
- * The Idea's permanent Conversation: the primary surface for developing it.
+ * The Session's permanent Conversation: the primary surface for developing it.
  * Streamed assistant text arrives on the push channel and is reconciled
  * against the durable snapshot, so what is on screen never outlives what was
  * saved. Suggested Responses submit directly; typed answers wait for Send.
@@ -31,7 +30,7 @@ type Phase =
 /** Assistant text for the Run in flight, ahead of the durable projection. */
 interface LiveRun {
   runId: string
-  /** One entry per provider message, in the order the provider opened them. */
+  /** One entry per Harness message, in the order the Harness opened them. */
   messages: { id: string; text: string }[]
   suggestedResponses: SuggestedResponse[]
 }
@@ -40,33 +39,33 @@ const EFFORT_OPTIONS = ['low', 'medium', 'high']
 
 const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
   authentication:
-    'The provider is no longer signed in. Sign in with its own CLI, then send your message again.',
+    'The Harness is no longer signed in. Sign in with its own CLI, then send your message again.',
   'rate-limit':
-    'The provider is rate limiting this account. Nothing was lost — send your message again in a moment.',
+    'The Harness is rate limiting this account. Nothing was lost — send your message again in a moment.',
   'context-exhausted':
-    'The Run ran out of provider context. Start a shorter message rather than resending this one.',
-  'process-crash': 'The provider process ended unexpectedly. Your message is safe to send again.',
+    'The Run ran out of Harness context. Start a shorter message rather than resending this one.',
+  'process-crash': 'The Harness process ended unexpectedly. Your message is safe to send again.',
   stopped: 'You stopped this Run. Everything up to that point is kept.',
   'uncertain-submission':
-    'The Run ended before the provider answered, so its outcome is unknown. Your message is kept and safe to send again.',
+    'The Run ended before the Harness answered, so its outcome is unknown. Your message is kept and safe to send again.',
   'protocol-unsupported':
-    'The provider reported its work in a format this app does not understand, so nothing usable came back. Updating the provider — or this app — is what fixes it.',
+    'The Harness reported its work in a format this app does not understand, so nothing usable came back. Updating the Harness — or this app — is what fixes it.',
   'policy-violation':
-    'The Run was stopped because it attempted something outside planning authority. Review the activity below.',
+    'The Run was stopped because it exceeded a Run limit. Review the activity below.',
   'supervision-failed':
-    'Provider cleanup could not be verified. Quit the app and check Activity Monitor before starting another Run.'
+    'Harness cleanup could not be verified. Quit the app and check Activity Monitor before starting another Run.'
 }
 
-export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element {
-  const relativePath = idea.relativePath
+export function Conversation({ session }: { session: SessionSummary }): React.JSX.Element {
+  const relativePath = session.relativePath
   const [phase, setPhase] = useState<Phase>({ state: 'loading' })
   const [runs, setRuns] = useState<RunSnapshot[]>([])
   const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
   const [live, setLive] = useState<LiveRun | null>(null)
   const [draft, setDraft] = useState('')
-  const [provider, setProvider] = useState<ProviderId>('codex')
-  const [workflow, setWorkflow] = useState<PlanningWorkflow>('grilling')
-  const [model, setModel] = useState(PROVIDER_DEFAULT_MODEL)
+  const [harness, setHarness] = useState<HarnessId>('codex')
+  const [skill, setSkill] = useState('grilling')
+  const [model, setModel] = useState(HARNESS_DEFAULT_MODEL)
   const [effort, setEffort] = useState('medium')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
   const [busy, setBusy] = useState(false)
@@ -78,18 +77,18 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
 
   const refresh = useCallback(async () => {
     try {
-      const next = await window.ideaShell.getConversation(relativePath)
+      const next = await window.shell.getConversation(relativePath)
       setPhase({ state: 'ready', snapshot: next })
       if (next.activeRunId === null) setLive(null)
     } catch {
       setPhase((current) => (current.state === 'ready' ? current : { state: 'failed' }))
     }
-    await window.ideaShell.listRuns(relativePath).then(setRuns, () => undefined)
+    await window.shell.listRuns(relativePath).then(setRuns, () => undefined)
   }, [relativePath])
 
   useEffect(() => {
     void refresh()
-    void window.ideaShell.getReadiness().then(setReadiness, () => undefined)
+    void window.shell.getReadiness().then(setReadiness, () => undefined)
   }, [refresh])
 
   // While a Run is in flight the durable snapshot is what settles partial
@@ -102,22 +101,12 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
 
   useEffect(
     () =>
-      window.ideaShell.onConversationEvent((streamed) => {
+      window.shell.onConversationEvent((streamed) => {
         if (streamed.relativePath !== relativePath) return
         const event = streamed.event
         if (event.type === 'failed') {
           setError(event.summary)
           return
-        }
-        if (event.type === 'workflow-completion-suggested') {
-          setPhase((current) =>
-            current.state === 'ready'
-              ? {
-                  state: 'ready',
-                  snapshot: { ...current.snapshot, workflowCompletionSuggested: true }
-                }
-              : current
-          )
         }
         setLive((current) => {
           const base: LiveRun =
@@ -127,7 +116,7 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
           if (event.type === 'choices') return { ...base, suggestedResponses: event.options }
           if (event.type !== 'assistant-message') return base
           // Each event carries the whole message so far, so a later one for
-          // the same provider item replaces the earlier one.
+          // the same Harness item replaces the earlier one.
           const known = base.messages.some((message) => message.id === event.id)
           return {
             ...base,
@@ -151,23 +140,23 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
       setBusy(true)
       setError(null)
       try {
-        const next = await window.ideaShell.developIdea({
+        const next = await window.shell.developSession({
           relativePath,
           submissionId: submissionId ?? crypto.randomUUID(),
           text,
           source,
-          workflow,
-          provider,
+          skill,
+          harness,
           model,
           effort,
           permissionMode
         })
         setPhase({ state: 'ready', snapshot: next })
         if (source === 'composer' && !submissionId) setDraft('')
-        await window.ideaShell.listRuns(relativePath).then(setRuns, () => undefined)
+        await window.shell.listRuns(relativePath).then(setRuns, () => undefined)
       } catch {
         setError(
-          'The Run could not start. Check that the provider is ready and that supervision has recovered.'
+          'The Run could not start. Check that the Harness is ready and that supervision has recovered.'
         )
         // The message was accepted durably before the Run was attempted, so
         // re-read the Conversation rather than leaving it looking lost.
@@ -176,14 +165,14 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
         setBusy(false)
       }
     },
-    [relativePath, provider, workflow, model, effort, permissionMode, refresh]
+    [relativePath, harness, skill, model, effort, permissionMode, refresh]
   )
 
   if (phase.state === 'loading') {
     return (
       <section className="mt-4 rounded-md border border-border bg-surface p-3" aria-busy="true">
         <p role="status" aria-live="polite" className="text-xs text-muted-foreground">
-          Reading this Idea’s Conversation…
+          Reading this Session’s Conversation…
         </p>
       </section>
     )
@@ -193,7 +182,7 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
     return (
       <section className="mt-4 rounded-md border border-border bg-surface p-3">
         <p role="alert" className="text-xs text-destructive">
-          This Idea’s Conversation could not be read. Its Markdown on disk is untouched.
+          This Session’s Conversation could not be read. Its Markdown on disk is untouched.
         </p>
         <Button className="mt-2" size="sm" variant="secondary" onClick={() => void refresh()}>
           Try again
@@ -216,9 +205,9 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
   const plainOptions =
     activeRunId === null && latestAssistant?.kind === 'message' && latestAssistant.plainOptions
   const activeRun = runs.find((run) => run.id === activeRunId) ?? runs[0]
-  const providers = readiness?.providers ?? []
-  const selected = providers.find((entry) => entry.provider === provider)
-  const canDevelop = selected?.capabilities.developIdea
+  const harnesses = readiness?.harnesses ?? []
+  const selected = harnesses.find((entry) => entry.harness === harness)
+  const canDevelop = selected?.capabilities.developSession
   const blocked = readiness !== null && canDevelop?.available !== true
   const resumable = phase.snapshot.recovery?.resumableSubmissionId ?? null
   const resumableText = entries.find(
@@ -236,7 +225,7 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
             Conversation
           </h3>
           <p className="text-xs text-muted-foreground">
-            One permanent history for this Idea. Everything here is plain Markdown on disk.
+            One permanent history for this Session. Everything here is plain Markdown on disk.
           </p>
         </div>
         {activeRunId && (
@@ -245,7 +234,7 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
             size="sm"
             variant="secondary"
             onClick={() =>
-              void window.ideaShell.stopRun({ runId: activeRunId, relativePath }).then(
+              void window.shell.stopRun({ runId: activeRunId, relativePath }).then(
                 () => refresh(),
                 () => setError('The Run could not be stopped.')
               )
@@ -264,7 +253,7 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
       >
         {!started && (
           <li className="text-xs text-muted-foreground">
-            Nothing has been developed yet. Choose a workflow below and send your first message.
+            Nothing has been developed yet. Choose a Skill below and send your first message.
           </li>
         )}
         {entries.map((entry) => (
@@ -282,7 +271,7 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
             </li>
           ))}
         {activeRunId && !liveForActiveRun?.messages.some((message) => message.text) && (
-          <li className="text-xs text-muted-foreground">Waiting for the provider to answer…</li>
+          <li className="text-xs text-muted-foreground">Waiting for the Harness to answer…</li>
         )}
         <div ref={endRef} />
       </ol>
@@ -366,29 +355,29 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
           className="min-h-20 rounded-md border border-border bg-background p-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         />
         <div className="flex flex-wrap items-center gap-2">
-          <Field label="Workflow">
+          <Field label="Skill">
             <select
-              aria-label="Workflow"
-              value={workflow}
-              onChange={(event) => setWorkflow(event.target.value as PlanningWorkflow)}
+              aria-label="Skill"
+              value={skill}
+              onChange={(event) => setSkill(event.target.value)}
               className="h-8 rounded-md border border-border bg-background px-2 text-xs"
             >
               <option value="grilling">Grill Me</option>
               <option value="wayfinder">Wayfinder</option>
             </select>
           </Field>
-          <Field label="Provider">
+          <Field label="Harness">
             <select
-              aria-label="Provider"
-              value={provider}
-              onChange={(event) => setProvider(event.target.value as ProviderId)}
+              aria-label="Harness"
+              value={harness}
+              onChange={(event) => setHarness(event.target.value as HarnessId)}
               className="h-8 rounded-md border border-border bg-background px-2 text-xs"
             >
-              {providers.length === 0 && <option value="codex">Codex</option>}
-              {providers.map((entry) => (
-                <option key={entry.provider} value={entry.provider}>
+              {harnesses.length === 0 && <option value="codex">Codex</option>}
+              {harnesses.map((entry) => (
+                <option key={entry.harness} value={entry.harness}>
                   {entry.displayName}
-                  {entry.capabilities.developIdea.available ? '' : ' — unavailable'}
+                  {entry.capabilities.developSession.available ? '' : ' — unavailable'}
                 </option>
               ))}
             </select>
@@ -398,8 +387,8 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
               aria-label="Model"
               value={model}
               onChange={(event) => setModel(event.target.value)}
-              placeholder={PROVIDER_DEFAULT_MODEL}
-              title={`Leave as “${PROVIDER_DEFAULT_MODEL}” to use the provider’s configured model.`}
+              placeholder={HARNESS_DEFAULT_MODEL}
+              title={`Leave as “${HARNESS_DEFAULT_MODEL}” to use the Harness’s configured model.`}
               className="h-8 w-36 rounded-md border border-border bg-background px-2 text-xs"
             />
           </Field>
@@ -437,17 +426,6 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
             <Send aria-hidden="true" className="size-3.5" />
             {busy ? 'Sending…' : started ? 'Send' : 'Start developing'}
           </Button>
-          {phase.snapshot.workflowCompletionSuggested && (
-            <Button
-              size="sm"
-              type="button"
-              variant="secondary"
-              disabled
-              title="MVP Spec synthesis arrives in the next planning phase."
-            >
-              Create MVP Spec
-            </Button>
-          )}
         </div>
         {blocked && canDevelop && (
           <div role="status" className="rounded-md border border-border bg-muted/50 p-2">
@@ -458,13 +436,12 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
               </code>
             )}
             <p className="mt-1 text-[11px] text-muted-foreground">
-              This app never installs or updates a provider for you.
+              This app never installs or updates a Harness for you.
             </p>
           </div>
         )}
         <p className="text-[11px] text-muted-foreground">
-          Auto stays inside the same fixed planning authority as Ask. Git, source edits, secrets,
-          sockets, scripts, and package managers are always blocked.
+          The Harness applies its own permissions for this Run.
         </p>
       </form>
 
@@ -506,9 +483,7 @@ function Field({
 }
 
 function EntryRow({ entry }: { entry: ConversationEntry }): React.JSX.Element | null {
-  if (entry.kind === 'usage' || entry.kind === 'session' || entry.kind === 'workflow-completion') {
-    return null
-  }
+  if (entry.kind === 'usage' || entry.kind === 'thread') return null
   if (entry.kind === 'boundary') {
     return (
       <li className="text-[11px] text-muted-foreground">
@@ -538,13 +513,13 @@ function EntryRow({ entry }: { entry: ConversationEntry }): React.JSX.Element | 
 function UsagePanel({
   usage
 }: {
-  usage: { run: HarnessUsage | null; idea: HarnessUsage }
+  usage: { run: HarnessUsage | null; session: HarnessUsage }
 }): React.JSX.Element | null {
-  if (usage.idea.totalTokens === 0) return null
-  const contextWindow = usage.run?.contextWindow ?? usage.idea.contextWindow
+  if (usage.session.totalTokens === 0) return null
+  const contextWindow = usage.run?.contextWindow ?? usage.session.contextWindow
   const used = usage.run?.contextUsed ?? null
   return (
-    <section className="border-t border-border px-3 py-2" aria-label="Provider-reported usage">
+    <section className="border-t border-border px-3 py-2" aria-label="Harness-reported usage">
       <dl className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
         <span className="flex gap-1">
           <dt>This Run</dt>
@@ -553,8 +528,8 @@ function UsagePanel({
           </dd>
         </span>
         <span className="flex gap-1">
-          <dt>This Idea</dt>
-          <dd className="text-foreground">{usage.idea.totalTokens.toLocaleString()} tokens</dd>
+          <dt>This Session</dt>
+          <dd className="text-foreground">{usage.session.totalTokens.toLocaleString()} tokens</dd>
         </span>
         {contextWindow !== null && used !== null && (
           <span className="flex gap-1">
@@ -566,7 +541,7 @@ function UsagePanel({
         )}
       </dl>
       <p className="mt-1 text-[11px] text-muted-foreground">
-        Reported by the provider and informational only. It is not a quota, allowance, or cost.
+        Reported by the Harness and informational only. It is not a quota, allowance, or cost.
       </p>
     </section>
   )
@@ -616,26 +591,26 @@ function ActivityPanel({
 
 function Attribution(): React.JSX.Element {
   const open = (url: string): void => {
-    void window.ideaShell.openExternalLink(url).catch(() => undefined)
+    void window.shell.openExternalLink(url).catch(() => undefined)
   }
   return (
     <footer className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
-      {WORKFLOW_ATTRIBUTION.notice}{' '}
+      {SKILL_ATTRIBUTION.notice}{' '}
       <Button
         size="sm"
         variant="ghost"
         className="h-auto px-1 text-[11px] underline"
-        onClick={() => open(WORKFLOW_ATTRIBUTION.website)}
+        onClick={() => open(SKILL_ATTRIBUTION.website)}
       >
-        {WORKFLOW_ATTRIBUTION.author}’s website
+        {SKILL_ATTRIBUTION.author}’s website
       </Button>
       <Button
         size="sm"
         variant="ghost"
         className="h-auto px-1 text-[11px] underline"
-        onClick={() => open(WORKFLOW_ATTRIBUTION.repository)}
+        onClick={() => open(SKILL_ATTRIBUTION.repository)}
       >
-        skills repository ({WORKFLOW_ATTRIBUTION.licence})
+        skills repository ({SKILL_ATTRIBUTION.licence})
       </Button>
     </footer>
   )

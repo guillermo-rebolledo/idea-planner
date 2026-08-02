@@ -6,10 +6,10 @@ import { themePreferenceSchema, type ThemePreference } from '@shared/contract'
 const settingsSchema = z.object({
   libraryPath: z.string().min(1).optional(),
   themePreference: themePreferenceSchema.default('system'),
-  /** Days without activity after which a pinned Idea shows as Dormant. */
+  /** Days without activity after which a pinned Session shows as Dormant. */
   dormantAfterDays: z.number().int().positive().default(14),
-  /** Explicitly selected provider executables; absence means PATH resolution. */
-  providerExecutables: z.record(z.string().min(1)).default({}),
+  /** Explicitly selected Harness executables; absence means PATH resolution. */
+  harnessExecutables: z.record(z.string().min(1)).default({}),
   /** One-time informed consent for bounded login-shell PATH discovery. */
   loginShellDiscovery: z.object({ grantedAt: z.string() }).nullable().default(null)
 })
@@ -18,13 +18,13 @@ export interface Settings {
   libraryPath?: string
   themePreference: ThemePreference
   dormantAfterDays: number
-  providerExecutables: Record<string, string>
+  harnessExecutables: Record<string, string>
   loginShellDiscovery: { grantedAt: string } | null
 }
 
 /**
- * Tiny app-level settings file in userData. Never part of an Idea Library:
- * losing it can never lose an Idea.
+ * Tiny app-level settings file in userData. Never part of the library:
+ * losing it can never lose a Session.
  */
 export class SettingsStore {
   private readonly filePath: string
@@ -53,12 +53,12 @@ export class SettingsStore {
       const parsed = settingsSchema.safeParse(JSON.parse(readFileSync(this.filePath, 'utf8')))
       if (parsed.success) return parsed.data
     } catch {
-      // Missing or corrupt settings fall back to defaults; Ideas live elsewhere.
+      // Missing or corrupt settings fall back to defaults; Sessions live elsewhere.
     }
     return {
       themePreference: 'system',
       dormantAfterDays: 14,
-      providerExecutables: {},
+      harnessExecutables: {},
       loginShellDiscovery: null
     }
   }

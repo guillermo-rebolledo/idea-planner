@@ -21,25 +21,23 @@ beforeEach(async () => {
 afterEach(async () => rm(libraryDir, { recursive: true, force: true }))
 
 describe('durable Run acceptance', () => {
-  it('accepts a stable submission once before provider contact', async () => {
-    const idea = await core.captureIdea({ kind: 'software', title: 'Sandbox', notes: '' })
+  it('accepts a stable submission once before Harness contact', async () => {
+    const session = await core.captureSession({ title: 'Sandbox', notes: '' })
     const input = {
       submissionId: 'submission-1',
-      relativePath: idea.relativePath,
-      prompt: 'Help me develop this Idea.',
+      relativePath: session.relativePath,
+      prompt: 'Help me develop this Session.',
       configuration: {
-        provider: 'codex' as const,
+        harness: 'codex' as const,
         executable: '/opt/codex',
         executableHash: 'c'.repeat(64),
-        providerVersion: 'codex-cli 0.146.0',
+        harnessVersion: 'codex-cli 0.146.0',
         model: 'gpt-5',
         effort: 'high',
-        workflow: 'grilling' as const,
         skill: { name: 'grilling', path: '/skills/grilling', hash: 'a'.repeat(64) },
         environment: { LANG: 'en_US.UTF-8', PATH: '/usr/bin:/bin' },
-        workingDirectory: join(libraryDir, idea.relativePath),
-        permissionMode: 'ask' as const,
-        permissionProfile: 'planning-v1' as const
+        workingDirectory: join(libraryDir, session.relativePath),
+        permissionMode: 'ask' as const
       }
     }
 
@@ -51,7 +49,7 @@ describe('durable Run acceptance', () => {
     const persisted = runSnapshotSchema.parse(
       JSON.parse(
         await readFile(
-          join(libraryDir, idea.relativePath, '.idea', 'runs', `${accepted.id}.json`),
+          join(libraryDir, session.relativePath, '.session', 'runs', `${accepted.id}.json`),
           'utf8'
         )
       )
@@ -60,41 +58,39 @@ describe('durable Run acceptance', () => {
     expect(persisted.prompt).toBe(input.prompt)
 
     await core.recordRunEvent({
-      relativePath: idea.relativePath,
+      relativePath: session.relativePath,
       runId: accepted.id,
       status: 'starting',
       kind: 'lifecycle',
-      summary: 'Starting provider'
+      summary: 'Starting the Harness'
     })
     await core.recordRunEvent({
-      relativePath: idea.relativePath,
+      relativePath: session.relativePath,
       runId: accepted.id,
       status: 'running',
       kind: 'lifecycle',
-      summary: 'Provider process running'
+      summary: 'Harness process running'
     })
     await expect(core.acceptRun(input)).resolves.toMatchObject({ status: 'running' })
   })
 
   it('rejects reuse of a submission identity with different content', async () => {
-    const idea = await core.captureIdea({ kind: 'software', title: 'Stable identity', notes: '' })
+    const session = await core.captureSession({ title: 'Stable identity', notes: '' })
     const base = {
       submissionId: 'submission-1',
-      relativePath: idea.relativePath,
+      relativePath: session.relativePath,
       prompt: 'First',
       configuration: {
-        provider: 'codex' as const,
+        harness: 'codex' as const,
         executable: '/opt/codex',
         executableHash: 'c'.repeat(64),
-        providerVersion: 'codex-cli 0.146.0',
+        harnessVersion: 'codex-cli 0.146.0',
         model: 'gpt-5',
         effort: 'high',
-        workflow: 'grilling' as const,
         skill: { name: 'grilling', path: '/skills/grilling', hash: 'b'.repeat(64) },
         environment: { LANG: 'en_US.UTF-8' },
-        workingDirectory: join(libraryDir, idea.relativePath),
-        permissionMode: 'auto' as const,
-        permissionProfile: 'planning-v1' as const
+        workingDirectory: join(libraryDir, session.relativePath),
+        permissionMode: 'auto' as const
       }
     }
     await core.acceptRun(base)
@@ -104,30 +100,28 @@ describe('durable Run acceptance', () => {
   })
 
   it('rejects invalid lifecycle transitions in durable state', async () => {
-    const idea = await core.captureIdea({ kind: 'software', title: 'Transitions', notes: '' })
+    const session = await core.captureSession({ title: 'Transitions', notes: '' })
     const accepted = await core.acceptRun({
       submissionId: 'submission-transition',
-      relativePath: idea.relativePath,
+      relativePath: session.relativePath,
       prompt: 'Plan safely',
       configuration: {
-        provider: 'codex',
+        harness: 'codex',
         executable: '/opt/codex',
         executableHash: 'd'.repeat(64),
-        providerVersion: 'codex-cli 0.146.0',
+        harnessVersion: 'codex-cli 0.146.0',
         model: 'gpt-5',
         effort: 'high',
-        workflow: 'grilling',
         skill: { name: 'grilling', path: '/skills/grilling', hash: 'e'.repeat(64) },
         environment: { LANG: 'en_US.UTF-8' },
-        workingDirectory: join(libraryDir, idea.relativePath),
-        permissionMode: 'ask',
-        permissionProfile: 'planning-v1'
+        workingDirectory: join(libraryDir, session.relativePath),
+        permissionMode: 'ask'
       }
     })
 
     await expect(
       core.recordRunEvent({
-        relativePath: idea.relativePath,
+        relativePath: session.relativePath,
         runId: accepted.id,
         status: 'completed',
         kind: 'lifecycle',
@@ -140,7 +134,7 @@ describe('durable Run acceptance', () => {
     const record = (input: unknown): Promise<unknown> =>
       (core.recordRunEvent as (value: unknown) => Promise<unknown>)(input)
     await expect(
-      record({ relativePath: 'idea', runId: 'run-1', kind: 'output', summary: '' })
+      record({ relativePath: 'session', runId: 'run-1', kind: 'output', summary: '' })
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
   })
 })

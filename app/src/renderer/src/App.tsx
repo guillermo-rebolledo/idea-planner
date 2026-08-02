@@ -20,7 +20,7 @@ export default function App(): React.JSX.Element {
   const loadBootState = useCallback(async () => {
     setBootPhase({ phase: 'loading' })
     try {
-      const boot = await window.ideaShell.getBootState()
+      const boot = await window.shell.getBootState()
       adoptTheme(boot.theme)
       setLibrary(boot.library)
       setBootPhase({ phase: 'ready', boot })
@@ -31,12 +31,12 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     void loadBootState()
-    return window.ideaShell.onThemeChanged(adoptTheme)
+    return window.shell.onThemeChanged(adoptTheme)
   }, [loadBootState, adoptTheme])
 
   const changeThemePreference = useCallback(
     async (preference: ThemeState['preference']) => {
-      adoptTheme(await window.ideaShell.setThemePreference(preference))
+      adoptTheme(await window.shell.setThemePreference(preference))
     },
     [adoptTheme]
   )
@@ -44,7 +44,7 @@ export default function App(): React.JSX.Element {
   if (bootPhase.phase === 'loading') {
     return (
       <div className="flex h-full items-center justify-center" role="status" aria-live="polite">
-        <p className="text-muted-foreground">Opening your Idea Library…</p>
+        <p className="text-muted-foreground">Opening your library…</p>
       </div>
     )
   }

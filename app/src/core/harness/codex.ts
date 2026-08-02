@@ -4,15 +4,15 @@ import {
   type HarnessEvent,
   type HarnessFailureCategory
 } from '@shared/conversation'
-import type { ProviderId } from '@shared/readiness'
+import type { HarnessId } from '@shared/readiness'
 
 /**
- * Harness Adapters translate one provider's protocol into normalized events.
+ * Harness Adapters translate one Harness's protocol into normalized events.
  * Everything downstream — persistence, presentation, recovery — reads only the
- * normalized contract, so a provider protocol change stays inside its Adapter.
+ * normalized contract, so a Harness protocol change stays inside its Adapter.
  */
 export interface HarnessAdapter {
-  readonly provider: ProviderId
+  readonly harness: HarnessId
   /** Consumes a raw stdout chunk and returns the events it completed. */
   ingest(chunk: string): HarnessEvent[]
   /** Reports whatever a truncated final line implies at end of stream. */
@@ -69,7 +69,7 @@ export function createCodexAdapter(): HarnessAdapter {
   }
 
   return {
-    provider: 'codex',
+    harness: 'codex',
     ingest(chunk) {
       pending += chunk
       const events: HarnessEvent[] = []
@@ -123,14 +123,14 @@ function describeItem(raw: unknown, completed: boolean): HarnessEvent[] {
         }
       ]
     case 'reasoning': {
-      // Only the provider's own finished summary. Hidden chain-of-thought is
+      // Only the Harness's own finished summary. Hidden chain-of-thought is
       // never requested, and a half-written summary is not a summary.
       if (!completed) return []
       const summary = redactCredentials(item.text ?? '').trim()
       return summary ? [{ type: 'reasoning', summary: summary.slice(0, 2_000) }] : []
     }
     // Tool items report once, when they start: the activity row is about what
-    // the provider asked for, not about how it turned out.
+    // the Harness asked for, not about how it turned out.
     case 'command_execution':
       return completed
         ? []
@@ -148,7 +148,7 @@ function describeItem(raw: unknown, completed: boolean): HarnessEvent[] {
             {
               type: 'tool',
               name: `${item.server ?? 'mcp'}.${item.tool ?? 'unknown'}`,
-              summary: `Called planning tool ${item.tool ?? 'unknown'}`
+              summary: `Called MCP tool ${item.tool ?? 'unknown'}`
             }
           ]
     case 'file_change':
@@ -185,7 +185,7 @@ function describeUsage(raw: unknown): HarnessEvent[] {
         outputTokens: parsed.data.output_tokens,
         totalTokens: parsed.data.input_tokens + parsed.data.output_tokens,
         // This protocol reports consumption only. The app never invents a
-        // window, a quota, or a remaining allowance the provider did not give.
+        // window, a quota, or a remaining allowance the Harness did not give.
         contextWindow: null,
         contextUsed: null
       }
@@ -194,7 +194,7 @@ function describeUsage(raw: unknown): HarnessEvent[] {
 }
 
 function describeFailure(message: string): HarnessEvent {
-  const summary = redactCredentials(message).trim() || 'The provider reported an error'
+  const summary = redactCredentials(message).trim() || 'The Harness reported an error'
   return { type: 'failed', category: categorize(summary), summary: summary.slice(0, 2_000) }
 }
 

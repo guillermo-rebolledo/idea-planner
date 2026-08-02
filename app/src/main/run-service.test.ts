@@ -14,8 +14,8 @@ import { RunService } from './run-service'
 
 const temporaryDirectories: string[] = []
 
-/** A ready Codex install with the verified Grill Me skill in place. */
-async function readyProviderRoot(prefix: string): Promise<string> {
+/** A ready Codex install with the verified Grill Me Skill in place. */
+async function readyHarnessRoot(prefix: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix))
   temporaryDirectories.push(root)
   await Promise.all([
@@ -55,33 +55,30 @@ function fakeCore(): FakeCore {
     commands: [],
     events: [],
     conversation: {
-      relativePath: 'idea',
+      relativePath: 'session',
       entries: [],
-      usage: { run: null, idea: emptyUsage() },
+      usage: { run: null, session: emptyUsage() },
       recovery: null,
-      providerSessions: {},
-      workflowCompletionSuggested: false,
+      harnessThreads: {},
       activeRunId: null
     }
   }
   const run: RunSnapshot = {
     id: runId,
     submissionId: 'submission-1',
-    relativePath: 'idea',
+    relativePath: 'session',
     prompt: 'Grill me',
     configuration: runConfigurationSchema.parse({
-      provider: 'codex',
+      harness: 'codex',
       executable: '/usr/local/bin/codex',
       executableHash: 'a'.repeat(64),
-      providerVersion: 'codex-cli 0.146.0',
+      harnessVersion: 'codex-cli 0.146.0',
       model: 'gpt-5-codex',
       effort: 'medium',
-      workflow: 'grilling',
       skill: { name: 'grilling', path: '/skills/grilling', hash: 'b'.repeat(64) },
       environment: {},
-      workingDirectory: '/library/idea',
-      permissionMode: 'ask',
-      permissionProfile: 'planning-v1'
+      workingDirectory: '/library/session',
+      permissionMode: 'ask'
     }),
     status: 'accepted',
     acceptedAt: '2026-07-31T12:00:00.000Z',
@@ -127,9 +124,9 @@ function readyReadiness(executablePath: string): {
   return {
     refresh: vi.fn(() =>
       Promise.resolve({
-        providers: [
+        harnesses: [
           {
-            provider: 'codex',
+            harness: 'codex',
             available: true,
             executablePath,
             version: 'codex-cli 0.146.0'
@@ -158,9 +155,9 @@ describe('Run service', () => {
       readiness: {
         refresh: vi.fn(() =>
           Promise.resolve({
-            providers: [
+            harnesses: [
               {
-                provider: 'claude',
+                harness: 'claude',
                 available: true,
                 executablePath: join(root, 'claude'),
                 version: '2.1.220 (Claude Code)'
@@ -173,17 +170,17 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js',
+      proxyScript: '/tmp/mcp-proxy.js',
       claudeOauthToken: fakeClaudeOauthToken
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'idea',
-      prompt: 'Develop this idea',
-      provider: 'claude',
+      relativePath: 'session',
+      prompt: 'Develop this Session',
+      harness: 'claude',
       model: 'claude-sonnet-4-5',
       effort: 'high',
-      workflow: 'wayfinder',
+      skill: 'wayfinder',
       permissionMode: 'ask'
     })
     expect(broker.launch?.args).toEqual(
@@ -198,14 +195,15 @@ describe('Run service', () => {
     expect(broker.launch?.args).not.toContain('--input-format')
     expect(broker.launch?.args).toEqual(expect.arrayContaining(['--setting-sources', 'user']))
     expect(broker.launch?.args).toEqual(expect.arrayContaining(['--tools', 'ToolSearch']))
-    expect(broker.launch?.args.at(-1)).toContain('/wayfinder Develop this idea')
+    expect(broker.launch?.args.at(-1)).toContain('/wayfinder Develop this Session')
     expect(broker.launch?.args).not.toContain('--disable-slash-commands')
     const mcpConfigPath = broker.launch?.args[broker.launch.args.indexOf('--mcp-config') + 1]
     if (!mcpConfigPath) throw new Error('Claude launch did not include an MCP config')
     const mcpConfig = JSON.parse(await readFile(mcpConfigPath, 'utf8')) as {
-      mcpServers: { planning: Record<string, unknown> }
+      mcpServers: { app: Record<string, unknown> }
     }
-    expect(mcpConfig.mcpServers.planning).not.toHaveProperty('args')
+    expect(mcpConfig.mcpServers.app).not.toHaveProperty('args')
+    expect(broker.launch?.args).toEqual(expect.arrayContaining(['--allowedTools', 'mcp__app__*']))
     expect(broker.launch?.environment['CLAUDE_CONFIG_DIR']).toContain('claude-config')
     await expect(
       readFile(
@@ -220,7 +218,7 @@ describe('Run service', () => {
     ).resolves.toBe('# Wayfinder')
   })
 
-  it('gives Wayfinder its own managed planning tree', async () => {
+  it('gives Wayfinder its own managed scratch tree', async () => {
     const root = await readyClaudeRoot('run-wayfinder-tree-')
     const broker = fakeBroker()
     const service = new RunService({
@@ -229,9 +227,9 @@ describe('Run service', () => {
       readiness: {
         refresh: vi.fn(() =>
           Promise.resolve({
-            providers: [
+            harnesses: [
               {
-                provider: 'claude',
+                harness: 'claude',
                 available: true,
                 executablePath: join(root, 'claude'),
                 version: '2.1.220 (Claude Code)'
@@ -244,28 +242,28 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js',
+      proxyScript: '/tmp/mcp-proxy.js',
       claudeOauthToken: fakeClaudeOauthToken
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'idea',
+      relativePath: 'session',
       prompt: 'Develop this',
-      provider: 'claude',
+      harness: 'claude',
       model: 'claude-sonnet-4-5',
       effort: 'medium',
-      workflow: 'wayfinder',
+      skill: 'wayfinder',
       permissionMode: 'ask'
     })
-    expect(broker.launch?.args.at(-1)).toContain('.scratch/idea-wayfinding')
+    expect(broker.launch?.args.at(-1)).toContain('.scratch/session-wayfinding')
   })
 
-  it('resumes compatible Claude continuity but hands off local history when switching providers', async () => {
+  it('resumes compatible Claude continuity but hands off local history when switching Harnesses', async () => {
     const root = await readyClaudeRoot('run-claude-continuity-')
     const core = fakeCore()
     core.conversation = {
       ...core.conversation,
-      providerSessions: { claude: 'saved-session' },
+      harnessThreads: { claude: 'saved-thread' },
       entries: [
         {
           kind: 'boundary',
@@ -276,15 +274,15 @@ describe('Run service', () => {
           summary: 'Wayfinder via Claude',
           submissionId: 'old-submission',
           recovery: null,
-          provider: 'claude',
-          workflow: 'wayfinder',
+          harness: 'claude',
+          skill: 'wayfinder',
           model: 'claude-sonnet-4-5'
         }
       ]
     }
-    const projectKey = join(root, 'library', 'idea').replaceAll('/', '-')
+    const projectKey = join(root, 'library', 'session').replaceAll('/', '-')
     await mkdir(join(root, '.claude', 'projects', projectKey), { recursive: true })
-    await writeFile(join(root, '.claude', 'projects', projectKey, 'saved-session.jsonl'), '{}\n')
+    await writeFile(join(root, '.claude', 'projects', projectKey, 'saved-thread.jsonl'), '{}\n')
     const broker = fakeBroker()
     const service = new RunService({
       core,
@@ -292,9 +290,9 @@ describe('Run service', () => {
       readiness: {
         refresh: vi.fn(() =>
           Promise.resolve({
-            providers: [
+            harnesses: [
               {
-                provider: 'claude',
+                harness: 'claude',
                 available: true,
                 executablePath: join(root, 'claude'),
                 version: '2.1.220 (Claude Code)'
@@ -307,22 +305,22 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js',
+      proxyScript: '/tmp/mcp-proxy.js',
       claudeOauthToken: fakeClaudeOauthToken
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'idea',
+      relativePath: 'session',
       prompt: 'Continue',
-      provider: 'claude',
+      harness: 'claude',
       model: 'claude-sonnet-4-5',
       effort: 'medium',
-      workflow: 'wayfinder',
+      skill: 'wayfinder',
       permissionMode: 'ask'
     })
-    expect(broker.launch?.args).toEqual(expect.arrayContaining(['--resume', 'saved-session']))
+    expect(broker.launch?.args).toEqual(expect.arrayContaining(['--resume', 'saved-thread']))
   })
-  it('persists acceptance before starting provider contact and freezes provenance', async () => {
+  it('persists acceptance before starting Harness contact and freezes provenance', async () => {
     const root = await mkdtemp(join(tmpdir(), 'run-service-'))
     temporaryDirectories.push(root)
     const skillPath = join(root, '.agents', 'skills', 'grilling', 'SKILL.md')
@@ -341,12 +339,11 @@ describe('Run service', () => {
         order.push(command.type)
         if (command.type === 'conversation/get') {
           return Promise.resolve({
-            relativePath: 'idea',
+            relativePath: 'session',
             entries: [],
-            usage: { run: null, idea: emptyUsage() },
+            usage: { run: null, session: emptyUsage() },
             recovery: null,
-            providerSessions: {},
-            workflowCompletionSuggested: false,
+            harnessThreads: {},
             activeRunId: null
           })
         }
@@ -372,7 +369,7 @@ describe('Run service', () => {
     }
     const broker = {
       start: vi.fn(async (_launch: { args: string[]; onBeforeCleanup?: () => Promise<void> }) => {
-        order.push('provider/start')
+        order.push('harness/start')
         await _launch.onBeforeCleanup?.()
       }),
       stop: vi.fn(() => Promise.resolve()),
@@ -386,9 +383,9 @@ describe('Run service', () => {
       readiness: {
         refresh: vi.fn(() =>
           Promise.resolve({
-            providers: [
+            harnesses: [
               {
-                provider: 'codex',
+                harness: 'codex',
                 available: true,
                 executablePath,
                 version: 'codex-cli 0.146.0'
@@ -401,27 +398,26 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js'
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'idea',
+      relativePath: 'session',
       prompt: 'Develop this',
-      provider: 'codex',
+      harness: 'codex',
       model: 'gpt-5',
       effort: 'high',
-      workflow: 'grilling',
+      skill: 'grilling',
       permissionMode: 'ask'
     })
-    expect(order.indexOf('run/accept')).toBeLessThan(order.indexOf('provider/start'))
+    expect(order.indexOf('run/accept')).toBeLessThan(order.indexOf('harness/start'))
     const accept = core.send.mock.calls.find(([command]) => command.type === 'run/accept')?.[0]
     expect(accept).toBeDefined()
     const acceptance = accept as { input: { configuration: unknown } }
     const configuration = runConfigurationSchema.parse(acceptance.input.configuration)
     expect(configuration).toMatchObject({
       executable: executablePath,
-      providerVersion: 'codex-cli 0.146.0',
-      permissionProfile: 'planning-v1',
+      harnessVersion: 'codex-cli 0.146.0',
       skill: { name: 'grilling', path: join(root, '.agents', 'skills', 'grilling') }
     })
     expect(configuration.executableHash).toMatch(/^[a-f0-9]{64}$/)
@@ -438,8 +434,8 @@ describe('Run service', () => {
     }
   })
 
-  it('accepts the message durably, then records the Run boundary, then contacts the provider', async () => {
-    const root = await readyProviderRoot('run-develop-')
+  it('accepts the message durably, then records the Run boundary, then contacts the Harness', async () => {
+    const root = await readyHarnessRoot('run-develop-')
     const core = fakeCore()
     const service = new RunService({
       core,
@@ -449,15 +445,15 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js'
     })
     await service.develop({
-      relativePath: 'idea',
+      relativePath: 'session',
       submissionId: 'submission-1',
       text: 'Grill me',
       source: 'composer',
-      workflow: 'grilling',
-      provider: 'codex',
+      skill: 'grilling',
+      harness: 'codex',
       model: 'gpt-5-codex',
       effort: 'medium',
       permissionMode: 'ask'
@@ -470,8 +466,8 @@ describe('Run service', () => {
     )
   })
 
-  it('refuses a workflow whose skill identity has not been verified', async () => {
-    const root = await readyProviderRoot('run-unverified-')
+  it('refuses a Skill whose identity has not been verified', async () => {
+    const root = await readyHarnessRoot('run-unverified-')
     const service = new RunService({
       core: fakeCore(),
       broker: fakeBroker(),
@@ -480,29 +476,29 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js'
     })
     await expect(
       service.start({
         submissionId: 'submission-1',
-        relativePath: 'idea',
+        relativePath: 'session',
         prompt: 'Develop this',
-        provider: 'codex',
+        harness: 'codex',
         model: 'gpt-5-codex',
         effort: 'medium',
-        workflow: 'to-spec',
+        skill: 'to-spec',
         permissionMode: 'ask'
       })
-    ).rejects.toThrow('not a verified planning workflow')
+    ).rejects.toThrow('is not a verified Skill')
   })
 
   it('streams normalized events to the window and keeps assistant text out of activity', async () => {
-    const root = await readyProviderRoot('run-stream-')
+    const root = await readyHarnessRoot('run-stream-')
     const core = fakeCore()
     core.events = [
       { type: 'assistant-message', id: 'item_0', text: 'Who is this for?', complete: true },
-      { type: 'reasoning', summary: 'Reading the Idea first.' },
-      { type: 'tool', name: 'planning.read_file', summary: 'Read file idea.md' }
+      { type: 'reasoning', summary: 'Reading the Session first.' },
+      { type: 'tool', name: 'app.read_file', summary: 'Read file session.md' }
     ]
     const broker = fakeBroker()
     const streamed: ConversationStreamEvent[] = []
@@ -514,17 +510,17 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js',
+      proxyScript: '/tmp/mcp-proxy.js',
       onConversationEvent: (event) => streamed.push(event)
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'idea',
+      relativePath: 'session',
       prompt: 'Grill me',
-      provider: 'codex',
+      harness: 'codex',
       model: 'gpt-5-codex',
       effort: 'medium',
-      workflow: 'grilling',
+      skill: 'grilling',
       permissionMode: 'ask'
     })
     broker.launch?.onOutput?.('stdout', '{"type":"turn.started"}\n')
@@ -540,10 +536,10 @@ describe('Run service', () => {
       .map(([command]) => command.input as { kind: string; summary: string })
     expect(activity.some((entry) => entry.summary.includes('Who is this for?'))).toBe(false)
     expect(activity).toContainEqual(
-      expect.objectContaining({ kind: 'reasoning', summary: 'Reading the Idea first.' })
+      expect.objectContaining({ kind: 'reasoning', summary: 'Reading the Session first.' })
     )
     expect(activity).toContainEqual(
-      expect.objectContaining({ kind: 'output', summary: 'planning.read_file: Read file idea.md' })
+      expect.objectContaining({ kind: 'output', summary: 'app.read_file: Read file session.md' })
     )
   })
 
@@ -558,9 +554,9 @@ describe('Run service', () => {
       readiness: {
         refresh: vi.fn(() =>
           Promise.resolve({
-            providers: [
+            harnesses: [
               {
-                provider: 'claude',
+                harness: 'claude',
                 available: true,
                 executablePath: join(root, 'claude'),
                 version: '2.1.220 (Claude Code)'
@@ -573,16 +569,16 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js'
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'idea',
+      relativePath: 'session',
       prompt: 'Develop',
-      provider: 'claude',
+      harness: 'claude',
       model: 'default',
       effort: 'medium',
-      workflow: 'wayfinder',
+      skill: 'wayfinder',
       permissionMode: 'ask'
     })
     broker.launch?.onOutput?.('stdout', '{"type":"system","subtype":"future"}\n')
@@ -595,14 +591,14 @@ describe('Run service', () => {
     })
   })
 
-  it('keeps the message and offers recovery when the provider is never contacted', async () => {
-    const root = await readyProviderRoot('run-uncertain-')
+  it('keeps the message and offers recovery when the Harness is never contacted', async () => {
+    const root = await readyHarnessRoot('run-uncertain-')
     const core = fakeCore()
     core.conversation = {
       ...core.conversation,
       recovery: {
         category: 'uncertain-submission',
-        summary: 'Provider process could not start',
+        summary: 'The Harness process could not start',
         resumableSubmissionId: 'submission-1'
       }
     }
@@ -616,15 +612,15 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js'
     })
     const snapshot = await service.develop({
-      relativePath: 'idea',
+      relativePath: 'session',
       submissionId: 'submission-1',
       text: 'Grill me',
       source: 'composer',
-      workflow: 'grilling',
-      provider: 'codex',
+      skill: 'grilling',
+      harness: 'codex',
       model: 'gpt-5-codex',
       effort: 'medium',
       permissionMode: 'ask'
@@ -637,7 +633,7 @@ describe('Run service', () => {
   })
 
   it('closes a Run the app no longer supervises when the Conversation is reopened', async () => {
-    const root = await readyProviderRoot('run-interrupted-')
+    const root = await readyHarnessRoot('run-interrupted-')
     const core = fakeCore()
     core.conversation = { ...core.conversation, activeRunId: 'run-from-a-previous-session' }
     const service = new RunService({
@@ -648,9 +644,9 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js'
     })
-    await service.conversation('idea')
+    await service.conversation('session')
     const finalize = (core.send.mock.calls as [{ type: string; input?: unknown }][]).find(
       ([command]) => command.type === 'conversation/finalize'
     )?.[0].input
@@ -661,8 +657,8 @@ describe('Run service', () => {
     })
   })
 
-  it('explains a failed Run with the provider’s own last diagnostic line', async () => {
-    const root = await readyProviderRoot('run-diagnostic-')
+  it('explains a failed Run with the Harness’s own last diagnostic line', async () => {
+    const root = await readyHarnessRoot('run-diagnostic-')
     const core = fakeCore()
     const broker = fakeBroker()
     const service = new RunService({
@@ -673,16 +669,16 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js'
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'idea',
+      relativePath: 'session',
       prompt: 'Grill me',
-      provider: 'codex',
+      harness: 'codex',
       model: 'default',
       effort: 'medium',
-      workflow: 'grilling',
+      skill: 'grilling',
       permissionMode: 'ask'
     })
     broker.launch?.onOutput?.('stderr', 'codex: cannot open .git/HEAD: Operation not permitted\n')
@@ -695,17 +691,15 @@ describe('Run service', () => {
     expect(finalize?.summary).toContain('Operation not permitted')
   })
 
-  it('surfaces an unready provider as an error rather than false recovery state', async () => {
-    const root = await readyProviderRoot('run-unready-')
+  it('surfaces an unready Harness as an error rather than false recovery state', async () => {
+    const root = await readyHarnessRoot('run-unready-')
     const service = new RunService({
       core: fakeCore(),
       broker: fakeBroker(),
       readiness: {
         refresh: vi.fn(() =>
           Promise.resolve({
-            providers: [
-              { provider: 'codex', available: false, executablePath: null, version: null }
-            ]
+            harnesses: [{ harness: 'codex', available: false, executablePath: null, version: null }]
           })
         )
       },
@@ -713,20 +707,20 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/planning-mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js'
     })
     await expect(
       service.develop({
-        relativePath: 'idea',
+        relativePath: 'session',
         submissionId: 'submission-1',
         text: 'Grill me',
         source: 'composer',
-        workflow: 'grilling',
-        provider: 'codex',
+        skill: 'grilling',
+        harness: 'codex',
         model: 'gpt-5-codex',
         effort: 'medium',
         permissionMode: 'ask'
       })
-    ).rejects.toThrow('not ready for planning')
+    ).rejects.toThrow('is not ready')
   })
 })

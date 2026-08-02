@@ -1,7 +1,7 @@
-import type { ProviderId } from '@shared/readiness'
+import type { HarnessId } from '@shared/readiness'
 
 /**
- * How a provider was installed, read from the path it already resolved to.
+ * How a Harness was installed, read from the path it already resolved to.
  *
  * The app never installs or upgrades anything. It only shows the command the
  * person can run themselves — and a command that does not match their
@@ -9,14 +9,14 @@ import type { ProviderId } from '@shared/readiness'
  * changing nothing.
  */
 
-interface ProviderPackage {
+interface HarnessPackage {
   /** The npm package name, used by every JavaScript package manager. */
   npm: string
-  /** The Homebrew formula, when the provider has one. */
+  /** The Homebrew formula, when the Harness has one. */
   homebrew: string | null
 }
 
-const PROVIDER_PACKAGES: Record<ProviderId, ProviderPackage> = {
+const HARNESS_PACKAGES: Record<HarnessId, HarnessPackage> = {
   codex: { npm: '@openai/codex', homebrew: 'codex' },
   claude: { npm: '@anthropic-ai/claude-code', homebrew: null }
 }
@@ -29,7 +29,7 @@ const PROVIDER_PACKAGES: Record<ProviderId, ProviderPackage> = {
  */
 const INSTALLERS: {
   matches: (path: string) => boolean
-  command: (provider: ProviderPackage) => string | null
+  command: (harness: HarnessPackage) => string | null
 }[] = [
   {
     matches: (path) => path.includes('/.bun/bin/'),
@@ -59,23 +59,23 @@ const INSTALLERS: {
 ]
 
 /**
- * The exact command that updates this provider, or null when the app cannot
+ * The exact command that updates this Harness, or null when the app cannot
  * tell. Never executed — it is shown for the person to run.
  *
- * Every known path for the provider is considered, because the command on
+ * Every known path for the Harness is considered, because the command on
  * PATH is usually a symlink: `/opt/homebrew/bin/codex` looks like a Homebrew
  * install and is very often a global npm one. Only the real path tells them
  * apart, and offering `brew upgrade` for an npm install is the exact failure
  * this module exists to avoid.
  */
-export function describeProviderUpdate(
-  provider: ProviderId,
+export function describeHarnessUpdate(
+  harness: HarnessId,
   paths: readonly (string | null)[]
 ): string | null {
   const candidates = paths
     .filter((path): path is string => Boolean(path))
     .map((path) => path.toLowerCase())
-  const pkg = PROVIDER_PACKAGES[provider]
+  const pkg = HARNESS_PACKAGES[harness]
   for (const installer of INSTALLERS) {
     if (candidates.some((path) => installer.matches(path))) return installer.command(pkg)
   }

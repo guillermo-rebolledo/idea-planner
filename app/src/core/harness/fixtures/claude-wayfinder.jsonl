@@ -1,4 +1,4 @@
-{"type":"system","subtype":"init","session_id":"session-claude-1","model":"claude-sonnet-4-5","permissionMode":"dontAsk","mcp_servers":[{"name":"planning","status":"connected"}]}
+{"type":"system","subtype":"init","session_id":"session-claude-1","model":"claude-sonnet-4-5","permissionMode":"dontAsk","mcp_servers":[{"name":"app","status":"connected"}]}
 {"type":"system","subtype":"status","status":"requesting","session_id":"session-claude-1"}
 {"type":"stream_event","session_id":"session-claude-1","event":{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":120,"output_tokens":0}}}}
 {"type":"stream_event","session_id":"session-claude-1","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Which decision "}}}
@@ -6,5 +6,5 @@
 {"type":"assistant","session_id":"session-claude-1","message":{"id":"msg_1","content":[{"type":"text","text":"Which decision should we resolve first?"}],"usage":{"input_tokens":120,"output_tokens":8}}}
 {"type":"system","subtype":"api_retry","attempt":1,"retry_delay_ms":250,"error":"rate_limit"}
 {"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"five_hour"},"session_id":"session-claude-1"}
-{"type":"assistant","session_id":"session-claude-1","message":{"id":"msg_2","content":[{"type":"tool_use","id":"tool_1","name":"mcp__planning__write_planning_file","input":{"path":"map.md"}}],"usage":{"input_tokens":0,"output_tokens":3}}}
+{"type":"assistant","session_id":"session-claude-1","message":{"id":"msg_2","content":[{"type":"tool_use","id":"tool_1","name":"mcp__app__offer_response_options","input":{"question":"Which first?"}}],"usage":{"input_tokens":0,"output_tokens":3}}}
 {"type":"result","subtype":"success","is_error":false,"session_id":"session-claude-1","result":"Which decision should we resolve first?","usage":{"input_tokens":120,"output_tokens":11}}

@@ -1,8 +1,8 @@
-import type { IdeaShellApi } from '@shared/contract'
+import type { ShellApi } from '@shared/contract'
 
 declare global {
   interface Window {
-    ideaShell: IdeaShellApi
+    shell: ShellApi
   }
 }
 

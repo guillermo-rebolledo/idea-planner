@@ -1,13 +1,13 @@
 import { z } from 'zod'
 
 /**
- * Provider and skill readiness: the shared shapes for the five independent
- * checks the app runs per provider. Probing happens in Main; the Renderer
+ * Harness and skill readiness: the shared shapes for the five independent
+ * checks the app runs per Harness. Probing happens in Main; the Renderer
  * only presents these validated results.
  */
 
-export const providerIdSchema = z.enum(['codex', 'claude'])
-export type ProviderId = z.infer<typeof providerIdSchema>
+export const harnessIdSchema = z.enum(['codex', 'claude'])
+export type HarnessId = z.infer<typeof harnessIdSchema>
 
 export const readinessDimensionSchema = z.enum([
   'executable',
@@ -19,7 +19,7 @@ export const readinessDimensionSchema = z.enum([
 export type ReadinessDimension = z.infer<typeof readinessDimensionSchema>
 
 /**
- * `warning` keeps a provider usable (for example an untested version);
+ * `warning` keeps a Harness usable (for example an untested version);
  * `failed` disables only the failing dimension's dependents; `not-probed`
  * marks dimensions that could not run because the executable is unavailable.
  */
@@ -52,7 +52,7 @@ export const readinessCheckSchema = z.object({
   dimension: readinessDimensionSchema,
   status: readinessStatusSchema,
   code: readinessCodeSchema,
-  /** One safe sentence describing the result. Never raw provider output. */
+  /** One safe sentence describing the result. Never raw Harness output. */
   summary: z.string().min(1),
   /** Copyable terminal remediation. The app never runs it. */
   command: z.string().nullable(),
@@ -66,42 +66,42 @@ export const executableSourceSchema = z.enum(['path', 'explicit'])
 export type ExecutableSource = z.infer<typeof executableSourceSchema>
 
 /**
- * A product capability a provider either supports or does not. Readiness
+ * A product capability a Harness either supports or does not. Readiness
  * reports these so a feature can be offered with an explanation rather than
  * silently omitted, which is the difference between "I can't" and "I won't".
  */
-export const providerCapabilitySchema = z.object({
+export const harnessCapabilitySchema = z.object({
   available: z.boolean(),
   /** One sentence saying why, in the person's terms. */
   summary: z.string().min(1),
   /** Copyable remediation. The app never runs it. */
   command: z.string().nullable()
 })
-export type ProviderCapability = z.infer<typeof providerCapabilitySchema>
+export type HarnessCapability = z.infer<typeof harnessCapabilitySchema>
 
-export const providerReadinessSchema = z.object({
-  provider: providerIdSchema,
+export const harnessReadinessSchema = z.object({
+  harness: harnessIdSchema,
   displayName: z.string().min(1),
   /** The exact configured command name, e.g. `codex`. */
   command: z.string().min(1),
-  /** Resolved absolute executable path, visible before a provider is usable. */
+  /** Resolved absolute executable path, visible before a Harness is usable. */
   executablePath: z.string().nullable(),
   executableSource: executableSourceSchema,
   version: z.string().nullable(),
   checks: z.array(readinessCheckSchema).length(5),
   /** Keyed by capability so a new one is a new field, not a lookup. */
-  capabilities: z.object({ developIdea: providerCapabilitySchema }),
+  capabilities: z.object({ developSession: harnessCapabilitySchema }),
   checkedAt: z.string().datetime(),
   /** True when every dimension is ready or a warning. */
   available: z.boolean()
 })
-export type ProviderReadiness = z.infer<typeof providerReadinessSchema>
+export type HarnessReadiness = z.infer<typeof harnessReadinessSchema>
 
 export const pathSourceSchema = z.enum(['login-shell', 'launchctl', 'inherited'])
 export type PathSource = z.infer<typeof pathSourceSchema>
 
 export const readinessSnapshotSchema = z.object({
-  providers: z.array(providerReadinessSchema),
+  harnesses: z.array(harnessReadinessSchema),
   /** Where the effective PATH came from, in merge order. */
   pathSources: z.array(pathSourceSchema),
   loginShellConsent: z.boolean(),
@@ -117,6 +117,6 @@ export const chooseExecutableResultSchema = z.union([
 export type ChooseExecutableResult = z.infer<typeof chooseExecutableResultSchema>
 
 export const refreshReadinessInputSchema = z.object({
-  provider: providerIdSchema.optional()
+  harness: harnessIdSchema.optional()
 })
 export type RefreshReadinessInput = z.infer<typeof refreshReadinessInputSchema>

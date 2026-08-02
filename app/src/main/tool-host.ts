@@ -1,10 +1,10 @@
 import { createServer, type Server, type Socket } from 'node:net'
 import { z } from 'zod'
 
-interface PlanningToolHostCallbacks {
+interface ToolHostCallbacks {
   onActivity(kind: 'allowed' | 'blocked' | 'output', summary: string): void | Promise<void>
   onStop(summary: string): void
-  /** Structured answers the provider offered for the current question. */
+  /** Structured answers the Harness offered for the current question. */
   onChoices(question: string, options: { label: string; value: string }[]): void
 }
 
@@ -61,7 +61,7 @@ const TOOL_DEFINITIONS = [
  * offers natively — structured response options — alongside the Harness's own
  * tools. It mediates nothing else.
  */
-export class PlanningToolHost {
+export class ToolHost {
   private server: Server | undefined
   private stopping = false
   private unreadableChoices = 0
@@ -71,7 +71,7 @@ export class PlanningToolHost {
     private readonly options: {
       socketPath: string
       capabilityToken: string
-      callbacks: PlanningToolHostCallbacks
+      callbacks: ToolHostCallbacks
       operationLimitMs?: number
       beforeOperation?: () => Promise<void>
     }
@@ -120,7 +120,7 @@ export class PlanningToolHost {
   private isAuthenticated(line: string): boolean {
     try {
       return (
-        z.object({ planningCapability: z.string() }).parse(JSON.parse(line)).planningCapability ===
+        z.object({ appCapability: z.string() }).parse(JSON.parse(line)).appCapability ===
         this.options.capabilityToken
       )
     } catch {
@@ -148,7 +148,7 @@ export class PlanningToolHost {
       this.respond(socket, request.id, {
         protocolVersion: '2025-06-18',
         capabilities: { tools: {} },
-        serverInfo: { name: 'idea-development-planning', version: '1.0.0' }
+        serverInfo: { name: 'app-tools', version: '1.0.0' }
       })
       return
     }
@@ -162,19 +162,16 @@ export class PlanningToolHost {
     }
     const parsed = callSchema.safeParse(request.params)
     if (!parsed.success) {
-      const summary = 'Blocked unsupported planning operation'
+      const summary = 'Blocked an unsupported tool call'
       await this.options.callbacks.onActivity('blocked', summary)
       if (!this.stopping) {
         this.stopping = true
         this.options.callbacks.onStop(summary)
       }
-      this.respond(socket, request.id, toolError('Invalid planning tool input'))
+      this.respond(socket, request.id, toolError('Invalid tool input'))
       return
     }
-    await this.options.callbacks.onActivity(
-      'output',
-      `Planning operation started: ${parsed.data.name}`
-    )
+    await this.options.callbacks.onActivity('output', `Tool call started: ${parsed.data.name}`)
     try {
       const outcome = await this.withDeadline((signal) => this.call(parsed.data.arguments, signal))
       await this.options.callbacks.onActivity(outcome.activity.kind, outcome.activity.summary)
@@ -190,8 +187,8 @@ export class PlanningToolHost {
     } catch (error) {
       const summary =
         error instanceof OperationTimeoutError
-          ? 'Planning operation exceeded the 60-second wall limit'
-          : 'Planning operation failed safely'
+          ? 'The tool call exceeded the 60-second wall limit'
+          : 'The tool call failed safely'
       await this.options.callbacks.onActivity('blocked', summary)
       if (!this.stopping) {
         this.stopping = true
@@ -210,7 +207,7 @@ export class PlanningToolHost {
     const offered = choiceArgumentsSchema.safeParse(args)
     if (!offered.success) {
       // Options the app cannot read are not a menu it can trust; the person
-      // keeps answering by typing. A provider that keeps offering unreadable
+      // keeps answering by typing. A Harness that keeps offering unreadable
       // menus is not going to start making sense, so the third one ends the Run.
       this.unreadableChoices += 1
       return {
@@ -239,7 +236,7 @@ export class PlanningToolHost {
         },
         (error: unknown) => {
           clearTimeout(timer)
-          reject(error instanceof Error ? error : new Error('Planning operation failed'))
+          reject(error instanceof Error ? error : new Error('The tool call failed'))
         }
       )
     })

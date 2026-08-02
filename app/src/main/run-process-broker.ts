@@ -17,7 +17,7 @@ export interface RunLaunch {
   runDirectory: string
   environment: Record<string, string>
   onBeforeCleanup?: () => Promise<void>
-  /** Raw provider bytes, by stream. Main never interprets them itself. */
+  /** Raw Harness bytes, by stream. Main never interprets them itself. */
   onOutput?: (stream: 'stdout' | 'stderr', text: string) => void
   onExit?: (code: number | null, signal: NodeJS.Signals | null) => void
   onSupervisionFailure?: () => void
@@ -44,7 +44,7 @@ interface ActiveRun {
 }
 
 const defaultDeps: BrokerDeps = {
-  // stdin is closed: a provider that reads stdin for extra input would
+  // stdin is closed: a Harness that reads stdin for extra input would
   // otherwise wait forever on a pipe this app never writes to.
   spawn: (file, args, options) =>
     nodeSpawn(file, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] }),
@@ -91,7 +91,7 @@ export class RunProcessBroker {
       windowsHide: true
     })
     if (!child.pid) {
-      return Promise.reject(new Error('Provider process did not report a process-group id'))
+      return Promise.reject(new Error('The Harness process did not report a process-group id'))
     }
     const pid = child.pid
     const entry: ActiveRun = {
@@ -170,7 +170,7 @@ export class RunProcessBroker {
     })
     if (count <= 16) return
     entry.stopping = true
-    entry.launch.onLimitViolation?.('Provider process tree exceeded the 16-process Run limit')
+    entry.launch.onLimitViolation?.('Harness process tree exceeded the 16-process Run limit')
     await this.stop(runId, 'policy').catch(() => entry.launch.onSupervisionFailure?.())
   }
 
@@ -226,7 +226,7 @@ export class RunProcessBroker {
     entry.outputBytes += Buffer.byteLength(text)
     if (entry.outputBytes > (this.deps.outputLimitBytes ?? 10 * 1024 * 1024)) {
       entry.stopping = true
-      launch.onLimitViolation?.('Provider output exceeded the 10 MB Run limit')
+      launch.onLimitViolation?.('Harness output exceeded the 10 MB Run limit')
       void this.stop(launch.id, 'policy').catch(() => launch.onSupervisionFailure?.())
       return
     }

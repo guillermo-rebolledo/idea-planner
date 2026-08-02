@@ -111,7 +111,7 @@ export function createClaudeAdapter(): HarnessAdapter {
   }
 
   return {
-    provider: 'claude',
+    harness: 'claude',
     ingest(chunk) {
       pending += chunk
       const events: HarnessEvent[] = []
@@ -137,10 +137,12 @@ function describeSystem(frame: Record<string, unknown>): HarnessEvent[] {
     return [protocolFailure(`Unsupported Claude system event: ${subtype || 'unknown'}`)]
   }
   if (subtype === 'init') {
-    const sessionId = text(frame['session_id'])
+    // Claude names its continuity record a session; the app calls it a
+    // Harness Thread.
+    const threadId = text(frame['session_id'])
     const model = text(frame['model'])
-    return sessionId && model
-      ? [{ type: 'session-ready', provider: 'claude', sessionId, model }]
+    return threadId && model
+      ? [{ type: 'thread-ready', harness: 'claude', threadId, model }]
       : [protocolFailure('Invalid Claude init event')]
   }
   if (subtype === 'api_retry') {
@@ -149,7 +151,7 @@ function describeSystem(frame: Record<string, unknown>): HarnessEvent[] {
         type: 'retrying',
         attempt: positiveInteger(frame['attempt']),
         delayMs: nonnegativeInteger(frame['retry_delay_ms']),
-        category: /rate.?limit/i.test(text(frame['error'])) ? 'rate-limit' : 'provider'
+        category: /rate.?limit/i.test(text(frame['error'])) ? 'rate-limit' : 'harness'
       }
     ]
   }
@@ -239,14 +241,12 @@ function categorize(summary: string): HarnessFailureCategory {
 }
 
 function normalizeToolName(name: string): string {
-  return name.replace(/^mcp__planning__/, 'planning.')
+  return name.replace(/^mcp__app__/, 'app.')
 }
 
 function describeTool(name: string): string {
-  const tool = name.replace(/^mcp__planning__/, '')
-  return name.startsWith('mcp__planning__')
-    ? `Called planning tool ${tool}`
-    : `Called Claude tool ${tool}`
+  const tool = name.replace(/^mcp__app__/, '')
+  return name.startsWith('mcp__app__') ? `Called app tool ${tool}` : `Called Claude tool ${tool}`
 }
 
 function object(value: unknown): Record<string, unknown> {

@@ -1,11 +1,11 @@
 import { z } from 'zod'
 
-/** One portable Idea folder reference, with no path traversal or separators. */
-export const ideaRelativePathSchema = z
+/** One portable Session folder reference, with no path traversal or separators. */
+export const sessionRelativePathSchema = z
   .string()
   .min(1)
   .refine(
     (path) => path !== '.' && path !== '..' && !path.includes('/') && !path.includes('\\'),
-    'Expected a portable Idea folder reference'
+    'Expected a portable Session folder reference'
   )
-export type IdeaRelativePath = z.infer<typeof ideaRelativePathSchema>
+export type SessionRelativePath = z.infer<typeof sessionRelativePathSchema>

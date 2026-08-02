@@ -22,12 +22,12 @@ describe('Claude harness Adapter', () => {
     )
   })
 
-  it('streams one message, reports the session and keeps transport completion separate', async () => {
+  it('streams one message, reports the Harness Thread and keeps transport completion separate', async () => {
     const events = await replay('claude-wayfinder.jsonl')
     expect(events).toContainEqual({
-      type: 'session-ready',
-      provider: 'claude',
-      sessionId: 'session-claude-1',
+      type: 'thread-ready',
+      harness: 'claude',
+      threadId: 'session-claude-1',
       model: 'claude-sonnet-4-5'
     })
     expect(events.filter((event) => event.type === 'assistant-message')).toEqual([
@@ -51,10 +51,9 @@ describe('Claude harness Adapter', () => {
       }
     ])
     expect(events).toContainEqual({ type: 'completed' })
-    expect(events.some((event) => event.type === 'workflow-completion-suggested')).toBe(false)
   })
 
-  it('normalizes retry, tool, and final provider usage without exposing arguments', async () => {
+  it('normalizes retry, tool, and final Harness usage without exposing arguments', async () => {
     const events = await replay('claude-wayfinder.jsonl')
     expect(events).toContainEqual({
       type: 'retrying',
@@ -64,8 +63,8 @@ describe('Claude harness Adapter', () => {
     })
     expect(events).toContainEqual({
       type: 'tool',
-      name: 'planning.write_planning_file',
-      summary: 'Called planning tool write_planning_file'
+      name: 'app.offer_response_options',
+      summary: 'Called app tool offer_response_options'
     })
     expect(events).toContainEqual({
       type: 'usage',
@@ -134,7 +133,7 @@ describe('Claude harness Adapter', () => {
     ])
   })
 
-  it('categorizes provider failures and redacts credentials', async () => {
+  it('categorizes Harness failures and redacts credentials', async () => {
     const events = await replay('claude-failures.jsonl')
     expect(events.filter((event) => event.type === 'failed').slice(0, 2)).toEqual([
       {

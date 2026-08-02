@@ -12,6 +12,8 @@ This ticket also wires `offer_response_options` to Suggested Responses: when a s
 
 Skills work better on Claude Code, which supports them natively, than on Codex, where the app injects the methodology as instruction text. Surface that difference rather than hiding it. Retain the existing MIT attribution.
 
+One duplication to remove: the list of usable Skills is currently hardcoded in two places — `VERIFIED_SKILLS` in Main, and the Skill `<select>` in the Renderer. Ticket 03 left it that way because discovery is this ticket's job. Discovery should leave exactly one source of truth.
+
 **Blocked by:** 06, 09
 
 **Status:** ready-for-agent

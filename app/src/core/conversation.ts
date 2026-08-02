@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Effect, Ref } from 'effect'
-import { CoreError, ideaRelativePathSchema } from '@shared/contract'
+import { CoreError, sessionRelativePathSchema } from '@shared/contract'
 import {
   addUsage,
   conversationEntrySchema,
@@ -19,13 +19,13 @@ import {
   type HarnessUsage,
   type SuggestedResponse
 } from '@shared/conversation'
-import type { ProviderId } from '@shared/readiness'
-import type { PlanningWorkflow } from '@shared/run'
+import type { HarnessId } from '@shared/readiness'
+import type { SkillName } from '@shared/run'
 import { createCodexAdapter, type HarnessAdapter } from './harness/codex'
 import { createClaudeAdapter } from './harness/claude'
 
 /**
- * The Idea's one permanent Conversation.
+ * The Session's one permanent Conversation.
  *
  * Durable truth is an append-only JSONL journal: later entries with the same
  * id supersede earlier ones, so a coalesced streaming checkpoint costs one
@@ -34,8 +34,8 @@ import { createClaudeAdapter } from './harness/claude'
  * only user messages, assistant messages, and visible Run boundaries.
  */
 
-const JOURNAL = join('.idea', 'conversation.jsonl')
-const DOCUMENT = join('planning', 'conversation.md')
+const JOURNAL = join('.session', 'conversation.jsonl')
+const DOCUMENT = 'conversation.md'
 /** Streaming deltas persist at most this often; every other change persists at once. */
 const CHECKPOINT_INTERVAL_MS = 250
 
@@ -48,8 +48,8 @@ export interface BeginConversationRunInput {
   relativePath: string
   runId: string
   submissionId: string
-  provider?: ProviderId
-  workflow?: PlanningWorkflow
+  harness?: HarnessId
+  skill?: SkillName
   model?: string
   restorationNote?: boolean
 }
@@ -60,10 +60,10 @@ export interface ApplyHarnessEventInput {
   event: HarnessEvent
 }
 
-export interface IngestProviderOutputInput {
+export interface IngestHarnessOutputInput {
   relativePath: string
   runId: string
-  provider: ProviderId
+  harness: HarnessId
   chunk: string
 }
 
@@ -72,14 +72,14 @@ export interface ConversationEffects {
   submit(input: unknown): Effect.Effect<ConversationSnapshot, CoreError>
   begin(input: BeginConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
   apply(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
-  /** Parses one raw provider chunk and applies everything it completed. */
-  ingest(input: IngestProviderOutputInput): Effect.Effect<HarnessEvent[], CoreError>
+  /** Parses one raw Harness chunk and applies everything it completed. */
+  ingest(input: IngestHarnessOutputInput): Effect.Effect<HarnessEvent[], CoreError>
   finalize(input: FinalizeConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
 }
 
 /**
  * One assistant message a Run is producing, rebuilt from the journal after a
- * crash. A Run may produce several, so each is tracked under the provider's
+ * crash. A Run may produce several, so each is tracked under the Harness's
  * own item id.
  */
 interface StreamState {
@@ -104,22 +104,22 @@ export function createConversationEffects(options: ConversationOptions): Convers
   // submission or a finalize on the same journal.
   const writeLock = Effect.runSync(Effect.makeSemaphore(1))
 
-  const ideaDirectory = (relativePath: string): Effect.Effect<string, CoreError> =>
+  const sessionDirectory = (relativePath: string): Effect.Effect<string, CoreError> =>
     options.library.pipe(
       Effect.flatMap((library) =>
         library === null
-          ? Effect.fail(new CoreError('NO_LIBRARY_OPEN', 'Open an Idea Library before developing'))
+          ? Effect.fail(new CoreError('NO_LIBRARY_OPEN', 'Open a library before developing'))
           : Effect.try({
-              try: () => join(library, ideaRelativePathSchema.parse(relativePath)),
-              catch: () => new CoreError('INVALID_INPUT', 'The Idea reference is not portable')
+              try: () => join(library, sessionRelativePathSchema.parse(relativePath)),
+              catch: () => new CoreError('INVALID_INPUT', 'The Session reference is not portable')
             })
       )
     )
 
-  const readEntries = (ideaDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
+  const readEntries = (sessionDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
     Effect.tryPromise({
       try: async () => {
-        const raw = await readFile(join(ideaDir, JOURNAL), 'utf8').catch(() => '')
+        const raw = await readFile(join(sessionDir, JOURNAL), 'utf8').catch(() => '')
         const byId = new Map<string, ConversationEntry>()
         for (const line of raw.split('\n')) {
           if (!line.trim()) continue
@@ -138,24 +138,23 @@ export function createConversationEffects(options: ConversationOptions): Convers
       catch: () => new CoreError('IO_ERROR', 'The Conversation history could not be read')
     })
 
-  const append = (ideaDir: string, entry: ConversationEntry): Effect.Effect<void, CoreError> =>
+  const append = (sessionDir: string, entry: ConversationEntry): Effect.Effect<void, CoreError> =>
     Effect.tryPromise({
       try: async () => {
-        await mkdir(join(ideaDir, '.idea'), { recursive: true, mode: 0o700 })
-        await appendFile(join(ideaDir, JOURNAL), `${JSON.stringify(entry)}\n`, 'utf8')
+        await mkdir(join(sessionDir, '.session'), { recursive: true, mode: 0o700 })
+        await appendFile(join(sessionDir, JOURNAL), `${JSON.stringify(entry)}\n`, 'utf8')
       },
       catch: () => new CoreError('IO_ERROR', 'The Conversation could not be saved')
     })
 
-  const renderDocument = (ideaDir: string): Effect.Effect<void, CoreError> =>
-    readEntries(ideaDir).pipe(
+  const renderDocument = (sessionDir: string): Effect.Effect<void, CoreError> =>
+    readEntries(sessionDir).pipe(
       Effect.flatMap((entries) =>
         Effect.tryPromise({
           try: async () => {
-            const path = join(ideaDir, DOCUMENT)
+            const path = join(sessionDir, DOCUMENT)
             const existing = await readFile(path, 'utf8').catch(() => '')
             const staged = `${path}.staged`
-            await mkdir(join(ideaDir, 'planning'), { recursive: true })
             await writeFile(staged, renderConversation(existing, entries), 'utf8')
             await rename(staged, path)
           },
@@ -166,12 +165,14 @@ export function createConversationEffects(options: ConversationOptions): Convers
 
   const snapshot = (
     relativePath: string,
-    ideaDir: string
+    sessionDir: string
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
-    readEntries(ideaDir).pipe(Effect.map((entries) => summarize(relativePath, entries)))
+    readEntries(sessionDir).pipe(Effect.map((entries) => summarize(relativePath, entries)))
 
   const get = (relativePath: string): Effect.Effect<ConversationSnapshot, CoreError> =>
-    ideaDirectory(relativePath).pipe(Effect.flatMap((ideaDir) => snapshot(relativePath, ideaDir)))
+    sessionDirectory(relativePath).pipe(
+      Effect.flatMap((sessionDir) => snapshot(relativePath, sessionDir))
+    )
 
   const submit = (rawInput: unknown): Effect.Effect<ConversationSnapshot, CoreError> =>
     Effect.gen(function* () {
@@ -182,10 +183,10 @@ export function createConversationEffects(options: ConversationOptions): Convers
         )
       }
       const input = parsed.data
-      const ideaDir = yield* ideaDirectory(input.relativePath)
+      const sessionDir = yield* sessionDirectory(input.relativePath)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entries = yield* readEntries(ideaDir)
+          const entries = yield* readEntries(sessionDir)
           const id = `user:${input.submissionId}`
           const existing = entries.find((entry) => entry.id === id)
           if (existing) {
@@ -215,8 +216,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
             suggestedResponses: [],
             plainOptions: false
           })
-          yield* append(ideaDir, entry)
-          yield* renderDocument(ideaDir)
+          yield* append(sessionDir, entry)
+          yield* renderDocument(sessionDir)
           return summarize(input.relativePath, [...entries, entry])
         })
       )
@@ -226,7 +227,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
     input: BeginConversationRunInput
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
     Effect.gen(function* () {
-      const ideaDir = yield* ideaDirectory(input.relativePath)
+      const sessionDir = yield* sessionDirectory(input.relativePath)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
           const at = (yield* options.clock).toISOString()
@@ -237,17 +238,17 @@ export function createConversationEffects(options: ConversationOptions): Convers
             runId: input.runId,
             boundary: 'run-started',
             summary: runBoundarySummary(input),
-            ...(input.provider ? { provider: input.provider } : {}),
-            ...(input.workflow ? { workflow: input.workflow } : {}),
+            ...(input.harness ? { harness: input.harness } : {}),
+            ...(input.skill ? { skill: input.skill } : {}),
             ...(input.model ? { model: input.model } : {}),
             ...(input.restorationNote ? { restorationNote: true } : {}),
             submissionId: input.submissionId,
             recovery: null
           })
-          yield* append(ideaDir, entry)
+          yield* append(sessionDir, entry)
           yield* forgetRun(input.runId)
-          yield* renderDocument(ideaDir)
-          return yield* snapshot(input.relativePath, ideaDir)
+          yield* renderDocument(sessionDir)
+          return yield* snapshot(input.relativePath, sessionDir)
         })
       )
     })
@@ -273,7 +274,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
     ]).pipe(Effect.asVoid)
 
   const loadStream = (
-    ideaDir: string,
+    sessionDir: string,
     runId: string,
     itemId: string
   ): Effect.Effect<StreamState, CoreError> =>
@@ -283,7 +284,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       if (known) return known
       // Core may have restarted mid-Run: continue from the last checkpoint
       // rather than starting a second copy of the same message.
-      const entries = yield* readEntries(ideaDir)
+      const entries = yield* readEntries(sessionDir)
       const previous = entries.find((entry) => entry.id === messageId)
       return yield* putStream({
         runId,
@@ -297,14 +298,14 @@ export function createConversationEffects(options: ConversationOptions): Convers
     })
 
   const checkpoint = (
-    ideaDir: string,
+    sessionDir: string,
     state: StreamState,
     at: Date
   ): Effect.Effect<void, CoreError> =>
     Effect.gen(function* () {
       yield* putStream({ ...state, checkpointedAt: at.getTime() })
       yield* append(
-        ideaDir,
+        sessionDir,
         conversationEntrySchema.parse({
           kind: 'message',
           id: state.messageId,
@@ -313,7 +314,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
           role: 'assistant',
           text: state.text,
           completeness: state.authoritative ? 'complete' : 'partial',
-          source: 'provider',
+          source: 'harness',
           submissionId: null,
           suggestedResponses: state.suggestedResponses,
           plainOptions: state.suggestedResponses.length === 0 && hasPlainOptions(state.text)
@@ -323,14 +324,14 @@ export function createConversationEffects(options: ConversationOptions): Convers
 
   const apply = (input: ApplyHarnessEventInput): Effect.Effect<void, CoreError> =>
     Effect.gen(function* () {
-      const ideaDir = yield* ideaDirectory(input.relativePath)
+      const sessionDir = yield* sessionDirectory(input.relativePath)
       yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
           const now = yield* options.clock
           const event = input.event
           switch (event.type) {
             case 'assistant-message': {
-              const state = yield* loadStream(ideaDir, input.runId, event.id)
+              const state = yield* loadStream(sessionDir, input.runId, event.id)
               const grown = yield* putStream({
                 ...state,
                 text: event.text,
@@ -342,7 +343,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 event.complete ||
                 now.getTime() - grown.checkpointedAt >= CHECKPOINT_INTERVAL_MS
               ) {
-                yield* checkpoint(ideaDir, grown, now)
+                yield* checkpoint(sessionDir, grown, now)
               }
               return
             }
@@ -353,7 +354,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
               const target = open.at(-1)
               if (!target) return
               yield* checkpoint(
-                ideaDir,
+                sessionDir,
                 yield* putStream({ ...target, suggestedResponses: event.options }),
                 now
               )
@@ -361,7 +362,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             }
             case 'usage':
               yield* append(
-                ideaDir,
+                sessionDir,
                 conversationEntrySchema.parse({
                   kind: 'usage',
                   id: `usage:${input.runId}`,
@@ -371,42 +372,31 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 })
               )
               return
-            case 'session-ready': {
-              const entries = yield* readEntries(ideaDir)
+            case 'thread-ready': {
+              const entries = yield* readEntries(sessionDir)
               const started = entries.find(
                 (entry) =>
                   entry.kind === 'boundary' && entry.id === `boundary:${input.runId}:started`
               )
-              if (started?.kind !== 'boundary' || started.provider !== event.provider) {
+              if (started?.kind !== 'boundary' || started.harness !== event.harness) {
                 return yield* Effect.fail(
-                  new CoreError('INVALID_INPUT', 'Provider session does not belong to this Run')
+                  new CoreError('INVALID_INPUT', 'Harness Thread does not belong to this Run')
                 )
               }
               yield* append(
-                ideaDir,
+                sessionDir,
                 conversationEntrySchema.parse({
-                  kind: 'session',
-                  id: `session:${started.provider}`,
+                  kind: 'thread',
+                  id: `thread:${started.harness}`,
                   at: now.toISOString(),
                   runId: input.runId,
-                  provider: event.provider,
-                  sessionId: event.sessionId,
+                  harness: event.harness,
+                  threadId: event.threadId,
                   model: event.model
                 })
               )
               return
             }
-            case 'workflow-completion-suggested':
-              yield* append(
-                ideaDir,
-                conversationEntrySchema.parse({
-                  kind: 'workflow-completion',
-                  id: `workflow-completion:${input.runId}`,
-                  at: now.toISOString(),
-                  runId: input.runId
-                })
-              )
-              return
             case 'unsupported':
               yield* Ref.update(drift, (current) =>
                 new Map(current).set(input.runId, (current.get(input.runId) ?? 0) + 1)
@@ -429,9 +419,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
     input: FinalizeConversationRunInput
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
     Effect.gen(function* () {
-      const ideaDir = yield* ideaDirectory(input.relativePath)
+      const sessionDir = yield* sessionDirectory(input.relativePath)
       // Drain a truncated final protocol line before the lock is taken, so
-      // the last thing the provider said is part of what is finalized.
+      // the last thing the Harness said is part of what is finalized.
       const trailing = (yield* Ref.get(adapters)).get(input.runId)?.flush() ?? []
       for (const event of trailing) {
         yield* apply({ relativePath: input.relativePath, runId: input.runId, event })
@@ -445,12 +435,12 @@ export function createConversationEffects(options: ConversationOptions): Convers
           for (const state of open) {
             if (!state.text) continue
             yield* checkpoint(
-              ideaDir,
+              sessionDir,
               { ...state, authoritative: state.authoritative || input.outcome === 'completed' },
               now
             )
           }
-          const entries = yield* readEntries(ideaDir)
+          const entries = yield* readEntries(sessionDir)
           const started = entries.find(
             (entry) => entry.kind === 'boundary' && entry.id === `boundary:${input.runId}:started`
           )
@@ -461,7 +451,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             entries.some((entry) => entry.kind === 'usage' && entry.runId === input.runId)
           const unmodelled = (yield* Ref.get(drift)).get(input.runId) ?? 0
           yield* append(
-            ideaDir,
+            sessionDir,
             conversationEntrySchema.parse({
               kind: 'boundary',
               id: `boundary:${input.runId}:ended`,
@@ -479,23 +469,23 @@ export function createConversationEffects(options: ConversationOptions): Convers
             })
           )
           yield* forgetRun(input.runId)
-          yield* renderDocument(ideaDir)
-          return yield* snapshot(input.relativePath, ideaDir)
+          yield* renderDocument(sessionDir)
+          return yield* snapshot(input.relativePath, sessionDir)
         })
       )
     })
 
-  const ingest = (input: IngestProviderOutputInput): Effect.Effect<HarnessEvent[], CoreError> =>
+  const ingest = (input: IngestHarnessOutputInput): Effect.Effect<HarnessEvent[], CoreError> =>
     Effect.gen(function* () {
       const known = (yield* Ref.get(adapters)).get(input.runId)
       let adapter = known
       if (!adapter) {
-        const factory: (() => HarnessAdapter) | undefined = ADAPTER_FACTORIES[input.provider]
-        // Without an Adapter the provider's answers could never reach the
+        const factory: (() => HarnessAdapter) | undefined = ADAPTER_FACTORIES[input.harness]
+        // Without an Adapter the Harness's answers could never reach the
         // Conversation, so this is refused rather than silently swallowed.
         if (!factory) {
           return yield* Effect.fail(
-            new CoreError('INVALID_INPUT', `${input.provider} cannot stream into a Conversation`)
+            new CoreError('INVALID_INPUT', `${input.harness} cannot stream into a Conversation`)
           )
         }
         const created = factory()
@@ -513,21 +503,14 @@ export function createConversationEffects(options: ConversationOptions): Convers
 }
 
 function runBoundarySummary(input: BeginConversationRunInput): string {
-  const workflow =
-    input.workflow === 'wayfinder'
-      ? 'Wayfinder'
-      : input.workflow === 'grilling'
-        ? 'Grill Me'
-        : 'Run'
-  const provider =
-    input.provider === 'claude' ? 'Claude' : input.provider === 'codex' ? 'Codex' : null
-  const started = provider ? `${workflow} started via ${provider}` : 'Run started'
-  return input.restorationNote
-    ? `${started}. Provider session restored from local history`
-    : started
+  const skill =
+    input.skill === 'wayfinder' ? 'Wayfinder' : input.skill === 'grilling' ? 'Grill Me' : 'Run'
+  const harness = input.harness === 'claude' ? 'Claude' : input.harness === 'codex' ? 'Codex' : null
+  const started = harness ? `${skill} started via ${harness}` : 'Run started'
+  return input.restorationNote ? `${started}. Harness Thread restored from local history` : started
 }
 
-const ADAPTER_FACTORIES: Partial<Record<ProviderId, () => HarnessAdapter>> = {
+const ADAPTER_FACTORIES: Partial<Record<HarnessId, () => HarnessAdapter>> = {
   codex: createCodexAdapter,
   claude: createClaudeAdapter
 }
@@ -549,16 +532,16 @@ const BOUNDARY_FOR_OUTCOME: Record<
   'supervision-failed': 'run-failed'
 }
 
-/** Causes the provider reports about itself, rather than ones this app infers. */
+/** Causes the Harness reports about itself, rather than ones this app infers. */
 type StatedCause = 'authentication' | 'rate-limit' | 'context-exhausted'
-const PROVIDER_STATED: Record<StatedCause, true> = {
+const HARNESS_STATED: Record<StatedCause, true> = {
   authentication: true,
   'rate-limit': true,
   'context-exhausted': true
 }
 
 function isStatedCause(category: HarnessFailureCategory): category is StatedCause {
-  return Object.hasOwn(PROVIDER_STATED, category)
+  return Object.hasOwn(HARNESS_STATED, category)
 }
 
 /** Categories whose cause is transient, so resending the same submission is safe. */
@@ -596,7 +579,7 @@ function describeRecovery(
     if (input.outcome === 'stopped') return 'stopped'
     if (input.outcome === 'policy-violation') return 'policy-violation'
     if (input.outcome === 'supervision-failed') return 'supervision-failed'
-    // What the provider said about itself beats anything inferred from the
+    // What the Harness said about itself beats anything inferred from the
     // shape of the Run, so an expired sign-in is never reported as drift.
     if (input.category !== null && isStatedCause(input.category)) return input.category
     if (spokeUnreadably) return 'protocol-unsupported'
@@ -616,37 +599,30 @@ function summarize(relativePath: string, entries: ConversationEntry[]): Conversa
   let activeRunId: string | null = null
   let recovery: ConversationRecovery | null = null
   let latestRunUsage: HarnessUsage | null = null
-  let ideaUsage = emptyUsage()
-  const providerSessions: Partial<Record<ProviderId, string>> = {}
-  let workflowCompletionSuggested = false
+  let sessionUsage = emptyUsage()
+  const harnessThreads: Partial<Record<HarnessId, string>> = {}
   for (const entry of entries) {
     if (entry.kind === 'boundary') {
       if (entry.boundary === 'run-started') {
         activeRunId = entry.runId
         recovery = null
-        workflowCompletionSuggested = false
       } else if (entry.runId === activeRunId) {
         activeRunId = null
         recovery = entry.recovery
       }
     }
     if (entry.kind === 'usage') {
-      ideaUsage = addUsage(ideaUsage, entry.usage)
+      sessionUsage = addUsage(sessionUsage, entry.usage)
       latestRunUsage = entry.usage
     }
-    if (entry.kind === 'session') providerSessions[entry.provider] = entry.sessionId
-    if (entry.kind === 'workflow-completion') workflowCompletionSuggested = true
+    if (entry.kind === 'thread') harnessThreads[entry.harness] = entry.threadId
   }
   return {
-    relativePath: ideaRelativePathSchema.parse(relativePath),
-    entries: entries.filter(
-      (entry) =>
-        entry.kind !== 'usage' && entry.kind !== 'session' && entry.kind !== 'workflow-completion'
-    ),
-    usage: { run: latestRunUsage, idea: ideaUsage },
+    relativePath: sessionRelativePathSchema.parse(relativePath),
+    entries: entries.filter((entry) => entry.kind !== 'usage' && entry.kind !== 'thread'),
+    usage: { run: latestRunUsage, session: sessionUsage },
     recovery,
-    providerSessions,
-    workflowCompletionSuggested,
+    harnessThreads,
     activeRunId
   }
 }
@@ -669,8 +645,7 @@ function renderConversation(existing: string, entries: ConversationEntry[]): str
     ? existing.slice(0, existing.indexOf('\n---\n') + 5)
     : ''
   const body = entries.flatMap((entry) => {
-    if (entry.kind === 'usage' || entry.kind === 'session' || entry.kind === 'workflow-completion')
-      return []
+    if (entry.kind === 'usage' || entry.kind === 'thread') return []
     if (entry.kind === 'boundary') {
       return [`_${BOUNDARY_LABEL[entry.boundary]} — ${entry.summary}_`, '']
     }

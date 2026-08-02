@@ -1,19 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
-import { basename, join, posix } from 'node:path'
+import { join, posix } from 'node:path'
 import { Cause, Context, Effect, Either, Exit, Layer, Option, Ref } from 'effect'
 import { z } from 'zod'
 import {
   CoreError,
-  captureIdeaInputSchema,
-  ideaRelativePathSchema,
-  ideaSummarySchema,
-  type CaptureIdeaInput,
-  type DeleteIdeaPreview,
+  captureSessionInputSchema,
+  sessionRelativePathSchema,
+  sessionSummarySchema,
+  type CaptureSessionInput,
+  type DeleteSessionPreview,
   type MailboxCoreQuery,
   type MailboxSnapshot,
-  type OpenedIdea,
-  type IdeaSummary,
+  type OpenedSession,
+  type SessionSummary,
   type LibrarySnapshot
 } from '@shared/contract'
 import {
@@ -31,20 +31,20 @@ import type {
   HarnessEvent,
   SubmitConversationMessageInput
 } from '@shared/conversation'
-import { suggestIdeaTitle } from '@shared/title'
+import { suggestSessionTitle } from '@shared/title'
 import {
   emptyMailbox,
   indexExists,
   queryIndex,
   rebuildIndex,
-  upsertIdea,
-  type IndexedIdea
+  upsertSession,
+  type IndexedSession
 } from './search-index'
 import {
   createConversationEffects,
   type ApplyHarnessEventInput,
   type BeginConversationRunInput,
-  type IngestProviderOutputInput
+  type IngestHarnessOutputInput
 } from './conversation'
 
 export interface CoreDeps {
@@ -53,22 +53,22 @@ export interface CoreDeps {
 }
 
 /**
- * The deep product-behavior module. It owns the Idea lifecycle and canonical
- * Markdown persistence, and is the primary test seam. It runs inside the Core
- * utility process in production and directly inside tests.
+ * The deep product-behavior module. It owns the Session lifecycle and
+ * canonical Markdown persistence, and is the primary test seam. It runs inside
+ * the Core utility process in production and directly inside tests.
  *
  * Internals are Effect (see ADR 0001); this interface stays promise-based so
  * Main and tests never see Effect types.
  */
 export interface Core {
   openLibrary(path: string): Promise<LibrarySnapshot>
-  captureIdea(input: CaptureIdeaInput): Promise<IdeaSummary>
-  openIdea(relativePath: string): Promise<OpenedIdea>
-  listIdeas(): Promise<IdeaSummary[]>
+  captureSession(input: CaptureSessionInput): Promise<SessionSummary>
+  openSession(relativePath: string): Promise<OpenedSession>
+  listSessions(): Promise<SessionSummary[]>
   queryMailbox(query: MailboxCoreQuery): Promise<MailboxSnapshot>
-  setIdeaPinned(relativePath: string, pinned: boolean): Promise<IdeaSummary>
-  setIdeaArchived(relativePath: string, archived: boolean): Promise<IdeaSummary>
-  previewDeleteIdea(relativePath: string): Promise<DeleteIdeaPreview>
+  setSessionPinned(relativePath: string, pinned: boolean): Promise<SessionSummary>
+  setSessionArchived(relativePath: string, archived: boolean): Promise<SessionSummary>
+  previewDeleteSession(relativePath: string): Promise<DeleteSessionPreview>
   acceptRun(input: AcceptRunInput): Promise<RunSnapshot>
   listRuns(relativePath: string): Promise<RunSnapshot[]>
   recordRunEvent(input: RecordRunEventInput): Promise<RunSnapshot>
@@ -76,7 +76,7 @@ export interface Core {
   submitConversationMessage(input: SubmitConversationMessageInput): Promise<ConversationSnapshot>
   beginConversationRun(input: BeginConversationRunInput): Promise<ConversationSnapshot>
   applyHarnessEvent(input: ApplyHarnessEventInput): Promise<void>
-  ingestProviderOutput(input: IngestProviderOutputInput): Promise<HarnessEvent[]>
+  ingestHarnessOutput(input: IngestHarnessOutputInput): Promise<HarnessEvent[]>
   finalizeConversationRun(input: FinalizeConversationRunInput): Promise<ConversationSnapshot>
 }
 
@@ -86,13 +86,16 @@ export interface Core {
  */
 export interface CoreEffects {
   openLibrary(path: string): Effect.Effect<LibrarySnapshot, CoreError>
-  captureIdea(input: CaptureIdeaInput): Effect.Effect<IdeaSummary, CoreError>
-  openIdea(relativePath: string): Effect.Effect<OpenedIdea, CoreError>
-  listIdeas(): Effect.Effect<IdeaSummary[], CoreError>
+  captureSession(input: CaptureSessionInput): Effect.Effect<SessionSummary, CoreError>
+  openSession(relativePath: string): Effect.Effect<OpenedSession, CoreError>
+  listSessions(): Effect.Effect<SessionSummary[], CoreError>
   queryMailbox(query: MailboxCoreQuery): Effect.Effect<MailboxSnapshot, CoreError>
-  setIdeaPinned(relativePath: string, pinned: boolean): Effect.Effect<IdeaSummary, CoreError>
-  setIdeaArchived(relativePath: string, archived: boolean): Effect.Effect<IdeaSummary, CoreError>
-  previewDeleteIdea(relativePath: string): Effect.Effect<DeleteIdeaPreview, CoreError>
+  setSessionPinned(relativePath: string, pinned: boolean): Effect.Effect<SessionSummary, CoreError>
+  setSessionArchived(
+    relativePath: string,
+    archived: boolean
+  ): Effect.Effect<SessionSummary, CoreError>
+  previewDeleteSession(relativePath: string): Effect.Effect<DeleteSessionPreview, CoreError>
   acceptRun(input: AcceptRunInput): Effect.Effect<RunSnapshot, CoreError>
   listRuns(relativePath: string): Effect.Effect<RunSnapshot[], CoreError>
   recordRunEvent(input: RecordRunEventInput): Effect.Effect<RunSnapshot, CoreError>
@@ -104,25 +107,29 @@ export interface CoreEffects {
     input: BeginConversationRunInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
   applyHarnessEvent(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
-  ingestProviderOutput(input: IngestProviderOutputInput): Effect.Effect<HarnessEvent[], CoreError>
+  ingestHarnessOutput(input: IngestHarnessOutputInput): Effect.Effect<HarnessEvent[], CoreError>
   finalizeConversationRun(
     input: FinalizeConversationRunInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
 }
 
-const IDEA_FILE = 'idea.md'
+const SESSION_FILE = 'session.md'
+const CONVERSATION_FILE = 'conversation.md'
+const PRIVATE_DIR = '.session'
+/** The on-disk shape this version writes and is willing to read. */
+const FORMAT_VERSION = 2
 const MAX_SLUG_LENGTH = 40
 const SCAN_CONCURRENCY = 8
 
-class IdeaClock extends Context.Tag('core/IdeaClock')<IdeaClock, { now(): Date }>() {}
+class SessionClock extends Context.Tag('core/SessionClock')<SessionClock, { now(): Date }>() {}
 class IdGenerator extends Context.Tag('core/IdGenerator')<IdGenerator, { nextId(): string }>() {}
 
-type CoreServices = IdeaClock | IdGenerator
+type CoreServices = SessionClock | IdGenerator
 
 export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
   const services: Layer.Layer<CoreServices> = Layer.mergeAll(
-    Layer.succeed(IdeaClock, { now: deps.now ?? (() => new Date()) }),
-    Layer.succeed(IdGenerator, { nextId: deps.randomId ?? (() => `idea-${randomUUID()}`) })
+    Layer.succeed(SessionClock, { now: deps.now ?? (() => new Date()) }),
+    Layer.succeed(IdGenerator, { nextId: deps.randomId ?? (() => `session-${randomUUID()}`) })
   )
 
   const libraryPath = Effect.runSync(Ref.make(Option.none<string>()))
@@ -138,9 +145,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       Effect.flatMap(
         Option.match({
           onNone: () =>
-            Effect.fail(
-              new CoreError('NO_LIBRARY_OPEN', `Open an Idea Library before ${activity}`)
-            ),
+            Effect.fail(new CoreError('NO_LIBRARY_OPEN', `Open a library before ${activity}`)),
           onSome: Effect.succeed
         })
       )
@@ -160,79 +165,75 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
         return yield* Effect.fail(new CoreError('NOT_A_DIRECTORY', `${path} is not a folder`))
       }
       yield* Ref.set(libraryPath, Option.some(path))
-      const ideas = yield* provide(scanIdeas(path))
+      const sessions = yield* provide(scanSessions(path))
       // Refresh the disposable search projection; a failure here never blocks
       // the library, because queries rebuild it again on demand.
-      yield* rebuildProjection(path, ideas).pipe(Effect.catchAll(() => Effect.void))
-      return { path, ideas }
+      yield* rebuildProjection(path, sessions).pipe(Effect.catchAll(() => Effect.void))
+      return { path, sessions }
     })
 
-  const captureIdea = (
-    rawInput: CaptureIdeaInput
-  ): Effect.Effect<IdeaSummary, CoreError, CoreServices> =>
+  const captureSession = (
+    rawInput: CaptureSessionInput
+  ): Effect.Effect<SessionSummary, CoreError, CoreServices> =>
     Effect.gen(function* () {
-      const library = yield* requireLibrary('capturing an Idea')
-      const parsed = captureIdeaInputSchema.safeParse(rawInput)
+      const library = yield* requireLibrary('capturing a Session')
+      const parsed = captureSessionInputSchema.safeParse(rawInput)
       if (!parsed.success) {
         return yield* Effect.fail(
-          new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid Idea input')
+          new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid Session input')
         )
       }
       const input = parsed.data
-      const title = input.title.trim() || suggestIdeaTitle(input.notes)
+      const title = input.title.trim() || suggestSessionTitle(input.notes)
 
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const clock = yield* IdeaClock
+          const clock = yield* SessionClock
           const ids = yield* IdGenerator
           const timestamp = clock.now().toISOString()
-          const idea: IdeaSummary = {
+          const session: SessionSummary = {
             id: ids.nextId(),
-            kind: input.kind,
             title,
-            status: 'saved',
             createdAt: timestamp,
             updatedAt: timestamp,
             relativePath: yield* reserveFolder(library, title),
             pinned: false,
             archivedAt: null
           }
-          const planningIndexId = ids.nextId()
           const conversationId = ids.nextId()
-          yield* writePortableIdea(
-            join(library, idea.relativePath),
-            idea,
+          yield* writePortableSession(
+            join(library, session.relativePath),
+            session,
             input.notes,
-            planningIndexId,
             conversationId
           )
           // Index exactly what was persisted so search answers cannot change
           // when the projection is later rebuilt from canonical content.
           yield* upsertProjection(
             library,
-            idea,
-            markdownBody(renderRootDocument(idea, input.notes))
+            session,
+            markdownBody(renderRootDocument(session, input.notes))
           )
-          return idea
+          return session
         })
       )
     })
 
-  const listIdeas: Effect.Effect<IdeaSummary[], CoreError> = requireLibrary('listing Ideas').pipe(
-    Effect.flatMap((library) => provide(scanIdeas(library)))
-  )
+  const listSessions: Effect.Effect<SessionSummary[], CoreError> = requireLibrary(
+    'listing Sessions'
+  ).pipe(Effect.flatMap((library) => provide(scanSessions(library))))
 
-  const openIdea = (relativePath: string): Effect.Effect<OpenedIdea, CoreError> =>
-    requireLibrary('opening an Idea').pipe(
-      Effect.flatMap((library) => provide(reopenIdea(library, relativePath)))
+  const openSession = (relativePath: string): Effect.Effect<OpenedSession, CoreError> =>
+    requireLibrary('opening a Session').pipe(
+      Effect.flatMap((library) => provide(reopenSession(library, relativePath)))
     )
 
   const queryMailbox = (query: MailboxCoreQuery): Effect.Effect<MailboxSnapshot, CoreError> =>
-    requireLibrary('searching Ideas').pipe(
+    requireLibrary('searching Sessions').pipe(
       Effect.flatMap((library) =>
         provide(
           Effect.gen(function* () {
-            const clock = yield* IdeaClock
+            const clock = yield* SessionClock
             if (indexExists(library)) {
               const attempt = yield* Effect.try({
                 try: () => queryIndex(library, query, clock.now()),
@@ -242,9 +243,9 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
             }
             // Missing or corrupt projection: rebuild it from canonical
             // content and answer from the fresh index.
-            const ideas = yield* scanIdeas(library)
-            yield* rebuildProjection(library, ideas)
-            if (ideas.length === 0)
+            const sessions = yield* scanSessions(library)
+            yield* rebuildProjection(library, sessions)
+            if (sessions.length === 0)
               return { ...emptyMailbox(query.view), index: 'rebuilt' as const }
             const rebuilt = yield* Effect.try({
               try: () => queryIndex(library, query, clock.now()),
@@ -259,44 +260,48 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
   const updateRootFlags = (
     relativePath: string,
     patch: { pinned?: boolean; archived?: boolean }
-  ): Effect.Effect<IdeaSummary, CoreError> =>
-    requireLibrary('updating an Idea').pipe(
+  ): Effect.Effect<SessionSummary, CoreError> =>
+    requireLibrary('updating a Session').pipe(
       Effect.flatMap((library) =>
         provide(
           writeLock.withPermits(1)(
             Effect.gen(function* () {
-              const parsedPath = ideaRelativePathSchema.safeParse(relativePath)
+              const parsedPath = sessionRelativePathSchema.safeParse(relativePath)
               if (!parsedPath.success) {
                 return yield* Effect.fail(
-                  new CoreError('INVALID_INPUT', 'The Idea reference is not portable')
+                  new CoreError('INVALID_INPUT', 'The Session reference is not portable')
                 )
               }
               const folder = parsedPath.data
-              const summary = yield* readIdeaSummary(library, folder)
+              const summary = yield* readSessionSummary(library, folder)
               if (!summary) {
-                return yield* Effect.fail(new CoreError('IDEA_NOT_FOUND', 'The Idea was not found'))
+                return yield* Effect.fail(
+                  new CoreError('SESSION_NOT_FOUND', 'The Session was not found')
+                )
               }
-              const ideaDir = join(library, folder)
+              const sessionDir = join(library, folder)
               const root = yield* Effect.tryPromise({
-                try: () => findRootDocument(ideaDir),
-                catch: () => new CoreError('IO_ERROR', 'The root Idea is unreadable')
+                try: () => findRootDocument(sessionDir),
+                catch: () => new CoreError('IO_ERROR', 'The root document is unreadable')
               })
               if (!root) {
-                return yield* Effect.fail(new CoreError('IO_ERROR', 'The root Idea is unreadable'))
+                return yield* Effect.fail(
+                  new CoreError('IO_ERROR', 'The root document is unreadable')
+                )
               }
               // A root document written by a newer app version is not ours to
               // rewrite: round-tripping it here would silently drop frontmatter
               // this version does not understand.
-              if (Number(root.parsed.frontmatter['format'] ?? '1') > 1) {
+              if (Number(root.parsed.frontmatter['format'] ?? '0') > FORMAT_VERSION) {
                 return yield* Effect.fail(
                   new CoreError(
                     'INVALID_INPUT',
-                    'This Idea was written by a newer version of the app'
+                    'This Session was written by a newer version of the app'
                   )
                 )
               }
-              const clock = yield* IdeaClock
-              const nextSummary: IdeaSummary = {
+              const clock = yield* SessionClock
+              const nextSummary: SessionSummary = {
                 ...summary,
                 ...(patch.pinned !== undefined ? { pinned: patch.pinned } : {}),
                 ...(patch.archived !== undefined
@@ -310,31 +315,27 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
               if (patch.archived !== undefined) {
                 nextRaw = setFrontmatterField(nextRaw, 'archived', nextSummary.archivedAt)
               }
-              const recovery = yield* Effect.promise(() => readRecovery(ideaDir))
+              const recovery = yield* Effect.promise(() => readRecovery(sessionDir))
               const identity: RecoveryIdentity = recovery
                 ? {
                     format: recovery.format,
-                    ideaId: recovery.ideaId,
+                    sessionId: recovery.sessionId,
                     summary: nextSummary,
                     documents: recovery.documents
                   }
                 : {
-                    format: 1,
-                    ideaId: summary.id,
+                    format: FORMAT_VERSION,
+                    sessionId: summary.id,
                     summary: nextSummary,
                     documents: {
                       root: { id: summary.id, path: root.path },
-                      planningIndex: {
-                        id: `${summary.id}:planning-index`,
-                        path: root.parsed.frontmatter['planning_index'] ?? 'planning/index.md'
-                      },
                       conversation: {
                         id: `${summary.id}:conversation`,
-                        path: root.parsed.frontmatter['conversation'] ?? 'planning/conversation.md'
+                        path: root.parsed.frontmatter['conversation'] ?? CONVERSATION_FILE
                       }
                     }
                   }
-              yield* writeManagedDocuments(ideaDir, identity, [
+              yield* writeManagedDocuments(sessionDir, identity, [
                 { path: root.path, content: nextRaw }
               ])
               yield* upsertProjection(library, nextSummary, markdownBody(nextRaw))
@@ -345,32 +346,35 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       )
     )
 
-  const previewDeleteIdea = (relativePath: string): Effect.Effect<DeleteIdeaPreview, CoreError> =>
-    requireLibrary('deleting an Idea').pipe(
+  const previewDeleteSession = (
+    relativePath: string
+  ): Effect.Effect<DeleteSessionPreview, CoreError> =>
+    requireLibrary('deleting a Session').pipe(
       Effect.flatMap((library) =>
         provide(
           Effect.gen(function* () {
-            const parsedPath = ideaRelativePathSchema.safeParse(relativePath)
+            const parsedPath = sessionRelativePathSchema.safeParse(relativePath)
             if (!parsedPath.success) {
               return yield* Effect.fail(
-                new CoreError('INVALID_INPUT', 'The Idea reference is not portable')
+                new CoreError('INVALID_INPUT', 'The Session reference is not portable')
               )
             }
             const folder = parsedPath.data
-            const summary = yield* readIdeaSummary(library, folder)
+            const summary = yield* readSessionSummary(library, folder)
             if (!summary) {
-              return yield* Effect.fail(new CoreError('IDEA_NOT_FOUND', 'The Idea was not found'))
+              return yield* Effect.fail(
+                new CoreError('SESSION_NOT_FOUND', 'The Session was not found')
+              )
             }
-            const ideaDir = join(library, folder)
-            const recovery = yield* Effect.promise(() => readRecovery(ideaDir))
+            const sessionDir = join(library, folder)
+            const recovery = yield* Effect.promise(() => readRecovery(sessionDir))
             const ownedFiles = new Set([
-              recovery?.documents.root.path ?? IDEA_FILE,
-              recovery?.documents.planningIndex.path ?? 'planning/index.md',
-              recovery?.documents.conversation.path ?? 'planning/conversation.md'
+              recovery?.documents.root.path ?? SESSION_FILE,
+              recovery?.documents.conversation.path ?? CONVERSATION_FILE
             ])
             const partition = yield* Effect.tryPromise({
-              try: () => partitionIdeaFolder(ideaDir, ownedFiles),
-              catch: () => new CoreError('IO_ERROR', 'Could not inspect the Idea folder')
+              try: () => partitionSessionFolder(sessionDir, ownedFiles),
+              catch: () => new CoreError('IO_ERROR', 'Could not inspect the Session folder')
             })
             return {
               relativePath: folder,
@@ -398,20 +402,22 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
                 )
               }
               const input = parsed.data
-              const ideaDir = join(library, input.relativePath)
-              const idea = yield* readIdeaSummary(library, input.relativePath)
-              if (!idea) {
-                return yield* Effect.fail(new CoreError('IDEA_NOT_FOUND', 'The Idea was not found'))
-              }
-              if (input.configuration.workingDirectory !== ideaDir) {
+              const sessionDir = join(library, input.relativePath)
+              const session = yield* readSessionSummary(library, input.relativePath)
+              if (!session) {
                 return yield* Effect.fail(
-                  new CoreError('INVALID_INPUT', 'Run Working Directory does not match the Idea')
+                  new CoreError('SESSION_NOT_FOUND', 'The Session was not found')
+                )
+              }
+              if (input.configuration.workingDirectory !== sessionDir) {
+                return yield* Effect.fail(
+                  new CoreError('INVALID_INPUT', 'Run working directory does not match the Session')
                 )
               }
               const fingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex')
               const submissionKey = createHash('sha256').update(input.submissionId).digest('hex')
-              const submissionsDir = join(ideaDir, '.idea', 'submissions')
-              const runsDir = join(ideaDir, '.idea', 'runs')
+              const submissionsDir = join(sessionDir, PRIVATE_DIR, 'submissions')
+              const runsDir = join(sessionDir, PRIVATE_DIR, 'runs')
               const submissionPath = join(submissionsDir, `${submissionKey}.json`)
               const existing = yield* Effect.promise(() =>
                 readFile(submissionPath, 'utf8').catch(() => null)
@@ -445,7 +451,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
                   catch: () => new CoreError('IO_ERROR', 'Durable Run state is unreadable')
                 })
               }
-              const clock = yield* IdeaClock
+              const clock = yield* SessionClock
               const ids = yield* IdGenerator
               const timestamp = clock.now().toISOString()
               const run: RunSnapshot = {
@@ -489,8 +495,8 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       Effect.flatMap((library) =>
         Effect.tryPromise({
           try: async () => {
-            const parsedPath = ideaRelativePathSchema.parse(relativePath)
-            const runsDir = join(library, parsedPath, '.idea', 'runs')
+            const parsedPath = sessionRelativePathSchema.parse(relativePath)
+            const runsDir = join(library, parsedPath, PRIVATE_DIR, 'runs')
             const names = await readdir(runsDir).catch(() => [])
             const runs = await Promise.all(
               names
@@ -522,7 +528,13 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
                 )
               }
               const event = parsedInput.data
-              const path = join(library, event.relativePath, '.idea', 'runs', `${event.runId}.json`)
+              const path = join(
+                library,
+                event.relativePath,
+                PRIVATE_DIR,
+                'runs',
+                `${event.runId}.json`
+              )
               const existing = yield* Effect.tryPromise({
                 try: () => readFile(path, 'utf8'),
                 catch: () => new CoreError('RUN_NOT_FOUND', 'The Run was not found')
@@ -543,7 +555,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
                   )
                 )
               }
-              const clock = yield* IdeaClock
+              const clock = yield* SessionClock
               const ids = yield* IdGenerator
               const timestamp = clock.now().toISOString()
               const next = yield* Effect.try({
@@ -572,13 +584,13 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
 
   return {
     openLibrary,
-    captureIdea: (input) => provide(captureIdea(input)),
-    openIdea,
-    listIdeas: () => listIdeas,
+    captureSession: (input) => provide(captureSession(input)),
+    openSession,
+    listSessions: () => listSessions,
     queryMailbox,
-    setIdeaPinned: (relativePath, pinned) => updateRootFlags(relativePath, { pinned }),
-    setIdeaArchived: (relativePath, archived) => updateRootFlags(relativePath, { archived }),
-    previewDeleteIdea,
+    setSessionPinned: (relativePath, pinned) => updateRootFlags(relativePath, { pinned }),
+    setSessionArchived: (relativePath, archived) => updateRootFlags(relativePath, { archived }),
+    previewDeleteSession,
     acceptRun,
     listRuns,
     recordRunEvent,
@@ -586,7 +598,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     submitConversationMessage: (input) => conversation.submit(input),
     beginConversationRun: (input) => conversation.begin(input),
     applyHarnessEvent: (input) => conversation.apply(input),
-    ingestProviderOutput: (input) => conversation.ingest(input),
+    ingestHarnessOutput: (input) => conversation.ingest(input),
     finalizeConversationRun: (input) => conversation.finalize(input)
   }
 }
@@ -614,13 +626,14 @@ export function createCore(deps: CoreDeps = {}): Core {
 
   return {
     openLibrary: (path) => run(core.openLibrary(path)),
-    captureIdea: (input) => run(core.captureIdea(input)),
-    openIdea: (relativePath) => run(core.openIdea(relativePath)),
-    listIdeas: () => run(core.listIdeas()),
+    captureSession: (input) => run(core.captureSession(input)),
+    openSession: (relativePath) => run(core.openSession(relativePath)),
+    listSessions: () => run(core.listSessions()),
     queryMailbox: (query) => run(core.queryMailbox(query)),
-    setIdeaPinned: (relativePath, pinned) => run(core.setIdeaPinned(relativePath, pinned)),
-    setIdeaArchived: (relativePath, archived) => run(core.setIdeaArchived(relativePath, archived)),
-    previewDeleteIdea: (relativePath) => run(core.previewDeleteIdea(relativePath)),
+    setSessionPinned: (relativePath, pinned) => run(core.setSessionPinned(relativePath, pinned)),
+    setSessionArchived: (relativePath, archived) =>
+      run(core.setSessionArchived(relativePath, archived)),
+    previewDeleteSession: (relativePath) => run(core.previewDeleteSession(relativePath)),
     acceptRun: (input) => run(core.acceptRun(input)),
     listRuns: (relativePath) => run(core.listRuns(relativePath)),
     recordRunEvent: (input) => run(core.recordRunEvent(input)),
@@ -628,7 +641,7 @@ export function createCore(deps: CoreDeps = {}): Core {
     submitConversationMessage: (input) => run(core.submitConversationMessage(input)),
     beginConversationRun: (input) => run(core.beginConversationRun(input)),
     applyHarnessEvent: (input) => run(core.applyHarnessEvent(input)),
-    ingestProviderOutput: (input) => run(core.ingestProviderOutput(input)),
+    ingestHarnessOutput: (input) => run(core.ingestHarnessOutput(input)),
     finalizeConversationRun: (input) => run(core.finalizeConversationRun(input))
   }
 }
@@ -645,7 +658,9 @@ function reserveFolder(library: string, title: string): Effect.Effect<string, Co
         Effect.catchAll((error) =>
           error.code === 'EEXIST'
             ? Effect.succeed(false)
-            : Effect.fail(new CoreError('IO_ERROR', `Could not create Idea folder in ${library}`))
+            : Effect.fail(
+                new CoreError('IO_ERROR', `Could not create Session folder in ${library}`)
+              )
         )
       )
       if (created) return candidate
@@ -654,194 +669,170 @@ function reserveFolder(library: string, title: string): Effect.Effect<string, Co
 }
 
 /** Renders the canonical root document, shared by persistence and indexing. */
-function renderRootDocument(idea: IdeaSummary, notes: string): string {
+function renderRootDocument(session: SessionSummary, notes: string): string {
   const body = notes.replace(/\r\n/g, '\n').trim()
   return [
     '---',
-    'format: 1',
-    `id: ${idea.id}`,
-    `kind: ${idea.kind}`,
-    `status: ${idea.status}`,
-    `created: ${idea.createdAt}`,
-    `updated: ${idea.updatedAt}`,
-    `pinned: ${idea.pinned}`,
-    ...(idea.archivedAt ? [`archived: ${idea.archivedAt}`] : []),
-    'planning_index: planning/index.md',
-    'conversation: planning/conversation.md',
+    `format: ${FORMAT_VERSION}`,
+    `id: ${session.id}`,
+    `created: ${session.createdAt}`,
+    `updated: ${session.updatedAt}`,
+    `pinned: ${session.pinned}`,
+    ...(session.archivedAt ? [`archived: ${session.archivedAt}`] : []),
+    `conversation: ${CONVERSATION_FILE}`,
     '---',
     '',
-    `# ${idea.title}`,
+    `# ${session.title}`,
     ...(body ? ['', body] : []),
     ''
   ].join('\n')
 }
 
-function writePortableIdea(
-  ideaDir: string,
-  idea: IdeaSummary,
+function writePortableSession(
+  sessionDir: string,
+  session: SessionSummary,
   notes: string,
-  planningIndexId: string,
   conversationId: string
 ): Effect.Effect<void, CoreError> {
-  const root = renderRootDocument(idea, notes)
-  const planningIndex = [
-    '---',
-    'format: 1',
-    `document_id: ${planningIndexId}`,
-    `idea_id: ${idea.id}`,
-    'document_kind: planning-index',
-    'conversation: conversation.md',
-    '---',
-    '',
-    '# Planning Index',
-    '',
-    '- [Idea](../idea.md) — the stable root Idea',
-    '- [Conversation](conversation.md) — the permanent planning history',
-    ''
-  ].join('\n')
+  const root = renderRootDocument(session, notes)
   const conversation = [
     '---',
-    'format: 1',
+    `format: ${FORMAT_VERSION}`,
     `document_id: ${conversationId}`,
-    `idea_id: ${idea.id}`,
+    `session_id: ${session.id}`,
     'document_kind: conversation',
     '---',
     '',
     '# Conversation',
     '',
-    'This permanent Conversation belongs to the Idea.',
+    'This permanent Conversation belongs to the Session.',
     ''
   ].join('\n')
   const identity = {
-    format: 1,
-    ideaId: idea.id,
-    summary: idea,
+    format: FORMAT_VERSION,
+    sessionId: session.id,
+    summary: session,
     documents: {
-      root: { id: idea.id, path: 'idea.md' },
-      planningIndex: { id: planningIndexId, path: 'planning/index.md' },
-      conversation: { id: conversationId, path: 'planning/conversation.md' }
+      root: { id: session.id, path: SESSION_FILE },
+      conversation: { id: conversationId, path: CONVERSATION_FILE }
     }
   }
 
-  return writeManagedDocuments(ideaDir, identity, [
-    { path: IDEA_FILE, content: root },
-    { path: 'planning/index.md', content: planningIndex },
-    { path: 'planning/conversation.md', content: conversation }
+  return writeManagedDocuments(sessionDir, identity, [
+    { path: SESSION_FILE, content: root },
+    { path: CONVERSATION_FILE, content: conversation }
   ])
 }
 
-type RecoveryIdentity = Pick<RecoveryState, 'format' | 'ideaId' | 'summary' | 'documents'>
+type RecoveryIdentity = Pick<RecoveryState, 'format' | 'sessionId' | 'summary' | 'documents'>
 
 /**
  * Writes the managed documents and the private identity record. Writes are
  * direct and applied in the given order, with the identity record last so a
  * torn write leaves it stale rather than ahead of the documents it names.
  *
- * Callers that mutate an existing Idea hold the write permit; first-write and
- * migration paths do not, because no other writer can yet name the Idea.
+ * Callers that mutate an existing Session hold the write permit; the
+ * first-write path does not, because no other writer can yet name the Session.
  */
 function writeManagedDocuments(
-  ideaDir: string,
+  sessionDir: string,
   identity: RecoveryIdentity,
   documents: { path: string; content: string }[]
 ): Effect.Effect<void, CoreError> {
   return Effect.tryPromise({
     try: async () => {
-      await mkdir(join(ideaDir, '.idea'), { recursive: true })
+      await mkdir(join(sessionDir, PRIVATE_DIR), { recursive: true })
       for (const document of documents) {
-        await mkdir(join(ideaDir, document.path, '..'), { recursive: true })
-        await writeFile(join(ideaDir, document.path), document.content, 'utf8')
+        await mkdir(join(sessionDir, document.path, '..'), { recursive: true })
+        await writeFile(join(sessionDir, document.path), document.content, 'utf8')
       }
-      await writeJsonAtomic(join(ideaDir, '.idea', 'recovery.json'), identity)
+      await writeJsonAtomic(join(sessionDir, PRIVATE_DIR, 'recovery.json'), identity)
     },
     catch: (error) =>
       error instanceof CoreError
         ? error
         : new CoreError(
             'IO_ERROR',
-            error instanceof Error ? error.message : `Could not save the Idea to ${ideaDir}`
+            error instanceof Error ? error.message : `Could not save the Session to ${sessionDir}`
           )
   })
 }
 
-function scanIdeas(library: string): Effect.Effect<IdeaSummary[], CoreError> {
+function scanSessions(library: string): Effect.Effect<SessionSummary[], CoreError> {
   return Effect.gen(function* () {
     const entries = yield* Effect.tryPromise({
       try: () => readdir(library, { withFileTypes: true }),
-      catch: () => new CoreError('IO_ERROR', `Could not read the Idea Library at ${library}`)
+      catch: () => new CoreError('IO_ERROR', `Could not read the library at ${library}`)
     })
-    // Dot-folders (like the disposable .index projection) are never Ideas.
+    // Dot-folders (like the disposable .index projection) are never Sessions.
     const folders = entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
-    yield* Effect.forEach(folders, (entry) => migrateSupportedIdea(join(library, entry.name)), {
-      concurrency: 1
-    })
     const summaries = yield* Effect.forEach(
       folders,
-      (entry) => readIdeaSummary(library, entry.name),
+      (entry) => readSessionSummary(library, entry.name),
       { concurrency: SCAN_CONCURRENCY }
     )
     return summaries
-      .filter((summary): summary is IdeaSummary => summary !== null)
+      .filter((summary): summary is SessionSummary => summary !== null)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.title.localeCompare(b.title))
   })
 }
 
 interface RecoveryState {
   format: number
-  ideaId: string
-  summary?: IdeaSummary
+  sessionId: string
+  summary?: SessionSummary
   documents: {
     root: { id: string; path: string }
-    planningIndex: { id: string; path: string }
     conversation: { id: string; path: string }
   }
 }
 
-function reopenIdea(library: string, relativePath: string): Effect.Effect<OpenedIdea, CoreError> {
+function reopenSession(
+  library: string,
+  relativePath: string
+): Effect.Effect<OpenedSession, CoreError> {
   return Effect.gen(function* () {
-    const parsedPath = ideaRelativePathSchema.safeParse(relativePath)
+    const parsedPath = sessionRelativePathSchema.safeParse(relativePath)
     if (!parsedPath.success) {
       return yield* Effect.fail(
-        new CoreError('INVALID_INPUT', 'The Idea reference is not portable')
+        new CoreError('INVALID_INPUT', 'The Session reference is not portable')
       )
     }
-    const ideaDir = join(library, parsedPath.data)
-    const summary = yield* readIdeaSummary(library, parsedPath.data)
+    const sessionDir = join(library, parsedPath.data)
+    const summary = yield* readSessionSummary(library, parsedPath.data)
     if (!summary)
-      return yield* Effect.fail(new CoreError('IDEA_NOT_FOUND', 'The Idea was not found'))
+      return yield* Effect.fail(new CoreError('SESSION_NOT_FOUND', 'The Session was not found'))
 
     const rootDocument = yield* Effect.tryPromise({
-      try: () => findRootDocument(ideaDir),
-      catch: () => new CoreError('IO_ERROR', 'The root Idea is unreadable')
+      try: () => findRootDocument(sessionDir),
+      catch: () => new CoreError('IO_ERROR', 'The root document is unreadable')
     })
     if (!rootDocument) {
-      return yield* Effect.fail(new CoreError('IO_ERROR', 'The root Idea is unreadable'))
+      return yield* Effect.fail(new CoreError('IO_ERROR', 'The root document is unreadable'))
     }
 
-    const recoveryPath = join(ideaDir, '.idea', 'recovery.json')
+    const recoveryPath = join(sessionDir, PRIVATE_DIR, 'recovery.json')
     const recovery = yield* Effect.tryPromise({
       try: async () => JSON.parse(await readFile(recoveryPath, 'utf8')) as RecoveryState,
       catch: () => new CoreError('IO_ERROR', 'The private recovery metadata is unreadable')
     })
     const identities = yield* Effect.tryPromise({
-      try: () => collectManagedIdentities(ideaDir),
+      try: () => collectManagedIdentities(sessionDir),
       catch: () => new CoreError('IO_ERROR', 'Managed content could not be read')
     })
     const rootPath = identities.get(recovery.documents.root.id)
-    const planningIndexPath = identities.get(recovery.documents.planningIndex.id)
     const conversationPath = identities.get(recovery.documents.conversation.id)
-    if (!rootPath || !planningIndexPath || !conversationPath) {
+    if (!rootPath || !conversationPath) {
       return yield* Effect.fail(
-        new CoreError('IO_ERROR', 'One or more canonical planning documents could not be recovered')
+        new CoreError('IO_ERROR', 'One or more canonical documents could not be recovered')
       )
     }
     const documents = {
       root: { ...recovery.documents.root, path: rootPath },
-      planningIndex: { ...recovery.documents.planningIndex, path: planningIndexPath },
       conversation: { ...recovery.documents.conversation, path: conversationPath }
     }
     const nextRecovery: RecoveryState = { ...recovery, summary, documents }
-    const repaired = yield* repairPortableLinks(ideaDir, nextRecovery)
+    const repaired = yield* repairPortableLinks(sessionDir, nextRecovery)
     if (!repaired) {
       yield* Effect.tryPromise({
         try: () => writeJsonAtomic(recoveryPath, nextRecovery),
@@ -850,14 +841,9 @@ function reopenIdea(library: string, relativePath: string): Effect.Effect<Opened
     }
 
     return {
-      idea: summary,
+      session: summary,
       documents: {
         root: { id: documents.root.id, kind: 'root' as const, path: rootPath },
-        planningIndex: {
-          id: documents.planningIndex.id,
-          kind: 'planning-index' as const,
-          path: planningIndexPath
-        },
         conversation: {
           id: documents.conversation.id,
           kind: 'conversation' as const,
@@ -868,10 +854,10 @@ function reopenIdea(library: string, relativePath: string): Effect.Effect<Opened
   })
 }
 
-async function collectManagedIdentities(ideaDir: string): Promise<Map<string, string>> {
+async function collectManagedIdentities(sessionDir: string): Promise<Map<string, string>> {
   const identities = new Map<string, string>()
-  for (const path of await listMarkdownPaths(ideaDir)) {
-    const parsed = parseIdeaMarkdown(await readFile(join(ideaDir, path), 'utf8'))
+  for (const path of await listMarkdownPaths(sessionDir)) {
+    const parsed = parseSessionMarkdown(await readFile(join(sessionDir, path), 'utf8'))
     if (!parsed) continue
     const id = parsed.frontmatter['document_id'] ?? parsed.frontmatter['id']
     if (id) identities.set(id, path)
@@ -879,12 +865,12 @@ async function collectManagedIdentities(ideaDir: string): Promise<Map<string, st
   return identities
 }
 
-async function findRootDocument(ideaDir: string): Promise<{
+async function findRootDocument(sessionDir: string): Promise<{
   path: string
   raw: string
-  parsed: NonNullable<ReturnType<typeof parseIdeaMarkdown>>
+  parsed: NonNullable<ReturnType<typeof parseSessionMarkdown>>
 } | null> {
-  const recoveryRaw = await readFile(join(ideaDir, '.idea', 'recovery.json'), 'utf8').catch(
+  const recoveryRaw = await readFile(join(sessionDir, PRIVATE_DIR, 'recovery.json'), 'utf8').catch(
     () => null
   )
   let rootId: string | null = null
@@ -895,12 +881,15 @@ async function findRootDocument(ideaDir: string): Promise<{
       rootId = null
     }
   }
-  for (const path of await listMarkdownPaths(ideaDir)) {
-    const raw = await readFile(join(ideaDir, path), 'utf8')
-    const parsed = parseIdeaMarkdown(raw)
+  for (const path of await listMarkdownPaths(sessionDir)) {
+    const raw = await readFile(join(sessionDir, path), 'utf8')
+    const parsed = parseSessionMarkdown(raw)
     if (!parsed) continue
+    // A folder written in a previous on-disk format is discarded, not read:
+    // it is left exactly as it is on disk and never becomes a Session.
+    if (Number(parsed.frontmatter['format'] ?? '0') < FORMAT_VERSION) continue
     const id = parsed.frontmatter['id']
-    if ((rootId && id === rootId) || (!rootId && path === IDEA_FILE && id)) {
+    if ((rootId && id === rootId) || (!rootId && path === SESSION_FILE && id)) {
       return { path, raw, parsed }
     }
   }
@@ -908,41 +897,21 @@ async function findRootDocument(ideaDir: string): Promise<{
 }
 
 function repairPortableLinks(
-  ideaDir: string,
+  sessionDir: string,
   recovery: RecoveryState
 ): Effect.Effect<boolean, CoreError> {
   return Effect.gen(function* () {
     const rootPath = recovery.documents.root.path
-    const indexPath = recovery.documents.planningIndex.path
     const conversationPath = recovery.documents.conversation.path
-    const [rootRaw, indexRaw] = yield* Effect.tryPromise({
-      try: () =>
-        Promise.all([
-          readFile(join(ideaDir, rootPath), 'utf8'),
-          readFile(join(ideaDir, indexPath), 'utf8')
-        ]),
+    const rootRaw = yield* Effect.tryPromise({
+      try: () => readFile(join(sessionDir, rootPath), 'utf8'),
       catch: () => new CoreError('IO_ERROR', 'Managed links could not be inspected')
     })
-    const fromRoot = posix.dirname(rootPath)
-    const fromIndex = posix.dirname(indexPath)
-    const rootToIndex = posix.relative(fromRoot, indexPath)
-    const rootToConversation = posix.relative(fromRoot, conversationPath)
-    const indexToRoot = posix.relative(fromIndex, rootPath)
-    const indexToConversation = posix.relative(fromIndex, conversationPath)
-    const nextRoot = replaceFrontmatterField(
-      replaceFrontmatterField(rootRaw, 'planning_index', rootToIndex),
-      'conversation',
-      rootToConversation
-    )
-    const nextIndex = replaceFrontmatterField(indexRaw, 'conversation', indexToConversation)
-      .replace(/^- \[Idea\]\([^\n)]*\)/m, `- [Idea](${indexToRoot})`)
-      .replace(/^- \[Conversation\]\([^\n)]*\)/m, `- [Conversation](${indexToConversation})`)
-    if (nextRoot === rootRaw && nextIndex === indexRaw) return false
+    const rootToConversation = posix.relative(posix.dirname(rootPath), conversationPath)
+    const nextRoot = replaceFrontmatterField(rootRaw, 'conversation', rootToConversation)
+    if (nextRoot === rootRaw) return false
 
-    yield* writeManagedDocuments(ideaDir, recovery, [
-      { path: rootPath, content: nextRoot },
-      { path: indexPath, content: nextIndex }
-    ])
+    yield* writeManagedDocuments(sessionDir, recovery, [{ path: rootPath, content: nextRoot }])
     return true
   })
 }
@@ -955,7 +924,7 @@ function replaceFrontmatterField(raw: string, key: string, value: string): strin
 async function listMarkdownPaths(root: string, prefix = ''): Promise<string[]> {
   const result: string[] = []
   for (const entry of await readdir(join(root, prefix), { withFileTypes: true })) {
-    if (entry.name === '.idea') continue
+    if (entry.name === PRIVATE_DIR) continue
     const relative = prefix ? `${prefix}/${entry.name}` : entry.name
     if (entry.isDirectory()) result.push(...(await listMarkdownPaths(root, relative)))
     else if (entry.isFile() && entry.name.endsWith('.md')) result.push(relative)
@@ -969,13 +938,13 @@ async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await rename(staged, path)
 }
 
-function readIdeaSummary(
+function readSessionSummary(
   library: string,
   folder: string
-): Effect.Effect<IdeaSummary | null, CoreError> {
+): Effect.Effect<SessionSummary | null, CoreError> {
   return Effect.gen(function* () {
-    const ideaDir = join(library, folder)
-    const root = yield* Effect.tryPromise(() => findRootDocument(ideaDir)).pipe(
+    const sessionDir = join(library, folder)
+    const root = yield* Effect.tryPromise(() => findRootDocument(sessionDir)).pipe(
       Effect.orElseSucceed(() => null)
     )
     if (!root) return null
@@ -983,9 +952,7 @@ function readIdeaSummary(
     const archivedRaw = parsed.frontmatter['archived']
     const candidate = {
       id: parsed.frontmatter['id'],
-      kind: parsed.frontmatter['kind'],
       title: parsed.title,
-      status: parsed.frontmatter['status'],
       createdAt: parsed.frontmatter['created'],
       updatedAt: parsed.frontmatter['updated'],
       relativePath: folder,
@@ -994,74 +961,18 @@ function readIdeaSummary(
       archivedAt:
         archivedRaw && z.string().datetime().safeParse(archivedRaw).success ? archivedRaw : null
     }
-    const validated = ideaSummarySchema.safeParse(candidate)
+    const validated = sessionSummarySchema.safeParse(candidate)
     if (!validated.success) return null
     yield* Effect.tryPromise({
       try: () =>
-        writeJsonAtomic(join(ideaDir, '.idea', 'projection.json'), {
-          format: 1,
+        writeJsonAtomic(join(sessionDir, PRIVATE_DIR, 'projection.json'), {
+          format: FORMAT_VERSION,
           source: 'canonical-markdown',
-          idea: validated.data
+          session: validated.data
         }),
-      catch: () => new CoreError('IO_ERROR', 'Could not rebuild the Idea projection')
+      catch: () => new CoreError('IO_ERROR', 'Could not rebuild the Session projection')
     })
     return validated.data
-  })
-}
-
-function migrateSupportedIdea(ideaDir: string): Effect.Effect<void, CoreError> {
-  return Effect.gen(function* () {
-    const rootPath = join(ideaDir, IDEA_FILE)
-    const raw = yield* Effect.tryPromise(() => readFile(rootPath, 'utf8')).pipe(
-      Effect.orElseSucceed(() => null)
-    )
-    if (raw === null) return
-    const parsed = parseIdeaMarkdown(raw)
-    if (!parsed) return
-    const format = Number(parsed.frontmatter['format'] ?? '0')
-    if (format !== 0) return
-
-    const candidate = ideaSummarySchema.safeParse({
-      id: parsed.frontmatter['id'],
-      kind: parsed.frontmatter['kind'],
-      title: parsed.title,
-      status: parsed.frontmatter['status'],
-      createdAt: parsed.frontmatter['created'],
-      updatedAt: parsed.frontmatter['updated'],
-      relativePath: basename(ideaDir)
-    })
-    if (!candidate.success) return
-
-    const hash = createHash('sha256').update(`idea.md\0${raw}`).digest('hex')
-    const snapshotDir = join(ideaDir, '.idea', 'snapshots', hash)
-    yield* Effect.tryPromise({
-      try: async () => {
-        await mkdir(snapshotDir, { recursive: true })
-        await writeFile(join(snapshotDir, IDEA_FILE), raw, 'utf8')
-        await writeJsonAtomic(join(snapshotDir, 'manifest.json'), {
-          format: 1,
-          reason: 'before-format-1-migration',
-          contentHash: hash,
-          files: [{ path: IDEA_FILE, sha256: createHash('sha256').update(raw).digest('hex') }]
-        })
-      },
-      catch: (error) =>
-        new CoreError(
-          'IO_ERROR',
-          error instanceof Error ? error.message : 'Could not snapshot the legacy Idea'
-        )
-    })
-
-    const headingMarker = `# ${candidate.data.title}`
-    const headingIndex = raw.indexOf(headingMarker)
-    const notes = headingIndex === -1 ? '' : raw.slice(headingIndex + headingMarker.length).trim()
-    yield* writePortableIdea(
-      ideaDir,
-      candidate.data,
-      notes,
-      `${candidate.data.id}:planning-index`,
-      `${candidate.data.id}:conversation`
-    )
   })
 }
 
@@ -1085,8 +996,10 @@ function setFrontmatterField(raw: string, key: string, value: string | null): st
   return `---\n${lines.join('\n')}\n---\n${raw.slice(end + 5)}`
 }
 
-async function readRecovery(ideaDir: string): Promise<RecoveryState | null> {
-  const raw = await readFile(join(ideaDir, '.idea', 'recovery.json'), 'utf8').catch(() => null)
+async function readRecovery(sessionDir: string): Promise<RecoveryState | null> {
+  const raw = await readFile(join(sessionDir, PRIVATE_DIR, 'recovery.json'), 'utf8').catch(
+    () => null
+  )
   if (raw === null) return null
   try {
     return JSON.parse(raw) as RecoveryState
@@ -1095,11 +1008,14 @@ async function readRecovery(ideaDir: string): Promise<RecoveryState | null> {
   }
 }
 
-function indexedIdeasFor(library: string, ideas: IdeaSummary[]): Effect.Effect<IndexedIdea[]> {
+function indexedSessionsFor(
+  library: string,
+  sessions: SessionSummary[]
+): Effect.Effect<IndexedSession[]> {
   return Effect.forEach(
-    ideas,
+    sessions,
     (summary) =>
-      Effect.promise(async (): Promise<IndexedIdea> => {
+      Effect.promise(async (): Promise<IndexedSession> => {
         const root = await findRootDocument(join(library, summary.relativePath)).catch(() => null)
         return { summary, body: root ? markdownBody(root.raw) : '' }
       }),
@@ -1107,8 +1023,11 @@ function indexedIdeasFor(library: string, ideas: IdeaSummary[]): Effect.Effect<I
   )
 }
 
-function rebuildProjection(library: string, ideas: IdeaSummary[]): Effect.Effect<void, CoreError> {
-  return indexedIdeasFor(library, ideas).pipe(
+function rebuildProjection(
+  library: string,
+  sessions: SessionSummary[]
+): Effect.Effect<void, CoreError> {
+  return indexedSessionsFor(library, sessions).pipe(
     Effect.flatMap((indexed) =>
       Effect.try({
         try: () => rebuildIndex(library, indexed),
@@ -1119,10 +1038,14 @@ function rebuildProjection(library: string, ideas: IdeaSummary[]): Effect.Effect
 }
 
 /** Best-effort projection refresh: a failed upsert self-heals on query. */
-function upsertProjection(library: string, idea: IdeaSummary, body: string): Effect.Effect<void> {
+function upsertProjection(
+  library: string,
+  session: SessionSummary,
+  body: string
+): Effect.Effect<void> {
   return Effect.sync(() => {
     try {
-      upsertIdea(library, { summary: idea, body })
+      upsertSession(library, { summary: session, body })
     } catch {
       // The next query rebuilds the disposable index from canonical content.
     }
@@ -1136,23 +1059,23 @@ interface FolderPartition {
 }
 
 /**
- * Splits an Idea folder into app-owned delete targets and foreign content to
+ * Splits a Session folder into app-owned delete targets and foreign content to
  * keep. A directory whose entire subtree is app-owned collapses into a single
- * target; `.idea` private state is always app-owned.
+ * target; `.session` private state is always app-owned.
  */
-async function partitionIdeaFolder(
-  ideaDir: string,
+async function partitionSessionFolder(
+  sessionDir: string,
   ownedFiles: Set<string>
 ): Promise<FolderPartition> {
   async function walk(prefix: string): Promise<FolderPartition> {
-    const entries = await readdir(join(ideaDir, prefix), { withFileTypes: true })
+    const entries = await readdir(join(sessionDir, prefix), { withFileTypes: true })
     if (entries.length === 0) return { allOwned: false, targets: [], keeps: [prefix] }
     const results: FolderPartition[] = []
     for (const entry of entries) {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name
       if (entry.isDirectory()) {
         results.push(
-          rel === '.idea' ? { allOwned: true, targets: [rel], keeps: [] } : await walk(rel)
+          rel === PRIVATE_DIR ? { allOwned: true, targets: [rel], keeps: [] } : await walk(rel)
         )
       } else if (ownedFiles.has(rel)) {
         results.push({ allOwned: true, targets: [rel], keeps: [] })
@@ -1176,7 +1099,7 @@ async function partitionIdeaFolder(
   return walk('')
 }
 
-function parseIdeaMarkdown(
+function parseSessionMarkdown(
   raw: string
 ): { frontmatter: Record<string, string>; title: string | null } | null {
   if (!raw.startsWith('---\n')) return null
@@ -1206,5 +1129,5 @@ function slugify(title: string): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, MAX_SLUG_LENGTH)
     .replace(/-+$/, '')
-  return slug || 'idea'
+  return slug || 'session'
 }

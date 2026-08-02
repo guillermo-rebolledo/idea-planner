@@ -1,15 +1,14 @@
-# Idea Development desktop app
+# Desktop app
 
-The production macOS Electron shell for local-first Idea development. This is the real
-Main / Core / Preload / Renderer architecture; the throwaway prototype under
-`prototypes/` is design evidence only.
+The production macOS Electron shell. This is the real Main / Core / Preload / Renderer
+architecture; the throwaway prototype under `prototypes/` is design evidence only.
 
 ## Architecture
 
 - `src/main` — thin privileged Main process: window lifecycle, native dialogs and theme,
   IPC sender validation, and supervision of the Core utility process.
 - `src/core` — the deep product-behavior module (`core.ts`) plus the utility-process entry
-  (`index.ts`). Owns the Idea lifecycle and canonical Markdown persistence. This module
+  (`index.ts`). Owns the Session lifecycle and canonical Markdown persistence. This module
   interface is the primary test seam. Internals are written with
   [Effect](https://effect.website) behind a promise-based interface — see
   `docs/adr/0001-adopt-effect-in-core.md`; Effect never leaks past Core.
@@ -19,10 +18,10 @@ Main / Core / Preload / Renderer architecture; the throwaway prototype under
   source-owned shadcn-style components (React 19, Tailwind CSS v4).
 - `src/shared` — the versioned zod contract validated at every process boundary.
 
-Ideas are stored as ordinary Markdown: one folder per Idea inside the user-chosen Idea
-Library, with minimal frontmatter (`id`, `kind`, `status`, timestamps) and the content as
-plain CommonMark. A rebuildable app-support settings file remembers the library location
-and theme preference; losing it never loses an Idea.
+Sessions are stored as ordinary Markdown: one folder per Session inside the user-chosen
+library, with minimal frontmatter (`format`, `id`, timestamps) and the content as plain
+CommonMark. A rebuildable app-support settings file remembers the library location and
+theme preference; losing it never loses a Session.
 
 ## Commands
 

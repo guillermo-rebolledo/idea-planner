@@ -1,8 +1,8 @@
 {"type":"thread.started","thread_id":"019fbb9a-aaa6-74a1-8b88-05802de70c12"}
 {"type":"turn.started"}
-{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Reading the Idea before asking the first question."}}
-{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"planning","tool":"read_file","status":"in_progress"}}
-{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"planning","tool":"read_file","status":"completed"}}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Reading the Session before asking the first question."}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"app","tool":"read_file","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"app","tool":"read_file","status":"completed"}}
 {"type":"item.updated","item":{"id":"item_2","type":"agent_message","text":"Who is this"}}
 {"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Who is this for, exactly?"}}
 {"type":"item.completed","item":{"id":"item_3","type":"future_item_kind","text":"anything"}}

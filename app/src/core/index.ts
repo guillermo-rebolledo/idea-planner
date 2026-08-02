@@ -64,20 +64,20 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
   switch (command.type) {
     case 'library/open':
       return core.openLibrary(command.path)
-    case 'idea/capture':
-      return core.captureIdea(command.input)
-    case 'idea/open':
-      return core.openIdea(command.relativePath)
-    case 'idea/list':
-      return core.listIdeas()
+    case 'session/capture':
+      return core.captureSession(command.input)
+    case 'session/open':
+      return core.openSession(command.relativePath)
+    case 'session/list':
+      return core.listSessions()
     case 'mailbox/query':
       return core.queryMailbox(command.query)
-    case 'idea/set-pinned':
-      return core.setIdeaPinned(command.relativePath, command.pinned)
-    case 'idea/set-archived':
-      return core.setIdeaArchived(command.relativePath, command.archived)
-    case 'idea/delete-preview':
-      return core.previewDeleteIdea(command.relativePath)
+    case 'session/set-pinned':
+      return core.setSessionPinned(command.relativePath, command.pinned)
+    case 'session/set-archived':
+      return core.setSessionArchived(command.relativePath, command.archived)
+    case 'session/delete-preview':
+      return core.previewDeleteSession(command.relativePath)
     case 'run/accept':
       return core.acceptRun(command.input)
     case 'run/list':
@@ -93,16 +93,16 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
         relativePath: command.relativePath,
         runId: command.runId,
         submissionId: command.submissionId,
-        provider: command.provider,
-        workflow: command.workflow,
+        harness: command.harness,
+        skill: command.skill,
         model: command.model,
         restorationNote: command.restorationNote
       })
     case 'conversation/ingest':
-      return core.ingestProviderOutput({
+      return core.ingestHarnessOutput({
         relativePath: command.relativePath,
         runId: command.runId,
-        provider: command.provider,
+        harness: command.harness,
         chunk: command.chunk
       })
     case 'conversation/apply':

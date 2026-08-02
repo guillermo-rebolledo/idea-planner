@@ -16,7 +16,7 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
           core: resolve(__dirname, 'src/core/index.ts'),
-          'planning-mcp-proxy': resolve(__dirname, 'src/main/planning-mcp-proxy.ts')
+          'mcp-proxy': resolve(__dirname, 'src/main/mcp-proxy.ts')
         }
       }
     }

@@ -4,6 +4,12 @@
 
 A Project is identified by the resolved path of its root, so two clones of the same remote are two Projects with independent trust and approvals. Each row carries a `+` that starts a new chat already bound to it, and clicking the row *filters* the Session list rather than navigating into a container — Projects are launchers, not containers.
 
+## The field that becomes the Checkout
+
+Ticket 03 deliberately did **not** rename `workingDirectory` to `checkout`, even though the glossary retires Working Directory. Today that field holds the Session's own folder in the library, which is not a git checkout of anything — Checkout is a Project concept, and Projects arrive here. Renaming it earlier would have asserted something false.
+
+This ticket is where it becomes true: a Session's working directory is the Project's primary checkout. Rename the field then, so the code and `CONTEXT.md` agree.
+
 **Blocked by:** 03
 
 **Status:** ready-for-agent

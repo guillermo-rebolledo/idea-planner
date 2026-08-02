@@ -1,10 +1,10 @@
-import type { ProviderId, ProviderReadiness, ReadinessSnapshot } from '@shared/readiness'
-import { providerIdSchema } from '@shared/readiness'
+import type { HarnessId, HarnessReadiness, ReadinessSnapshot } from '@shared/readiness'
+import { harnessIdSchema } from '@shared/readiness'
 import {
-  PROVIDER_SPECS,
+  HARNESS_SPECS,
   SKILLS_INSTALL_COMMAND,
   discoverPathEntries,
-  probeProvider,
+  probeHarness,
   type DiscoveredPath
 } from './readiness'
 import type { SettingsStore } from './settings'
@@ -17,7 +17,7 @@ export interface ReadinessServiceOptions {
   probeTimeoutMs?: number
 }
 
-const PROVIDER_IDS = providerIdSchema.options
+const HARNESS_IDS = harnessIdSchema.options
 
 /**
  * Owns the cached readiness snapshot in Main. Probing happens on demand and
@@ -36,8 +36,8 @@ export class ReadinessService {
     return this.snapshot ?? this.refresh()
   }
 
-  async refresh(provider?: ProviderId): Promise<ReadinessSnapshot> {
-    if (provider) return this.enqueue(() => this.probe(provider))
+  async refresh(harness?: HarnessId): Promise<ReadinessSnapshot> {
+    if (harness) return this.enqueue(() => this.probe(harness))
     // A full refresh already in flight answers concurrent requests.
     this.inFlightFull ??= this.enqueue(() => this.probe()).finally(() => {
       this.inFlightFull = null
@@ -51,21 +51,21 @@ export class ReadinessService {
     return result
   }
 
-  async setExplicitExecutable(provider: ProviderId, path: string): Promise<ReadinessSnapshot> {
+  async setExplicitExecutable(harness: HarnessId, path: string): Promise<ReadinessSnapshot> {
     const { settings } = this.options
     settings.update({
-      providerExecutables: { ...settings.get().providerExecutables, [provider]: path }
+      harnessExecutables: { ...settings.get().harnessExecutables, [harness]: path }
     })
-    return this.refresh(provider)
+    return this.refresh(harness)
   }
 
-  async clearExplicitExecutable(provider: ProviderId): Promise<ReadinessSnapshot> {
+  async clearExplicitExecutable(harness: HarnessId): Promise<ReadinessSnapshot> {
     const { settings } = this.options
-    const providerExecutables = Object.fromEntries(
-      Object.entries(settings.get().providerExecutables).filter(([key]) => key !== provider)
+    const harnessExecutables = Object.fromEntries(
+      Object.entries(settings.get().harnessExecutables).filter(([key]) => key !== harness)
     )
-    settings.update({ providerExecutables })
-    return this.refresh(provider)
+    settings.update({ harnessExecutables })
+    return this.refresh(harness)
   }
 
   async setLoginShellDiscovery(consent: boolean): Promise<ReadinessSnapshot> {
@@ -89,23 +89,23 @@ export class ReadinessService {
     })
   }
 
-  private async probe(provider?: ProviderId): Promise<ReadinessSnapshot> {
+  private async probe(harness?: HarnessId): Promise<ReadinessSnapshot> {
     const discovered = await this.discover()
     const settings = this.options.settings.get()
 
-    const probeOne = (id: ProviderId): Promise<ProviderReadiness> =>
-      probeProvider(PROVIDER_SPECS[id], {
+    const probeOne = (id: HarnessId): Promise<HarnessReadiness> =>
+      probeHarness(HARNESS_SPECS[id], {
         pathEntries: discovered.entries,
-        explicitExecutable: settings.providerExecutables[id],
+        explicitExecutable: settings.harnessExecutables[id],
         homeDir: this.options.homeDir,
         probeTimeoutMs: this.options.probeTimeoutMs
       })
 
     const previous = this.snapshot
-    const providers = await Promise.all(
-      PROVIDER_IDS.map(async (id) => {
-        if (provider && id !== provider) {
-          const kept = previous?.providers.find((entry) => entry.provider === id)
+    const harnesses = await Promise.all(
+      HARNESS_IDS.map(async (id) => {
+        if (harness && id !== harness) {
+          const kept = previous?.harnesses.find((entry) => entry.harness === id)
           if (kept) return kept
         }
         return probeOne(id)
@@ -113,7 +113,7 @@ export class ReadinessService {
     )
 
     this.snapshot = {
-      providers,
+      harnesses,
       pathSources: discovered.sources,
       loginShellConsent: settings.loginShellDiscovery !== null,
       skillsInstallCommand: SKILLS_INSTALL_COMMAND

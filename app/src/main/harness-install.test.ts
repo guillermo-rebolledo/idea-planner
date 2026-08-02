@@ -1,29 +1,29 @@
 import { describe, expect, it } from 'vitest'
-import { describeProviderUpdate } from './provider-install'
+import { describeHarnessUpdate } from './harness-install'
 
 /**
- * Telling someone how to update a provider is only useful if the command
+ * Telling someone how to update a Harness is only useful if the command
  * matches how they actually installed it. A plausible-but-wrong command is
  * worse than none, because it appears to succeed and changes nothing.
  */
 
-describe('describing how to update a provider', () => {
+describe('describing how to update a Harness', () => {
   it('offers the package manager that owns the resolved path', () => {
-    expect(describeProviderUpdate('codex', ['/Users/x/.bun/bin/codex'])).toBe(
+    expect(describeHarnessUpdate('codex', ['/Users/x/.bun/bin/codex'])).toBe(
       'bun i -g @openai/codex@latest'
     )
-    expect(describeProviderUpdate('codex', ['/Users/x/Library/pnpm/codex'])).toBe(
+    expect(describeHarnessUpdate('codex', ['/Users/x/Library/pnpm/codex'])).toBe(
       'pnpm add -g @openai/codex@latest'
     )
     expect(
-      describeProviderUpdate('claude', [
+      describeHarnessUpdate('claude', [
         '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js'
       ])
     ).toBe('npm install -g @anthropic-ai/claude-code@latest')
   })
 
   it('reads a Homebrew installation as Homebrew', () => {
-    expect(describeProviderUpdate('codex', ['/opt/homebrew/Cellar/codex/0.146.0/bin/codex'])).toBe(
+    expect(describeHarnessUpdate('codex', ['/opt/homebrew/Cellar/codex/0.146.0/bin/codex'])).toBe(
       'brew upgrade codex'
     )
   })
@@ -33,7 +33,7 @@ describe('describing how to update a provider', () => {
     // Homebrew's bin. `brew upgrade` there reports success and changes
     // nothing, so the real path has to win.
     expect(
-      describeProviderUpdate('codex', [
+      describeHarnessUpdate('codex', [
         '/opt/homebrew/bin/codex',
         '/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js'
       ])
@@ -41,16 +41,14 @@ describe('describing how to update a provider', () => {
   })
 
   it('does not offer a global command for a project-local install', () => {
-    expect(describeProviderUpdate('codex', ['/Users/x/dev/app/node_modules/.bin/codex'])).toBeNull()
+    expect(describeHarnessUpdate('codex', ['/Users/x/dev/app/node_modules/.bin/codex'])).toBeNull()
   })
 
   it('offers nothing when the installation is not recognizable', () => {
-    expect(
-      describeProviderUpdate('codex', ['/Users/x/dev/my-fork/target/release/codex'])
-    ).toBeNull()
+    expect(describeHarnessUpdate('codex', ['/Users/x/dev/my-fork/target/release/codex'])).toBeNull()
   })
 
-  it('offers nothing when the provider was never resolved', () => {
-    expect(describeProviderUpdate('codex', [null])).toBeNull()
+  it('offers nothing when the Harness was never resolved', () => {
+    expect(describeHarnessUpdate('codex', [null])).toBeNull()
   })
 })

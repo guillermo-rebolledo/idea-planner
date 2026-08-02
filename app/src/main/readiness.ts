@@ -3,20 +3,19 @@ import { access, constants, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
   PathSource,
-  ProviderId,
-  ProviderCapability,
-  ProviderReadiness,
+  HarnessId,
+  HarnessCapability,
+  HarnessReadiness,
   ReadinessCheck,
   ReadinessCode,
   ReadinessDimension,
   ReadinessStatus,
   RemediationLink
 } from '@shared/readiness'
-import type { PlanningWorkflow } from '@shared/run'
-import { describeProviderUpdate } from './provider-install'
+import { describeHarnessUpdate } from './harness-install'
 
 /**
- * Provider and skill readiness probing. Discovery is deliberately narrow:
+ * Harness and skill readiness probing. Discovery is deliberately narrow:
  * exact configured command names resolved against an explicit PATH (inherited
  * and launchctl, plus a login shell only after one-time consent) — never a
  * directory enumeration or disk scan. Probes execute fixed argument vectors
@@ -31,24 +30,21 @@ const SKILLS_LINKS: RemediationLink[] = [
   { label: 'Node.js (provides npm and npx)', url: 'https://nodejs.org' }
 ]
 
-/** The workflows this product invokes plus their reviewed dependency closure. */
+/** The Skills this product invokes plus their reviewed dependency closure. */
 const REQUIRED_SKILLS = ['grill-me', 'grilling', 'wayfinder']
 
 /**
- * The exact skill identity each planning workflow is allowed to invoke. A
- * workflow absent here has not been reviewed and verified, so the app refuses
- * to start a Run for it rather than reaching for a plausible directory name.
+ * The exact Skills a Run is allowed to invoke. A Skill absent here has not
+ * been reviewed and verified, so the app refuses to start a Run for it rather
+ * than reaching for a plausible directory name.
  */
-export const VERIFIED_WORKFLOW_SKILLS: Partial<Record<PlanningWorkflow, string>> = {
-  grilling: 'grilling',
-  wayfinder: 'wayfinder'
-}
+export const VERIFIED_SKILLS: readonly string[] = ['grilling', 'wayfinder']
 
 /** Hosts of every remediation link, so the open-link allowlist cannot drift. */
 export function readinessLinkHosts(): Set<string> {
   const links = [
     ...SKILLS_LINKS,
-    ...Object.values(PROVIDER_SPECS).flatMap((spec) => [spec.installLink, spec.authLink])
+    ...Object.values(HARNESS_SPECS).flatMap((spec) => [spec.installLink, spec.authLink])
   ]
   return new Set(links.map((link) => new URL(link.url).hostname))
 }
@@ -56,15 +52,15 @@ export function readinessLinkHosts(): Set<string> {
 type AuthProbe = { kind: 'exit-code'; args: string[] } | { kind: 'stream-init'; args: string[] }
 type SandboxProbe = { kind: 'exit-code'; args: string[] } | { kind: 'host-sandbox-exec' }
 
-export interface ProviderSpec {
-  id: ProviderId
+export interface HarnessSpec {
+  id: HarnessId
   displayName: string
   command: string
   versionArgs: string[]
   /** Versions below this fail as incompatible. */
   minimumVersion: string
   /**
-   * What this app can do with the provider. `null` means no harness Adapter
+   * What this app can do with the Harness. `null` means no harness Adapter
    * exists for it yet, so the feature is declared unsupported rather than
    * offered and then failing.
    */
@@ -81,7 +77,7 @@ export interface ProviderSpec {
   authLink: RemediationLink
 }
 
-export const PROVIDER_SPECS: Record<ProviderId, ProviderSpec> = {
+export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
   codex: {
     id: 'codex',
     displayName: 'Codex',
@@ -250,7 +246,7 @@ function finishCheck(dimension: ReadinessDimension, draft: CheckDraft): Readines
   }
 }
 
-function notProbed(dimension: ReadinessDimension, spec: ProviderSpec): ReadinessCheck {
+function notProbed(dimension: ReadinessDimension, spec: HarnessSpec): ReadinessCheck {
   return finishCheck(dimension, {
     status: 'not-probed',
     code: 'not-probed',
@@ -259,7 +255,7 @@ function notProbed(dimension: ReadinessDimension, spec: ProviderSpec): Readiness
 }
 
 async function probeCompatibility(
-  spec: ProviderSpec,
+  spec: HarnessSpec,
   run: (args: string[], untilStdoutLine?: (line: string) => boolean) => Promise<RunResult>
 ): Promise<{ check: ReadinessCheck; version: string | null }> {
   const result = await run(spec.versionArgs)
@@ -333,7 +329,7 @@ async function probeCompatibility(
 }
 
 async function probeAuthentication(
-  spec: ProviderSpec,
+  spec: HarnessSpec,
   run: (args: string[], untilStdoutLine?: (line: string) => boolean) => Promise<RunResult>
 ): Promise<ReadinessCheck> {
   const probe = spec.authProbe
@@ -405,7 +401,7 @@ async function probeAuthentication(
 }
 
 async function probeSandbox(
-  spec: ProviderSpec,
+  spec: HarnessSpec,
   sandboxExecPath: string,
   run: (args: string[], untilStdoutLine?: (line: string) => boolean) => Promise<RunResult>
 ): Promise<ReadinessCheck> {
@@ -437,11 +433,11 @@ async function probeSandbox(
   return finishCheck('sandbox', {
     status: 'ready',
     code: 'ready',
-    summary: 'The native macOS planning sandbox is available.'
+    summary: 'The native macOS sandbox is available.'
   })
 }
 
-async function probeSkills(spec: ProviderSpec, homeDir: string): Promise<ReadinessCheck> {
+async function probeSkills(spec: HarnessSpec, homeDir: string): Promise<ReadinessCheck> {
   const missing: string[] = []
   for (const name of REQUIRED_SKILLS) {
     // Exact documented location for this harness — never a directory walk.
@@ -457,7 +453,7 @@ async function probeSkills(spec: ProviderSpec, homeDir: string): Promise<Readine
     return finishCheck('skills', {
       status: 'failed',
       code: 'skills-missing',
-      summary: `The Matt Pocock planning skills are not installed for ${spec.displayName}. Install them yourself with the command below — this app never runs it.`,
+      summary: `The Matt Pocock Skills are not installed for ${spec.displayName}. Install them yourself with the command below — this app never runs it.`,
       command: SKILLS_INSTALL_COMMAND,
       links: SKILLS_LINKS,
       missingSkills: missing
@@ -470,10 +466,10 @@ async function probeSkills(spec: ProviderSpec, homeDir: string): Promise<Readine
   })
 }
 
-export async function probeProvider(
-  spec: ProviderSpec,
+export async function probeHarness(
+  spec: HarnessSpec,
   options: ProbeOptions
-): Promise<ProviderReadiness> {
+): Promise<HarnessReadiness> {
   const timeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS
   const sandboxExecPath = options.sandboxExecPath ?? '/usr/bin/sandbox-exec'
   const source = options.explicitExecutable ? 'explicit' : 'path'
@@ -548,12 +544,12 @@ export async function probeProvider(
   ]
   const available = checks.every((entry) => entry.status === 'ready' || entry.status === 'warning')
   // The command on PATH is usually a symlink, and only what it points at can
-  // say how the provider was installed.
+  // say how the Harness was installed.
   const realExecutablePath = executablePath
     ? await realpath(executablePath).catch(() => null)
     : null
   return {
-    provider: spec.id,
+    harness: spec.id,
     displayName: spec.displayName,
     command: spec.command,
     executablePath,
@@ -561,7 +557,7 @@ export async function probeProvider(
     version,
     checks,
     capabilities: {
-      developIdea: describeConversationCapability(spec, {
+      developSession: describeConversationCapability(spec, {
         available,
         version,
         paths: [executablePath, realExecutablePath]
@@ -573,25 +569,25 @@ export async function probeProvider(
 }
 
 /**
- * Whether this provider can develop an Idea, and if not, what the person can
- * do about it. An unsupported provider stays visible with a reason: silently
+ * Whether this Harness can develop a Session, and if not, what the person can
+ * do about it. An unsupported Harness stays visible with a reason: silently
  * omitting it looks like a bug, and looks the same as a broken install.
  */
 function describeConversationCapability(
-  spec: ProviderSpec,
+  spec: HarnessSpec,
   state: { available: boolean; version: string | null; paths: (string | null)[] }
-): ProviderCapability {
+): HarnessCapability {
   if (!spec.conversation) {
     return {
       available: false,
-      summary: `Developing an Idea with ${spec.displayName} is not supported yet. Its harness Adapter arrives in a later milestone.`,
+      summary: `Developing a Session with ${spec.displayName} is not supported yet. Its harness Adapter arrives in a later milestone.`,
       command: null
     }
   }
   if (!state.available) {
     return {
       available: false,
-      summary: `${spec.displayName} is not ready yet. Open AI Providers to see which check needs repairing.`,
+      summary: `${spec.displayName} is not ready yet. Open Harnesses to see which check needs repairing.`,
       command: null
     }
   }
@@ -599,15 +595,15 @@ function describeConversationCapability(
   if (state.version && compareVersions(state.version, required) < 0) {
     return {
       available: false,
-      // Below this version the provider reports its work in a shape this
+      // Below this version the Harness reports its work in a shape this
       // app's Adapter cannot read, so a Run would produce nothing usable.
-      summary: `Developing an Idea needs ${spec.displayName} ${required} or newer. You have ${state.version}.`,
-      command: describeProviderUpdate(spec.id, state.paths)
+      summary: `Developing a Session needs ${spec.displayName} ${required} or newer. You have ${state.version}.`,
+      command: describeHarnessUpdate(spec.id, state.paths)
     }
   }
   return {
     available: true,
-    summary: `Ready to develop an Idea with ${spec.displayName}.`,
+    summary: `Ready to develop a Session with ${spec.displayName}.`,
     command: null
   }
 }
@@ -626,8 +622,8 @@ function splitPath(value: string | null | undefined): string[] {
 
 const LOGIN_SHELL_TIMEOUT_MS = 5000
 const LAUNCHCTL_TIMEOUT_MS = 2000
-const PATH_MARKER_BEGIN = '__IDEA_PATH_BEGIN__'
-const PATH_MARKER_END = '__IDEA_PATH_END__'
+const PATH_MARKER_BEGIN = '__APP_PATH_BEGIN__'
+const PATH_MARKER_END = '__APP_PATH_END__'
 
 async function runForOutput(
   file: string,

@@ -3,11 +3,11 @@ import { createConnection, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PlanningToolHost } from './planning-tool-host'
+import { ToolHost } from './tool-host'
 
 let root: string
 let socketPath: string
-let host: PlanningToolHost
+let host: ToolHost
 let socket: Socket
 let nextId = 0
 const onActivity = vi.fn()
@@ -15,12 +15,12 @@ const onStop = vi.fn()
 const onChoices = vi.fn()
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'planning-tools-'))
-  socketPath = join(root, 'planning.sock')
+  root = await mkdtemp(join(tmpdir(), 'app-tools-'))
+  socketPath = join(root, 'app.sock')
   onActivity.mockReset()
   onStop.mockReset()
   onChoices.mockReset()
-  host = new PlanningToolHost({
+  host = new ToolHost({
     socketPath,
     capabilityToken: 'test-capability',
     callbacks: { onActivity, onStop, onChoices }
@@ -28,7 +28,7 @@ beforeEach(async () => {
   await host.start()
   socket = createConnection(socketPath)
   await new Promise<void>((resolve) => socket.once('connect', resolve))
-  socket.write(`${JSON.stringify({ planningCapability: 'test-capability' })}\n`)
+  socket.write(`${JSON.stringify({ appCapability: 'test-capability' })}\n`)
 })
 
 afterEach(async () => {
