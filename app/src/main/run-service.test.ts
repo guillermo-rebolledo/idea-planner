@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createConnection, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -131,7 +132,8 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       usage: { run: null, session: emptyUsage() },
       recovery: null,
       harnessThreads: {},
-      activeRunId: null
+      activeRunId: null,
+      pendingApprovalId: null
     }
   }
   const run: RunSnapshot = {
@@ -210,7 +212,11 @@ function readyReadiness(executablePath: string): {
 }
 
 const fakeClaudeOauthToken = (): Promise<string> => Promise.resolve('test-oauth-token')
+/** Connections a test opened to a Run's MCP socket, closed with the test. */
+const openSockets: Socket[] = []
+
 afterEach(async () => {
+  for (const socket of openSockets.splice(0)) socket.destroy()
   await Promise.all(
     temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true }))
   )
@@ -791,18 +797,230 @@ describe('staged settings', () => {
   })
 })
 
-describe('Ask before it can ask', () => {
-  it('refuses an Ask Run rather than starting one that can never be answered', async () => {
+describe('Ask mode', () => {
+  it('runs Claude in the mode that asks, pointed at the app’s own approval tool', async () => {
     const root = await readyClaudeRoot('run-claude-ask-')
     const broker = fakeBroker()
     const service = new RunService(claudeDeps(root, broker))
 
-    // Ask maps to the Harness mode that asks, and nothing serves the prompt
-    // tool until ticket 07b. Starting anyway produces a Run that stalls on its
-    // first tool call and looks like it is working.
-    await expect(service.start({ ...startInput(), permissionMode: 'ask' })).rejects.toThrow(
-      /approval/i
+    await service.start({ ...startInput(), permissionMode: 'ask' })
+
+    const args = broker.launch?.args ?? []
+    expect(args).toEqual(expect.arrayContaining(['--permission-mode', 'default']))
+    expect(args).toEqual(
+      expect.arrayContaining(['--permission-prompt-tool', 'mcp__app__approval_request'])
     )
+    const settingsPath = args[args.indexOf('--settings') + 1] ?? ''
+    // Ask gates every tool, the app's own included. Being asked whether the app
+    // may offer you a menu is not a decision anybody has, so those alone are
+    // allowed outright — and nothing the agent does to the Checkout is.
+    expect(JSON.parse(await readFile(settingsPath, 'utf8'))).toMatchObject({
+      permissions: {
+        defaultMode: 'default',
+        allow: ['mcp__app__offer_response_options', 'mcp__app__approval_request']
+      }
+    })
+  })
+
+  it('blocks the Run on a request, and resumes it when the person approves', async () => {
+    const root = await readyClaudeRoot('run-claude-approve-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    const streamed: ConversationStreamEvent[] = []
+    const service = new RunService({
+      ...claudeDeps(root, broker),
+      core,
+      onConversationEvent: (event) => streamed.push(event)
+    })
+    const run = await service.start({ ...startInput(), permissionMode: 'ask' })
+
+    const { answer } = await requestApproval(root, {
+      tool_name: 'Bash',
+      input: { command: 'pnpm test' },
+      tool_use_id: 'toolu_1'
+    })
+    await vi.waitFor(() => {
+      expect(streamed.map((entry) => entry.event.type)).toContain('approval-request')
+    })
+    // The Run is blocked while the request stands, and the Conversation is
+    // where the person reads what is being asked for.
+    expect(applied(core, 'approval-request')).toMatchObject({
+      id: 'toolu_1',
+      tool: 'Bash',
+      summary: 'pnpm test'
+    })
+    expect(latestStatus(core)).toBe('waiting')
+
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId: run.id,
+      approvalId: 'toolu_1',
+      decision: 'allow',
+      message: ''
+    })
+
+    expect(JSON.parse(await answer)).toMatchObject({ behavior: 'allow' })
+    expect(applied(core, 'approval-resolved')).toMatchObject({ decision: 'allowed' })
+    expect(latestStatus(core)).toBe('running')
+  })
+
+  it('hands a denial’s message back to the agent and lets the Run carry on', async () => {
+    const root = await readyClaudeRoot('run-claude-deny-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    const service = new RunService({ ...claudeDeps(root, broker), core })
+    const run = await service.start({ ...startInput(), permissionMode: 'ask' })
+
+    const { answer } = await requestApproval(root, {
+      tool_name: 'Bash',
+      input: { command: 'rm -rf /' },
+      tool_use_id: 'toolu_2'
+    })
+    await vi.waitFor(() => expect(applied(core, 'approval-request')).toBeDefined())
+
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId: run.id,
+      approvalId: 'toolu_2',
+      decision: 'deny',
+      message: 'Run the unit tests instead'
+    })
+
+    expect(JSON.parse(await answer)).toEqual({
+      behavior: 'deny',
+      message: 'Run the unit tests instead'
+    })
+    expect(applied(core, 'approval-resolved')).toMatchObject({
+      decision: 'denied',
+      message: 'Run the unit tests instead'
+    })
+    // Denied, not stopped: the agent was told, and goes on working.
+    expect(latestStatus(core)).toBe('running')
+  })
+
+  it('declines what is outstanding when the Run ends, and leaves nothing to answer', async () => {
+    const root = await readyClaudeRoot('run-claude-outstanding-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    const service = new RunService({ ...claudeDeps(root, broker), core })
+    const run = await service.start({ ...startInput(), permissionMode: 'ask' })
+
+    const { answer } = await requestApproval(root, {
+      tool_name: 'Bash',
+      input: { command: 'pnpm test' },
+      tool_use_id: 'toolu_3'
+    })
+    await vi.waitFor(() => expect(applied(core, 'approval-request')).toBeDefined())
+
+    // Quitting the app stops the Run, which is what closing this Run's tool
+    // host means. The Harness is told rather than left blocked on a socket.
+    await service.stop(run.id, 'session')
+    await broker.launch?.onBeforeCleanup?.()
+
+    expect(JSON.parse(await answer)).toMatchObject({ behavior: 'deny' })
+    expect(core.commands).toContain('conversation/finalize')
+    await expect(
+      service.resolveApproval({
+        sessionId: 'session',
+        runId: run.id,
+        approvalId: 'toolu_3',
+        decision: 'allow'
+      })
+    ).rejects.toThrow(/no longer waiting/)
+  })
+
+  it('refuses Ask on Codex, whose transport cannot carry an approval', async () => {
+    const root = await readyHarnessRoot('run-codex-ask-')
+    const broker = fakeBroker()
+    const service = new RunService({
+      core: fakeCore(join(root, 'a-project')),
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            harnesses: [
+              {
+                harness: 'codex' as const,
+                available: true,
+                executablePath: join(root, 'codex'),
+                version: 'codex-cli 0.146.0'
+              }
+            ]
+          })
+        )
+      },
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js'
+    })
+
+    // `codex exec` auto-rejects approvals without emitting an event, so a Run
+    // started this way would look like it was working while refusing
+    // everything. Ticket 10 owns the transport that can ask.
+    await expect(
+      service.start({ ...startInput(), harness: 'codex', skill: 'grilling', permissionMode: 'ask' })
+    ).rejects.toThrow(/Ask/)
     expect(broker.start).not.toHaveBeenCalled()
   })
 })
+
+/** The latest Run status this service asked Core to record. */
+function latestStatus(core: FakeCore): string | undefined {
+  return (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
+    .filter(([command]) => command.type === 'run/event' && command.input?.status !== undefined)
+    .at(-1)?.[0].input?.status
+}
+
+/** The event of that type this service applied to the Conversation. */
+function applied(core: FakeCore, type: string): Record<string, unknown> | undefined {
+  return (core.send.mock.calls as [{ type: string; event?: Record<string, unknown> }][])
+    .filter(
+      ([command]) => command.type === 'conversation/apply' && command.event?.['type'] === type
+    )
+    .at(-1)?.[0].event
+}
+
+/**
+ * Asks for permission the way the Harness does: over the app's own MCP socket,
+ * found where the Run's staged configuration points the proxy at it. The
+ * request stays outstanding, so its answer is handed back unawaited — the
+ * point of the test is that nothing comes back until the person decides.
+ */
+async function requestApproval(
+  root: string,
+  args: Record<string, unknown>
+): Promise<{ answer: Promise<string> }> {
+  const runsRoot = join(root, 'private')
+  const [runKey] = await readdir(runsRoot)
+  if (!runKey) throw new Error('The Run staged no private directory')
+  const config = JSON.parse(await readFile(join(runsRoot, runKey, 'mcp.json'), 'utf8')) as {
+    mcpServers: { app: { env: { APP_MCP_SOCKET: string; APP_MCP_CAPABILITY: string } } }
+  }
+  const { APP_MCP_SOCKET, APP_MCP_CAPABILITY } = config.mcpServers.app.env
+  const socket = createConnection(APP_MCP_SOCKET)
+  openSockets.push(socket)
+  await new Promise<void>((resolve) => socket.once('connect', resolve))
+  socket.write(`${JSON.stringify({ appCapability: APP_MCP_CAPABILITY })}\n`)
+  const answer = new Promise<string>((resolve) => {
+    let pending = ''
+    socket.on('data', (chunk: Buffer) => {
+      pending += chunk.toString('utf8')
+      const boundary = pending.indexOf('\n')
+      if (boundary < 0) return
+      const response = JSON.parse(pending.slice(0, boundary)) as {
+        result?: { content?: { text?: string }[] }
+      }
+      resolve(response.result?.content?.[0]?.text ?? '')
+    })
+  })
+  socket.write(
+    `${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'approval_request', arguments: args }
+    })}\n`
+  )
+  return { answer }
+}

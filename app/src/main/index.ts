@@ -21,6 +21,7 @@ import {
   setSessionArchivedInputSchema,
   setSessionPinnedInputSchema,
   themePreferenceSchema,
+  resolveApprovalInputSchema,
   runSnapshotSchema,
   startRunInputSchema,
   stopRunInputSchema,
@@ -352,6 +353,9 @@ function registerIpc(): void {
   )
   handleInvoke(IPC_CHANNELS.developSession, developSessionInputSchema, async (input) =>
     conversationSnapshotSchema.parse(await runService.develop(input))
+  )
+  handleInvoke(IPC_CHANNELS.resolveApproval, resolveApprovalInputSchema, async (input) =>
+    conversationSnapshotSchema.parse(await runService.resolveApproval(input))
   )
 }
 

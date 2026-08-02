@@ -842,3 +842,88 @@ describe('a command from start to finish', () => {
     expect(commands).toMatchObject([{ command: 'pnpm test', output: 'all good', running: false }])
   })
 })
+
+describe('an approval from request to answer', () => {
+  const request: HarnessEvent = {
+    type: 'approval-request',
+    id: 'toolu_approve_1',
+    tool: 'Bash',
+    summary: 'pnpm test',
+    detail: '{"command":"pnpm test"}'
+  }
+
+  it('blocks the Run on the request and leaves that state when it is answered', async () => {
+    const runId = await startRun('Run the tests', 'submission-approval')
+
+    await stream(runId, [request])
+    const blocked = await makeCore().getConversation(sessionId)
+    expect(blocked.pendingApprovalId).toBe(`approval:${runId}:toolu_approve_1`)
+
+    await stream(runId, [
+      { type: 'approval-resolved', id: 'toolu_approve_1', decision: 'allowed', message: '' }
+    ])
+    const resolved = await makeCore().getConversation(sessionId)
+    expect(resolved.pendingApprovalId).toBeNull()
+    // One request happened, so the Conversation holds one — answered.
+    expect(resolved.entries.filter((entry) => entry.kind === 'approval')).toMatchObject([
+      { tool: 'Bash', summary: 'pnpm test', decision: 'allowed' }
+    ])
+  })
+
+  it('keeps the message the agent was denied with', async () => {
+    const runId = await startRun('Delete everything', 'submission-denied')
+    await stream(runId, [
+      request,
+      {
+        type: 'approval-resolved',
+        id: 'toolu_approve_1',
+        decision: 'denied',
+        message: 'Run the unit tests instead'
+      }
+    ])
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    expect(reloaded.entries.filter((entry) => entry.kind === 'approval')).toMatchObject([
+      { decision: 'denied', message: 'Run the unit tests instead' }
+    ])
+  })
+
+  it('redacts and bounds what the request carries, as any other durable content', async () => {
+    const runId = await startRun('Call the API', 'submission-secret')
+    await stream(runId, [
+      {
+        ...request,
+        summary: 'curl -H "api_key: sk-live-1234567890"',
+        detail: 'x'.repeat(9_000)
+      }
+    ])
+
+    const [approval] = (await makeCore().getConversation(sessionId)).entries.filter(
+      (entry) => entry.kind === 'approval'
+    )
+    if (approval?.kind !== 'approval') throw new Error('expected an approval entry')
+    expect(approval.summary).not.toContain('sk-live-1234567890')
+    expect(approval.detail.length).toBeLessThanOrEqual(4_000)
+  })
+
+  it('settles an unanswered request when the Run ends, so nothing reads as allowed', async () => {
+    const runId = await startRun('Run the tests', 'submission-abandoned')
+    await stream(runId, [request])
+
+    await core.finalizeConversationRun({
+      sessionId,
+      runId,
+      outcome: 'stopped',
+      category: null,
+      summary: 'Run stopped by user'
+    })
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    expect(reloaded.pendingApprovalId).toBeNull()
+    expect(reloaded.entries.filter((entry) => entry.kind === 'approval')).toMatchObject([
+      { decision: 'abandoned' }
+    ])
+    // The Session is left usable rather than stuck behind a dead request.
+    expect(reloaded.activeRunId).toBeNull()
+  })
+})

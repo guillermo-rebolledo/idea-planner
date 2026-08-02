@@ -152,6 +152,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'queryMailbox',
       'refreshReadiness',
       'removeProject',
+      'resolveApproval',
       'setLoginShellDiscovery',
       'setSessionArchived',
       'setSessionPinned',

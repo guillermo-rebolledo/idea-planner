@@ -16,11 +16,11 @@ The mode a Run really ran under is already read back from the init event and rec
 
 **Blocked by:** 07a
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The person selects Ask or Full access per Run, with the choice visible in the composer
-- [ ] In Ask mode, edits and commands produce an approval request in the Conversation
-- [ ] Approving resumes the Run; denying returns the message to the agent and the Run continues
-- [ ] A Run is blocked while an approval is outstanding, and leaves that state on resolution
-- [ ] Closing the app with an approval outstanding leaves the Session recoverable
-- [ ] `pnpm verify` passes
+- [x] The person selects Ask or Full access per Run, with the choice visible in the composer
+- [x] In Ask mode, edits and commands produce an approval request in the Conversation
+- [x] Approving resumes the Run; denying returns the message to the agent and the Run continues
+- [x] A Run is blocked while an approval is outstanding, and leaves that state on resolution
+- [x] Closing the app with an approval outstanding leaves the Session recoverable
+- [x] `pnpm verify` passes

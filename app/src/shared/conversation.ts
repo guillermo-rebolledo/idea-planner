@@ -22,6 +22,21 @@ export const suggestedResponseSchema = z.object({
 })
 export type SuggestedResponse = z.infer<typeof suggestedResponseSchema>
 
+/**
+ * How much of one Approval Request's tool input is worth carrying. A request
+ * can hold a whole file's contents, and one that displaces the Conversation
+ * around it is one nobody can read anyway.
+ */
+export const MAX_APPROVAL_DETAIL = 4_000
+
+/**
+ * How an Approval Request ended. `abandoned` is what an unanswered request
+ * becomes when its Run ends first — a request nobody answered must never read
+ * back as one somebody allowed.
+ */
+export const approvalDecisionSchema = z.enum(['allowed', 'denied', 'abandoned'])
+export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>
+
 export const harnessFailureCategorySchema = z.enum([
   'authentication',
   'rate-limit',
@@ -101,6 +116,28 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
     type: z.literal('choices'),
     question: z.string().max(2_000),
     options: z.array(suggestedResponseSchema).min(1).max(12)
+  }),
+  /**
+   * The agent asking before it edits or runs anything, in Ask mode. It is
+   * served natively by the app's own approval tool
+   * (`docs/harness-permission-mapping.md`), so `id` is the Harness's own
+   * tool-use id and the Run is blocked for as long as this stands.
+   */
+  z.object({
+    type: z.literal('approval-request'),
+    id: z.string().min(1).max(200),
+    tool: z.string().min(1).max(200),
+    /** What is being asked for, in one line: the command, or the path. */
+    summary: z.string().min(1).max(2_000),
+    /** The rest of the tool input, so the person judges the real request. */
+    detail: z.string().max(MAX_APPROVAL_DETAIL)
+  }),
+  z.object({
+    type: z.literal('approval-resolved'),
+    id: z.string().min(1).max(200),
+    decision: approvalDecisionSchema,
+    /** What the agent is told when the person declines. */
+    message: z.string().max(2_000).default('')
   }),
   z.object({ type: z.literal('usage'), usage: harnessUsageSchema }),
   z.object({
@@ -238,6 +275,25 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     running: z.boolean().default(false)
   }),
   /**
+   * Something the agent asked permission for, and what the person answered.
+   * It belongs to the Conversation rather than to an activity panel: it is a
+   * decision the person made, and the record of it outlives the Run.
+   */
+  z.object({
+    kind: z.literal('approval'),
+    id: z.string().min(1),
+    at: z.string().datetime(),
+    runId: z.string().min(1),
+    /** The Harness's own id for the call, which the answer is addressed to. */
+    requestId: z.string().min(1).max(200),
+    tool: z.string().min(1).max(200),
+    summary: z.string().min(1).max(2_000),
+    detail: z.string().max(MAX_APPROVAL_DETAIL),
+    /** Null while the request stands, which is what blocks the Run. */
+    decision: approvalDecisionSchema.nullable().default(null),
+    message: z.string().max(2_000).default('')
+  }),
+  /**
    * A file the Harness changed, kept in the Conversation because it is part of
    * what happened in it. The Checkout is the record of the change itself; this
    * is the record of the Run having made it.
@@ -265,7 +321,13 @@ export const conversationSnapshotSchema = z.object({
     claude: z.string().min(1).optional()
   }),
   /** The Run the Conversation is currently waiting on, when there is one. */
-  activeRunId: z.string().min(1).nullable()
+  activeRunId: z.string().min(1).nullable(),
+  /**
+   * The approval the Run is blocked on, when one stands. Ticket 12 owns
+   * Session status, so blocked lives on the Run and this is where the app
+   * reads it from.
+   */
+  pendingApprovalId: z.string().min(1).nullable().default(null)
 })
 export type ConversationSnapshot = z.infer<typeof conversationSnapshotSchema>
 

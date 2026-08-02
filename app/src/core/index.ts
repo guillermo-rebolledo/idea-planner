@@ -106,7 +106,11 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
         harness: command.harness,
         skill: command.skill,
         model: command.model,
-        restorationNote: command.restorationNote
+        restorationNote: command.restorationNote,
+        // Without this the Conversation has nothing to compare the Harness's
+        // reported mode against, so a Run in a mode nobody chose reads as one
+        // that ran exactly as asked.
+        askedPermissionMode: command.askedPermissionMode
       })
     case 'conversation/ingest':
       return core.ingestHarnessOutput({

@@ -37,6 +37,7 @@ const api: ShellApi = {
   stopRun: (input) => ipcRenderer.invoke(IPC_CHANNELS.stopRun, input),
   getConversation: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.getConversation, sessionId),
   developSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.developSession, input),
+  resolveApproval: (input) => ipcRenderer.invoke(IPC_CHANNELS.resolveApproval, input),
   onConversationEvent: (listener) => {
     const subscription = (_event: unknown, streamed: ConversationStreamEvent): void =>
       listener(streamed)

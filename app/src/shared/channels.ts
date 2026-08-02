@@ -29,5 +29,6 @@ export const IPC_CHANNELS = {
   stopRun: 'run:stop',
   getConversation: 'conversation:get',
   developSession: 'conversation:develop',
+  resolveApproval: 'conversation:resolve-approval',
   conversationEvent: 'conversation:event'
 } as const

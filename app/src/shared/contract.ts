@@ -14,6 +14,7 @@ import {
   acceptRunInputSchema,
   recordRunEventInputSchema,
   skillNameSchema,
+  type ResolveApprovalInput,
   type RunSnapshot,
   type StartRunInput,
   type StopRunInput
@@ -276,6 +277,11 @@ export interface ShellApi {
    * survives even when the Run never reaches the Harness.
    */
   developSession(input: DevelopSessionInput): Promise<ConversationSnapshot>
+  /**
+   * Answers the approval a Run is blocked on. Approving lets the agent
+   * proceed; denying hands it the message and it carries on without.
+   */
+  resolveApproval(input: ResolveApprovalInput): Promise<ConversationSnapshot>
   /** Assistant text and control events, delivered ahead of durable projection. */
   onConversationEvent(listener: (event: ConversationStreamEvent) => void): () => void
 }

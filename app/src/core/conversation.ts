@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { Effect, Ref } from 'effect'
 import { CoreError } from '@shared/contract'
 import {
+  MAX_APPROVAL_DETAIL,
   addUsage,
   conversationEntrySchema,
   emptyUsage,
@@ -474,6 +475,45 @@ export function createConversationEffects(options: ConversationOptions): Convers
               )
               return
             }
+            case 'approval-request': {
+              // Keyed by the Harness's own tool-use id, so the answer replaces
+              // the request rather than landing beside it. Redacted and bounded
+              // like any other durable content: a request carries whatever the
+              // agent was about to run.
+              yield* append(
+                sessionDir,
+                conversationEntrySchema.parse({
+                  kind: 'approval',
+                  id: approvalEntryId(input.runId, event.id),
+                  at: now.toISOString(),
+                  runId: input.runId,
+                  requestId: event.id,
+                  tool: event.tool,
+                  summary: redactCredentials(event.summary).slice(0, 2_000),
+                  detail: redactCredentials(event.detail).slice(0, MAX_APPROVAL_DETAIL),
+                  decision: null,
+                  message: ''
+                })
+              )
+              return
+            }
+            case 'approval-resolved': {
+              const entries = yield* readEntries(sessionDir)
+              const requested = entries.find(
+                (entry) => entry.id === approvalEntryId(input.runId, event.id)
+              )
+              // An answer to a request this Conversation never saw, or a second
+              // answer to one already settled, changes nothing: the first
+              // answer is the one the agent was given.
+              if (requested?.kind !== 'approval' || requested.decision !== null) return
+              yield* append(sessionDir, {
+                ...requested,
+                at: now.toISOString(),
+                decision: event.decision,
+                message: redactCredentials(event.message).slice(0, 2_000)
+              })
+              return
+            }
             case 'file-change': {
               // What the Run did to the Checkout is part of what happened in
               // the Conversation, so it is durable rather than only streamed.
@@ -542,6 +582,19 @@ export function createConversationEffects(options: ConversationOptions): Convers
             )
           }
           const entries = yield* readEntries(sessionDir)
+          // A request the Run ended before anyone answered is settled here, so
+          // it cannot read back as one somebody allowed — and so the Session is
+          // recoverable rather than stuck behind a request nothing can answer.
+          for (const entry of entries) {
+            if (entry.kind !== 'approval') continue
+            if (entry.runId !== input.runId || entry.decision !== null) continue
+            yield* append(sessionDir, {
+              ...entry,
+              at: now.toISOString(),
+              decision: 'abandoned',
+              message: 'The Run ended before this was answered'
+            })
+          }
           const started = entries.find(
             (entry) => entry.kind === 'boundary' && entry.id === `boundary:${input.runId}:started`
           )
@@ -600,6 +653,11 @@ export function createConversationEffects(options: ConversationOptions): Convers
     })
 
   return { get, submit, begin, apply, ingest, finalize }
+}
+
+/** One approval's durable identity: the Run, and the Harness's tool-use id. */
+function approvalEntryId(runId: string, toolUseId: string): string {
+  return `approval:${runId}:${toolUseId}`
 }
 
 function runBoundarySummary(input: BeginConversationRunInput): string {
@@ -723,6 +781,12 @@ function summarize(sessionId: string, entries: ConversationEntry[]): Conversatio
     usage: { run: latestRunUsage, session: sessionUsage },
     recovery,
     harnessThreads,
-    activeRunId
+    activeRunId,
+    // The Run is blocked for exactly as long as a request stands unanswered.
+    // The oldest is the one put to the person, so that answering it reveals
+    // the next: a Harness may have several in flight, and picking the newest
+    // would leave the ones behind it unanswerable.
+    pendingApprovalId:
+      entries.find((entry) => entry.kind === 'approval' && entry.decision === null)?.id ?? null
   }
 }

@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Bot, ChevronRight, FileDiff, Send, Square, Terminal, User } from 'lucide-react'
+import {
+  Bot,
+  ChevronRight,
+  FileDiff,
+  Send,
+  ShieldQuestion,
+  Square,
+  Terminal,
+  User
+} from 'lucide-react'
 import {
   HARNESS_DEFAULT_MODEL,
   SKILL_ATTRIBUTION,
+  type ApprovalDecision,
   type ConversationEntry,
   type ConversationRecovery,
   type DiffHunk,
@@ -72,9 +82,11 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
   const [skill, setSkill] = useState('grilling')
   const [model, setModel] = useState(HARNESS_DEFAULT_MODEL)
   const [effort, setEffort] = useState('medium')
-  // Full access until ticket 07b serves the approval prompt: offering Ask
-  // as the default would start Runs that stall on their first tool call.
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('auto')
+  // Ask by default: a Run edits the Project in place, and being asked first is
+  // the posture somebody would choose if they were choosing deliberately.
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
+  const [denyMessage, setDenyMessage] = useState('')
+  const [deciding, setDeciding] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
@@ -91,6 +103,11 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
     harnesses.find((entry) => entry.capabilities.developSession.available) ??
     harnesses[0]
   const chosenHarness = selected?.harness ?? null
+  // Ask is served natively per Harness, and only Claude's transport can carry
+  // it today (`docs/harness-permission-mapping.md`). Offering it on Codex would
+  // start Runs the app cannot keep its promise about.
+  const askable = chosenHarness === 'claude'
+  const effectiveMode: PermissionMode = askable ? permissionMode : 'auto'
 
   const refresh = useCallback(async () => {
     try {
@@ -123,6 +140,13 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
         const event = streamed.event
         if (event.type === 'failed') {
           setError(event.summary)
+          return
+        }
+        // An approval is durable the moment it is asked for, and the Run is
+        // blocked until it is answered — so it is read back rather than kept
+        // as a second copy of the same fact on this side.
+        if (event.type === 'approval-request' || event.type === 'approval-resolved') {
+          void refresh()
           return
         }
         setLive((current) => {
@@ -178,7 +202,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           }
         })
       }),
-    [sessionId]
+    [sessionId, refresh]
   )
 
   useEffect(() => {
@@ -200,7 +224,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           harness: chosenHarness,
           model,
           effort,
-          permissionMode
+          permissionMode: effectiveMode
         })
         setPhase({ state: 'ready', snapshot: next })
         if (source === 'composer' && !submissionId) setDraft('')
@@ -216,7 +240,38 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
         setBusy(false)
       }
     },
-    [sessionId, chosenHarness, skill, model, effort, permissionMode, refresh]
+    [sessionId, chosenHarness, skill, model, effort, effectiveMode, refresh]
+  )
+
+  /**
+   * The person's answer to what the agent asked for. The Run is blocked until
+   * this lands, so the snapshot it returns is what unblocks the surface.
+   */
+  const decide = useCallback(
+    async (
+      approval: Extract<ConversationEntry, { kind: 'approval' }>,
+      decision: 'allow' | 'deny'
+    ) => {
+      setDeciding(true)
+      setError(null)
+      try {
+        const next = await window.shell.resolveApproval({
+          sessionId,
+          runId: approval.runId,
+          approvalId: approval.requestId,
+          decision,
+          message: denyMessage.trim()
+        })
+        setPhase({ state: 'ready', snapshot: next })
+        setDenyMessage('')
+      } catch {
+        setError('That request could not be answered. The Run may have already ended.')
+        await refresh()
+      } finally {
+        setDeciding(false)
+      }
+    },
+    [sessionId, denyMessage, refresh]
   )
 
   if (phase.state === 'loading') {
@@ -255,6 +310,10 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
       : []
   const plainOptions =
     activeRunId === null && latestAssistant?.kind === 'message' && latestAssistant.plainOptions
+  const pendingApproval = entries.find(
+    (entry): entry is Extract<ConversationEntry, { kind: 'approval' }> =>
+      entry.kind === 'approval' && entry.id === phase.snapshot.pendingApprovalId
+  )
   const activeRun = runs.find((run) => run.id === activeRunId) ?? runs[0]
   const canDevelop = selected?.capabilities.developSession
   const blocked = readiness !== null && canDevelop?.available !== true
@@ -347,11 +406,69 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           .map((change) => (
             <FileChangeRow key={change.id} path={change.path} hunks={change.hunks} />
           ))}
-        {activeRunId && !liveForActiveRun?.messages.some((message) => message.text) && (
-          <li className="text-xs text-muted-foreground">Waiting for the Harness to answer…</li>
-        )}
+        {activeRunId &&
+          !pendingApproval &&
+          !liveForActiveRun?.messages.some((message) => message.text) && (
+            <li className="text-xs text-muted-foreground">Waiting for the Harness to answer…</li>
+          )}
         <div ref={endRef} />
       </ol>
+
+      {pendingApproval && (
+        <div
+          role="alert"
+          aria-label="Approval request"
+          className="mx-3 mb-3 rounded-md border border-border bg-muted/50 p-3"
+        >
+          <p className="flex items-center gap-2 text-xs font-medium">
+            <ShieldQuestion aria-hidden="true" className="size-3.5 shrink-0" />
+            The agent is asking before it uses {pendingApproval.tool}. This Run is blocked until you
+            answer.
+          </p>
+          <p className="mt-2 font-mono text-xs break-all select-text">{pendingApproval.summary}</p>
+          {pendingApproval.detail && (
+            <details className="mt-1">
+              <summary className="cursor-pointer text-[11px] text-muted-foreground">
+                What it sent
+              </summary>
+              <pre className="mt-1 max-h-40 overflow-auto rounded-md border border-border bg-surface p-2 font-mono text-[11px] whitespace-pre-wrap select-text">
+                {pendingApproval.detail}
+              </pre>
+            </details>
+          )}
+          <label className="sr-only" htmlFor="approval-message">
+            What to tell the agent if you decline
+          </label>
+          <input
+            id="approval-message"
+            value={denyMessage}
+            disabled={deciding}
+            onChange={(event) => setDenyMessage(event.target.value)}
+            placeholder="If you decline, what should it do instead? (optional)"
+            className="mt-2 h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
+          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              disabled={deciding}
+              onClick={() => void decide(pendingApproval, 'allow')}
+            >
+              Approve
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={deciding}
+              onClick={() => void decide(pendingApproval, 'deny')}
+            >
+              Decline
+            </Button>
+          </div>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Declining is not a stop: the agent is told why and carries on without it.
+          </p>
+        </div>
+      )}
 
       {phase.snapshot.recovery && (
         <div role="alert" className="mx-3 mb-3 rounded-md border border-border bg-muted/50 p-3">
@@ -485,15 +602,15 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           </Field>
           <Field label="Permission">
             <select
-              aria-label="Permission prompts"
-              value={permissionMode}
+              aria-label="Permission Mode"
+              value={effectiveMode}
               onChange={(event) => setPermissionMode(event.target.value as PermissionMode)}
               className="h-8 rounded-md border border-border bg-background px-2 text-xs"
             >
-              <option value="auto">Full access</option>
-              <option value="ask" disabled>
-                Ask — needs the approval prompt, not built yet
+              <option value="ask" disabled={!askable}>
+                {askable ? 'Ask' : 'Ask — not available on this Harness'}
               </option>
+              <option value="auto">Full access</option>
             </select>
           </Field>
           <Button
@@ -520,7 +637,9 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           </div>
         )}
         <p className="text-[11px] text-muted-foreground">
-          The Harness applies its own permissions for this Run.
+          {effectiveMode === 'ask'
+            ? 'In Ask, the agent stops for your approval before it edits or runs anything.'
+            : 'In Full access, the agent edits and runs without asking. The Harness applies its own permissions for this Run.'}
         </p>
       </form>
 
@@ -676,6 +795,38 @@ function FileChangeRow({ path, hunks }: { path: string; hunks: DiffHunk[] }): Re
   )
 }
 
+/** What the agent asked for, and what the person decided about it. */
+const APPROVAL_OUTCOME: Record<ApprovalDecision, string> = {
+  allowed: 'You approved this',
+  denied: 'You declined this',
+  abandoned: 'Unanswered — the Run ended first'
+}
+
+function ApprovalRow({
+  entry
+}: {
+  entry: Extract<ConversationEntry, { kind: 'approval' }>
+}): React.JSX.Element {
+  return (
+    <li className="flex gap-2">
+      <ShieldQuestion
+        aria-hidden="true"
+        className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+      />
+      <div className="min-w-0 flex-1">
+        <p className="text-xs">
+          <span className="text-muted-foreground">{entry.tool}</span>{' '}
+          <span className="font-mono break-all select-text">{entry.summary}</span>
+        </p>
+        <p className="text-[11px] text-muted-foreground">
+          {entry.decision === null ? 'Waiting for your answer' : APPROVAL_OUTCOME[entry.decision]}
+          {entry.decision === 'denied' && entry.message ? ` — “${entry.message}”` : ''}
+        </p>
+      </div>
+    </li>
+  )
+}
+
 function EntryRow({ entry }: { entry: ConversationEntry }): React.JSX.Element | null {
   if (entry.kind === 'usage' || entry.kind === 'thread') return null
   if (entry.kind === 'command')
@@ -688,6 +839,7 @@ function EntryRow({ entry }: { entry: ConversationEntry }): React.JSX.Element | 
       />
     )
   if (entry.kind === 'file-change') return <FileChangeRow path={entry.path} hunks={entry.hunks} />
+  if (entry.kind === 'approval') return <ApprovalRow entry={entry} />
   if (entry.kind === 'boundary') {
     return (
       <li className="text-[11px] text-muted-foreground">

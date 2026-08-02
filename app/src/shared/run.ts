@@ -10,6 +10,17 @@ import { harnessIdSchema } from './readiness'
 export const MCP_SERVER_NAME = 'app'
 export const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`
 
+/**
+ * The tool the app serves Approval Requests on, and the fully qualified name
+ * Claude is pointed at with its `--permission-prompt-tool` flag. Ask mode is
+ * exactly this tool being answered (`docs/harness-permission-mapping.md`).
+ */
+export const APPROVAL_TOOL_NAME = 'approval_request'
+export const APPROVAL_TOOL = `${MCP_TOOL_PREFIX}${APPROVAL_TOOL_NAME}`
+
+/** Every tool this app serves, as the Harness names them. */
+export const APP_TOOLS = [`${MCP_TOOL_PREFIX}offer_response_options`, APPROVAL_TOOL]
+
 export const runStatusSchema = z.enum([
   'accepted',
   'starting',
@@ -127,6 +138,20 @@ export const stopRunInputSchema = z.object({
   sessionId: z.string().min(1)
 })
 export type StopRunInput = z.infer<typeof stopRunInputSchema>
+
+/**
+ * The person's answer to one outstanding Approval Request. Denying carries a
+ * message because the agent is told why, and a refusal it cannot read is one it
+ * will simply try again.
+ */
+export const resolveApprovalInputSchema = z.object({
+  sessionId: z.string().min(1),
+  runId: z.string().min(1),
+  approvalId: z.string().min(1).max(200),
+  decision: z.enum(['allow', 'deny']),
+  message: z.string().max(2_000).optional()
+})
+export type ResolveApprovalInput = z.infer<typeof resolveApprovalInputSchema>
 
 export const recordRunEventInputSchema = z.object({
   sessionId: z.string().min(1),

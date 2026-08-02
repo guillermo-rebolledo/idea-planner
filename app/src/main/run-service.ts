@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { sessionSummarySchema, type CoreCommand } from '@shared/contract'
 import {
   HARNESS_DEFAULT_MODEL,
+  MAX_APPROVAL_DETAIL,
   conversationSnapshotSchema,
   developSessionInputSchema,
   harnessEventSchema,
@@ -20,16 +21,20 @@ import {
   type HarnessFailureCategory
 } from '@shared/conversation'
 import {
+  APPROVAL_TOOL,
+  APP_TOOLS,
   MCP_SERVER_NAME,
+  resolveApprovalInputSchema,
   runSnapshotSchema,
   startRunInputSchema,
   type PermissionMode,
+  type ResolveApprovalInput,
   type RunActivityKind,
   type RunSnapshot,
   type StartRunInput
 } from '@shared/run'
 import { HARNESS_SPECS, VERIFIED_SKILLS } from './readiness'
-import { ToolHost } from './tool-host'
+import { ToolHost, type ApprovalRequest } from './tool-host'
 import type { RunProcessBroker } from './run-process-broker'
 
 interface CorePort {
@@ -162,13 +167,12 @@ export class RunService {
 
   async start(rawInput: StartRunInput): Promise<RunSnapshot> {
     const input = startRunInputSchema.parse(rawInput)
-    // Ask reaches the Harness as the mode that asks, and nothing answers it
-    // until ticket 07b serves the approval prompt. A Run started anyway stalls
-    // on its first tool call while looking like it is working, which is worse
-    // than not starting: refuse it out loud.
-    if (input.permissionMode === 'ask') {
+    // `codex exec` auto-rejects approvals without emitting an event, so an Ask
+    // Run on it would refuse everything while looking like it was working.
+    // Ticket 10 brings the app-server transport that can actually ask.
+    if (input.permissionMode === 'ask' && input.harness === 'codex') {
       throw new Error(
-        'Ask mode needs the approval prompt, which is not built yet. Use Full access.'
+        'Ask mode needs the Codex app-server protocol, which is not built yet. Use Full access.'
       )
     }
     const checkout = await this.checkoutFor(input.sessionId)
@@ -315,6 +319,7 @@ export class RunService {
       toolHost = new ToolHost({
         socketPath,
         capabilityToken,
+        servesApprovals: input.permissionMode === 'ask',
         callbacks: {
           onActivity: (kind, summary) =>
             this.record(accepted, undefined, kind, sanitize(summary, checkout)).then(
@@ -325,7 +330,8 @@ export class RunService {
           },
           onChoices: (question, options) => {
             void this.offerChoices(accepted, question, options)
-          }
+          },
+          onApproval: (request) => this.requestApproval(accepted, checkout, request)
         }
       })
       await toolHost.start()
@@ -528,6 +534,86 @@ export class RunService {
     })
   }
 
+  /**
+   * The agent asking before it edits or runs something, in Ask mode. The
+   * request lands in the Conversation and the Run is marked blocked; the
+   * Harness stays held in its tool call until `resolveApproval` answers it.
+   */
+  private async requestApproval(
+    run: Pick<RunSnapshot, 'id' | 'sessionId'>,
+    checkout: string,
+    request: ApprovalRequest
+  ): Promise<void> {
+    const described = describeApproval(request.tool, request.input)
+    const event: HarnessEvent = {
+      type: 'approval-request',
+      id: request.id,
+      tool: request.tool,
+      summary: sanitize(described.summary, checkout),
+      detail: sanitize(described.detail, checkout).slice(0, MAX_APPROVAL_DETAIL)
+    }
+    await this.deps.core.send({
+      type: 'conversation/apply',
+      sessionId: run.sessionId,
+      runId: run.id,
+      event
+    })
+    this.deps.onConversationEvent?.({ sessionId: run.sessionId, runId: run.id, event })
+    await this.record(run, 'waiting', 'blocked', `Waiting for you to approve ${event.summary}`)
+  }
+
+  /**
+   * The person's answer. The Harness is told first — it is the one waiting —
+   * and the Conversation records what was decided either way.
+   */
+  async resolveApproval(rawInput: ResolveApprovalInput): Promise<ConversationSnapshot> {
+    const input = resolveApprovalInputSchema.parse(rawInput)
+    const host = this.toolHosts.get(input.runId)
+    const written = input.message?.trim() ?? ''
+    // A refusal the agent cannot read is one it will simply try again.
+    const message =
+      written === '' ? 'You declined this in the app. Ask before trying it again.' : written
+    const allowed = input.decision === 'allow'
+    const answered =
+      host?.resolveApproval(
+        input.approvalId,
+        allowed ? { behavior: 'allow' } : { behavior: 'deny', message }
+      ) ?? false
+    if (!answered || !host) {
+      // The Run ended, or somebody already answered. Either way the agent has
+      // moved on, and saying so beats silently pretending this took effect.
+      throw new Error('That request is no longer waiting for an answer')
+    }
+    const event: HarnessEvent = {
+      type: 'approval-resolved',
+      id: input.approvalId,
+      decision: allowed ? 'allowed' : 'denied',
+      message: allowed ? '' : message
+    }
+    await this.deps.core.send({
+      type: 'conversation/apply',
+      sessionId: input.sessionId,
+      runId: input.runId,
+      event
+    })
+    this.deps.onConversationEvent?.({
+      sessionId: input.sessionId,
+      runId: input.runId,
+      event
+    })
+    // A denial is an answer, not a failure: the agent was told and carries on.
+    // The Run leaves the blocked state only once nothing else is outstanding.
+    // The host is what knows whether anything else still stands, so it is what
+    // decides when the Run stops being blocked.
+    await this.record(
+      { id: input.runId, sessionId: input.sessionId },
+      host.hasOutstandingApprovals() ? undefined : 'running',
+      allowed ? 'allowed' : 'blocked',
+      allowed ? 'You approved the request' : `You declined: ${message}`
+    )
+    return await this.readConversation(input.sessionId)
+  }
+
   /** Records a Run's terminal state and closes its Conversation boundary. */
   private async conclude(
     run: Pick<RunSnapshot, 'id' | 'sessionId'>,
@@ -599,10 +685,19 @@ export class RunService {
     if (harness === 'claude') {
       // This Run's settings, layered over the person's own and never written
       // into them: their terminal use of the Harness is not ours to change.
-      // Ticket 07b adds permission rules here; today it carries the mode only.
+      //
+      // Ask gates every tool, including the app's own — and being asked whether
+      // the app may offer you a menu is not a permission decision anybody has.
+      // An allow rule short-circuits the prompt for exactly those, and nothing
+      // else. What the agent does to the Checkout still comes to the person.
       const settings = this.deps.stageSettings
         ? this.deps.stageSettings(permissionMode)
-        : { permissions: { defaultMode: CLAUDE_PERMISSION_MODES[permissionMode] } }
+        : {
+            permissions: {
+              defaultMode: CLAUDE_PERMISSION_MODES[permissionMode],
+              allow: [...APP_TOOLS]
+            }
+          }
       // Checked before the Harness sees them: invalid settings are ignored in
       // silence, so a rule that never loaded looks exactly like one that did.
       const validated = claudeSettingsSchema.safeParse(settings)
@@ -723,6 +818,9 @@ function harnessArguments(
     // with no native tools at all. It edits the Checkout with its own.
     '--permission-mode',
     CLAUDE_PERMISSION_MODES[input.permissionMode],
+    // Ask is this mode plus somewhere for its prompts to go. Without the tool
+    // the Harness has nothing to ask, and stalls on its first tool call.
+    ...(input.permissionMode === 'ask' ? ['--permission-prompt-tool', APPROVAL_TOOL] : []),
     '--no-chrome',
     '--output-format',
     'stream-json',
@@ -859,6 +957,10 @@ function describeActivity(
         kind: 'output',
         summary: `Harness retry ${event.attempt} in ${event.delayMs} ms (${event.category})`
       }
+    // An approval is recorded where it is decided, with the wording the person
+    // actually saw; repeating it here would say it twice.
+    case 'approval-request':
+    case 'approval-resolved':
     case 'assistant-message':
     case 'choices':
     case 'usage':
@@ -866,4 +968,20 @@ function describeActivity(
     case 'unsupported':
       return undefined
   }
+}
+
+/**
+ * What the person is actually being asked to allow. The tool input is the only
+ * honest source, so the line they read is drawn from it — an approval whose
+ * card says merely "Bash" is one nobody can judge.
+ */
+function describeApproval(
+  tool: string,
+  input: Record<string, unknown>
+): { summary: string; detail: string } {
+  const field = (name: string): string | undefined =>
+    typeof input[name] === 'string' && input[name].length > 0 ? input[name] : undefined
+  const summary =
+    field('command') ?? field('file_path') ?? field('path') ?? field('pattern') ?? tool
+  return { summary, detail: JSON.stringify(input, null, 2) }
 }
