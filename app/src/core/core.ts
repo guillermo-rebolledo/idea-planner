@@ -284,6 +284,17 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
               if (!root) {
                 return yield* Effect.fail(new CoreError('IO_ERROR', 'The root Idea is unreadable'))
               }
+              // A root document written by a newer app version is not ours to
+              // rewrite: round-tripping it here would silently drop frontmatter
+              // this version does not understand.
+              if (Number(root.parsed.frontmatter['format'] ?? '1') > 1) {
+                return yield* Effect.fail(
+                  new CoreError(
+                    'INVALID_INPUT',
+                    'This Idea was written by a newer version of the app'
+                  )
+                )
+              }
               const clock = yield* IdeaClock
               const nextSummary: IdeaSummary = {
                 ...summary,
@@ -722,9 +733,12 @@ function writePortableIdea(
 type RecoveryIdentity = Pick<RecoveryState, 'format' | 'ideaId' | 'summary' | 'documents'>
 
 /**
- * Writes the managed documents and the private identity record together.
- * Writes are direct; the caller holds the write permit, so the order here is
- * the order on disk.
+ * Writes the managed documents and the private identity record. Writes are
+ * direct and applied in the given order, with the identity record last so a
+ * torn write leaves it stale rather than ahead of the documents it names.
+ *
+ * Callers that mutate an existing Idea hold the write permit; first-write and
+ * migration paths do not, because no other writer can yet name the Idea.
  */
 function writeManagedDocuments(
   ideaDir: string,

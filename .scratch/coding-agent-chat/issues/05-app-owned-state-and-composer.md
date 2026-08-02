@@ -6,10 +6,19 @@ Home *is* a new chat. A **New chat** action sits above everything in the sidebar
 
 Onboarding is reduced accordingly: it asks the user to add their first Repository, not to choose a library.
 
+## A regression this ticket must close
+
+Ticket 01 removed transactional staging, so multi-document writes became several sequential file writes with no atomicity. It removed the safety net in the same change: a partially written Idea no longer parses, and the summary reader returns nothing for it, so **the Idea disappears from the inbox without a word**.
+
+That was accepted deliberately rather than repaired, because the file-per-Idea model this ticket replaces was about to stop existing — rebuilding transactional Markdown writes would have been work thrown away. It is recorded here so the acceptance of app-owned state is also the moment the durability hole closes.
+
+Whatever store this ticket introduces must make a write either land or not land, and must never silently drop a Session because its state was written halfway.
+
 **Blocked by:** 03, 04
 
 **Status:** ready-for-agent
 
+- [ ] A partially completed write never results in a Session vanishing or being silently skipped
 - [ ] Sessions, Conversations, and Runs persist as app-owned state and survive restart
 - [ ] The launch surface is a composer with a Repository selector defaulting to the last used
 - [ ] A Session is created on send, not before, and appears in the sidebar

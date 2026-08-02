@@ -217,6 +217,23 @@ describe('an application restart', () => {
     expect(snapshot.ideas[0]?.title).toBe('Valid idea')
   })
 
+  it('refuses to rewrite an Idea written by a newer version of the app', async () => {
+    await core.openLibrary(libraryDir)
+    const saved = await core.captureIdea({ kind: 'general', title: 'From the future', notes: '' })
+    const rootPath = join(libraryDir, saved.relativePath, 'idea.md')
+    const original = await readFile(rootPath, 'utf8')
+    await writeFile(rootPath, original.replace('format: 1', 'format: 99'))
+
+    const reborn = makeCore()
+    await reborn.openLibrary(libraryDir)
+    await expect(reborn.setIdeaPinned(saved.relativePath, true)).rejects.toMatchObject({
+      code: 'INVALID_INPUT',
+      message: 'This Idea was written by a newer version of the app'
+    })
+    await expect(readFile(rootPath, 'utf8')).resolves.toContain('format: 99')
+    await expect(readFile(rootPath, 'utf8')).resolves.not.toContain('pinned: true')
+  })
+
   it('orders Ideas newest first', async () => {
     await core.openLibrary(libraryDir)
     await core.captureIdea({ kind: 'general', title: 'First', notes: '' })
