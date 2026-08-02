@@ -767,7 +767,8 @@ describe('commands in the Conversation', () => {
         id: 'toolu_1',
         command: 'pnpm test',
         output: `token=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\n${'log line\n'.repeat(5_000)}`,
-        failed: false
+        failed: false,
+        running: false
       }
     })
 
@@ -812,5 +813,32 @@ describe('the mode a Run really ran under', () => {
       (entry) => entry.kind === 'boundary' && entry.summary.includes('plan')
     )
     expect(notices).toHaveLength(1)
+  })
+})
+
+describe('a command from start to finish', () => {
+  it('replaces the running command rather than recording it twice', async () => {
+    const runId = await startRun('Run the tests', 'submission-running')
+    const command = (patch: { output?: string; running: boolean }) =>
+      core.applyHarnessEvent({
+        sessionId,
+        runId,
+        event: {
+          type: 'command',
+          id: 'toolu_1',
+          command: 'pnpm test',
+          output: patch.output ?? '',
+          failed: false,
+          running: patch.running
+        }
+      })
+
+    await command({ running: true })
+    await command({ output: 'all good', running: false })
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    const commands = reloaded.entries.filter((entry) => entry.kind === 'command')
+    // One command happened, so the Conversation shows one — finished.
+    expect(commands).toMatchObject([{ command: 'pnpm test', output: 'all good', running: false }])
   })
 })

@@ -213,7 +213,8 @@ describe('commands', () => {
         id: 'toolu_015hHJHQrm7DjbErN5tdKwW6',
         command: 'wc -l lines.txt',
         output: '       3 lines.txt',
-        failed: false
+        failed: false,
+        running: false
       }
     ])
   })
@@ -273,7 +274,50 @@ describe('a command that never finished', () => {
       id: 'toolu_1',
       command: 'pnpm test',
       output: '',
-      failed: false
+      failed: false,
+      running: false
     })
+  })
+})
+
+describe('a command that is still running', () => {
+  it('reports the command when it starts, not only when it finishes', () => {
+    const adapter = createClaudeAdapter()
+    adapter.ingest(
+      `${JSON.stringify({
+        type: 'assistant',
+        message: {
+          id: 'msg_1',
+          content: [
+            { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'pnpm test' } }
+          ]
+        }
+      })}\n`
+    )
+
+    // The Harness carries no partial output, so the command starting is the
+    // earliest thing there is to say. Saying nothing until it finishes leaves
+    // a person watching an empty Conversation while a test suite runs.
+    const started = adapter.ingest(
+      `${JSON.stringify({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task-1',
+        tool_use_id: 'toolu_1',
+        description: 'Run the tests',
+        task_type: 'local_bash'
+      })}\n`
+    )
+
+    expect(started).toEqual([
+      {
+        type: 'command',
+        id: 'toolu_1',
+        command: 'pnpm test',
+        output: '',
+        failed: false,
+        running: true
+      }
+    ])
   })
 })

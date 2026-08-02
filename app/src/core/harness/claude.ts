@@ -41,9 +41,15 @@ const assistantSchema = z.object({
   usage: usageSchema.optional()
 })
 
+const taskStartedSchema = z.object({
+  tool_use_id: z.string().min(1).max(200)
+})
+
 const KNOWN_SYSTEM_EVENTS = new Set([
   'init',
   'status',
+  'task_started',
+  'task_notification',
   'thinking_tokens',
   'api_retry',
   'hook_started',
@@ -95,6 +101,9 @@ export function createClaudeAdapter(): HarnessAdapter {
     const type = text(frame['type'])
     switch (type) {
       case 'system':
+        if (text(frame['subtype']) === 'task_started') {
+          return describeCommandStarted(frame, pendingCommands)
+        }
         return describeSystem(frame)
       case 'stream_event': {
         const event = object(frame['event'])
@@ -167,7 +176,8 @@ export function createClaudeAdapter(): HarnessAdapter {
           id,
           command: redactCredentials(command),
           output: '',
-          failed: false
+          failed: false,
+          running: false
         })
       }
       pendingCommands.clear()
@@ -259,6 +269,31 @@ function describeAssistant(raw: unknown, pendingCommands: Map<string, string>): 
   return events
 }
 
+/**
+ * A command the moment it begins. The Harness carries no partial output, so
+ * this is the earliest there is to say: without it a person watching a test
+ * suite sees nothing at all until it finishes.
+ */
+function describeCommandStarted(
+  frame: Record<string, unknown>,
+  pendingCommands: Map<string, string>
+): HarnessEvent[] {
+  const parsed = taskStartedSchema.safeParse(frame)
+  if (!parsed.success) return []
+  const command = pendingCommands.get(parsed.data.tool_use_id)
+  if (command === undefined) return []
+  return [
+    {
+      type: 'command',
+      id: parsed.data.tool_use_id,
+      command: redactCredentials(command),
+      output: '',
+      failed: false,
+      running: true
+    }
+  ]
+}
+
 /** The shell command a tool call is running, if it is running one. */
 function commandOf(name: string, input: unknown): string | null {
   if (name !== 'Bash') return null
@@ -299,7 +334,8 @@ function describeCommandResult(
       id: block.data.tool_use_id,
       command: redactCredentials(command),
       output: redactCredentials(output),
-      failed: block.data.is_error ?? false
+      failed: block.data.is_error ?? false,
+      running: false
     })
   }
   return events

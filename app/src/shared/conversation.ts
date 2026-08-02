@@ -94,7 +94,8 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
     id: z.string().min(1).max(200),
     command: z.string().min(1),
     output: z.string(),
-    failed: z.boolean()
+    failed: z.boolean(),
+    running: z.boolean().default(false)
   }),
   z.object({
     type: z.literal('choices'),
@@ -228,7 +229,13 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     runId: z.string().min(1),
     command: z.string().min(1),
     output: z.string(),
-    failed: z.boolean()
+    failed: z.boolean(),
+    /**
+     * Still running. The Harness carries no partial output, so this is the
+     * earliest the app can say anything: the command appears the moment it
+     * starts and its output fills in when it lands.
+     */
+    running: z.boolean().default(false)
   }),
   /**
    * A file the Harness changed, kept in the Conversation because it is part of

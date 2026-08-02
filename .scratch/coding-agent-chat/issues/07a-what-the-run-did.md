@@ -18,6 +18,12 @@ Ticket 06 gave the Harness its native tools back, but the Adapter reports only t
 
 **A mode mismatch is surfaced, not fatal.** If managed settings force a mode other than the one chosen, the Run still works; the person simply needs to know it is not running what they picked.
 
+## What "as it happens" can actually mean
+
+Measured against claude 2.1.220: the stream protocol does **not** carry partial command output. A `task_started` frame fires when a command begins and a `task_notification` reports its status, but stdout arrives whole, in the tool result, when the command finishes. There is nothing incremental to stream.
+
+So the honest version of the bar is: the command appears the instant it starts, marked as running, and its output fills in when it lands. A person watching a test suite sees what is being run immediately rather than an empty Conversation — which is the part that actually mattered. Real partial output would need a transport that offers it, and neither this Harness nor `codex exec` does.
+
 **Blocked by:** 06
 
 **Status:** ready-for-agent

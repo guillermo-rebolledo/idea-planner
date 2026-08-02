@@ -455,20 +455,21 @@ export function createConversationEffects(options: ConversationOptions): Convers
               )
               return
             case 'command': {
-              const written = yield* readEntries(sessionDir)
-              const ordinal =
-                written.filter((entry) => entry.kind === 'command' && entry.runId === input.runId)
-                  .length + 1
+              // Keyed by the Harness's own id for the call, so the command
+              // recorded when it started is the one replaced when it finishes
+              // rather than a second entry beside it. Reloading keeps the last
+              // write for an id, which is the finished one.
               yield* append(
                 sessionDir,
                 conversationEntrySchema.parse({
                   kind: 'command',
-                  id: `command:${input.runId}:${ordinal}`,
+                  id: `command:${input.runId}:${event.id}`,
                   at: now.toISOString(),
                   runId: input.runId,
                   command: describeCommand(event.command),
                   output: describeOutput(event.output),
-                  failed: event.failed
+                  failed: event.failed,
+                  running: event.running
                 })
               )
               return

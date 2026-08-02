@@ -35,6 +35,8 @@ interface LiveRun {
   messages: { id: string; text: string }[]
   /** Files changed so far in this Run, shown while it is still working. */
   changes: { id: string; path: string; hunks: DiffHunk[] }[]
+  /** Commands, by the Harness's id, so a running one becomes a finished one. */
+  commands: { id: string; command: string; output: string; failed: boolean; running: boolean }[]
   suggestedResponses: SuggestedResponse[]
 }
 
@@ -127,7 +129,13 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           const base: LiveRun =
             current?.runId === streamed.runId
               ? current
-              : { runId: streamed.runId, messages: [], changes: [], suggestedResponses: [] }
+              : {
+                  runId: streamed.runId,
+                  messages: [],
+                  changes: [],
+                  commands: [],
+                  suggestedResponses: []
+                }
           if (event.type === 'choices') return { ...base, suggestedResponses: event.options }
           // A change is already on disk when it arrives, so it is shown as it
           // happens rather than waiting for the Run to finish.
@@ -142,6 +150,18 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
                   hunks: event.hunks
                 }
               ]
+            }
+          }
+          // A command appears the moment it starts and is replaced in place
+          // when it finishes: the Harness sends no partial output, so this is
+          // as live as it gets.
+          if (event.type === 'command') {
+            const known = base.commands.some((entry) => entry.id === event.id)
+            return {
+              ...base,
+              commands: known
+                ? base.commands.map((entry) => (entry.id === event.id ? { ...event } : entry))
+                : [...base.commands, { ...event }]
             }
           }
           if (event.type !== 'assistant-message') return base
@@ -163,7 +183,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' })
-  }, [snapshot?.entries.length, live?.messages, live?.changes])
+  }, [snapshot?.entries.length, live?.messages, live?.changes, live?.commands])
 
   const send = useCallback(
     async (text: string, source: 'composer' | 'suggested-response', submissionId?: string) => {
@@ -299,6 +319,24 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
                 <p className="text-sm whitespace-pre-wrap select-text">{message.text}</p>
               </div>
             </li>
+          ))}
+        {liveForActiveRun?.commands
+          .filter(
+            (entry) =>
+              !entries.some(
+                (durable) =>
+                  durable.kind === 'command' &&
+                  durable.id === `command:${liveForActiveRun.runId}:${entry.id}`
+              )
+          )
+          .map((entry) => (
+            <CommandRow
+              key={entry.id}
+              command={entry.command}
+              output={entry.output}
+              failed={entry.failed}
+              running={entry.running}
+            />
           ))}
         {liveForActiveRun?.changes
           .slice(
@@ -535,11 +573,13 @@ const OUTPUT_PREVIEW_LINES = 12
 function CommandRow({
   command,
   output,
-  failed
+  failed,
+  running
 }: {
   command: string
   output: string
   failed: boolean
+  running: boolean
 }): React.JSX.Element {
   const lines = output ? output.split('\n') : []
   const long = lines.length > OUTPUT_PREVIEW_LINES
@@ -553,10 +593,13 @@ function CommandRow({
         <p className="flex flex-wrap items-baseline gap-x-2 font-mono text-xs">
           <span className="text-muted-foreground">$</span>
           <span className="break-all select-text">{command}</span>
+          {running && <span className="text-[11px] text-muted-foreground">running…</span>}
           {failed && <span className="text-[11px] text-destructive">failed</span>}
         </p>
         {lines.length === 0 ? (
-          <p className="mt-1 text-[11px] text-muted-foreground">No output.</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {running ? 'Waiting for it to finish.' : 'No output.'}
+          </p>
         ) : (
           <>
             {long && (
@@ -636,7 +679,14 @@ function FileChangeRow({ path, hunks }: { path: string; hunks: DiffHunk[] }): Re
 function EntryRow({ entry }: { entry: ConversationEntry }): React.JSX.Element | null {
   if (entry.kind === 'usage' || entry.kind === 'thread') return null
   if (entry.kind === 'command')
-    return <CommandRow command={entry.command} output={entry.output} failed={entry.failed} />
+    return (
+      <CommandRow
+        command={entry.command}
+        output={entry.output}
+        failed={entry.failed}
+        running={entry.running}
+      />
+    )
   if (entry.kind === 'file-change') return <FileChangeRow path={entry.path} hunks={entry.hunks} />
   if (entry.kind === 'boundary') {
     return (
