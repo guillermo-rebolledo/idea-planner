@@ -2,13 +2,10 @@ import { createServer, type Server, type Socket } from 'node:net'
 import { z } from 'zod'
 
 interface PlanningToolHostCallbacks {
-  onActivity(
-    kind: 'allowed' | 'blocked' | 'error' | 'output',
-    summary: string
-  ): void | Promise<void>
+  onActivity(kind: 'allowed' | 'blocked' | 'output', summary: string): void | Promise<void>
   onStop(summary: string): void
   /** Structured answers the provider offered for the current question. */
-  onChoices?(question: string, options: { label: string; value: string }[]): void
+  onChoices(question: string, options: { label: string; value: string }[]): void
 }
 
 /**
@@ -67,7 +64,6 @@ const TOOL_DEFINITIONS = [
 export class PlanningToolHost {
   private server: Server | undefined
   private stopping = false
-  private outputBytes = 0
   private unreadableChoices = 0
   private operationQueue: Promise<void> = Promise.resolve()
 
@@ -180,31 +176,22 @@ export class PlanningToolHost {
       `Planning operation started: ${parsed.data.name}`
     )
     try {
-      const result = await this.withDeadline((signal) => this.call(parsed.data.arguments, signal))
-      this.outputBytes += Buffer.byteLength(result.text)
-      if (this.outputBytes > 10 * 1024 * 1024) throw new OutputLimitError()
-      await this.options.callbacks.onActivity(
-        result.outcome.activity.kind,
-        result.outcome.activity.summary
-      )
-      if (result.outcome.decision === 'stop' && !this.stopping) {
+      const outcome = await this.withDeadline((signal) => this.call(parsed.data.arguments, signal))
+      await this.options.callbacks.onActivity(outcome.activity.kind, outcome.activity.summary)
+      if (outcome.decision === 'stop' && !this.stopping) {
         this.stopping = true
-        this.options.callbacks.onStop(result.outcome.activity.summary)
+        this.options.callbacks.onStop(outcome.activity.summary)
       }
       this.respond(
         socket,
         request.id,
-        result.outcome.decision === 'allow'
-          ? toolText(result.text)
-          : toolError(result.outcome.activity.summary)
+        outcome.decision === 'allow' ? toolText('offered') : toolError(outcome.activity.summary)
       )
     } catch (error) {
       const summary =
         error instanceof OperationTimeoutError
           ? 'Planning operation exceeded the 60-second wall limit'
-          : error instanceof OutputLimitError
-            ? 'Planning tool output exceeded the 10 MB Run limit'
-            : 'Planning operation failed safely'
+          : 'Planning operation failed safely'
       await this.options.callbacks.onActivity('blocked', summary)
       if (!this.stopping) {
         this.stopping = true
@@ -214,10 +201,7 @@ export class PlanningToolHost {
     }
   }
 
-  private async call(
-    args: Record<string, unknown>,
-    signal: AbortSignal
-  ): Promise<{ outcome: ToolOutcome; text: string }> {
+  private async call(args: Record<string, unknown>, signal: AbortSignal): Promise<ToolOutcome> {
     await this.options.beforeOperation?.()
     signal.throwIfAborted()
     // Offering answers touches nothing: no path, no process, no new authority.
@@ -230,20 +214,14 @@ export class PlanningToolHost {
       // menus is not going to start making sense, so the third one ends the Run.
       this.unreadableChoices += 1
       return {
-        outcome: {
-          decision: this.unreadableChoices >= 3 ? 'stop' : 'block',
-          activity: { kind: 'blocked', summary: 'Blocked unreadable Suggested Responses' }
-        },
-        text: ''
+        decision: this.unreadableChoices >= 3 ? 'stop' : 'block',
+        activity: { kind: 'blocked', summary: 'Blocked unreadable Suggested Responses' }
       }
     }
-    this.options.callbacks.onChoices?.(offered.data.question, offered.data.options)
+    this.options.callbacks.onChoices(offered.data.question, offered.data.options)
     return {
-      outcome: {
-        decision: 'allow',
-        activity: { kind: 'allowed', summary: 'Offered Suggested Responses' }
-      },
-      text: 'offered'
+      decision: 'allow',
+      activity: { kind: 'allowed', summary: 'Offered Suggested Responses' }
     }
   }
 
@@ -278,7 +256,6 @@ export class PlanningToolHost {
 }
 
 class OperationTimeoutError extends Error {}
-class OutputLimitError extends Error {}
 
 function tool(
   name: string,

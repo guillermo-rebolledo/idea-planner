@@ -425,7 +425,7 @@ export function Conversation({ idea }: { idea: IdeaSummary }): React.JSX.Element
               className="h-8 rounded-md border border-border bg-background px-2 text-xs"
             >
               <option value="ask">Ask</option>
-              <option value="auto">Auto inside the planning sandbox</option>
+              <option value="auto">Auto</option>
             </select>
           </Field>
           <Button
