@@ -24,6 +24,7 @@ import {
   type ReadinessSnapshot,
   type RunSnapshot,
   type SessionSummary,
+  type SkillCatalog,
   type StandingApprovalKind,
   type SuggestedResponse
 } from '@shared/contract'
@@ -81,7 +82,10 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
   const [live, setLive] = useState<LiveRun | null>(null)
   const [draft, setDraft] = useState('')
   const [harness, setHarness] = useState<HarnessId | null>(null)
-  const [skill, setSkill] = useState('grilling')
+  // No Skill by default. Most messages are not asking for a methodology, and
+  // one applied because it happened to be selected is one nobody chose.
+  const [skill, setSkill] = useState<string | null>(null)
+  const [catalog, setCatalog] = useState<SkillCatalog | null>(null)
   const [model, setModel] = useState(HARNESS_DEFAULT_MODEL)
   const [effort, setEffort] = useState('medium')
   // Ask by default: a Run edits the Project in place, and being asked first is
@@ -121,6 +125,15 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
     void refresh()
     void window.shell.getReadiness().then(setReadiness, () => undefined)
   }, [refresh])
+
+  // Skills are installed and removed by the person, in their own directories,
+  // so what is available is read rather than remembered.
+  useEffect(() => {
+    if (!chosenHarness) return
+    void window.shell
+      .listSkills({ projectRoot: session.projectRoot, harness: chosenHarness })
+      .then(setCatalog, () => undefined)
+  }, [chosenHarness, session.projectRoot])
 
   // While a Run is in flight the durable snapshot is what settles partial
   // messages, so it is re-read until the Run reaches a boundary.
@@ -206,6 +219,25 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
     endRef.current?.scrollIntoView({ block: 'end' })
   }, [snapshot?.entries.length, live?.messages, live?.changes, live?.commands])
 
+  // Derived rather than corrected: a Skill the catalog stops offering — the
+  // Project's trust withdrawn, the directory deleted — is one this message no
+  // longer asks for, without a round of state chasing the catalog.
+  const chosenSkill =
+    skill && catalog?.available.some((entry) => entry.name === skill) ? skill : null
+
+  // `/` at the start of an empty message asks what methodologies there are.
+  // Anywhere else it is just a slash, because most messages contain paths.
+  const slashQuery = /^\/(\S*)$/.exec(draft)?.[1] ?? null
+  const matchingSkills = (catalog?.available ?? []).filter((entry) =>
+    entry.name.includes(slashQuery ?? '')
+  )
+
+  /** Takes the Skill for this message, and the `/` back out of the message. */
+  const chooseSkill = useCallback((name: string) => {
+    setSkill(name)
+    setDraft('')
+  }, [])
+
   const send = useCallback(
     async (text: string, source: 'composer' | 'suggested-response', submissionId?: string) => {
       if (!chosenHarness) return
@@ -217,14 +249,20 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           submissionId: submissionId ?? crypto.randomUUID(),
           text,
           source,
-          skill,
+          ...(chosenSkill ? { skill: chosenSkill } : {}),
           harness: chosenHarness,
           model,
           effort,
           permissionMode: permissionMode
         })
         setPhase({ state: 'ready', snapshot: next })
-        if (source === 'composer' && !submissionId) setDraft('')
+        // Per message, not per Session: real work switches methodology inside
+        // one thread of context, and a Skill that outlives the message it was
+        // chosen for is one nobody chose for the next one.
+        if (source === 'composer' && !submissionId) {
+          setDraft('')
+          setSkill(null)
+        }
         await window.shell.listRuns(sessionId).then(setRuns, () => undefined)
       } catch {
         setError(
@@ -237,7 +275,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
         setBusy(false)
       }
     },
-    [sessionId, chosenHarness, skill, model, effort, permissionMode, refresh]
+    [sessionId, chosenHarness, chosenSkill, model, effort, permissionMode, refresh]
   )
 
   /**
@@ -361,7 +399,8 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
       >
         {!started && (
           <li className="text-xs text-muted-foreground">
-            Nothing has been developed yet. Choose a Skill below and send your first message.
+            Nothing has been developed yet. Send your first message — and if you have Skills
+            installed, type / to work to one.
           </li>
         )}
         {entries.map((entry) => (
@@ -412,6 +451,73 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           )}
         <div ref={endRef} />
       </ol>
+
+      {catalog?.projectTrusted && catalog.available.some((entry) => entry.source === 'project') && (
+        <p className="mx-3 mb-3 text-[11px] text-muted-foreground">
+          This Project’s own Skills are offered because you trusted them.{' '}
+          <button
+            type="button"
+            className="underline underline-offset-2"
+            onClick={() =>
+              void window.shell
+                .trustProjectSkills({
+                  root: session.projectRoot,
+                  harness: chosenHarness ?? 'claude',
+                  trusted: false
+                })
+                .then(setCatalog, () => setError('That could not be withdrawn.'))
+            }
+          >
+            Stop trusting them
+          </button>
+        </p>
+      )}
+
+      {catalog && catalog.untrusted.length > 0 && (
+        <div
+          role="alert"
+          aria-label="Project Skills"
+          className="mx-3 mb-3 rounded-md border border-border bg-muted/50 p-3"
+        >
+          <p className="text-xs">
+            This Project brings {catalog.untrusted.length === 1 ? 'a Skill' : 'Skills'} of its own.
+            A Skill is instructions for an agent that can edit files and run commands, and these
+            arrived with the repository — so they are not offered until you say so.
+          </p>
+          <ul className="mt-2 flex flex-col gap-1">
+            {catalog.untrusted.map((entry) => (
+              <li key={entry.name} className="text-xs">
+                <span className="font-medium">{entry.name}</span>
+                {entry.description && (
+                  <span className="text-muted-foreground"> — {entry.description}</span>
+                )}
+                <span className="block font-mono text-[10px] break-all text-muted-foreground select-text">
+                  {entry.path}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <Button
+            className="mt-2"
+            size="sm"
+            variant="secondary"
+            onClick={() =>
+              void window.shell
+                .trustProjectSkills({
+                  root: session.projectRoot,
+                  harness: chosenHarness ?? 'claude',
+                  trusted: true
+                })
+                .then(setCatalog, () => setError('Those Skills could not be trusted.'))
+            }
+          >
+            Trust this Project’s Skills
+          </Button>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Read them first — they are files in the repository. You can withdraw this at any time.
+          </p>
+        </div>
+      )}
 
       {pendingApproval && (
         <div
@@ -567,6 +673,37 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
         <label className="sr-only" htmlFor="conversation-composer">
           Your message
         </label>
+        {slashQuery !== null && (
+          <ul
+            aria-label="Skills"
+            className="max-h-40 overflow-y-auto rounded-md border border-border bg-surface"
+          >
+            {matchingSkills.length === 0 && (
+              <li className="px-2 py-1.5 text-xs text-muted-foreground">
+                No installed Skill matches. Keep typing your message — a Skill is optional.
+              </li>
+            )}
+            {matchingSkills.map((entry) => (
+              <li key={`${entry.source}:${entry.name}`}>
+                <button
+                  type="button"
+                  className="flex w-full flex-col items-start px-2 py-1.5 text-left hover:bg-muted/60"
+                  onClick={() => chooseSkill(entry.name)}
+                >
+                  <span className="text-xs font-medium">
+                    {entry.name}
+                    {entry.source === 'project' && (
+                      <span className="ml-1 font-normal text-muted-foreground">this Project</span>
+                    )}
+                  </span>
+                  {entry.description && (
+                    <span className="text-[11px] text-muted-foreground">{entry.description}</span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <textarea
           id="conversation-composer"
           value={draft}
@@ -575,16 +712,35 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           placeholder={started ? 'Write your answer…' : 'What should we develop or decide?'}
           className="min-h-20 rounded-md border border-border bg-background p-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         />
+        {chosenSkill && (
+          <p className="text-[11px] text-muted-foreground">
+            This message asks for the{' '}
+            <span className="font-medium text-foreground">{chosenSkill}</span> Skill.{' '}
+            <button
+              type="button"
+              className="underline underline-offset-2"
+              onClick={() => setSkill(null)}
+            >
+              Send without it
+            </button>
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <Field label="Skill">
             <select
               aria-label="Skill"
-              value={skill}
-              onChange={(event) => setSkill(event.target.value)}
-              className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+              value={chosenSkill ?? ''}
+              disabled={(catalog?.available.length ?? 0) === 0}
+              onChange={(event) => setSkill(event.target.value || null)}
+              className="h-8 max-w-44 rounded-md border border-border bg-background px-2 text-xs"
             >
-              <option value="grilling">Grill Me</option>
-              <option value="wayfinder">Wayfinder</option>
+              <option value="">{catalog?.available.length ? 'None' : 'None installed'}</option>
+              {catalog?.available.map((entry) => (
+                <option key={`${entry.source}:${entry.name}`} value={entry.name}>
+                  {entry.name}
+                  {entry.source === 'project' ? ' (this Project)' : ''}
+                </option>
+              ))}
             </select>
           </Field>
           <Field label="Harness">

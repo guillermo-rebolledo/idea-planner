@@ -308,11 +308,6 @@ function CheckRow({ check }: { check: ReadinessCheck }): React.JSX.Element {
         <span className="ml-auto text-[11px] text-muted-foreground">{statusLabel}</span>
       </div>
       <p className="pl-5.5 text-xs leading-relaxed text-muted-foreground">{check.summary}</p>
-      {check.missingSkills.length > 0 && (
-        <p className="pl-5.5 text-xs text-muted-foreground">
-          Missing: {check.missingSkills.join(', ')}
-        </p>
-      )}
       {check.command && check.status !== 'ready' && <CopyableCommand command={check.command} />}
       {check.links.length > 0 && check.status !== 'ready' && (
         <p className="pl-5.5 text-xs text-muted-foreground">

@@ -71,11 +71,18 @@ export const runConfigurationSchema = z.object({
   harnessVersion: z.string().min(1),
   model: z.string().min(1),
   effort: z.string().min(1),
-  skill: z.object({
-    name: skillNameSchema,
-    path: z.string().min(1),
-    hash: z.string().length(64)
-  }),
+  /**
+   * The methodology this Run was asked to work to, pinned to the exact text on
+   * disk when it started. Null is ordinary: Skills are optional, and most
+   * messages are not asking for one.
+   */
+  skill: z
+    .object({
+      name: skillNameSchema,
+      path: z.string().min(1),
+      hash: z.string().length(64)
+    })
+    .nullable(),
   environment: z.record(z.string()),
   /**
    * The Checkout the Run works on: its Session's Project, edited in place
@@ -128,7 +135,7 @@ export const startRunInputSchema = acceptRunInputSchema
     harness: harnessIdSchema,
     model: z.string().min(1),
     effort: z.string().min(1),
-    skill: skillNameSchema,
+    skill: skillNameSchema.optional(),
     permissionMode: permissionModeSchema
   })
 export type StartRunInput = z.infer<typeof startRunInputSchema>

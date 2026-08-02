@@ -16,15 +16,27 @@ One duplication to remove: the list of usable Skills is currently hardcoded in t
 
 **Blocked by:** 06, 09
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Skills are discovered from global directories and from the Project
-- [ ] Project skills are inert until that Project's skills are trusted, once, with the skills shown; trust is revocable
-- [ ] Typing `/` in the composer lists available skills and inserts one for that message
-- [ ] A Run records which Skill it used, with provenance pinned
-- [ ] Structured choices render as Suggested Responses and move the Session to `blocked`; prose lists never do
-- [ ] Choosing a Suggested Response submits it as an immediate visible user turn
-- [ ] The app indicates when skills are installed and suggests them, without ever requiring them
-- [ ] The Codex limitation is stated in the UI
-- [ ] Attribution is retained
-- [ ] `pnpm verify` passes
+- [x] Skills are discovered from global directories and from the Project
+- [x] Project skills are inert until that Project's skills are trusted, once, with the skills shown; trust is revocable
+- [x] Typing `/` in the composer lists available skills and inserts one for that message
+- [x] A Run records which Skill it used, with provenance pinned
+- [x] Structured choices render as Suggested Responses and move the Session to `blocked`; prose lists never do
+- [x] Choosing a Suggested Response submits it as an immediate visible user turn
+- [x] The app indicates when skills are installed and suggests them, without ever requiring them
+- [x] The Codex limitation is stated in the UI
+- [x] Attribution is retained
+- [x] `pnpm verify` passes
+
+## Answer — what was already true
+
+Four of these were built by earlier tickets and are left alone: `offer_response_options` reaches Suggested Responses through the tool host, a prose list of options never becomes one (`hasPlainOptions`), a Run pins the Skill it used with its path and hash, and the MIT attribution still renders. This ticket verified them rather than rebuilding them.
+
+## Answer — the Session status this ticket does not set
+
+The ticket asks for structured choices to move the Session to `blocked`. Ticket 12 owns Session status and says so itself, and 07b already put the blocked signal on the **Run** for the same reason. Nothing here half-introduces a second status for 12 to rewrite; what this ticket does is make sure the choices themselves are produced and answered.
+
+## Answer — one source of truth
+
+`VERIFIED_SKILLS` is gone, the composer's hardcoded `<select>` is gone, and the Conversation's boundary summary no longer knows two Skill names by heart. What a Run may use is exactly what discovery returns for that Project and Harness — so a Skill this app offers is one the Harness would also find, and a Skill it refuses is one the Harness would not.

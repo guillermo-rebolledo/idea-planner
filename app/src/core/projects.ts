@@ -52,10 +52,36 @@ export class ProjectStore {
         const project: Project = {
           root,
           name: basename(root),
-          addedAt: this.now().toISOString()
+          addedAt: this.now().toISOString(),
+          skillsTrustedAt: null
         }
         yield* this.write([...projects, project])
         return yield* this.view(project)
+      })
+    )
+  }
+
+  /**
+   * Trusts, or stops trusting, this Project's own Skills. Revocable because
+   * the repository it came from can change under it: what was trusted was a
+   * set of Skills the person read, not the repository forever.
+   */
+  setSkillsTrusted(root: string, trusted: boolean): Effect.Effect<ProjectView, CoreError> {
+    return this.writeLock.withPermits(1)(
+      Effect.gen(this, function* () {
+        const projects = yield* this.read()
+        const project = projects.find((entry) => entry.root === root)
+        if (!project) {
+          return yield* Effect.fail(
+            new CoreError('INVALID_INPUT', 'That Project has not been added')
+          )
+        }
+        const updated: Project = {
+          ...project,
+          skillsTrustedAt: trusted ? this.now().toISOString() : null
+        }
+        yield* this.write(projects.map((entry) => (entry === project ? updated : entry)))
+        return yield* this.view(updated)
       })
     )
   }

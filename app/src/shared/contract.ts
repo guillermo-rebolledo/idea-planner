@@ -14,6 +14,7 @@ import {
   type RevokeStandingApprovalInput,
   type StandingApproval
 } from './approval'
+import type { ListSkillsInput, SkillCatalog, TrustProjectSkillsInput } from './skill'
 import { harnessIdSchema } from './readiness'
 import type { ChooseExecutableResult, HarnessId, ReadinessSnapshot } from './readiness'
 import type { ChooseProjectResult, ProjectView } from './project'
@@ -163,6 +164,11 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('project/add'), root: z.string().min(1) }),
   z.object({ type: z.literal('project/list') }),
   z.object({ type: z.literal('project/remove'), root: z.string().min(1) }),
+  z.object({
+    type: z.literal('project/trust-skills'),
+    root: z.string().min(1),
+    trusted: z.boolean()
+  }),
   z.object({ type: z.literal('approval/grant'), input: grantStandingApprovalInputSchema }),
   z.object({ type: z.literal('approval/list'), projectRoot: z.string().min(1) }),
   z.object({
@@ -269,6 +275,13 @@ export interface ShellApi {
    * directory on disk is never touched.
    */
   removeProject(root: string): Promise<void>
+  /**
+   * The methodologies available for a Run in this Project, and the Project's
+   * own that are waiting to be trusted.
+   */
+  listSkills(input: ListSkillsInput): Promise<SkillCatalog>
+  /** Offers this Project's own Skills, or stops offering them. */
+  trustProjectSkills(input: TrustProjectSkillsInput): Promise<SkillCatalog>
   /** What this Project has permanently allowed, newest grant last. */
   listStandingApprovals(projectRoot: string): Promise<StandingApproval[]>
   /** Takes one back. The next Run in that Project asks about it again. */
@@ -324,6 +337,7 @@ export interface ShellApi {
 
 export { IPC_CHANNELS } from './channels'
 export * from './approval'
+export * from './skill'
 export * from './conversation'
 export * from './project'
 export * from './readiness'

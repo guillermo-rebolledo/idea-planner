@@ -14,6 +14,7 @@ import type {
   RemediationLink
 } from '@shared/readiness'
 import { describeHarnessUpdate } from './harness-install'
+import { discoverGlobalSkills } from './skills'
 
 /**
  * Harness and skill readiness probing. Discovery is deliberately narrow:
@@ -30,13 +31,6 @@ const SKILLS_LINKS: RemediationLink[] = [
   { label: 'Matt Pocock’s skills repository', url: 'https://github.com/mattpocock/skills' },
   { label: 'Node.js (provides npm and npx)', url: 'https://nodejs.org' }
 ]
-
-/**
- * The exact Skills a Run is allowed to invoke. A Skill absent here has not
- * been reviewed and verified, so the app refuses to start a Run for it rather
- * than reaching for a plausible directory name.
- */
-export const VERIFIED_SKILLS: readonly string[] = ['grilling', 'wayfinder']
 
 /** Hosts of every remediation link, so the open-link allowlist cannot drift. */
 export function readinessLinkHosts(): Set<string> {
@@ -220,7 +214,6 @@ interface CheckDraft {
   summary: string
   command?: string
   links?: RemediationLink[]
-  missingSkills?: string[]
 }
 
 function finishCheck(dimension: ReadinessDimension, draft: CheckDraft): ReadinessCheck {
@@ -230,8 +223,7 @@ function finishCheck(dimension: ReadinessDimension, draft: CheckDraft): Readines
     code: draft.code,
     summary: draft.summary,
     command: draft.command ?? null,
-    links: draft.links ?? [],
-    missingSkills: draft.missingSkills ?? []
+    links: draft.links ?? []
   }
 }
 
@@ -390,37 +382,28 @@ async function probeAuthentication(
 }
 
 /**
- * Which Skills are installed for this Harness. Reported, and nothing more: a
- * Harness that is installed, compatible, and signed in works, and a
- * methodology document missing from somebody's home directory is not a reason
- * to tell them it does not.
+ * How many Skills this Harness would find, and nothing more. There is no
+ * required set: Skills are optional, a Harness that works is not made unusable
+ * by an empty directory, and which ones exist is discovery's answer rather
+ * than a list this file keeps.
  */
 async function probeSkills(spec: HarnessSpec, homeDir: string): Promise<ReadinessCheck> {
-  const missing: string[] = []
-  for (const name of VERIFIED_SKILLS) {
-    // Exact documented location for this harness — never a directory walk.
-    const skillFile = join(homeDir, spec.skillsRoot, name, 'SKILL.md')
-    try {
-      const info = await stat(skillFile)
-      if (!info.isFile()) missing.push(name)
-    } catch {
-      missing.push(name)
-    }
-  }
-  if (missing.length > 0) {
+  // Readiness is about this machine, so only the global directory is counted:
+  // a Project's own Skills belong to that Project and are trusted there.
+  const installed = (await discoverGlobalSkills(homeDir, spec.id)).length
+  if (installed === 0) {
     return finishCheck('skills', {
       status: 'warning',
       code: 'skills-missing',
-      summary: `The Matt Pocock Skills are not installed for ${spec.displayName}, so a Run cannot invoke one. Everything else still works. Install them yourself with the command below — this app never runs it.`,
+      summary: `No Skills are installed for ${spec.displayName}, so a Run cannot be asked to work to one. Everything else still works. Install some yourself with the command below — this app never runs it.`,
       command: SKILLS_INSTALL_COMMAND,
-      links: SKILLS_LINKS,
-      missingSkills: missing
+      links: SKILLS_LINKS
     })
   }
   return finishCheck('skills', {
     status: 'ready',
     code: 'ready',
-    summary: 'Matt Pocock’s Grill Me and Wayfinder skills and their dependencies are installed.'
+    summary: `${installed === 1 ? '1 Skill is' : `${installed} Skills are`} installed for ${spec.displayName}. Type / in the composer to work to one.`
   })
 }
 

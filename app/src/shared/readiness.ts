@@ -76,9 +76,7 @@ export const readinessCheckSchema = z.object({
   summary: z.string().min(1),
   /** Copyable terminal remediation. The app never runs it. */
   command: z.string().nullable(),
-  links: z.array(remediationLinkSchema),
-  /** Skill names still missing, when the dimension is `skills`. */
-  missingSkills: z.array(z.string().min(1))
+  links: z.array(remediationLinkSchema)
 })
 export type ReadinessCheck = z.infer<typeof readinessCheckSchema>
 

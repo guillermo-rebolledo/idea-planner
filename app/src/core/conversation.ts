@@ -737,10 +737,13 @@ function approvalEntryId(runId: string, toolUseId: string): string {
 }
 
 function runBoundarySummary(input: BeginConversationRunInput): string {
-  const skill =
-    input.skill === 'wayfinder' ? 'Wayfinder' : input.skill === 'grilling' ? 'Grill Me' : 'Run'
+  // The Skill is whatever was installed and asked for; this app keeps no list
+  // of names to prettify, because discovery is the only list there is.
   const harness = input.harness === 'claude' ? 'Claude' : input.harness === 'codex' ? 'Codex' : null
-  const started = harness ? `${skill} started via ${harness}` : 'Run started'
+  const work = input.skill
+    ? `Run started via ${harness ?? 'a Harness'}, working to ${input.skill}`
+    : null
+  const started = work ?? (harness ? `Run started via ${harness}` : 'Run started')
   return input.restorationNote ? `${started}. Harness Thread restored from local history` : started
 }
 

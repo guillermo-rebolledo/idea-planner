@@ -388,7 +388,8 @@ export type SubmitConversationMessageInput = z.infer<typeof submitConversationMe
 
 /** The Renderer's one command for developing a Session through a Conversation. */
 export const developSessionInputSchema = submitConversationMessageInputSchema.extend({
-  skill: skillNameSchema,
+  /** Absent when the message asks for no particular methodology. */
+  skill: skillNameSchema.optional(),
   harness: harnessIdSchema,
   model: z.string().min(1).max(200),
   effort: z.string().min(1).max(50),

@@ -101,6 +101,13 @@ async function completeOnboarding(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Continue', exact: true }).click()
 }
 
+/** Typing `/` offers what is installed; picking one is for that message only. */
+async function chooseSkill(page: Page, name: string): Promise<void> {
+  const composer = page.getByLabel('Your message')
+  await composer.fill('/')
+  await page.getByRole('list', { name: 'Skills' }).getByRole('button', { name }).click()
+}
+
 /** A Session is started by sending a message; its title comes from it. */
 async function startSession(page: Page, message: string): Promise<void> {
   await page.getByRole('button', { name: 'New chat', exact: true }).click()
@@ -144,6 +151,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'listProjects',
       'listRuns',
       'listSessions',
+      'listSkills',
       'listStandingApprovals',
       'onConversationEvent',
       'onThemeChanged',
@@ -159,7 +167,8 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'setThemePreference',
       'startRun',
       'startSession',
-      'stopRun'
+      'stopRun',
+      'trustProjectSkills'
     ])
 
     // The preload functions cross the bridge by value: none of them can be
@@ -447,6 +456,51 @@ test('readiness reports Codex and Claude independently, with safe repair and re-
     await expect(claudeCard.getByText('Usable', { exact: true })).toBeVisible()
 
     await dialog.getByRole('button', { name: 'Close Harnesses' }).click()
+  } finally {
+    await app.close()
+  }
+})
+
+test('a Project’s own Skills are shown, trusted once, and then offered', async () => {
+  // Installed the way a person installs them: a directory with a SKILL.md, in
+  // the place the Harness itself reads.
+  await installFakeSkills('.claude/skills')
+  const own = join(sandbox.projectDir, '.claude', 'skills', 'deploy-to-prod')
+  await mkdir(own, { recursive: true })
+  await writeFile(join(own, 'SKILL.md'), '---\ndescription: Ships it\n---\n')
+
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Offline receipts')
+
+    const skills = page.getByRole('combobox', { name: 'Skill' })
+    // The global ones are offered; the repository's own is not, yet.
+    await expect(skills).toContainText('grilling')
+    await expect(skills).not.toContainText('deploy-to-prod')
+
+    // It is shown before it is trusted, with what it says it does.
+    const notice = page.getByRole('alert', { name: 'Project Skills' })
+    await expect(notice.getByText('deploy-to-prod', { exact: true })).toBeVisible()
+    await expect(notice.getByText('Ships it')).toBeVisible()
+
+    await notice.getByRole('button', { name: 'Trust this Project’s Skills' }).click()
+    await expect(skills).toContainText('deploy-to-prod')
+
+    // Typing `/` offers what is installed, and the choice is for this message.
+    await chooseSkill(page, 'grilling')
+    await expect(page.getByText('This message asks for the')).toBeVisible()
+    // Picking takes the `/` back out; the message itself is what follows.
+    await page.getByLabel('Your message').fill('Grill me on this')
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
+    // Gone with the message it was chosen for: the next one asks for nothing.
+    await expect(page.getByText('This message asks for the')).toHaveCount(0)
+
+    // Trust is revocable where it was given, and withdrawing it takes the
+    // Skill back out of what is offered.
+    await page.getByRole('button', { name: 'Stop trusting them' }).click()
+    await expect(skills).not.toContainText('deploy-to-prod')
   } finally {
     await app.close()
   }

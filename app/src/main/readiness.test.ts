@@ -220,14 +220,20 @@ describe('authentication', () => {
 })
 
 describe('skills', () => {
-  it('lists exactly the missing skills with only the approved guidance', async () => {
+  it('says how many are installed rather than naming a required set', async () => {
+    // There is no required set. What is installed is discovery's answer, and
+    // one Skill is as valid an answer as ten.
     await installSkills('.agents/skills', ['grilling'])
-    const readiness = await probeCodex()
-    const skills = check(readiness, 'skills')
-    // Informational: a missing Skill is worth saying, and worth nothing else.
+    const skills = check(await probeCodex(), 'skills')
+    expect(skills.status).toBe('ready')
+    expect(skills.summary).toContain('1 Skill is installed')
+  })
+
+  it('offers guidance, not a demand, when none are installed', async () => {
+    const skills = check(await probeCodex(), 'skills')
+    // Informational: worth saying, and worth nothing else.
     expect(skills.status).toBe('warning')
     expect(skills.code).toBe('skills-missing')
-    expect(skills.missingSkills).toEqual(['wayfinder'])
     expect(skills.command).toBe('npx skills@latest add mattpocock/skills')
     expect(skills.links.map((link) => link.url)).toContain('https://github.com/mattpocock/skills')
   })

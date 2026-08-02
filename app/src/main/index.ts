@@ -21,6 +21,10 @@ import {
   setSessionArchivedInputSchema,
   setSessionPinnedInputSchema,
   themePreferenceSchema,
+  listSkillsInputSchema,
+  skillCatalogSchema,
+  trustProjectSkillsInputSchema,
+  type SkillCatalog,
   resolveApprovalInputSchema,
   revokeStandingApprovalInputSchema,
   runSnapshotSchema,
@@ -38,9 +42,11 @@ import {
 import {
   chooseExecutableResultSchema,
   harnessIdSchema,
+  type HarnessId,
   readinessSnapshotSchema,
   refreshReadinessInputSchema
 } from '@shared/readiness'
+import { discoverSkills } from './skills'
 import { CoreClient } from './core-client'
 import { initRepository, resolveProjectRoot } from './git'
 import { HARNESS_SPECS, readinessLinkHosts } from './readiness'
@@ -206,6 +212,23 @@ function registerIpc(): void {
   // Forgetting a Project is app state only: nothing on disk is touched.
   handleInvoke(IPC_CHANNELS.removeProject, z.string().min(1), async (root) => {
     await coreClient.send({ type: 'project/remove', root })
+  })
+
+  // Skills are discovered on demand: they are installed and removed by the
+  // person, in their own directories, without telling this app.
+  handleInvoke(IPC_CHANNELS.listSkills, listSkillsInputSchema, async (input) =>
+    skillCatalogSchema.parse(await skillsFor(input.projectRoot, input.harness))
+  )
+
+  handleInvoke(IPC_CHANNELS.trustProjectSkills, trustProjectSkillsInputSchema, async (input) => {
+    const project = projectViewSchema.parse(
+      await coreClient.send({
+        type: 'project/trust-skills',
+        root: input.root,
+        trusted: input.trusted
+      })
+    )
+    return skillCatalogSchema.parse(await skillsFor(project.root, input.harness))
   })
 
   handleInvoke(IPC_CHANNELS.listStandingApprovals, z.string().min(1), async (projectRoot) =>
@@ -378,6 +401,32 @@ function registerIpc(): void {
   )
 }
 
+/**
+ * What is installed for one Project, with the Project's own Skills offered
+ * only once it has been trusted.
+ */
+async function skillsFor(projectRoot: string, harness: HarnessId): Promise<SkillCatalog> {
+  // The same home readiness probes, so a test that installs Skills where it
+  // says it did finds them there.
+  const projects = projectViewSchema.array().parse(await coreClient.send({ type: 'project/list' }))
+  return discoverSkills({
+    homeDirectory: harnessHomeDirectory(),
+    projectRoot,
+    harness,
+    // A Project the app does not have is not one whose Skills are trusted:
+    // `undefined !== null` would have quietly said otherwise.
+    projectTrusted:
+      projects.find((project) => project.root === projectRoot)?.skillsTrustedAt != null
+  })
+}
+
+/** Where a Harness's own directories live, redirected only by a test run. */
+function harnessHomeDirectory(): string {
+  return !app.isPackaged && testReadinessHome !== undefined
+    ? testReadinessHome
+    : app.getPath('home')
+}
+
 function hardenSession(): void {
   const ses = session.defaultSession
 
@@ -437,7 +486,7 @@ void app.whenReady().then(() => {
   settings = new SettingsStore(app.getPath('userData'))
   readiness = new ReadinessService({
     settings,
-    homeDir: !app.isPackaged && testReadinessHome ? testReadinessHome : app.getPath('home'),
+    homeDir: harnessHomeDirectory(),
     testPathOverride:
       !app.isPackaged && testReadinessPath !== undefined ? testReadinessPath : undefined
   })
@@ -449,6 +498,7 @@ void app.whenReady().then(() => {
     privateRoot: join(app.getPath('userData'), 'runs'),
     proxyExecutable: process.execPath,
     proxyScript: join(__dirname, 'mcp-proxy.js'),
+    skills: skillsFor,
     // Assistant text and control events take the direct path to the window so
     // streaming stays responsive; durable projection follows behind it.
     onConversationEvent: (event) => {

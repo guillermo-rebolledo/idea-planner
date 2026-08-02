@@ -74,6 +74,7 @@ export interface Core {
   addProject(root: string): Promise<ProjectView>
   listProjects(): Promise<ProjectView[]>
   removeProject(root: string): Promise<void>
+  setProjectSkillsTrusted(root: string, trusted: boolean): Promise<ProjectView>
   grantStandingApproval(input: GrantStandingApprovalInput): Promise<StandingApproval>
   listStandingApprovals(projectRoot: string): Promise<StandingApproval[]>
   standingApprovalRules(projectRoot: string, harness: HarnessId): Promise<string[]>
@@ -110,6 +111,7 @@ export interface CoreEffects {
   addProject(root: string): Effect.Effect<ProjectView, CoreError>
   listProjects(): Effect.Effect<ProjectView[], CoreError>
   removeProject(root: string): Effect.Effect<void, CoreError>
+  setProjectSkillsTrusted(root: string, trusted: boolean): Effect.Effect<ProjectView, CoreError>
   grantStandingApproval(
     input: GrantStandingApprovalInput
   ): Effect.Effect<StandingApproval, CoreError>
@@ -457,6 +459,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     // is part of what removing it forgets.
     removeProject: (root) =>
       projects.remove(root).pipe(Effect.flatMap(() => approvals.forgetProject(root))),
+    setProjectSkillsTrusted: (root, trusted) => projects.setSkillsTrusted(root, trusted),
     grantStandingApproval,
     listStandingApprovals: (projectRoot) => approvals.list(projectRoot),
     standingApprovalRules: (projectRoot, harness) => approvals.rules(projectRoot, harness),
@@ -528,6 +531,7 @@ export function createCore(deps: CoreDeps = {}): Core {
     addProject: (root) => run(core.addProject(root)),
     listProjects: () => run(core.listProjects()),
     removeProject: (root) => run(core.removeProject(root)),
+    setProjectSkillsTrusted: (root, trusted) => run(core.setProjectSkillsTrusted(root, trusted)),
     grantStandingApproval: (input) => run(core.grantStandingApproval(input)),
     listStandingApprovals: (projectRoot) => run(core.listStandingApprovals(projectRoot)),
     standingApprovalRules: (projectRoot, harness) =>

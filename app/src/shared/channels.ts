@@ -7,6 +7,8 @@ export const IPC_CHANNELS = {
   chooseProject: 'project:choose',
   listProjects: 'project:list',
   removeProject: 'project:remove',
+  listSkills: 'skill:list',
+  trustProjectSkills: 'skill:trust-project',
   listStandingApprovals: 'approval:list',
   revokeStandingApproval: 'approval:revoke',
   initializeProject: 'project:init',

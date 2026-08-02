@@ -22,6 +22,7 @@ import type { SessionSummary } from '@shared/contract'
 import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
 import type { RunLaunch } from './run-process-broker'
 import { RunService } from './run-service'
+import { discoverSkills } from './skills'
 
 const temporaryDirectories: string[] = []
 
@@ -67,7 +68,8 @@ function claudeDeps(root: string, broker: ReturnType<typeof fakeBroker>) {
     privateRoot: join(root, 'private'),
     proxyExecutable: '/usr/bin/true',
     proxyScript: '/tmp/mcp-proxy.js',
-    claudeOauthToken: fakeClaudeOauthToken
+    claudeOauthToken: fakeClaudeOauthToken,
+    skills: fakeSkills(root)
   }
 }
 
@@ -240,6 +242,15 @@ function readyReadiness(executablePath: string): {
 }
 
 const fakeClaudeOauthToken = (): Promise<string> => Promise.resolve('test-oauth-token')
+
+/**
+ * Discovery, as Main injects it. Tests install Skills on disk in the Harness's
+ * own documented directory, so this reads them the way the app does.
+ */
+function fakeSkills(root: string) {
+  return (projectRoot: string, harness: 'codex' | 'claude') =>
+    discoverSkills({ homeDirectory: root, projectRoot, harness, projectTrusted: true })
+}
 /** Connections a test opened to a Run's MCP socket, closed with the test. */
 const openSockets: Socket[] = []
 
@@ -276,7 +287,8 @@ describe('Run service', () => {
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
-      claudeOauthToken: fakeClaudeOauthToken
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
     })
     await service.start({
       submissionId: 'submission-1',
@@ -364,7 +376,8 @@ describe('Run service', () => {
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
-      claudeOauthToken: fakeClaudeOauthToken
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
     })
     await service.start({
       submissionId: 'submission-1',
@@ -466,7 +479,8 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
     })
     await service.start({
       submissionId: 'submission-1',
@@ -506,7 +520,8 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
     })
     await service.develop({
       sessionId: 'session',
@@ -527,7 +542,7 @@ describe('Run service', () => {
     )
   })
 
-  it('refuses a Skill whose identity has not been verified', async () => {
+  it('refuses a Skill that is not installed for this Harness', async () => {
     const root = await readyHarnessRoot('run-unverified-')
     const service = new RunService({
       core: fakeCore(join(root, 'a-project')),
@@ -536,7 +551,8 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
     })
     await expect(
       service.start({
@@ -549,7 +565,9 @@ describe('Run service', () => {
         skill: 'to-spec',
         permissionMode: 'auto'
       })
-    ).rejects.toThrow('is not a verified Skill')
+      // Discovery is the only list: a name it does not return is a name the
+      // Harness would not find either.
+    ).rejects.toThrow('is not an installed Skill')
   })
 
   it('streams normalized events to the window and keeps assistant text out of activity', async () => {
@@ -570,6 +588,7 @@ describe('Run service', () => {
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root),
       onConversationEvent: (event) => streamed.push(event)
     })
     await service.start({
@@ -627,7 +646,8 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
     })
     await service.start({
       submissionId: 'submission-1',
@@ -669,7 +689,8 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
     })
     const snapshot = await service.develop({
       sessionId: 'session',
@@ -700,7 +721,8 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
     })
     await service.conversation('session')
     const finalize = (core.send.mock.calls as [{ type: string; input?: unknown }][]).find(
@@ -724,7 +746,8 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
     })
     await service.start({
       submissionId: 'submission-1',
@@ -763,7 +786,8 @@ describe('Run service', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
     })
     await expect(
       service.develop({
@@ -855,7 +879,8 @@ describe('Codex on the app-server protocol', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
     }
   }
 
@@ -1382,7 +1407,8 @@ describe('Ask mode', () => {
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/mcp-proxy.js'
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
     })
 
     await service.start({

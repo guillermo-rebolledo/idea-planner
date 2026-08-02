@@ -35,7 +35,9 @@ import {
   type RunSnapshot,
   type StartRunInput
 } from '@shared/run'
-import { HARNESS_SPECS, VERIFIED_SKILLS } from './readiness'
+import type { HarnessId } from '@shared/readiness'
+import type { SkillCatalog } from '@shared/skill'
+import { HARNESS_SPECS } from './readiness'
 import { ToolHost, type ApprovalRequest } from './tool-host'
 import type { RunProcessBroker } from './run-process-broker'
 
@@ -71,6 +73,8 @@ interface RunServiceDeps {
   proxyExecutable: string
   proxyScript: string
   claudeOauthToken?: () => Promise<string>
+  /** What is installed for a Project, with its own Skills only once trusted. */
+  skills: (projectRoot: string, harness: HarnessId) => Promise<SkillCatalog>
   /** Overridable so a test can stage settings this app would never write. */
   stageSettings?: (permissionMode: PermissionMode) => unknown
   /** How long a Harness is given to end its own turn before it is stopped. */
@@ -203,16 +207,10 @@ export class RunService {
       throw new Error(`${input.harness} is not ready`)
     }
     if (!harness.version) throw new Error(`${input.harness} version provenance is unavailable`)
-    const skillName = input.skill
-    if (!VERIFIED_SKILLS.includes(skillName)) {
-      throw new Error(`${skillName} is not a verified Skill`)
-    }
-    const spec = HARNESS_SPECS[input.harness]
-    const skillDirectory = join(this.deps.homeDirectory, spec.skillsRoot, skillName)
-    const skillFile = join(skillDirectory, 'SKILL.md')
-    const skillHash = createHash('sha256')
-      .update(await readFile(skillFile))
-      .digest('hex')
+    // A Skill is whatever is installed and offered, resolved by discovery
+    // rather than named in a list this app keeps: two lists of Skills are two
+    // chances to offer one the Harness cannot find.
+    const skill = input.skill ? await this.resolveSkill(input.skill, checkout, input.harness) : null
     const executableHash = await hashFile(harness.executablePath)
     const runKey = createHash('sha256')
       .update(`${input.sessionId}\0${input.submissionId}`)
@@ -231,7 +229,7 @@ export class RunService {
       harnessVersion: harness.version,
       model: input.model,
       effort: input.effort,
-      skill: { name: skillName, path: skillDirectory, hash: skillHash },
+      skill,
       environment,
       checkout,
       permissionMode: input.permissionMode
@@ -280,13 +278,14 @@ export class RunService {
       )
     const threadCompatible =
       savedThread !== undefined &&
-      latestHarnessBoundary?.skill === input.skill &&
+      latestHarnessBoundary !== undefined &&
+      latestHarnessBoundary.skill === input.skill &&
       latestHarnessBoundary.model === input.model &&
       (input.harness !== 'claude' ||
         (await claudeThreadExists(this.deps.homeDirectory, checkout, savedThread)))
     const restoreFromHistory =
       switchedHarness || (latestHarness === input.harness && !threadCompatible)
-    const handoff = deterministicHandoff(conversation, input.skill)
+    const handoff = deterministicHandoff(conversation, input.skill ?? null)
     // The Conversation records the Run boundary before anything can fail, so
     // every later outcome has somewhere understandable to land.
     await this.deps.core.send({
@@ -300,12 +299,14 @@ export class RunService {
       askedPermissionMode: CLAUDE_PERMISSION_MODES[input.permissionMode],
       restorationNote: latestHarness === input.harness && !threadCompatible
     })
-    await this.record(
-      accepted,
-      undefined,
-      'lifecycle',
-      `Invoking the verified ${skillName} skill, based on Matt Pocock’s MIT-licensed skills`
-    )
+    if (skill) {
+      await this.record(
+        accepted,
+        undefined,
+        'lifecycle',
+        `Working to the ${skill.name} Skill, pinned to the text on disk when this Run started`
+      )
+    }
     if (this.deps.broker.needsRecovery()) {
       return await this.conclude(
         accepted,
@@ -397,7 +398,9 @@ export class RunService {
                   sandbox: CODEX_SANDBOXES[input.permissionMode],
                   ...(input.model === HARNESS_DEFAULT_MODEL ? {} : { model: input.model }),
                   effort: input.effort,
-                  developerInstructions: await readFile(skillFile, 'utf8'),
+                  developerInstructions: skill
+                    ? await readFile(join(skill.path, 'SKILL.md'), 'utf8')
+                    : '',
                   prompt: restoreFromHistory
                     ? `${input.prompt}\n\nDeterministic handoff from the Conversation so far:\n${handoff}`
                     : input.prompt,
@@ -889,6 +892,32 @@ export class RunService {
     )
   }
 
+  /**
+   * The Skill this Run was asked for, as it is on disk right now. Pinning the
+   * hash is what makes the record mean something later: the text can change
+   * under a Run that has already read it.
+   */
+  private async resolveSkill(
+    name: string,
+    projectRoot: string,
+    harness: StartRunInput['harness']
+  ): Promise<{ name: string; path: string; hash: string }> {
+    const catalog = await this.deps.skills(projectRoot, harness)
+    const skill = catalog.available.find((entry) => entry.name === name)
+    if (!skill) {
+      throw new Error(
+        `${name} is not an installed Skill for this Harness, or belongs to a Project whose Skills are not trusted`
+      )
+    }
+    return {
+      name: skill.name,
+      path: skill.path,
+      hash: createHash('sha256')
+        .update(await readFile(join(skill.path, 'SKILL.md')))
+        .digest('hex')
+    }
+  }
+
   /** What this Project has permanently allowed, as the Harness's own rules. */
   private async standingRules(
     projectRoot: string,
@@ -1085,7 +1114,9 @@ function harnessArguments(
     ...(input.model === HARNESS_DEFAULT_MODEL ? [] : ['--model', input.model]),
     '--effort',
     input.effort,
-    `/${input.skill} ${input.prompt}${handoff ? `\n\nDeterministic handoff from the Conversation so far:\n${handoff}` : ''}`
+    // Claude reads a Skill natively when the message names one; without one
+    // the message is just the message.
+    `${input.skill ? `/${input.skill} ` : ''}${input.prompt}${handoff ? `\n\nDeterministic handoff from the Conversation so far:\n${handoff}` : ''}`
   ]
 }
 
@@ -1093,13 +1124,13 @@ function harnessArguments(
  * What a new Harness Thread needs to continue the Conversation: the Skill in
  * force and the turns immediately before it.
  */
-function deterministicHandoff(conversation: ConversationSnapshot, skill: string): string {
+function deterministicHandoff(conversation: ConversationSnapshot, skill: string | null): string {
   const recent = conversation.entries
     .filter((entry) => entry.kind === 'message')
     .slice(-8)
     .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.text}`)
     .join('\n')
-  return [`Skill: ${skill}`, 'Recent turns:', recent || '(none)'].join('\n')
+  return [...(skill ? [`Skill: ${skill}`] : []), 'Recent turns:', recent || '(none)'].join('\n')
 }
 
 async function claudeThreadExists(

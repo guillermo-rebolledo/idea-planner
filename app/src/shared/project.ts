@@ -8,7 +8,14 @@ import { z } from 'zod'
 export const projectSchema = z.object({
   root: z.string().min(1),
   name: z.string().min(1),
-  addedAt: z.string().datetime()
+  addedAt: z.string().datetime(),
+  /**
+   * When the person trusted this Project's own Skills. Null means its Skills
+   * are found and not offered: a Skill is instruction text steering an agent
+   * with write and command access, and one that arrived by `git clone` is text
+   * from whoever wrote that repository.
+   */
+  skillsTrustedAt: z.string().datetime().nullable().default(null)
 })
 export type Project = z.infer<typeof projectSchema>
 
