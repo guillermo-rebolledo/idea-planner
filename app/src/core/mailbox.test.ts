@@ -44,8 +44,9 @@ afterEach(async () => {
   await rm(projectRoot, { recursive: true, force: true })
 })
 
-async function start(title: string) {
-  return core.startSession({ projectRoot, title })
+/** A Session is started by a message; its title is derived from it. */
+async function start(message: string) {
+  return core.startSession({ projectRoot, message })
 }
 
 describe('pinning', () => {

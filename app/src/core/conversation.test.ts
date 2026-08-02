@@ -16,6 +16,9 @@ let projectRoot: string
 let core: Core
 let sessionId: string
 
+/** Every Session in these tests is started by this message. */
+const STARTING_MESSAGE = 'Offline receipts'
+
 function makeCore(): Core {
   let tick = 0
   return createCore({
@@ -42,7 +45,7 @@ async function startRun(prompt: string, submissionId: string): Promise<string> {
       effort: 'medium',
       skill: { name: 'grilling', path: '/home/.agents/skills/grilling', hash: 'b'.repeat(64) },
       environment: {},
-      workingDirectory: projectRoot,
+      checkout: projectRoot,
       permissionMode: 'ask'
     }
   })
@@ -72,7 +75,7 @@ beforeEach(async () => {
   projectRoot = await mkdtemp(join(tmpdir(), 'session-conversation-project-'))
   core = makeCore()
   await core.addProject(projectRoot)
-  const session = await core.startSession({ projectRoot, title: 'Offline receipts' })
+  const session = await core.startSession({ projectRoot, message: STARTING_MESSAGE })
   sessionId = session.id
 })
 
@@ -82,9 +85,9 @@ afterEach(async () => {
 })
 
 describe('submitting to the Conversation', () => {
-  it('starts empty for a newly started Session', async () => {
+  it('starts with the message that created the Session and nothing else', async () => {
     const snapshot = await core.getConversation(sessionId)
-    expect(snapshot.entries).toEqual([])
+    expect(messages(snapshot.entries)).toMatchObject([{ role: 'user', text: STARTING_MESSAGE }])
     expect(snapshot.activeRunId).toBeNull()
     expect(snapshot.usage.session.totalTokens).toBe(0)
   })
@@ -97,6 +100,7 @@ describe('submitting to the Conversation', () => {
       source: 'composer'
     })
     expect(messages(snapshot.entries)).toMatchObject([
+      { role: 'user', text: STARTING_MESSAGE },
       {
         role: 'user',
         text: 'Grill me about this Session',
@@ -116,6 +120,7 @@ describe('submitting to the Conversation', () => {
       source: 'suggested-response'
     })
     expect(messages(snapshot.entries)).toMatchObject([
+      { role: 'user', text: STARTING_MESSAGE },
       {
         role: 'user',
         text: 'Solo freelancers who invoice a handful of clients.',
@@ -133,7 +138,8 @@ describe('submitting to the Conversation', () => {
     }
     await core.submitConversationMessage(input)
     const snapshot = await core.submitConversationMessage(input)
-    expect(messages(snapshot.entries)).toHaveLength(1)
+    // The starting message, and the resent one recorded once.
+    expect(messages(snapshot.entries)).toHaveLength(2)
   })
 
   it('rejects reusing a submission id for different content', async () => {
@@ -526,7 +532,7 @@ describe('ingesting raw Harness output', () => {
         effort: 'medium',
         skill: { name: 'wayfinder', path: '/home/.claude/skills/wayfinder', hash: 'b'.repeat(64) },
         environment: {},
-        workingDirectory: projectRoot,
+        checkout: projectRoot,
         permissionMode: 'ask'
       }
     })

@@ -103,11 +103,12 @@ async function completeOnboarding(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Continue without a Harness' }).click()
 }
 
-async function startSession(page: Page, title: string): Promise<void> {
-  await page.getByRole('button', { name: 'New Session' }).click()
-  await page.getByLabel('What are you working on?').fill(title)
-  await page.getByRole('button', { name: 'Start Session' }).click()
-  await expect(page.getByRole('heading', { name: title })).toBeVisible()
+/** A Session is started by sending a message; its title comes from it. */
+async function startSession(page: Page, message: string): Promise<void> {
+  await page.getByRole('button', { name: 'New chat', exact: true }).click()
+  await page.getByRole('form', { name: 'New chat' }).getByLabel('Message').fill(message)
+  await page.getByRole('button', { name: 'Send' }).click()
+  await expect(page.getByRole('heading', { name: message })).toBeVisible()
 }
 
 test('renderer is sandboxed with only the narrow preload surface', async () => {
@@ -204,6 +205,39 @@ test('a person starts a Session and it survives an application restart', async (
     await expect(page.getByRole('heading', { name: 'Offline recipe planner' })).toBeVisible()
   } finally {
     await secondRun.close()
+  }
+})
+
+test('home is a new chat, and a Project row opens one already bound to it', async () => {
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+
+    // Home is the composer, naming the Project that would be edited.
+    const composer = page.getByRole('form', { name: 'New chat' })
+    await expect(composer).toBeVisible()
+    await expect(
+      composer.getByText(await realpath(sandbox.projectDir), { exact: true })
+    ).toBeVisible()
+
+    // A Session exists only once the message is sent.
+    await composer.getByLabel('Message').fill('Tidy the imports')
+    const inbox = page.getByRole('navigation', { name: 'Session inbox' })
+    await expect(inbox.getByText('Tidy the imports')).toHaveCount(0)
+    await composer.getByRole('button', { name: 'Send' }).click()
+    await expect(inbox.getByText('Tidy the imports')).toBeVisible()
+
+    // New chat always returns to the launch surface.
+    await page.getByRole('button', { name: 'New chat', exact: true }).click()
+    await expect(page.getByRole('form', { name: 'New chat' })).toBeVisible()
+
+    // So does the button on a Project row, already bound to that Project.
+    await page.getByRole('button', { name: 'New chat in', exact: false }).first().click()
+    const bound = page.getByRole('form', { name: 'New chat' })
+    await expect(bound.getByText(await realpath(sandbox.projectDir), { exact: true })).toBeVisible()
+  } finally {
+    await app.close()
   }
 })
 
@@ -407,10 +441,6 @@ test('readiness reports Codex and Claude independently, with safe repair and re-
       dialog.getByRole('region', { name: 'Codex readiness' }).getByText('Usable', { exact: true })
     ).toBeVisible()
     await dialog.getByRole('button', { name: 'Close Harnesses' }).click()
-
-    // And it is restated immediately before any Run could start.
-    await page.getByRole('button', { name: 'New Session' }).click()
-    await expect(page.getByText('Ready Harnesses: Codex, Claude Code.')).toBeVisible()
   } finally {
     await app.close()
   }

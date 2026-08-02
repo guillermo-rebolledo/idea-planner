@@ -91,7 +91,7 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       effort: 'medium',
       skill: { name: 'grilling', path: '/skills/grilling', hash: 'b'.repeat(64) },
       environment: {},
-      workingDirectory: projectRoot,
+      checkout: projectRoot,
       permissionMode: 'ask'
     }),
     status: 'accepted',

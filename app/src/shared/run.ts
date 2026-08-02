@@ -66,7 +66,11 @@ export const runConfigurationSchema = z.object({
     hash: z.string().length(64)
   }),
   environment: z.record(z.string()),
-  workingDirectory: z.string().min(1),
+  /**
+   * The Checkout the Run works on: its Session's Project, edited in place
+   * (ADR 0004).
+   */
+  checkout: z.string().min(1),
   permissionMode: permissionModeSchema
 })
 export type RunConfiguration = z.infer<typeof runConfigurationSchema>

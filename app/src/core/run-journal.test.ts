@@ -28,7 +28,7 @@ afterEach(async () => {
 
 describe('durable Run acceptance', () => {
   it('accepts a stable submission once before Harness contact', async () => {
-    const session = await core.startSession({ projectRoot, title: 'Sandbox' })
+    const session = await core.startSession({ projectRoot, message: 'Sandbox' })
     const input = {
       submissionId: 'submission-1',
       sessionId: session.id,
@@ -42,7 +42,7 @@ describe('durable Run acceptance', () => {
         effort: 'high',
         skill: { name: 'grilling', path: '/skills/grilling', hash: 'a'.repeat(64) },
         environment: { LANG: 'en_US.UTF-8', PATH: '/usr/bin:/bin' },
-        workingDirectory: projectRoot,
+        checkout: projectRoot,
         permissionMode: 'ask' as const
       }
     }
@@ -81,7 +81,7 @@ describe('durable Run acceptance', () => {
   })
 
   it('rejects reuse of a submission identity with different content', async () => {
-    const session = await core.startSession({ projectRoot, title: 'Stable identity' })
+    const session = await core.startSession({ projectRoot, message: 'Stable identity' })
     const base = {
       submissionId: 'submission-1',
       sessionId: session.id,
@@ -95,7 +95,7 @@ describe('durable Run acceptance', () => {
         effort: 'high',
         skill: { name: 'grilling', path: '/skills/grilling', hash: 'b'.repeat(64) },
         environment: { LANG: 'en_US.UTF-8' },
-        workingDirectory: projectRoot,
+        checkout: projectRoot,
         permissionMode: 'auto' as const
       }
     }
@@ -106,7 +106,7 @@ describe('durable Run acceptance', () => {
   })
 
   it('rejects invalid lifecycle transitions in durable state', async () => {
-    const session = await core.startSession({ projectRoot, title: 'Transitions' })
+    const session = await core.startSession({ projectRoot, message: 'Transitions' })
     const accepted = await core.acceptRun({
       submissionId: 'submission-transition',
       sessionId: session.id,
@@ -120,7 +120,7 @@ describe('durable Run acceptance', () => {
         effort: 'high',
         skill: { name: 'grilling', path: '/skills/grilling', hash: 'e'.repeat(64) },
         environment: { LANG: 'en_US.UTF-8' },
-        workingDirectory: projectRoot,
+        checkout: projectRoot,
         permissionMode: 'ask'
       }
     })

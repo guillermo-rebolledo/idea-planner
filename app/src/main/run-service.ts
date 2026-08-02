@@ -197,7 +197,7 @@ export class RunService {
       effort: input.effort,
       skill: { name: skillName, path: skillDirectory, hash: skillHash },
       environment,
-      workingDirectory,
+      checkout: workingDirectory,
       permissionMode: input.permissionMode
     }
     const accepted = runSnapshotSchema.parse(

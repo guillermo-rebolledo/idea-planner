@@ -33,7 +33,7 @@ afterEach(async () => {
 
 describe('Sessions', () => {
   it('starts a Session against a Project and gives it an id, not a path', async () => {
-    const session = await core.startSession({ projectRoot, title: 'Fix the failing build' })
+    const session = await core.startSession({ projectRoot, message: 'Fix the failing build' })
 
     expect(session).toMatchObject({
       id: 'session-0001',
@@ -44,14 +44,39 @@ describe('Sessions', () => {
     await expect(core.listSessions()).resolves.toEqual([session])
   })
 
+  it('starts with the message already in the Conversation', async () => {
+    // A Session is created on send. There is no moment where one exists
+    // without the message that asked for it.
+    const session = await core.startSession({
+      projectRoot,
+      message: 'Rename the thing\nand explain why'
+    })
+
+    const snapshot = await core.getConversation(session.id)
+    expect(snapshot.entries).toMatchObject([
+      { kind: 'message', role: 'user', text: 'Rename the thing\nand explain why' }
+    ])
+    // Titled from the message, deterministically and locally.
+    expect(session.title).toBe('Rename the thing')
+  })
+
+  it('leaves no Session behind when the message cannot be accepted', async () => {
+    await expect(core.startSession({ projectRoot, message: '' })).rejects.toMatchObject({
+      code: 'INVALID_INPUT'
+    })
+
+    await expect(core.listSessions()).resolves.toEqual([])
+    await expect(core.listDamagedSessions()).resolves.toEqual([])
+  })
+
   it('refuses to start a Session without a Project', async () => {
     await expect(
-      core.startSession({ projectRoot: join(tmpdir(), 'never-added'), title: 'Nowhere' })
+      core.startSession({ projectRoot: join(tmpdir(), 'never-added'), message: 'Nowhere' })
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
   })
 
   it('writes nothing into the Project', async () => {
-    await core.startSession({ projectRoot, title: 'Leaves no trace' })
+    await core.startSession({ projectRoot, message: 'Leaves no trace' })
 
     // Work lives in the Project; the record of asking for it does not.
     await expect(readFile(join(projectRoot, 'session.md'), 'utf8')).rejects.toBeDefined()
@@ -59,14 +84,14 @@ describe('Sessions', () => {
   })
 
   it('keeps Sessions across a restart', async () => {
-    const session = await core.startSession({ projectRoot, title: 'Survives' })
+    const session = await core.startSession({ projectRoot, message: 'Survives' })
 
     await expect(makeCore().listSessions()).resolves.toEqual([session])
   })
 
   it('never lists a Session whose record was only half written', async () => {
-    const kept = await core.startSession({ projectRoot, title: 'Whole' })
-    const torn = await core.startSession({ projectRoot, title: 'Half written' })
+    const kept = await core.startSession({ projectRoot, message: 'Whole' })
+    const torn = await core.startSession({ projectRoot, message: 'Half written' })
     // A crash mid-write, modelled as the truncation it would leave behind.
     await writeFile(join(stateDir, 'sessions', torn.id, 'session.json'), '{"id":"session-')
 
@@ -79,7 +104,7 @@ describe('Sessions', () => {
   })
 
   it('archives and unarchives a Session by id', async () => {
-    const session = await core.startSession({ projectRoot, title: 'Done with this' })
+    const session = await core.startSession({ projectRoot, message: 'Done with this' })
 
     const archived = await core.setSessionArchived(session.id, true)
     expect(archived.archivedAt).not.toBeNull()
@@ -90,7 +115,7 @@ describe('Sessions', () => {
 
   it('deletes a Session from the store and leaves the Project alone', async () => {
     await writeFile(join(projectRoot, 'source.ts'), 'export const kept = true')
-    const session = await core.startSession({ projectRoot, title: 'Delete me' })
+    const session = await core.startSession({ projectRoot, message: 'Delete me' })
 
     await core.deleteSession(session.id)
 
@@ -106,7 +131,7 @@ async function listing(path: string): Promise<string[]> {
 
 describe('the Conversation journal', () => {
   it('keeps the messages before a torn line rather than losing the Conversation', async () => {
-    const session = await core.startSession({ projectRoot, title: 'Journalled' })
+    const session = await core.startSession({ projectRoot, message: 'Journalled' })
     await core.submitConversationMessage({
       sessionId: session.id,
       submissionId: 'first',
@@ -127,13 +152,13 @@ describe('the Conversation journal', () => {
     const snapshot = await makeCore().getConversation(session.id)
 
     const said = snapshot.entries.flatMap((entry) => (entry.kind === 'message' ? [entry.text] : []))
-    expect(said).toEqual(['The first thing I asked', 'The second thing I asked'])
+    expect(said).toEqual(['Journalled', 'The first thing I asked', 'The second thing I asked'])
   })
 })
 
 describe('a store that cannot be read', () => {
   it('fails loudly rather than reporting that there are no Sessions', async () => {
-    await core.startSession({ projectRoot, title: 'Exists' })
+    await core.startSession({ projectRoot, message: 'Exists' })
     // An unreadable store is not an empty one. Answering "no Sessions" here is
     // the vanishing-without-a-word failure this store exists to prevent.
     await rm(join(stateDir, 'sessions'), { recursive: true, force: true })
@@ -143,8 +168,8 @@ describe('a store that cannot be read', () => {
   })
 
   it('orders Sessions newest first', async () => {
-    await core.startSession({ projectRoot, title: 'First' })
-    await core.startSession({ projectRoot, title: 'Second' })
+    await core.startSession({ projectRoot, message: 'First' })
+    await core.startSession({ projectRoot, message: 'Second' })
 
     await expect(makeCore().listSessions()).resolves.toMatchObject([
       { title: 'Second' },
@@ -153,7 +178,7 @@ describe('a store that cannot be read', () => {
   })
 
   it('ignores stray files beside the Sessions without failing', async () => {
-    const session = await core.startSession({ projectRoot, title: 'Real' })
+    const session = await core.startSession({ projectRoot, message: 'Real' })
     await writeFile(join(stateDir, 'sessions', '.DS_Store'), 'junk')
 
     await expect(makeCore().listSessions()).resolves.toEqual([session])

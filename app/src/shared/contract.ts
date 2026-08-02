@@ -101,7 +101,12 @@ export type SetSessionArchivedInput = z.infer<typeof setSessionArchivedInputSche
 export const startSessionInputSchema = z.object({
   /** The Project the Session works against, by the root git resolved. */
   projectRoot: z.string().min(1),
-  title: z.string().min(1)
+  /**
+   * The message that starts the Session. A Session is created on send, so
+   * there is no moment where one exists without the message that asked for it,
+   * and the title is derived from it locally.
+   */
+  message: z.string().min(1).max(100_000)
 })
 export type StartSessionInput = z.infer<typeof startSessionInputSchema>
 

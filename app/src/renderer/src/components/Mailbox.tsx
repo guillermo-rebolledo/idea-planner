@@ -26,7 +26,7 @@ import type {
   ThemeState
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
-import { CaptureForm } from '@renderer/components/CaptureForm'
+import { Composer } from '@renderer/components/Composer'
 import { Conversation } from '@renderer/components/Conversation'
 import { Projects } from '@renderer/components/Projects'
 import { ReadinessDialog } from '@renderer/components/Readiness'
@@ -38,8 +38,8 @@ interface MailboxProps {
 }
 
 type CenterSurface =
-  | { kind: 'empty' }
-  | { kind: 'new-session' }
+  /** Home. A new chat, optionally already bound to a Project. */
+  | { kind: 'new-chat'; projectRoot?: string }
   | { kind: 'session'; session: SessionSummary }
   | { kind: 'confirm-delete'; session: SessionSummary }
 
@@ -70,7 +70,7 @@ const GROUP_META: Record<MailboxGroupKey, GroupMeta> = {
  * slice uses for starting a Session, reading it, and deleting it.
  */
 export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React.JSX.Element {
-  const [surface, setSurface] = useState<CenterSurface>({ kind: 'empty' })
+  const [surface, setSurface] = useState<CenterSurface>({ kind: 'new-chat' })
   const [inboxCollapsed, setInboxCollapsed] = useState(false)
   const [readinessOpen, setReadinessOpen] = useState(false)
   const [announcement, setAnnouncement] = useState('')
@@ -105,7 +105,11 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       .catch(() => setDamaged([]))
   }, [mailbox])
 
-  const startNewSession = useCallback(() => setSurface({ kind: 'new-session' }), [])
+  /** Home. Optionally already bound, as the button on a Project row does. */
+  const startNewChat = useCallback(
+    (projectRoot?: string) => setSurface({ kind: 'new-chat', projectRoot }),
+    []
+  )
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
@@ -121,7 +125,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       }
       if (event.key.toLowerCase() === 'n') {
         event.preventDefault()
-        startNewSession()
+        startNewChat()
       }
       if (event.key === '/') {
         event.preventDefault()
@@ -131,7 +135,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [startNewSession])
+  }, [startNewChat])
 
   function handleStarted(session: SessionSummary): void {
     void refreshMailbox(query)
@@ -168,7 +172,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       )
       setSurface((current) =>
         current.kind === 'session' && current.session.id === session.id
-          ? { kind: 'empty' }
+          ? { kind: 'new-chat' }
           : current
       )
     } catch {
@@ -181,7 +185,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     try {
       await window.shell.deleteSession(session.id)
       setAnnouncement(`Deleted “${session.title}”. Your Project was not touched.`)
-      setSurface({ kind: 'empty' })
+      setSurface({ kind: 'new-chat' })
     } catch {
       setAnnouncement(`Deleting “${session.title}” failed. Nothing was lost.`)
     }
@@ -218,9 +222,9 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
             <Bot aria-hidden="true" className="size-3.5" />
             Harnesses
           </Button>
-          <Button onClick={startNewSession} size="sm">
+          <Button onClick={() => startNewChat()} size="sm">
             <Plus aria-hidden="true" className="size-3.5" />
-            New Session
+            New chat
           </Button>
         </div>
       </header>
@@ -232,11 +236,11 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
             selectedId={selectedSession?.id}
             onOpen={openSession}
             onExpand={() => setInboxCollapsed(false)}
-            onNewSession={startNewSession}
+            onNewChat={() => startNewChat()}
           />
         ) : (
           <div className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/40">
-            <Projects />
+            <Projects onNewChat={(root) => startNewChat(root)} />
             <nav aria-label="Session inbox" className="flex min-h-0 flex-1 flex-col">
               {damaged.length > 0 && (
                 <p
@@ -290,7 +294,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
                   query={query}
                   selectedId={selectedSession?.id}
                   onOpen={openSession}
-                  onNewSession={startNewSession}
+                  onNewChat={() => startNewChat()}
                   onClearSearch={() => setQuery((current) => ({ ...current, search: '' }))}
                   onRetry={() => void refreshMailbox(query)}
                   onTogglePinned={(session) => void togglePinned(session)}
@@ -303,16 +307,10 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
         )}
 
         <main className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-          {surface.kind === 'new-session' ? (
-            <CaptureForm
-              onStarted={handleStarted}
-              onCancel={() => setSurface({ kind: 'empty' })}
-              onShowReadiness={() => setReadinessOpen(true)}
-            />
-          ) : surface.kind === 'confirm-delete' ? (
+          {surface.kind === 'confirm-delete' ? (
             <DeleteConfirmSurface
               session={surface.session}
-              onCancel={() => setSurface({ kind: 'empty' })}
+              onCancel={() => setSurface({ kind: 'new-chat' })}
               onConfirm={() => void confirmDelete(surface.session)}
             />
           ) : surface.kind === 'session' ? (
@@ -323,16 +321,11 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
               onDelete={(session) => setSurface({ kind: 'confirm-delete', session })}
             />
           ) : (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
-              <MessageSquare aria-hidden="true" className="size-6 text-muted-foreground" />
-              <div>
-                <p className="font-medium">Start a Session before the thought fades</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Press <kbd className="rounded border border-border px-1 font-mono">N</kbd> or use
-                  New Session.
-                </p>
-              </div>
-            </div>
+            <Composer
+              key={surface.projectRoot ?? 'any-project'}
+              boundProjectRoot={surface.projectRoot}
+              onStarted={handleStarted}
+            />
           )}
         </main>
       </div>
@@ -351,7 +344,7 @@ interface InboxContentProps {
   query: MailboxQuery
   selectedId: string | undefined
   onOpen: (session: MailboxSession) => void
-  onNewSession: () => void
+  onNewChat: () => void
   onClearSearch: () => void
   onRetry: () => void
   onTogglePinned: (session: MailboxSession) => void
@@ -398,7 +391,7 @@ function InboxContent(props: InboxContentProps): React.JSX.Element {
         <p className="text-xs text-muted-foreground">
           No Sessions yet. Press <kbd className="font-mono">N</kbd> to start one.
         </p>
-        <Button variant="secondary" size="sm" onClick={props.onNewSession}>
+        <Button variant="secondary" size="sm" onClick={props.onNewChat}>
           Start a Session
         </Button>
       </div>
@@ -557,7 +550,7 @@ interface CompactRailProps {
   selectedId: string | undefined
   onOpen: (session: MailboxSession) => void
   onExpand: () => void
-  onNewSession: () => void
+  onNewChat: () => void
 }
 
 /**
@@ -569,7 +562,7 @@ function CompactRail({
   selectedId,
   onOpen,
   onExpand,
-  onNewSession
+  onNewChat
 }: CompactRailProps): React.JSX.Element {
   return (
     <nav
@@ -580,7 +573,7 @@ function CompactRail({
         type="button"
         aria-label="New Session"
         title="New Session"
-        onClick={onNewSession}
+        onClick={onNewChat}
         className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
       >
         <Plus aria-hidden="true" className="size-4" />

@@ -16,7 +16,7 @@ The target Project is displayed prominently in the composer rather than tucked i
 
 `suggestSessionTitle` was deleted in 05a: with notes gone it had no caller, and dead code is dead code. A composer that derives a Session title from the first message will want it back — it is one `git show` away rather than something to write again.
 
-`listDamagedSessions` exists in Core and is contract-tested, but reaches no channel and no surface. A Session whose record could not be read is reported rather than hidden precisely so it can be shown; deciding where belongs with the surface.
+`listDamagedSessions` was surfaced in 05a itself, in the inbox, so this ticket inherits nothing there.
 
 **Blocked by:** 05a
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, FolderGit2, FolderPlus, X } from 'lucide-react'
+import { AlertTriangle, FolderGit2, FolderPlus, Plus, X } from 'lucide-react'
 import type { ChooseProjectResult, ProjectView } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
@@ -20,10 +20,13 @@ type RootConfirmation = Extract<ChooseProjectResult, { status: 'confirm-root' }>
  * surface only ever offers folders and reports answers.
  */
 export function Projects({
-  onProjectsChanged
+  onProjectsChanged,
+  onNewChat
 }: {
   /** Lets a host surface react to the list, such as leaving onboarding. */
   onProjectsChanged?: (projects: ProjectView[]) => void
+  /** Starts a chat already bound to a Project. Absent during onboarding. */
+  onNewChat?: (projectRoot: string) => void
 } = {}): React.JSX.Element {
   const [list, setList] = useState<ProjectList>({ state: 'loading' })
   const [refusal, setRefusal] = useState<Refusal | null>(null)
@@ -141,6 +144,7 @@ export function Projects({
         list={list}
         onRetry={() => void refresh()}
         onRemove={(project) => void removeProject(project)}
+        onNewChat={onNewChat}
       />
 
       {refusal && (
@@ -177,11 +181,13 @@ export function Projects({
 function ProjectListContent({
   list,
   onRetry,
-  onRemove
+  onRemove,
+  onNewChat
 }: {
   list: ProjectList
   onRetry: () => void
   onRemove: (project: ProjectView) => void
+  onNewChat?: (projectRoot: string) => void
 }): React.JSX.Element {
   if (list.state === 'loading') {
     return <p className="px-1 py-1 text-[11px] text-muted-foreground">Reading your Projects…</p>
@@ -209,7 +215,12 @@ function ProjectListContent({
   return (
     <ul className="flex flex-col gap-px">
       {list.projects.map((project) => (
-        <ProjectRow key={project.root} project={project} onRemove={onRemove} />
+        <ProjectRow
+          key={project.root}
+          project={project}
+          onRemove={onRemove}
+          onNewChat={onNewChat}
+        />
       ))}
     </ul>
   )
@@ -217,10 +228,12 @@ function ProjectListContent({
 
 function ProjectRow({
   project,
-  onRemove
+  onRemove,
+  onNewChat
 }: {
   project: ProjectView
   onRemove: (project: ProjectView) => void
+  onNewChat?: (projectRoot: string) => void
 }): React.JSX.Element {
   return (
     <li className="group relative">
@@ -245,6 +258,17 @@ function ProjectRow({
           </span>
         )}
       </div>
+      {onNewChat && project.available && (
+        <button
+          type="button"
+          aria-label={`New chat in “${project.name}”`}
+          title={`New chat in “${project.name}”`}
+          onClick={() => onNewChat(project.root)}
+          className="absolute top-1/2 right-7 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-border hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Plus aria-hidden="true" className="size-3.5" />
+        </button>
+      )}
       <button
         type="button"
         aria-label={`Remove “${project.name}” from the app`}

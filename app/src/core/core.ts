@@ -30,6 +30,7 @@ import type {
 } from '@shared/conversation'
 import type { ProjectView } from '@shared/project'
 import { writeJsonAtomic } from './atomic'
+import { suggestSessionTitle } from '@shared/title'
 import { ProjectStore } from './projects'
 import { SessionStore } from './sessions'
 import {
@@ -157,7 +158,26 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       if (!known.some((project) => project.root === input.projectRoot)) {
         return yield* Effect.fail(new CoreError('INVALID_INPUT', 'That Project has not been added'))
       }
-      return yield* sessions.start(input)
+      const session = yield* sessions.start({
+        projectRoot: input.projectRoot,
+        title: suggestSessionTitle(input.message)
+      })
+      // The message is what created the Session, so a Session that exists
+      // without it is a Session nobody asked for. If this cannot land, the
+      // record goes with it.
+      yield* conversation
+        .submit({
+          sessionId: session.id,
+          submissionId: `start-${session.id}`,
+          text: input.message,
+          source: 'composer'
+        })
+        .pipe(
+          Effect.catchAll((error) =>
+            sessions.delete(session.id).pipe(Effect.andThen(Effect.fail(error)))
+          )
+        )
+      return session
     })
 
   /**
@@ -212,9 +232,9 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
           // A Run works on the Session's Checkout, which is the Project it
           // belongs to. Anything else would let a Run edit a directory the
           // Session never named.
-          if (input.configuration.workingDirectory !== session.projectRoot) {
+          if (input.configuration.checkout !== session.projectRoot) {
             return yield* Effect.fail(
-              new CoreError('INVALID_INPUT', 'Run working directory does not match the Session')
+              new CoreError('INVALID_INPUT', "Run Checkout does not match the Session's Project")
             )
           }
           const sessionDir = yield* sessions.directoryFor(input.sessionId)

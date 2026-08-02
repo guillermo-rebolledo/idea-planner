@@ -14,6 +14,8 @@ Readiness still probes macOS Seatbelt — Codex through its own `sandbox` subcom
 
 Readiness copy changed in 05a: "Not usable — capture still works" became "Not usable yet", because capture no longer exists and the old string promised something untrue. This ticket decides what an unusable Harness actually leaves a person able to do, and says that instead.
 
+Ticket 05b removed the last place readiness was restated before a Run could start: the capture form said "Ready Harnesses: …" immediately before saving. The composer does not, because a gate is a better answer than a restatement — this ticket is that gate.
+
 **Blocked by:** 05a
 
 **Status:** ready-for-agent
