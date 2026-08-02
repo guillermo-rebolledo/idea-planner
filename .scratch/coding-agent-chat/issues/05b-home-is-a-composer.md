@@ -20,13 +20,13 @@ The target Project is displayed prominently in the composer rather than tucked i
 
 **Blocked by:** 05a
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The launch surface is a composer with a Project selector defaulting to the last used
-- [ ] A Session is created on send, not before, and appears in the sidebar
-- [ ] The target Project is unmissable in the composer
-- [ ] The `+` on a Project row opens the same composer pre-bound to it
-- [ ] **New chat** is always available in the sidebar and returns to the launch surface
-- [ ] A Session's working directory is its Project's primary checkout, and the field is named for what it holds
-- [ ] The capture form is gone, and no surface creates a Session without a message
-- [ ] `pnpm verify` passes
+- [x] The launch surface is a composer with a Project selector defaulting to the last used
+- [x] A Session is created on send, not before, and appears in the sidebar
+- [x] The target Project is unmissable in the composer
+- [x] The `+` on a Project row opens the same composer pre-bound to it
+- [x] **New chat** is always available in the sidebar and returns to the launch surface
+- [x] A Session's working directory is its Project's primary checkout, and the field is named for what it holds
+- [x] The capture form is gone, and no surface creates a Session without a message
+- [x] `pnpm verify` passes

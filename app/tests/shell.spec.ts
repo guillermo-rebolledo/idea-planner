@@ -63,6 +63,10 @@ test.beforeEach(async () => {
   // Every test needs somewhere to work, and only git can make a folder a
   // Project (ADR 0005).
   await promisify(execFile)('git', ['init', '--quiet'], { cwd: sandbox.projectDir })
+  // And a Harness that can run a Session, because the app refuses to open
+  // without one. The launch gate has its own test; every other test is about
+  // what happens past it.
+  await installFakeHarness('claude', READY_CLAUDE_FAKE)
 })
 
 test.afterEach(async () => {
@@ -78,7 +82,7 @@ async function installFakeHarness(name: string, script: string): Promise<void> {
 }
 
 async function installFakeSkills(root: string): Promise<void> {
-  for (const skill of ['grill-me', 'grilling', 'wayfinder']) {
+  for (const skill of ['grilling', 'wayfinder']) {
     const dir = join(sandbox.readinessHomeDir, root, skill)
     await mkdir(dir, { recursive: true })
     await writeFile(join(dir, 'SKILL.md'), `---\nname: ${skill}\n---\n`)
@@ -86,21 +90,15 @@ async function installFakeSkills(root: string): Promise<void> {
 }
 
 /**
- * Onboarding step one: the sandbox reaches the Project through a symlink, so
- * git names a root the person did not pick and the app confirms it first.
+ * Onboarding: the sandbox reaches the Project through a symlink, so git names
+ * a root the person did not pick and the app confirms it first.
  */
-async function addFirstProject(page: Page): Promise<void> {
+async function completeOnboarding(page: Page): Promise<void> {
   const projects = page.getByRole('region', { name: 'Projects' })
   await projects.getByRole('button', { name: 'Add Project' }).click()
   await projects.getByRole('alert').getByRole('button', { name: 'Add this Project' }).click()
   await expect(projects.getByText(basename(sandbox.projectDir), { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Continue', exact: true }).click()
-  await page.getByRole('heading', { name: 'Check Harness readiness' }).waitFor()
-}
-
-async function completeOnboarding(page: Page): Promise<void> {
-  await addFirstProject(page)
-  await page.getByRole('button', { name: 'Continue without a Harness' }).click()
 }
 
 /** A Session is started by sending a message; its title comes from it. */
@@ -397,7 +395,6 @@ test('a person adds a Project and a plain folder is refused with an offer to set
 const READY_CODEX_FAKE = `case "$1" in
   --version) echo "codex-cli 0.146.0"; exit 0;;
   login) exit 0;;
-  sandbox) exit 0;;
 esac
 exit 1`
 
@@ -407,43 +404,71 @@ const READY_CLAUDE_FAKE = `case "$1" in
 esac`
 
 test('readiness reports Codex and Claude independently, with safe repair and re-check', async () => {
-  await installFakeHarness('codex', READY_CODEX_FAKE)
-  await installFakeSkills('.agents/skills')
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await page.getByRole('button', { name: 'Harnesses' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Harnesses' })
+    const codexCard = dialog.getByRole('region', { name: 'Codex readiness' })
+    const claudeCard = dialog.getByRole('region', { name: 'Claude Code readiness' })
+
+    // Claude is usable; the resolved absolute path is visible.
+    await expect(claudeCard.getByText('Usable', { exact: true })).toBeVisible()
+    await expect(
+      claudeCard.getByText(join(sandbox.readinessBinDir, 'claude'), { exact: true })
+    ).toBeVisible()
+    // Its Skills are missing, and that holds nothing up.
+    await expect(claudeCard.getByText('npx skills@latest add mattpocock/skills')).toBeVisible()
+
+    // Codex stays visible, not usable, and repaired independently.
+    await expect(codexCard.getByText('Not usable yet')).toBeVisible()
+    await installFakeHarness('codex', READY_CODEX_FAKE)
+    await codexCard.getByRole('button', { name: 'Check Codex again' }).click()
+    await expect(codexCard.getByText('Usable', { exact: true })).toBeVisible()
+    // Usable and drivable are different questions, and the card answers both:
+    // "Usable" alone above a Harness no Session can use would be a lie.
+    await expect(
+      codexCard.getByText('cannot run a Session with Codex yet', { exact: false })
+    ).toBeVisible()
+
+    // Installing the Skills clears the guidance and changes nothing else:
+    // Claude was usable throughout, because Skills never gated it.
+    await installFakeSkills('.claude/skills')
+    await claudeCard.getByRole('button', { name: 'Check Claude Code again' }).click()
+    await expect(claudeCard.getByText('npx skills@latest add mattpocock/skills')).toHaveCount(0)
+    await expect(claudeCard.getByText('Usable', { exact: true })).toBeVisible()
+
+    await dialog.getByRole('button', { name: 'Close Harnesses' }).click()
+  } finally {
+    await app.close()
+  }
+})
+
+test('with no usable Harness the app says so and opens as soon as one is repaired', async () => {
+  // The one test that starts from a machine the app cannot work on.
+  await rm(join(sandbox.readinessBinDir, 'claude'), { force: true })
 
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
-    await addFirstProject(page)
+    await page.getByRole('heading', { name: 'This app needs a coding agent to work' }).waitFor()
 
-    const codexCard = page.getByRole('region', { name: 'Codex readiness' })
-    const claudeCard = page.getByRole('region', { name: 'Claude Code readiness' })
+    // Not a bare refusal: it says which Harness is missing what.
+    const missing = page.getByRole('list', { name: 'What is missing' })
+    await expect(missing.getByRole('listitem')).toHaveCount(2)
+    // Each names its own first problem rather than a shared refusal.
+    await expect(missing.getByText('claude command was not found', { exact: false })).toBeVisible()
+    await expect(missing.getByText('codex command was not found', { exact: false })).toBeVisible()
+    // And onboarding is not reachable behind it.
+    await expect(page.getByRole('heading', { name: 'Add your first Project' })).toHaveCount(0)
 
-    // Codex is fully ready; the resolved absolute path is visible.
-    await expect(codexCard.getByText('Usable', { exact: true })).toBeVisible()
-    await expect(
-      codexCard.getByText(join(sandbox.readinessBinDir, 'codex'), { exact: true })
-    ).toBeVisible()
-
-    // Claude stays visible but not ready, with only the approved remediation.
-    await expect(claudeCard.getByText('Not usable yet')).toBeVisible()
-    await expect(claudeCard.getByText('npx skills@latest add mattpocock/skills')).toBeVisible()
-
-    // The person repairs Claude in their own terminal; Check again recovers.
+    // Repaired in the person's own terminal, then re-checked — no restart.
     await installFakeHarness('claude', READY_CLAUDE_FAKE)
-    await installFakeSkills('.claude/skills')
-    await claudeCard.getByRole('button', { name: 'Check Claude Code again' }).click()
-    await expect(claudeCard.getByText('Usable', { exact: true })).toBeVisible()
-
-    // With a ready Harness the continue action stops offering to go without one.
+    await page.getByRole('button', { name: 'Check again', exact: true }).click()
     await page.getByRole('button', { name: 'Continue', exact: true }).click()
 
-    // The same readiness module is reachable from Settings (Harnesses).
-    await page.getByRole('button', { name: 'Harnesses' }).click()
-    const dialog = page.getByRole('dialog', { name: 'Harnesses' })
-    await expect(
-      dialog.getByRole('region', { name: 'Codex readiness' }).getByText('Usable', { exact: true })
-    ).toBeVisible()
-    await dialog.getByRole('button', { name: 'Close Harnesses' }).click()
+    await page.getByRole('heading', { name: 'Add your first Project' }).waitFor()
   } finally {
     await app.close()
   }

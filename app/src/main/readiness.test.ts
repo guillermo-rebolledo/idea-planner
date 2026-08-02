@@ -52,7 +52,6 @@ function check(readiness: HarnessReadiness, dimension: ReadinessDimension): Read
 const READY_CODEX_SCRIPT = `case "$1" in
   --version) echo "codex-cli 0.146.0"; exit 0;;
   login) exit 0;;
-  sandbox) exit 0;;
 esac
 exit 1`
 
@@ -79,7 +78,6 @@ describe('executable discovery', () => {
     expect(check(readiness, 'executable').code).toBe('executable-missing')
     expect(check(readiness, 'compatibility').status).toBe('not-probed')
     expect(check(readiness, 'authentication').status).toBe('not-probed')
-    expect(check(readiness, 'sandbox').status).toBe('not-probed')
     // Skill discovery is filesystem-based and stays independent.
     expect(check(readiness, 'skills').code).toBe('skills-missing')
     expect(readiness.available).toBe(false)
@@ -108,7 +106,7 @@ describe('executable discovery', () => {
 
   it('still runs the native probes for an explicitly selected executable', async () => {
     const selected = await fakeExecutable('codex-anywhere', READY_CODEX_SCRIPT)
-    await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
+    await installSkills('.agents/skills', ['grilling', 'wayfinder'])
     const readiness = await probeHarness(HARNESS_SPECS.codex, {
       pathEntries: [],
       explicitExecutable: selected,
@@ -139,7 +137,7 @@ describe('compatibility', () => {
   })
 
   it('warns about an untested newer version without disabling the Harness', async () => {
-    await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
+    await installSkills('.agents/skills', ['grilling', 'wayfinder'])
     const readiness = await probeCodex({
       script: `case "$1" in
         --version) echo "codex-cli 9.9.9"; exit 0;;
@@ -184,7 +182,6 @@ describe('authentication', () => {
     expect(authentication.code).toBe('unauthenticated')
     // Other dimensions stay independently ready.
     expect(check(readiness, 'compatibility').status).toBe('ready')
-    expect(check(readiness, 'sandbox').status).toBe('ready')
   })
 
   it('treats a Claude stream that reaches init as authenticated', async () => {
@@ -198,7 +195,6 @@ describe('authentication', () => {
     const readiness = await probeHarness(HARNESS_SPECS.claude, {
       pathEntries: [binDir],
       homeDir,
-      sandboxExecPath: join(binDir, 'claude'),
       probeTimeoutMs: 5000
     })
     expect(check(readiness, 'authentication').status).toBe('ready')
@@ -215,7 +211,6 @@ describe('authentication', () => {
     const readiness = await probeHarness(HARNESS_SPECS.claude, {
       pathEntries: [binDir],
       homeDir,
-      sandboxExecPath: join(binDir, 'claude'),
       probeTimeoutMs: 5000
     })
     const authentication = check(readiness, 'authentication')
@@ -224,52 +219,29 @@ describe('authentication', () => {
   })
 })
 
-describe('sandbox', () => {
-  it('reports the native sandbox unavailable when the probe fails', async () => {
-    const readiness = await probeCodex({
-      script: `case "$1" in
-        --version) echo "codex-cli 0.146.0"; exit 0;;
-        sandbox) exit 1;;
-        *) exit 0;;
-      esac`
-    })
-    const sandbox = check(readiness, 'sandbox')
-    expect(sandbox.status).toBe('failed')
-    expect(sandbox.code).toBe('sandbox-unavailable')
-  })
-
-  it('checks the host sandbox binary for Claude', async () => {
-    await fakeExecutable(
-      'claude',
-      `case "$1" in
-        --version) echo "2.1.220 (Claude Code)"; exit 0;;
-        -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
-      esac`
-    )
-    const readiness = await probeHarness(HARNESS_SPECS.claude, {
-      pathEntries: [binDir],
-      homeDir,
-      sandboxExecPath: join(homeDir, 'no-such-sandbox-exec'),
-      probeTimeoutMs: 5000
-    })
-    expect(check(readiness, 'sandbox').code).toBe('sandbox-unavailable')
-  }, 15_000)
-})
-
 describe('skills', () => {
   it('lists exactly the missing skills with only the approved guidance', async () => {
-    await installSkills('.agents/skills', ['grill-me'])
+    await installSkills('.agents/skills', ['grilling'])
     const readiness = await probeCodex()
     const skills = check(readiness, 'skills')
-    expect(skills.status).toBe('failed')
+    // Informational: a missing Skill is worth saying, and worth nothing else.
+    expect(skills.status).toBe('warning')
     expect(skills.code).toBe('skills-missing')
-    expect(skills.missingSkills).toEqual(['grilling', 'wayfinder'])
+    expect(skills.missingSkills).toEqual(['wayfinder'])
     expect(skills.command).toBe('npx skills@latest add mattpocock/skills')
     expect(skills.links.map((link) => link.url)).toContain('https://github.com/mattpocock/skills')
   })
 
+  it('leaves a Harness usable when no Skill is installed at all', async () => {
+    // Skills are optional (ADR 0003). A Harness that is installed, compatible,
+    // and signed in is usable, whatever is or is not in the home directory.
+    const readiness = await probeCodex()
+    expect(check(readiness, 'skills').status).toBe('warning')
+    expect(readiness.available).toBe(true)
+  })
+
   it('is ready when the complete dependency closure is present', async () => {
-    await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
+    await installSkills('.agents/skills', ['grilling', 'wayfinder'])
     const readiness = await probeCodex()
     expect(check(readiness, 'skills').status).toBe('ready')
   })
@@ -281,10 +253,10 @@ function capability(readiness: HarnessReadiness): HarnessCapability {
 
 describe('developing a Session', () => {
   it('is available when the Harness is ready and new enough', async () => {
-    await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
+    await installSkills('.agents/skills', ['grilling', 'wayfinder'])
     // Codex has no Adapter that can run a Session, so the general shape of
     // this answer is exercised through the Harness that does.
-    await installSkills('.claude/skills', ['grill-me', 'grilling', 'wayfinder'])
+    await installSkills('.claude/skills', ['grilling', 'wayfinder'])
     await fakeExecutable(
       'claude',
       `case "$1" in
@@ -302,16 +274,20 @@ exit 1`
   })
 
   it('says plainly that Codex cannot run a Session yet', async () => {
-    await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
+    await installSkills('.agents/skills', ['grilling', 'wayfinder'])
     // Offering a Harness that starts and then does nothing is worse than
     // saying it is not supported: its Adapter can carry neither approvals nor
     // diffs until it is rewritten.
-    expect(capability(await probeCodex())).toMatchObject({ available: false })
-    expect(capability(await probeCodex()).summary).toContain('not supported yet')
+    // Said in the person's terms rather than the app's: a Harness that is
+    // installed and signed in is usable, and still cannot run a Session here.
+    const readiness = await probeCodex()
+    expect(readiness.available).toBe(true)
+    expect(capability(readiness)).toMatchObject({ available: false })
+    expect(capability(readiness).summary).toContain('cannot run a Session with Codex yet')
   })
 
   it('names the version needed when the Adapter needs a newer Harness', async () => {
-    await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
+    await installSkills('.agents/skills', ['grilling', 'wayfinder'])
     await fakeExecutable('codex', READY_CODEX_SCRIPT)
     const readiness = await probeHarness(
       // An Adapter whose requirement has outrun the installed CLI: the
@@ -326,7 +302,7 @@ exit 1`
   })
 
   it('offers Claude when its stream protocol and Wayfinder skills are ready', async () => {
-    await installSkills('.claude/skills', ['grill-me', 'grilling', 'wayfinder'])
+    await installSkills('.claude/skills', ['grilling', 'wayfinder'])
     await fakeExecutable(
       'claude',
       `case "$1" in
@@ -345,8 +321,15 @@ exit 1`
 
   it('points at the failing checks rather than a version when the Harness is unready', async () => {
     // Again through a spec that can run a Session, so the answer is about
-    // readiness rather than about Codex having no Adapter.
-    await fakeExecutable('codex', READY_CODEX_SCRIPT)
+    // readiness rather than about Codex having no Adapter. Unready here means
+    // signed out — a gating dimension, unlike a missing Skill.
+    await fakeExecutable(
+      'codex',
+      `case "$1" in
+  --version) echo "codex-cli 0.146.0"; exit 0;;
+esac
+exit 1`
+    )
     const readiness = await probeHarness(
       { ...HARNESS_SPECS.codex, conversation: { minimumVersion: '0.44.0' } },
       { pathEntries: [binDir], homeDir, probeTimeoutMs: 5000 }
@@ -365,7 +348,7 @@ describe('restored readiness', () => {
     expect(before.available).toBe(false)
 
     await fakeExecutable('codex', READY_CODEX_SCRIPT)
-    await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
+    await installSkills('.agents/skills', ['grilling', 'wayfinder'])
 
     const after = await probeHarness(HARNESS_SPECS.codex, {
       pathEntries: [binDir],

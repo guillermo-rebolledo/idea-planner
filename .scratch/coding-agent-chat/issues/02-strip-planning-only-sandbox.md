@@ -8,12 +8,12 @@ The Main-owned MCP host is reduced, not deleted. It keeps `offer_response_option
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The planning policy module and its approval matrix are gone
-- [ ] The MCP tool host advertises only `offer_response_options`
-- [ ] The per-Run capability socket and sandboxed stdio proxy still work for that one tool
-- [ ] Native process-group launch, terminate, reap, and verify are untouched
-- [ ] A Run still streams normalized events and persists them durably
-- [ ] The follow-up section of [ADR 0001](../../../docs/adr/0001-adopt-effect-in-core.md) is accurate about what remains
-- [ ] `pnpm verify` passes; tests asserting planning containment are removed rather than skipped
+- [x] The planning policy module and its approval matrix are gone
+- [x] The MCP tool host advertises only `offer_response_options`
+- [x] The per-Run capability socket and sandboxed stdio proxy still work for that one tool
+- [x] Native process-group launch, terminate, reap, and verify are untouched
+- [x] A Run still streams normalized events and persists them durably
+- [x] The follow-up section of [ADR 0001](../../../docs/adr/0001-adopt-effect-in-core.md) is accurate about what remains
+- [x] `pnpm verify` passes; tests asserting planning containment are removed rather than skipped

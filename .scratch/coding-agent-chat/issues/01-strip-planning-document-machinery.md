@@ -10,12 +10,12 @@ Retained: the conversation journal, projection and recovery; persist-before-AI; 
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Reference Attachments and external-content reconciliation are gone from the contract, Core, and Renderer
-- [ ] Managed-document versions, conflicts, and duplicates are gone, along with their commands
-- [ ] Transaction staging is gone; remaining writes are direct
-- [ ] The reconciliation, missing, unrecoverable, and restore-version surfaces are gone
-- [ ] Conversation journal, projection, and recovery are untouched and still covered by their tests
-- [ ] Capture, open, converse, and restart still work end to end
-- [ ] `pnpm verify` passes and the packaged-shell acceptance suite passes, with tests for deleted behaviour removed rather than skipped
+- [x] Reference Attachments and external-content reconciliation are gone from the contract, Core, and Renderer
+- [x] Managed-document versions, conflicts, and duplicates are gone, along with their commands
+- [x] Transaction staging is gone; remaining writes are direct
+- [x] The reconciliation, missing, unrecoverable, and restore-version surfaces are gone
+- [x] Conversation journal, projection, and recovery are untouched and still covered by their tests
+- [x] Capture, open, converse, and restart still work end to end
+- [x] `pnpm verify` passes and the packaged-shell acceptance suite passes, with tests for deleted behaviour removed rather than skipped

@@ -26,13 +26,13 @@ So the honest version of the bar is: the command appears the instant it starts, 
 
 **Blocked by:** 06
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A command the agent runs appears in the Conversation with what it printed, as it happens
-- [ ] Command output is redacted and bounded, and a huge output cannot displace the Conversation around it
-- [ ] Output renders as a compact terminal block, collapsible when long
-- [ ] The effective permission mode is read back from the init event, and a mismatch is surfaced rather than swallowed
-- [ ] Staged settings are validated before spawn; invalid settings fail loudly rather than being silently ignored
-- [ ] A Run records the permission mode it actually ran under
-- [ ] The contract test replays a stream recorded from the installed CLI
-- [ ] `pnpm verify` passes
+- [x] A command the agent runs appears in the Conversation with what it printed, as it happens
+- [x] Command output is redacted and bounded, and a huge output cannot displace the Conversation around it
+- [x] Output renders as a compact terminal block, collapsible when long
+- [x] The effective permission mode is read back from the init event, and a mismatch is surfaced rather than swallowed
+- [x] Staged settings are validated before spawn; invalid settings fail loudly rather than being silently ignored
+- [x] A Run records the permission mode it actually ran under
+- [x] The contract test replays a stream recorded from the installed CLI
+- [x] `pnpm verify` passes

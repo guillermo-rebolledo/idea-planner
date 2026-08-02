@@ -1,9 +1,15 @@
 import { z } from 'zod'
 
 /**
- * Harness and skill readiness: the shared shapes for the five independent
- * checks the app runs per Harness. Probing happens in Main; the Renderer
- * only presents these validated results.
+ * Harness readiness: the shared shapes for the checks the app runs per
+ * Harness. Probing happens in Main; the Renderer only presents these
+ * validated results.
+ *
+ * Three dimensions decide whether a Harness can be used at all — it has to be
+ * there, be a version this app can talk to, and be signed in. `skills` is
+ * reported beside them and gates nothing: Skills are optional (ADR 0003), and
+ * a Harness that can work is not made unusable by a methodology document
+ * missing from the person's home directory.
  */
 
 export const harnessIdSchema = z.enum(['codex', 'claude'])
@@ -13,7 +19,6 @@ export const readinessDimensionSchema = z.enum([
   'executable',
   'compatibility',
   'authentication',
-  'sandbox',
   'skills'
 ])
 export type ReadinessDimension = z.infer<typeof readinessDimensionSchema>
@@ -34,7 +39,6 @@ export const readinessCodeSchema = z.enum([
   'version-unrecognized',
   'version-untested',
   'unauthenticated',
-  'sandbox-unavailable',
   'skills-missing',
   'probe-timeout',
   'probe-failed',
@@ -88,14 +92,39 @@ export const harnessReadinessSchema = z.object({
   executablePath: z.string().nullable(),
   executableSource: executableSourceSchema,
   version: z.string().nullable(),
-  checks: z.array(readinessCheckSchema).length(5),
+  /** One per dimension, always, so a missing probe cannot read as a pass. */
+  checks: z.array(readinessCheckSchema).length(readinessDimensionSchema.options.length),
   /** Keyed by capability so a new one is a new field, not a lookup. */
   capabilities: z.object({ developSession: harnessCapabilitySchema }),
   checkedAt: z.string().datetime(),
-  /** True when every dimension is ready or a warning. */
+  /** True when every gating dimension is ready or a warning. */
   available: z.boolean()
 })
 export type HarnessReadiness = z.infer<typeof harnessReadinessSchema>
+
+/**
+ * The Harnesses this app could actually run a Session with. Deliberately
+ * narrower than Readiness: being installed, compatible, and signed in makes a
+ * Harness usable, but one this app cannot drive is still one the person would
+ * type their first message into and watch do nothing. The launch gate exists
+ * to prevent exactly that, so it asks the narrower question.
+ */
+export function harnessesReadyForASession(snapshot: ReadinessSnapshot): HarnessReadiness[] {
+  return snapshot.harnesses.filter((harness) => harness.capabilities.developSession.available)
+}
+
+/**
+ * The one thing standing between this Harness and a Session, in the person's
+ * own situation: the first check that failed — not found, wrong version,
+ * signed out — or, when readiness is not the problem, what the app says about
+ * driving it.
+ */
+export function firstProblem(harness: HarnessReadiness): string {
+  const failing = harness.checks.find(
+    (check) => check.status === 'failed' || check.status === 'not-probed'
+  )
+  return failing?.summary ?? harness.capabilities.developSession.summary
+}
 
 export const pathSourceSchema = z.enum(['login-shell', 'launchctl', 'inherited'])
 export type PathSource = z.infer<typeof pathSourceSchema>

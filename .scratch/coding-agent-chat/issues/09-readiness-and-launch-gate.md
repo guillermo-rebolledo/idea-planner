@@ -18,13 +18,25 @@ Ticket 05b removed the last place readiness was restated before a Run could star
 
 **Blocked by:** 05a
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Readiness reports executable, compatibility, and authentication per Harness, independently repairable
-- [ ] The app blocks use unless at least one Harness is usable, and explains which are missing what
-- [ ] Recovery is possible without restarting: fix the problem, re-check, continue
-- [ ] `skills` is informational and blocks nothing; the planning-era required-skill set is gone
-- [ ] The `sandbox` dimension is removed
-- [ ] Install and login guidance is copyable and never executed
-- [ ] Harness discovery still avoids filesystem scans and asks consent before login-shell startup files
-- [ ] `pnpm verify` passes
+- [x] Readiness reports executable, compatibility, and authentication per Harness, independently repairable
+- [x] The app blocks use unless at least one Harness is usable, and explains which are missing what
+- [x] Recovery is possible without restarting: fix the problem, re-check, continue
+- [x] `skills` is informational and blocks nothing; the planning-era required-skill set is gone
+- [x] The `sandbox` dimension is removed
+- [x] Install and login guidance is copyable and never executed
+- [x] Harness discovery still avoids filesystem scans and asks consent before login-shell startup files
+- [x] `pnpm verify` passes
+
+## Answer — the Seatbelt probe
+
+Both Seatbelt probes are gone: Codex's `sandbox` subcommand and Claude's check for `/usr/bin/sandbox-exec`.
+
+The counter-argument in this ticket is that Codex genuinely needs Seatbelt for its own sandbox. It does — and that is the reason to stop probing it here, not to keep it. The app stopped using Seatbelt itself in ticket 02, so what the probe gated was a Harness's own containment, and it gated the *whole Harness*: a machine where `codex sandbox` failed was told Codex was unusable, even for work that never touches that mode. When Codex cannot sandbox, Codex is the thing that knows, at the moment it matters, in its own words — and a Run that fails for that reason now reports what Codex said rather than what this app guessed a launch earlier.
+
+The Claude side was weaker still: checking that a macOS binary exists said nothing about Claude, which does not use it.
+
+## Answer — what "usable" leaves you able to do
+
+Nothing, in this app, if it is the only Harness — which is why the gate exists rather than a warning. The two questions are now answered separately, because they have different answers: **usable** stays Readiness's three checks and is what the person repairs, while the gate asks whether any Harness can actually run a Session. A Codex that is installed, compatible, and signed in is usable and still cannot run a Session here, so its card says both.

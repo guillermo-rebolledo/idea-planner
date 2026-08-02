@@ -30,9 +30,6 @@ const SKILLS_LINKS: RemediationLink[] = [
   { label: 'Node.js (provides npm and npx)', url: 'https://nodejs.org' }
 ]
 
-/** The Skills this product invokes plus their reviewed dependency closure. */
-const REQUIRED_SKILLS = ['grill-me', 'grilling', 'wayfinder']
-
 /**
  * The exact Skills a Run is allowed to invoke. A Skill absent here has not
  * been reviewed and verified, so the app refuses to start a Run for it rather
@@ -50,7 +47,6 @@ export function readinessLinkHosts(): Set<string> {
 }
 
 type AuthProbe = { kind: 'exit-code'; args: string[] } | { kind: 'stream-init'; args: string[] }
-type SandboxProbe = { kind: 'exit-code'; args: string[] } | { kind: 'host-sandbox-exec' }
 
 export interface HarnessSpec {
   id: HarnessId
@@ -68,7 +64,6 @@ export interface HarnessSpec {
   /** Versions at or above this are untested: usable, with a warning. */
   untestedFrom: string
   authProbe: AuthProbe
-  sandboxProbe: SandboxProbe
   /** Copyable sign-in command shown when authentication fails. Never run. */
   authRemediationCommand: string
   /** Home-relative root of the harness's documented skill location. */
@@ -93,8 +88,6 @@ export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
     untestedFrom: '0.147.0',
     authProbe: { kind: 'exit-code', args: ['login', 'status'] },
     authRemediationCommand: 'codex login',
-    // Codex's own Seatbelt runner proves the native macOS sandbox works.
-    sandboxProbe: { kind: 'exit-code', args: ['sandbox', '/usr/bin/true'] },
     skillsRoot: '.agents/skills',
     installLink: { label: 'Install Codex CLI', url: 'https://developers.openai.com/codex/cli' },
     authLink: { label: 'Codex sign-in guidance', url: 'https://developers.openai.com/codex/cli' }
@@ -117,7 +110,6 @@ export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
       args: ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose']
     },
     authRemediationCommand: 'claude /login',
-    sandboxProbe: { kind: 'host-sandbox-exec' },
     skillsRoot: '.claude/skills',
     installLink: { label: 'Install Claude Code', url: 'https://code.claude.com/docs/en/overview' },
     authLink: { label: 'Claude Code sign-in guidance', url: 'https://code.claude.com/docs/en/iam' }
@@ -130,8 +122,6 @@ export interface ProbeOptions {
   explicitExecutable?: string
   homeDir: string
   probeTimeoutMs?: number
-  /** Host Seatbelt binary consulted for `host-sandbox-exec` probes. */
-  sandboxExecPath?: string
 }
 
 const DEFAULT_PROBE_TIMEOUT_MS = 10_000
@@ -399,46 +389,15 @@ async function probeAuthentication(
   })
 }
 
-async function probeSandbox(
-  spec: HarnessSpec,
-  sandboxExecPath: string,
-  run: (args: string[], untilStdoutLine?: (line: string) => boolean) => Promise<RunResult>
-): Promise<ReadinessCheck> {
-  const unavailable = (
-    summary: string,
-    code: ReadinessCode = 'sandbox-unavailable'
-  ): ReadinessCheck =>
-    finishCheck('sandbox', {
-      status: 'failed',
-      code,
-      summary,
-      links: [spec.installLink]
-    })
-
-  if (spec.sandboxProbe.kind === 'exit-code') {
-    const result = await run(spec.sandboxProbe.args)
-    if (result.outcome === 'timeout') {
-      return unavailable(
-        `${spec.displayName} did not finish its sandbox verification in time.`,
-        'probe-timeout'
-      )
-    }
-    if (result.outcome === 'spawn-error' || result.code !== 0) {
-      return unavailable(`${spec.displayName} could not verify its native macOS sandbox.`)
-    }
-  } else if (!(await isExecutableFile(sandboxExecPath))) {
-    return unavailable('The native macOS sandbox runtime is unavailable on this system.')
-  }
-  return finishCheck('sandbox', {
-    status: 'ready',
-    code: 'ready',
-    summary: 'The native macOS sandbox is available.'
-  })
-}
-
+/**
+ * Which Skills are installed for this Harness. Reported, and nothing more: a
+ * Harness that is installed, compatible, and signed in works, and a
+ * methodology document missing from somebody's home directory is not a reason
+ * to tell them it does not.
+ */
 async function probeSkills(spec: HarnessSpec, homeDir: string): Promise<ReadinessCheck> {
   const missing: string[] = []
-  for (const name of REQUIRED_SKILLS) {
+  for (const name of VERIFIED_SKILLS) {
     // Exact documented location for this harness — never a directory walk.
     const skillFile = join(homeDir, spec.skillsRoot, name, 'SKILL.md')
     try {
@@ -450,9 +409,9 @@ async function probeSkills(spec: HarnessSpec, homeDir: string): Promise<Readines
   }
   if (missing.length > 0) {
     return finishCheck('skills', {
-      status: 'failed',
+      status: 'warning',
       code: 'skills-missing',
-      summary: `The Matt Pocock Skills are not installed for ${spec.displayName}. Install them yourself with the command below — this app never runs it.`,
+      summary: `The Matt Pocock Skills are not installed for ${spec.displayName}, so a Run cannot invoke one. Everything else still works. Install them yourself with the command below — this app never runs it.`,
       command: SKILLS_INSTALL_COMMAND,
       links: SKILLS_LINKS,
       missingSkills: missing
@@ -470,7 +429,6 @@ export async function probeHarness(
   options: ProbeOptions
 ): Promise<HarnessReadiness> {
   const timeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS
-  const sandboxExecPath = options.sandboxExecPath ?? '/usr/bin/sandbox-exec'
   const source = options.explicitExecutable ? 'explicit' : 'path'
 
   let executablePath: string | null = null
@@ -511,7 +469,6 @@ export async function probeHarness(
 
   let compatibilityCheck: ReadinessCheck
   let authenticationCheck: ReadinessCheck
-  let sandboxCheck: ReadinessCheck
   let version: string | null = null
 
   if (executablePath) {
@@ -527,21 +484,18 @@ export async function probeHarness(
     compatibilityCheck = compatibility.check
     version = compatibility.version
     authenticationCheck = await probeAuthentication(spec, run)
-    sandboxCheck = await probeSandbox(spec, sandboxExecPath, run)
   } else {
     compatibilityCheck = notProbed('compatibility', spec)
     authenticationCheck = notProbed('authentication', spec)
-    sandboxCheck = notProbed('sandbox', spec)
   }
 
-  const checks = [
-    executableCheck,
-    compatibilityCheck,
-    authenticationCheck,
-    sandboxCheck,
-    skillsCheck
-  ]
-  const available = checks.every((entry) => entry.status === 'ready' || entry.status === 'warning')
+  // Being there, being a version this app can talk to, and being signed in.
+  // Nothing else decides whether a Harness can be used: the app stopped using
+  // macOS Seatbelt itself in ticket 02, and gating on a facility only the
+  // Harness uses made this app refuse a Harness over its own business.
+  const gating = [executableCheck, compatibilityCheck, authenticationCheck]
+  const checks = [...gating, skillsCheck]
+  const available = gating.every((entry) => entry.status === 'ready' || entry.status === 'warning')
   // The command on PATH is usually a symlink, and only what it points at can
   // say how the Harness was installed.
   const realExecutablePath = executablePath
@@ -579,14 +533,14 @@ function describeConversationCapability(
   if (!spec.conversation) {
     return {
       available: false,
-      summary: `Developing a Session with ${spec.displayName} is not supported yet. Its harness Adapter arrives in a later milestone.`,
+      summary: `This app cannot run a Session with ${spec.displayName} yet. Support for it arrives in a later milestone.`,
       command: null
     }
   }
   if (!state.available) {
     return {
       available: false,
-      summary: `${spec.displayName} is not ready yet. Open Harnesses to see which check needs repairing.`,
+      summary: `${spec.displayName} is not ready yet. The checks below say what needs repairing.`,
       command: null
     }
   }

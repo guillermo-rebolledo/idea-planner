@@ -28,13 +28,13 @@ That was accepted deliberately, because the file-per-Session model was about to 
 
 **Blocked by:** 03, 04
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A Session is identified by an opaque id; no Session is addressed by a path
-- [ ] Sessions, Conversations, and Runs persist in the app-owned store and survive restart
-- [ ] Every Session belongs to a Project, and a Session cannot exist without one
-- [ ] A half-written Session is never silently dropped, and a torn journal line never loses the Conversation before it
-- [ ] No library path is requested anywhere, and onboarding asks for a first Project
-- [ ] No user-visible Markdown is written, and removing a Project never touches the directory on disk
-- [ ] Losing the store loses history but never work, because work lives in the Project under git
-- [ ] `pnpm verify` passes, and the packaged-shell acceptance suite covers restart
+- [x] A Session is identified by an opaque id; no Session is addressed by a path
+- [x] Sessions, Conversations, and Runs persist in the app-owned store and survive restart
+- [x] Every Session belongs to a Project, and a Session cannot exist without one
+- [x] A half-written Session is never silently dropped, and a torn journal line never loses the Conversation before it
+- [x] No library path is requested anywhere, and onboarding asks for a first Project
+- [x] No user-visible Markdown is written, and removing a Project never touches the directory on disk
+- [x] Losing the store loses history but never work, because work lives in the Project under git
+- [x] `pnpm verify` passes, and the packaged-shell acceptance suite covers restart

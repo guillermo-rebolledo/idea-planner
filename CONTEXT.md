@@ -55,5 +55,9 @@ A permission the user has granted permanently for a Project — a command the ag
 _Avoid_: Allowlist, whitelist, permission
 
 **Readiness**:
-Whether a Harness is installed, compatible, and authenticated on this machine. A Harness clearing all three is **usable**, and at least one usable Harness is required before the app can be used at all. Reported per Harness and repaired by the user, never by the app.
+Whether a Harness is installed, compatible, and authenticated on this machine. A Harness clearing all three is **usable**. Reported per Harness and repaired by the user, never by the app.
 _Avoid_: Health, status, setup
+
+**Launch Gate**:
+The app opening only when at least one Harness can run a Session. That is narrower than usable: a Harness this app cannot drive yet is one the person would send their first message to and watch do nothing. Stated per Harness, repaired in the user's own terminal, and re-checked without restarting.
+_Avoid_: Blocker, paywall, splash

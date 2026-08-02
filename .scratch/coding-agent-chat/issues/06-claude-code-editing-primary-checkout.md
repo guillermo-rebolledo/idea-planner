@@ -20,14 +20,14 @@ Between tickets 02 and 06 the app can therefore converse and nothing else. This 
 
 **Blocked by:** 05b
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A Run launches Claude Code against the Session's Project with the primary checkout as working directory
-- [ ] Per-Run configuration is injected via the staged settings mechanism, never by writing to the user's own configuration — note that `CLAUDE_CONFIG_DIR` does not work for this and the current code uses it
-- [ ] File edits appear as inline diffs in the Conversation as they happen
-- [ ] A contract test pins the edit-result payload shape to the installed CLI version and fails loudly when it changes
-- [ ] Command execution and its output stream into the Conversation
-- [ ] The user message is durable before the Harness is contacted
-- [ ] The Conversation, including diffs, survives restart
-- [ ] Stopping a Run terminates the process group and leaves the Session recoverable
-- [ ] `pnpm verify` passes
+- [x] A Run launches Claude Code against the Session's Project with the primary checkout as working directory
+- [x] Per-Run configuration is injected via the staged settings mechanism, never by writing to the user's own configuration — note that `CLAUDE_CONFIG_DIR` does not work for this and the current code uses it
+- [x] File edits appear as inline diffs in the Conversation as they happen
+- [x] A contract test pins the edit-result payload shape to the installed CLI version and fails loudly when it changes
+- [x] Command execution and its output stream into the Conversation
+- [x] The user message is durable before the Harness is contacted
+- [x] The Conversation, including diffs, survives restart
+- [x] Stopping a Run terminates the process group and leaves the Session recoverable
+- [x] `pnpm verify` passes

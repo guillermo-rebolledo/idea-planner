@@ -23,15 +23,15 @@ What remains is honest and complete: **Projects exist, are git-validated, and ar
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A native picker adds a Project, with the exact path confirmed before anything is written
-- [ ] Selecting any folder inside a repository adds that repository, identified by the root git resolves
-- [ ] A folder that is not a git repository is refused, with an offer to run `git init` — the only Git mutation the app performs
-- [ ] A missing git binary is reported as a missing dependency, never as "not a repository"
-- [ ] Adding the same Project twice is idempotent, including via two different paths inside it
-- [ ] A Project whose path has disappeared is shown as unavailable and is removable, without taking the app down
-- [ ] The sidebar shows a Projects section
-- [ ] Removing a Project from the app never touches the directory on disk
-- [ ] Projects survive restart, and losing the store never touches a repository
-- [ ] `pnpm verify` passes
+- [x] A native picker adds a Project, with the exact path confirmed before anything is written
+- [x] Selecting any folder inside a repository adds that repository, identified by the root git resolves
+- [x] A folder that is not a git repository is refused, with an offer to run `git init` — the only Git mutation the app performs
+- [x] A missing git binary is reported as a missing dependency, never as "not a repository"
+- [x] Adding the same Project twice is idempotent, including via two different paths inside it
+- [x] A Project whose path has disappeared is shown as unavailable and is removable, without taking the app down
+- [x] The sidebar shows a Projects section
+- [x] Removing a Project from the app never touches the directory on disk
+- [x] Projects survive restart, and losing the store never touches a repository
+- [x] `pnpm verify` passes

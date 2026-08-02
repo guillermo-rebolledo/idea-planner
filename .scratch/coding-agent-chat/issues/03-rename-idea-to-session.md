@@ -18,13 +18,13 @@ Every Run also freezes `permissionProfile: 'planning-v1'` into its durable confi
 
 **Blocked by:** 01, 02
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `CONTEXT.md` terms are the only domain vocabulary in the contract, Core, Renderer, and tests
-- [ ] No occurrence of Idea, workflow, Draft Artifact, Proposal, MVP Spec, Implementation Ticket, or Planning Package remains outside `.scratch/research/` and git history
-- [ ] The contract version is incremented, and a library holding the previous format is ignored rather than migrated, read, or altered
-- [ ] The unreachable `workflow-completion` plumbing and the frozen `planning-v1` permission profile are gone
-- [ ] `pnpm verify` passes and the packaged-shell acceptance suite passes
+- [x] `CONTEXT.md` terms are the only domain vocabulary in the contract, Core, Renderer, and tests
+- [x] No occurrence of Idea, workflow, Draft Artifact, Proposal, MVP Spec, Implementation Ticket, or Planning Package remains outside `.scratch/research/` and git history
+- [x] The contract version is incremented, and a library holding the previous format is ignored rather than migrated, read, or altered
+- [x] The unreachable `workflow-completion` plumbing and the frozen `planning-v1` permission profile are gone
+- [x] `pnpm verify` passes and the packaged-shell acceptance suite passes
 
 ## Comments
 

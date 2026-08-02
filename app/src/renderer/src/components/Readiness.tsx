@@ -20,17 +20,16 @@ import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
 
 /**
- * The reusable readiness surface shown in onboarding, Settings, and before a
- * Run. Codex and Claude stay visible independently; each of the five
- * dimensions reports its own state with safe, copyable remediation. The app
- * never installs, signs in, or runs any remediation command itself.
+ * The reusable readiness surface shown at the launch gate and in Settings.
+ * Codex and Claude stay visible independently; each dimension reports its own
+ * state with safe, copyable remediation. The app never installs, signs in, or
+ * runs any remediation command itself.
  */
 
 const DIMENSION_LABELS: Record<ReadinessDimension, string> = {
   executable: 'Executable',
   compatibility: 'Version compatibility',
   authentication: 'Signed in',
-  sandbox: 'Sandbox',
   skills: 'Skills'
 }
 
@@ -198,6 +197,20 @@ function HarnessCard({
         </div>
       </header>
 
+      {/* Being usable and being something this app can drive are two
+          different questions, and a card that answers only the first leaves
+          "Usable" sitting above a Harness no Session can use. */}
+      <p
+        className={cn(
+          'border-b border-border px-3 py-2 text-xs',
+          harness.capabilities.developSession.available
+            ? 'text-muted-foreground'
+            : 'text-foreground'
+        )}
+      >
+        {harness.capabilities.developSession.summary}
+      </p>
+
       <div className="flex flex-col gap-1 px-3 py-2">
         <p className="text-xs text-muted-foreground">
           Command <code className="select-text">{harness.command}</code>
@@ -269,7 +282,9 @@ function CheckRow({ check }: { check: ReadinessCheck }): React.JSX.Element {
     check.status === 'ready'
       ? 'Ready'
       : check.status === 'warning'
-        ? 'Usable with a warning'
+        ? // A warning is the strongest thing an informational dimension can
+          // say, and the most a gating one can say without blocking.
+          'Usable with a warning'
         : check.status === 'failed'
           ? 'Not ready'
           : 'Not checked'
