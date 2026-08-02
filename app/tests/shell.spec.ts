@@ -432,11 +432,17 @@ test('readiness reports Codex and Claude independently, with safe repair and re-
       codexCard.getByText('cannot run a Session with Codex yet', { exact: false })
     ).toBeVisible()
 
-    // Installing the Skills clears the guidance and changes nothing else:
-    // Claude was usable throughout, because Skills never gated it.
+    // Skills say what is installed rather than raising an alarm: they cannot
+    // block anything, so they are never reported as though they had.
+    await expect(claudeCard.getByText('Not installed', { exact: true })).toBeVisible()
+    await expect(claudeCard.getByText('Usable with a warning')).toHaveCount(0)
+
+    // Installing them clears the guidance and changes nothing else: Claude was
+    // usable throughout, because Skills never gated it.
     await installFakeSkills('.claude/skills')
     await claudeCard.getByRole('button', { name: 'Check Claude Code again' }).click()
     await expect(claudeCard.getByText('npx skills@latest add mattpocock/skills')).toHaveCount(0)
+    await expect(claudeCard.getByText('Installed', { exact: true })).toBeVisible()
     await expect(claudeCard.getByText('Usable', { exact: true })).toBeVisible()
 
     await dialog.getByRole('button', { name: 'Close Harnesses' }).click()

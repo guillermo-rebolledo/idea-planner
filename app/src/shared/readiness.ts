@@ -24,6 +24,22 @@ export const readinessDimensionSchema = z.enum([
 export type ReadinessDimension = z.infer<typeof readinessDimensionSchema>
 
 /**
+ * The dimensions that decide whether a Harness can be used at all. Everything
+ * else is reported beside them and gates nothing, and the two are kept apart
+ * here so that one list decides and the other only informs — a dimension that
+ * cannot block anything must not be presented as though it had.
+ */
+export const GATING_DIMENSIONS: readonly ReadinessDimension[] = [
+  'executable',
+  'compatibility',
+  'authentication'
+]
+
+export function isGating(dimension: ReadinessDimension): boolean {
+  return GATING_DIMENSIONS.includes(dimension)
+}
+
+/**
  * `warning` keeps a Harness usable (for example an untested version);
  * `failed` disables only the failing dimension's dependents; `not-probed`
  * marks dimensions that could not run because the executable is unavailable.

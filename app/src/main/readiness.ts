@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { access, constants, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { isGating } from '@shared/readiness'
 import type {
   PathSource,
   HarnessId,
@@ -493,9 +494,10 @@ export async function probeHarness(
   // Nothing else decides whether a Harness can be used: the app stopped using
   // macOS Seatbelt itself in ticket 02, and gating on a facility only the
   // Harness uses made this app refuse a Harness over its own business.
-  const gating = [executableCheck, compatibilityCheck, authenticationCheck]
-  const checks = [...gating, skillsCheck]
-  const available = gating.every((entry) => entry.status === 'ready' || entry.status === 'warning')
+  const checks = [executableCheck, compatibilityCheck, authenticationCheck, skillsCheck]
+  const available = checks
+    .filter((entry) => isGating(entry.dimension))
+    .every((entry) => entry.status === 'ready' || entry.status === 'warning')
   // The command on PATH is usually a symlink, and only what it points at can
   // say how the Harness was installed.
   const realExecutablePath = executablePath

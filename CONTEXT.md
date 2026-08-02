@@ -36,6 +36,10 @@ _Avoid_: Provider, model, backend
 The Harness-specific continuity record behind a Conversation, such as a Codex thread or Claude session. A Conversation may cross Harness Threads when the user switches Harness.
 _Avoid_: Conversation, Run, Harness Session
 
+**Adapter**:
+The translation between one Harness's own protocol and the events the rest of the app understands, so nothing outside it sees a raw Harness frame. A Harness the app has no Adapter for can be perfectly usable and still unable to run a Session here, which is why the Launch Gate asks about Sessions rather than about Readiness.
+_Avoid_: Driver, integration, plugin, connector
+
 **Skill**:
 An installed instruction document that gives the agent a defined methodology for a Run, such as test-driven development or bug diagnosis. Discovered from the user's global skill directories or from the Project, and never installed by the app. A Project's own Skills stay inert until the user trusts that Project.
 _Avoid_: Workflow, command, prompt

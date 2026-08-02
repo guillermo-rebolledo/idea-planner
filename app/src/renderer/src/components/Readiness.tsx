@@ -4,17 +4,19 @@ import {
   Check,
   CheckCircle2,
   Copy,
+  Info,
   Minus,
   RefreshCw,
   XCircle,
   X
 } from 'lucide-react'
-import type {
-  HarnessId,
-  HarnessReadiness,
-  ReadinessCheck,
-  ReadinessDimension,
-  ReadinessSnapshot
+import {
+  isGating,
+  type HarnessId,
+  type HarnessReadiness,
+  type ReadinessCheck,
+  type ReadinessDimension,
+  type ReadinessSnapshot
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
@@ -268,9 +270,16 @@ function HarnessCard({
 }
 
 function CheckRow({ check }: { check: ReadinessCheck }): React.JSX.Element {
+  // A dimension that cannot block anything is not reported as though it had.
+  // Skills are the only one today: missing them is worth saying and is not a
+  // fault, so the row states what is installed rather than raising an alarm
+  // beside a Harness that works.
+  const informational = !isGating(check.dimension)
   const icon =
     check.status === 'ready' ? (
       <CheckCircle2 aria-hidden="true" className="size-3.5 shrink-0 text-positive" />
+    ) : informational ? (
+      <Info aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
     ) : check.status === 'warning' ? (
       <AlertTriangle aria-hidden="true" className="size-3.5 shrink-0 text-notice-foreground" />
     ) : check.status === 'failed' ? (
@@ -278,13 +287,14 @@ function CheckRow({ check }: { check: ReadinessCheck }): React.JSX.Element {
     ) : (
       <Minus aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
     )
-  const statusLabel =
-    check.status === 'ready'
+  const statusLabel = informational
+    ? check.status === 'ready'
+      ? 'Installed'
+      : 'Not installed'
+    : check.status === 'ready'
       ? 'Ready'
       : check.status === 'warning'
-        ? // A warning is the strongest thing an informational dimension can
-          // say, and the most a gating one can say without blocking.
-          'Usable with a warning'
+        ? 'Usable with a warning'
         : check.status === 'failed'
           ? 'Not ready'
           : 'Not checked'
@@ -303,10 +313,8 @@ function CheckRow({ check }: { check: ReadinessCheck }): React.JSX.Element {
           Missing: {check.missingSkills.join(', ')}
         </p>
       )}
-      {check.command && (check.status === 'failed' || check.status === 'warning') && (
-        <CopyableCommand command={check.command} />
-      )}
-      {check.links.length > 0 && (check.status === 'failed' || check.status === 'warning') && (
+      {check.command && check.status !== 'ready' && <CopyableCommand command={check.command} />}
+      {check.links.length > 0 && check.status !== 'ready' && (
         <p className="pl-5.5 text-xs text-muted-foreground">
           {check.links.map((link, index) => (
             <span key={link.url}>
