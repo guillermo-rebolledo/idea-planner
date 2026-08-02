@@ -362,6 +362,13 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     path: z.string().min(1),
     hunks: z.array(diffHunkSchema).min(1),
     /**
+     * Who observed it. `harness` is the agent reporting its own edit;
+     * `checkout` is the app finding it by comparing the Checkout before and
+     * after the Run, which is the only way a change made by a shell command
+     * is ever seen (ticket 12c).
+     */
+    source: z.enum(['harness', 'checkout']).default('harness'),
+    /**
      * What the change did, counted before the diff was shortened for storage.
      * A long change keeps only the first of its lines, and counting those
      * would report a smaller change than the one that happened.
@@ -384,9 +391,28 @@ export const changedFileSchema = z.object({
   /** How many separate times the agent wrote to it, across every Run. */
   changes: z.number().int().positive(),
   added: z.number().int().nonnegative(),
-  removed: z.number().int().nonnegative()
+  removed: z.number().int().nonnegative(),
+  /**
+   * Whether the agent said it changed this. False means the app found it by
+   * comparing the Checkout before and after the Run — the change happened,
+   * and nothing in the Conversation accounts for it.
+   */
+  reported: z.boolean()
 })
 export type ChangedFile = z.infer<typeof changedFileSchema>
+
+/** One file a Checkout comparison found changed, with git's own patch. */
+export const checkoutChangeSchema = z.object({
+  path: z.string().min(1),
+  diff: z.string()
+})
+
+export const recordCheckoutChangesInputSchema = z.object({
+  sessionId: z.string().min(1),
+  runId: z.string().min(1),
+  files: z.array(checkoutChangeSchema).max(500)
+})
+export type RecordCheckoutChangesInput = z.infer<typeof recordCheckoutChangesInputSchema>
 
 export const conversationSnapshotSchema = z.object({
   sessionId: z.string().min(1),

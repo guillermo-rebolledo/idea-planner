@@ -427,6 +427,47 @@ test('a Session says which files it changed, and offers nothing to accept', asyn
   }
 })
 
+/**
+ * A Harness that changes a file the way a shell command does — no edit tool,
+ * no report — and one that reports nothing at all about it.
+ */
+const QUIET_CLAUDE_FAKE = `case "$1" in
+  --version) echo "2.1.220 (Claude Code)"; exit 0;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  --print)
+    echo '{"type":"system","subtype":"init"}'
+    printf 'quietly changed\n' >> quiet.ts
+    echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}]},"session_id":"thread-1"}'
+    /bin/sleep 1
+    exit 0;;
+esac`
+
+test('a change nobody reported is still listed, and says nobody reported it', async () => {
+  await installFakeHarness('claude', QUIET_CLAUDE_FAKE)
+  await writeFile(join(sandbox.projectDir, 'quiet.ts'), 'export const quiet = true\n')
+  // Dirty before the Session, and never the agent's work.
+  await writeFile(join(sandbox.projectDir, 'mine.ts'), 'export const mine = true\n')
+
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Tidy it up')
+    await page.getByLabel('Your message').fill('Go on then')
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
+
+    const panel = page.getByRole('region', { name: 'Files this Session changed' })
+    await expect(panel.getByText('quiet.ts')).toBeVisible()
+    await expect(panel.getByText('changed without being reported')).toBeVisible()
+    await expect(panel.getByText('mine.ts')).toHaveCount(0)
+
+    await panel.getByRole('button', { name: 'quiet.ts', exact: false }).click()
+    await expect(panel.getByText('+quietly changed')).toBeVisible()
+  } finally {
+    await app.close()
+  }
+})
+
 test('deleting a Session forgets it and leaves the Project alone', async () => {
   await writeFile(join(sandbox.projectDir, 'source.ts'), 'export const kept = true')
 

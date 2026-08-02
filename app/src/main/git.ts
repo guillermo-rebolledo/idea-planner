@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process'
+import { mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
@@ -67,9 +69,156 @@ export async function initRepository(
   }
 }
 
-function environment(options: GitOptions): NodeJS.ProcessEnv {
-  return options.pathEnv === undefined ? process.env : { ...process.env, PATH: options.pathEnv }
+/**
+ * A snapshot of a Checkout: the tree git would write if everything in the
+ * working directory were staged. `unavailable` is not a failure — a Checkout
+ * that is not a repository, or a machine with no git, simply has no snapshot,
+ * and a Run must not fail over it.
+ */
+export type CheckoutSnapshot = { status: 'taken'; tree: string } | { status: 'unavailable' }
+
+/** One file that changed between two snapshots, and how. */
+export interface SnapshotChange {
+  /** Relative to the Checkout, as git names it. */
+  path: string
+  /** The unified diff between the two snapshots, as git rendered it. */
+  diff: string
 }
+
+/**
+ * Records what is in the Checkout right now, so that what a Run changes can be
+ * told from what was already there — however the change was made. The Harness
+ * reports what it edits with its own tools, and a shell command it runs
+ * reports nothing at all (ticket 12c).
+ *
+ * This never touches the person's repository. Their index and their object
+ * store are left exactly as they were: git is pointed at an app-owned index
+ * and an app-owned object directory, with the repository added only as a
+ * read-only alternate, so every blob and tree this writes lands in app-owned
+ * state. Their `.gitignore` still applies, so build output stays out.
+ */
+export async function snapshotCheckout(
+  checkout: string,
+  appOwnedDirectory: string,
+  options: GitOptions = {}
+): Promise<CheckoutSnapshot> {
+  try {
+    const env = await snapshotEnvironment(checkout, appOwnedDirectory, options)
+    await mkdir(join(appOwnedDirectory, OBJECTS), { recursive: true })
+    // Staged into our index, never theirs. `-A` is what makes a file the agent
+    // created count, and what makes one it deleted count as gone.
+    await run('git', ['add', '-A'], { cwd: checkout, env, timeout: TIMEOUT_MS })
+    const { stdout } = await run('git', ['write-tree'], {
+      cwd: checkout,
+      env,
+      timeout: TIMEOUT_MS
+    })
+    const tree = stdout.trim()
+    return tree ? { status: 'taken', tree } : { status: 'unavailable' }
+  } catch {
+    return { status: 'unavailable' }
+  }
+}
+
+/**
+ * What changed between two snapshots of one Checkout. Either snapshot being
+ * unavailable means the question cannot be answered, which is reported as
+ * nothing having been observed rather than as nothing having happened.
+ */
+export async function diffSnapshots(
+  checkout: string,
+  appOwnedDirectory: string,
+  before: CheckoutSnapshot,
+  after: CheckoutSnapshot,
+  options: GitOptions = {}
+): Promise<SnapshotChange[]> {
+  if (before.status !== 'taken' || after.status !== 'taken') return []
+  if (before.tree === after.tree) return []
+  try {
+    const { stdout } = await run(
+      'git',
+      ['diff-tree', '-r', '-p', '--no-color', '--no-ext-diff', before.tree, after.tree],
+      {
+        cwd: checkout,
+        env: await snapshotEnvironment(checkout, appOwnedDirectory, options),
+        timeout: TIMEOUT_MS,
+        maxBuffer: MAX_DIFF_BYTES
+      }
+    )
+    return splitPatch(stdout)
+  } catch {
+    return []
+  }
+}
+
+/** One patch per file, named the way git names it. */
+function splitPatch(patch: string): SnapshotChange[] {
+  const changes: SnapshotChange[] = []
+  for (const section of patch.split(/^diff --git /m).slice(1)) {
+    // `b/<path>` is the file as it is now; a deletion keeps the old name in
+    // both, so this names something either way.
+    const path = /^a\/(.*?) b\/(.*)$/m.exec(section)?.[2]
+    if (path === undefined) continue
+    changes.push({ path, diff: `diff --git ${section}`.trimEnd() })
+  }
+  return changes
+}
+
+async function snapshotEnvironment(
+  checkout: string,
+  appOwnedDirectory: string,
+  options: GitOptions
+): Promise<NodeJS.ProcessEnv> {
+  return {
+    ...environment(options),
+    GIT_INDEX_FILE: join(appOwnedDirectory, 'index'),
+    GIT_OBJECT_DIRECTORY: join(appOwnedDirectory, OBJECTS),
+    // Read-only access to what the repository already has, so this rehashes
+    // nothing it can borrow. Asked for rather than assumed: in a linked
+    // worktree or a submodule `.git` is a file and the objects are elsewhere.
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: await objectDirectory(checkout, options)
+  }
+}
+
+async function objectDirectory(checkout: string, options: GitOptions): Promise<string> {
+  const { stdout } = await run(
+    'git',
+    ['rev-parse', '--path-format=absolute', '--git-path', 'objects'],
+    { cwd: checkout, env: environment(options), timeout: TIMEOUT_MS }
+  )
+  return stdout.trim()
+}
+
+/** Where the objects this writes go, which is never the person's repository. */
+const OBJECTS = 'objects'
+
+/** A diff larger than this is not one anybody was going to read. */
+const MAX_DIFF_BYTES = 8 * 1024 * 1024
+
+/**
+ * The environment a git call runs in. Anything the process inherited that
+ * would point git at a different repository is dropped: a shell — or a git
+ * hook, which exports `GIT_DIR` and `GIT_INDEX_FILE` — can hand this app an
+ * environment in which `cwd` no longer decides which repository it is talking
+ * to, and every call here means the one the person's Project is in.
+ */
+function environment(options: GitOptions): NodeJS.ProcessEnv {
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !REDIRECTING.has(name))
+  )
+  return options.pathEnv === undefined ? inherited : { ...inherited, PATH: options.pathEnv }
+}
+
+/** Inherited variables that would answer for a repository nobody asked about. */
+const REDIRECTING = new Set([
+  'GIT_DIR',
+  'GIT_COMMON_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_NAMESPACE'
+])
 
 /**
  * Distinguishes "this machine has no git" from "this folder is not a

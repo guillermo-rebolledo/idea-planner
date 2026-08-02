@@ -3,6 +3,7 @@ import {
   codexLaunchSchema,
   finalizeConversationRunInputSchema,
   harnessEventSchema,
+  recordCheckoutChangesInputSchema,
   submitConversationMessageInputSchema,
   type ConversationSnapshot,
   type ConversationStreamEvent,
@@ -257,6 +258,10 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     sessionId: z.string().min(1),
     runId: z.string().min(1),
     event: harnessEventSchema
+  }),
+  z.object({
+    type: z.literal('conversation/checkout-changes'),
+    input: recordCheckoutChangesInputSchema
   }),
   z.object({ type: z.literal('conversation/finalize'), input: finalizeConversationRunInputSchema })
 ])

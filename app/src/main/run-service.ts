@@ -37,6 +37,7 @@ import {
 } from '@shared/run'
 import type { HarnessId } from '@shared/readiness'
 import type { SkillCatalog } from '@shared/skill'
+import { diffSnapshots, snapshotCheckout, type CheckoutSnapshot } from './git'
 import { HARNESS_SPECS } from './readiness'
 import { ToolHost, type ApprovalRequest } from './tool-host'
 import type { RunProcessBroker } from './run-process-broker'
@@ -83,6 +84,14 @@ interface RunServiceDeps {
   onConversationEvent?: (event: ConversationStreamEvent) => void
 }
 
+/** A Run's Checkout as it was before the Harness touched it. */
+interface CheckoutBaseline {
+  checkout: string
+  /** App-owned, so snapshotting writes nothing into the person's repository. */
+  directory: string
+  snapshot: CheckoutSnapshot
+}
+
 /** What one outstanding request could be turned into, if the person asks. */
 interface RequestProposal {
   projectRoot: string
@@ -111,6 +120,13 @@ export class RunService {
   private readonly proposals = new Map<string, Map<string, RequestProposal>>()
   /** Runs already being ended by their own turn completing, so it happens once. */
   private readonly finishing = new Set<string>()
+  /**
+   * What each Run's Checkout looked like when it started. Comparing it with
+   * the Checkout when the Run ends is the only way a change made by a shell
+   * command is ever seen: the Harness reports the edits it makes with its own
+   * tools and nothing else (ticket 12c).
+   */
+  private readonly baselines = new Map<string, CheckoutBaseline>()
 
   constructor(private readonly deps: RunServiceDeps) {}
 
@@ -417,6 +433,18 @@ export class RunService {
               CLAUDE_CODE_OAUTH_TOKEN: await (this.deps.claudeOauthToken ?? readClaudeOauthToken)()
             }
           : configuration.environment
+      // Taken before the Harness runs, so everything the person had already
+      // changed is the baseline and stays theirs.
+      //
+      // It is kept beside the Run rather than inside it: a Run that ends badly
+      // has its directory removed, and a baseline that went with it would take
+      // the answer to "what changed" away exactly when it is wanted.
+      const snapshotDirectory = join(this.deps.privateRoot, 'checkout-snapshots', runKey)
+      this.baselines.set(accepted.id, {
+        checkout,
+        directory: snapshotDirectory,
+        snapshot: await snapshotCheckout(checkout, snapshotDirectory)
+      })
       await this.deps.broker.start({
         id: accepted.id,
         executable: harness.executablePath,
@@ -861,6 +889,7 @@ export class RunService {
     const explained =
       status === 'failed' && category === null && diagnostic ? `${summary}: ${diagnostic}` : summary
     const snapshot = await this.record(run, status, kind, explained)
+    await this.recordUnreportedChanges(run)
     const finalize: FinalizeConversationRunInput = {
       sessionId: run.sessionId,
       runId: run.id,
@@ -870,6 +899,43 @@ export class RunService {
     }
     await this.deps.core.send({ type: 'conversation/finalize', input: finalize })
     return snapshot
+  }
+
+  /**
+   * What the Run changed that nobody reported. Comparing the Checkout with its
+   * baseline finds it however it was made — a shell command, a codemod, a
+   * formatter — and Core keeps only what the Harness did not already account
+   * for. A Checkout with no snapshot simply has nothing to compare, which is
+   * not a failure and never ends a Run differently.
+   */
+  private async recordUnreportedChanges(run: Pick<RunSnapshot, 'id' | 'sessionId'>): Promise<void> {
+    const baseline = this.baselines.get(run.id)
+    this.baselines.delete(run.id)
+    if (!baseline) return
+    if (baseline.snapshot.status !== 'taken') {
+      await rm(baseline.directory, { recursive: true, force: true })
+      return
+    }
+    try {
+      const files = await diffSnapshots(
+        baseline.checkout,
+        baseline.directory,
+        baseline.snapshot,
+        await snapshotCheckout(baseline.checkout, baseline.directory)
+      )
+      if (files.length === 0) return
+      await this.deps.core.send({
+        type: 'conversation/checkout-changes',
+        input: { sessionId: run.sessionId, runId: run.id, files }
+      })
+    } catch {
+      // A comparison that cannot be made leaves the reported record alone.
+      // Ending the Run is what matters here, and it has already happened.
+    } finally {
+      // The snapshot's objects have done their job; what they described is in
+      // the Conversation now.
+      await rm(baseline.directory, { recursive: true, force: true })
+    }
   }
 
   private async record(

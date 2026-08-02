@@ -811,6 +811,42 @@ describe('what this Session changed', () => {
     expect(file).toMatchObject({ path: 'generated.ts', added: 500, removed: 0 })
   })
 
+  it('adds what the Checkout comparison found and nobody reported', async () => {
+    const runId = await startRun('Run the codemod', 'submission-codemod')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'file-change',
+        path: `${projectRoot}/reported.ts`,
+        hunks: [hunk(['+const a = 1'])]
+      }
+    })
+    // What a shell command did: the Harness said nothing about either file.
+    await core.recordCheckoutChanges({
+      sessionId,
+      runId,
+      files: [
+        {
+          path: 'reported.ts',
+          diff: 'diff --git a/reported.ts b/reported.ts\n@@ -1 +1 @@\n-const a = 0\n+const a = 1'
+        },
+        {
+          path: 'renamed.ts',
+          diff: 'diff --git a/renamed.ts b/renamed.ts\n@@ -0,0 +1,2 @@\n+const b = 2\n+const c = 3'
+        }
+      ]
+    })
+
+    const changed = (await makeCore().getConversation(sessionId)).changedFiles
+    expect(changed).toMatchObject([
+      // Reported once by the agent, and not counted a second time for being
+      // seen again on disk.
+      { path: 'reported.ts', changes: 1, added: 1, removed: 0, reported: true },
+      { path: 'renamed.ts', changes: 1, added: 2, removed: 0, reported: false }
+    ])
+  })
+
   it('reports only what the agent changed, never what was already dirty', async () => {
     // The Checkout is edited in place (ADR 0004), so a Project the person had
     // already been working in would hand `git diff` their edits as the

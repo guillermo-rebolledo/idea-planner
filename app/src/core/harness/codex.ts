@@ -1,13 +1,13 @@
 import { z } from 'zod'
 import {
   redactCredentials,
-  type DiffHunk,
   type HarnessEvent,
   type HarnessFailureCategory
 } from '@shared/conversation'
 import type { StandingApprovalKind } from '@shared/approval'
 import type { CodexLaunch } from '@shared/conversation'
 import type { HarnessId } from '@shared/readiness'
+import { parseUnifiedDiff } from './diff'
 import type { AskForApproval } from './codex-protocol/v2/AskForApproval'
 import type { SandboxMode } from './codex-protocol/v2/SandboxMode'
 import type { ThreadResumeParams } from './codex-protocol/v2/ThreadResumeParams'
@@ -415,7 +415,7 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
         return (item.changes ?? []).map((change) => ({
           type: 'file-change' as const,
           path: change.path,
-          hunks: parseHunks(change.diff)
+          hunks: parseUnifiedDiff(change.diff, { wholeFileWhenNoHunks: true })
         }))
       case 'userMessage':
       case 'plan':
@@ -507,50 +507,6 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
       })
     }
   }
-}
-
-/**
- * The hunks in one file's patch. Codex sends a unified diff body for a change
- * and the file's whole content for a new one, so a patch that never declares a
- * hunk is read as everything in it being added.
- */
-function parseHunks(diff: string): DiffHunk[] {
-  const empty: DiffHunk = { oldStart: 0, oldLines: 0, newStart: 1, newLines: 0, lines: [] }
-  if (!diff) return [empty]
-  const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
-  const lines = diff.split('\n')
-  // A patch that never declares a hunk is a new file: Codex sends its content
-  // rather than a diff of it, so every line of it is an addition.
-  if (!lines.some((line) => header.test(line))) {
-    return [bounded({ ...empty, newLines: lines.length, lines: lines.map((line) => `+${line}`) })]
-  }
-  const hunks: DiffHunk[] = []
-  let current: DiffHunk | null = null
-  for (const line of lines) {
-    const match = header.exec(line)
-    if (match) {
-      current = {
-        oldStart: Number(match[1]),
-        oldLines: Number(match[2] ?? '1'),
-        newStart: Number(match[3]),
-        newLines: Number(match[4] ?? '1'),
-        lines: []
-      }
-      hunks.push(current)
-      continue
-    }
-    current?.lines.push(line)
-  }
-  return hunks.length > 0 ? hunks.map(bounded) : [empty]
-}
-
-/** One hunk as the Conversation should hold it: redacted, and without the
- * empty final line a trailing newline leaves behind. */
-function bounded(hunk: DiffHunk): DiffHunk {
-  const lines = [...hunk.lines]
-  const last = lines.at(-1)
-  if (last === '' || last === '+') lines.pop()
-  return { ...hunk, lines: lines.map((line) => redactCredentials(line)) }
 }
 
 function protocolFailure(summary: string): HarnessEvent {

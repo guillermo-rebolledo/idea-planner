@@ -150,6 +150,8 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
         runId: command.runId,
         event: command.event
       })
+    case 'conversation/checkout-changes':
+      return core.recordCheckoutChanges(command.input)
     case 'conversation/finalize':
       return core.finalizeConversationRun(command.input)
   }

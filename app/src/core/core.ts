@@ -28,6 +28,7 @@ import type {
   ConversationSnapshot,
   FinalizeConversationRunInput,
   HarnessStream,
+  RecordCheckoutChangesInput,
   SubmitConversationMessageInput
 } from '@shared/conversation'
 import type { ProjectView } from '@shared/project'
@@ -97,6 +98,7 @@ export interface Core {
   ): Promise<{ answered: boolean; outgoing: string[] }>
   interruptHarness(runId: string): Promise<string[]>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Promise<HarnessStream>
+  recordCheckoutChanges(input: RecordCheckoutChangesInput): Promise<void>
   finalizeConversationRun(input: FinalizeConversationRunInput): Promise<ConversationSnapshot>
 }
 
@@ -140,6 +142,7 @@ export interface CoreEffects {
   ): Effect.Effect<{ answered: boolean; outgoing: string[] }, CoreError>
   interruptHarness(runId: string): Effect.Effect<string[], CoreError>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
+  recordCheckoutChanges(input: RecordCheckoutChangesInput): Effect.Effect<void, CoreError>
   finalizeConversationRun(
     input: FinalizeConversationRunInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
@@ -501,6 +504,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     answerHarnessApproval: (input) => conversation.answer(input),
     interruptHarness: (runId) => conversation.interrupt(runId),
     ingestHarnessOutput: (input) => conversation.ingest(input),
+    recordCheckoutChanges: (input) => conversation.recordCheckoutChanges(input),
     finalizeConversationRun: (input) => conversation.finalize(input)
   }
 }
@@ -619,6 +623,7 @@ export function createCore(deps: CoreDeps = {}): Core {
     answerHarnessApproval: (input) => run(core.answerHarnessApproval(input)),
     interruptHarness: (runId) => run(core.interruptHarness(runId)),
     ingestHarnessOutput: (input) => run(core.ingestHarnessOutput(input)),
+    recordCheckoutChanges: (input) => run(core.recordCheckoutChanges(input)),
     finalizeConversationRun: (input) => run(core.finalizeConversationRun(input))
   }
 }

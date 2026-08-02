@@ -23,11 +23,13 @@ import {
   type HarnessFailureCategory,
   type HarnessStream,
   type HarnessUsage,
+  type RecordCheckoutChangesInput,
   type SuggestedResponse
 } from '@shared/conversation'
 import type { HarnessId } from '@shared/readiness'
 import type { SkillName } from '@shared/run'
 import { createCodexAdapter, type HarnessAdapter } from './harness/codex'
+import { parseUnifiedDiff } from './harness/diff'
 import { createClaudeAdapter } from './harness/claude'
 
 /**
@@ -169,6 +171,8 @@ export interface ConversationEffects {
   interrupt(runId: string): Effect.Effect<string[], CoreError>
   /** Parses one raw Harness chunk and applies everything it completed. */
   ingest(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
+  /** Records changes found by comparing the Checkout, which nobody reported. */
+  recordCheckoutChanges(input: RecordCheckoutChangesInput): Effect.Effect<void, CoreError>
   finalize(input: FinalizeConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
 }
 
@@ -601,6 +605,58 @@ export function createConversationEffects(options: ConversationOptions): Convers
       )
     })
 
+  /**
+   * Records what a Run changed that nobody reported. The Harness accounts for
+   * its own edits; a shell command it ran accounts for nothing, so a Checkout
+   * compared before and after the Run is the only way those are ever seen.
+   *
+   * A path the Harness already reported in this Run is left alone: it is the
+   * same change, described better, and recording it twice would double what
+   * the panel says the Run did.
+   */
+  const recordCheckoutChanges = (
+    input: RecordCheckoutChangesInput
+  ): Effect.Effect<void, CoreError> =>
+    Effect.gen(function* () {
+      if (input.files.length === 0) return
+      const sessionDir = yield* sessionDirectory(input.sessionId)
+      const checkout = yield* options.checkoutFor(input.sessionId)
+      yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const written = yield* readEntries(sessionDir)
+          const reported = new Set(
+            written
+              .filter((entry) => entry.kind === 'file-change' && entry.runId === input.runId)
+              .map((entry) => (entry.kind === 'file-change' ? entry.path : ''))
+          )
+          let ordinal = written.filter(
+            (entry) => entry.kind === 'file-change' && entry.runId === input.runId
+          ).length
+          const now = yield* options.clock
+          for (const file of input.files) {
+            const described = describeChange(
+              file.path,
+              parseUnifiedDiff(file.diff, { wholeFileWhenNoHunks: false }),
+              checkout
+            )
+            if (reported.has(described.path)) continue
+            ordinal += 1
+            yield* append(
+              sessionDir,
+              conversationEntrySchema.parse({
+                kind: 'file-change',
+                id: `file-change:${input.runId}:${ordinal}`,
+                at: now.toISOString(),
+                runId: input.runId,
+                source: 'checkout',
+                ...described
+              })
+            )
+          }
+        })
+      )
+    })
+
   const finalize = (
     input: FinalizeConversationRunInput
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
@@ -734,7 +790,18 @@ export function createConversationEffects(options: ConversationOptions): Convers
       return { events, outgoing: adapter.takeOutgoing() }
     })
 
-  return { get, submit, begin, apply, open, answer, interrupt, ingest, finalize }
+  return {
+    get,
+    submit,
+    begin,
+    apply,
+    open,
+    answer,
+    interrupt,
+    ingest,
+    recordCheckoutChanges,
+    finalize
+  }
 }
 
 /** One approval's durable identity: the Run, and the Harness's tool-use id. */
@@ -847,7 +914,10 @@ function tally(
     path: entry.path,
     changes: (known?.changes ?? 0) + 1,
     added: (known?.added ?? 0) + entry.added,
-    removed: (known?.removed ?? 0) + entry.removed
+    removed: (known?.removed ?? 0) + entry.removed,
+    // One report from the agent is enough to account for the file; a Checkout
+    // comparison only ever adds what nothing accounted for.
+    reported: (known?.reported ?? false) || entry.source === 'harness'
   }
 }
 

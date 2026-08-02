@@ -39,8 +39,9 @@ export function ChangedFiles({
           Files this Session changed
         </h3>
         <p className="text-xs text-muted-foreground">
-          What the agent reported changing, in your Project. The changes are already on disk — git
-          decides what you keep.
+          What changed in your Project while this Session worked, whether the agent reported it or a
+          command it ran did it quietly. The changes are already on disk — git decides what you
+          keep.
         </p>
       </header>
       <ul className="flex flex-col">
@@ -87,7 +88,13 @@ function ChangedFileRow({
           <span className="text-destructive">−{file.removed}</span>
         </span>
         <span className="shrink-0 text-[11px] text-muted-foreground">
-          {file.changes === 1 ? 'changed once' : `changed ${String(file.changes)} times`}
+          {file.reported
+            ? file.changes === 1
+              ? 'changed once'
+              : `changed ${String(file.changes)} times`
+            : // Found on disk with nothing in the Conversation accounting for
+              // it: a command the agent ran changed this, and said nothing.
+              'changed without being reported'}
         </span>
       </button>
       {open && (
