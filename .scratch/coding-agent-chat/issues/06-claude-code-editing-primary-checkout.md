@@ -18,7 +18,7 @@ Ticket 02 removed the app's own containment but left the flags that restrict the
 
 Between tickets 02 and 06 the app can therefore converse and nothing else. This ticket is where the Harness gets its native tools back, under the mapping in `docs/harness-permission-mapping.md`. The stale prompt text must go with them — a false instruction to the model is worse than a stale comment, because the model acts on it.
 
-**Blocked by:** 05
+**Blocked by:** 05b
 
 **Status:** ready-for-agent
 

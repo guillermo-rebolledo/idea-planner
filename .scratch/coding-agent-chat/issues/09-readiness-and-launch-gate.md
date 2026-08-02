@@ -12,7 +12,7 @@ Guidance stays copyable and is never executed by the app.
 
 Readiness still probes macOS Seatbelt — Codex through its own `sandbox` subcommand, Claude by checking `/usr/bin/sandbox-exec` exists. The app stopped using Seatbelt itself in ticket 02, so this now gates the app on a facility only the Harness uses. Decide whether that is still the app's business: Codex genuinely needs it for its own sandbox, while for Claude it may now be nothing to do with us.
 
-**Blocked by:** 05
+**Blocked by:** 05a
 
 **Status:** ready-for-agent
 
