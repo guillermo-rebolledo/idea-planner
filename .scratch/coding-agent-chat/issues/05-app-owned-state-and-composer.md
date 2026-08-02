@@ -6,6 +6,15 @@ Home *is* a new chat. A **New chat** action sits above everything in the sidebar
 
 Onboarding is reduced accordingly: it asks the user to add their first Project, not to choose a library.
 
+## Carried here from ticket 04
+
+Ticket 04 added Projects but did not bind Sessions to them, so two things moved to this ticket, where a Session finally gets a Project:
+
+- **The `+` on a Project row**, which opens the composer already bound to that Project.
+- **Renaming `workingDirectory` to `checkout`.** Tickets 03 and 04 both declined it because the field held a Session's own folder rather than a checkout of anything. Once a Session works against a Project's primary checkout, the name becomes true — rename it then, so the code and `CONTEXT.md` agree.
+
+Ticket 04 also created the app-owned store in userData for Projects. Extend that same store to Sessions, Conversations, and Runs rather than adding a second one.
+
 ## A regression this ticket must close
 
 Ticket 01 removed transactional staging, so multi-document writes became several sequential file writes with no atomicity. It removed the safety net in the same change: a partially written Idea no longer parses, and the summary reader returns nothing for it, so **the Idea disappears from the inbox without a word**.
@@ -22,6 +31,7 @@ Whatever store this ticket introduces must make a write either land or not land,
 - [ ] Sessions, Conversations, and Runs persist as app-owned state and survive restart
 - [ ] The launch surface is a composer with a Project selector defaulting to the last used
 - [ ] A Session is created on send, not before, and appears in the sidebar
+- [ ] A Session's working directory is its Project's primary checkout, and the field is named for what it holds
 - [ ] The `+` on a Project row opens the same composer pre-bound to it
 - [ ] The target Project is unmissable in the composer
 - [ ] Onboarding asks for a first Project; no library path is requested anywhere
