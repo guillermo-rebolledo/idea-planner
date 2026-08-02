@@ -158,7 +158,20 @@ export function createClaudeAdapter(): HarnessAdapter {
     flush() {
       const rest = pending
       pending = ''
-      return consumeLine(rest)
+      const events = consumeLine(rest)
+      // A Run stopped mid-command would otherwise say nothing about what it
+      // was running, which is exactly what the person wants to know.
+      for (const [id, command] of pendingCommands) {
+        events.push({
+          type: 'command',
+          id,
+          command: redactCredentials(command),
+          output: '',
+          failed: false
+        })
+      }
+      pendingCommands.clear()
+      return events
     }
   }
 }
@@ -271,10 +284,16 @@ function describeCommandResult(
     const command = pendingCommands.get(block.data.tool_use_id)
     if (command === undefined) continue
     pendingCommands.delete(block.data.tool_use_id)
+    // Which stream said what matters when a command fails, and a payload in
+    // an unfamiliar shape still has the tool result's own text to fall back on.
     const result = commandResultSchema.safeParse(frame['tool_use_result'])
     const output = result.success
-      ? [result.data.stdout, result.data.stderr].filter(Boolean).join('\n')
-      : ''
+      ? [result.data.stdout, result.data.stderr && `stderr: ${result.data.stderr}`]
+          .filter(Boolean)
+          .join('\n')
+      : typeof (raw as { content?: unknown }).content === 'string'
+        ? (raw as { content: string }).content
+        : ''
     events.push({
       type: 'command',
       id: block.data.tool_use_id,

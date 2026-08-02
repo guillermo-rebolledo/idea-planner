@@ -195,6 +195,8 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     skill: skillNameSchema.optional(),
     model: z.string().min(1).max(200).optional(),
     restorationNote: z.boolean().optional(),
+    /** The native mode this app asked the Harness for, to compare with what it reports. */
+    askedPermissionMode: z.string().min(1).max(100).optional(),
     /** The submission that started this Run, so a resend stays idempotent. */
     submissionId: z.string().min(1).nullable().default(null),
     recovery: conversationRecoverySchema.nullable().default(null)

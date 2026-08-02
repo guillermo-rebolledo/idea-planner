@@ -8,6 +8,12 @@ Ask is implemented natively per `docs/harness-permission-mapping.md`: `--permiss
 
 Ticket 07 originally said the Session shows `blocked`. Ticket 03 deliberately declined to introduce Session status while only one value was reachable, and ticket 12 owns it. So the blocked signal lives on the **Run** here — an approval is outstanding — and ticket 12 maps it into the inbox's needs-attention group. Half-introducing a status that 12 then rewrites is the churn both tickets exist to avoid.
 
+## What 07a left standing
+
+Ask is **refused** today. Ticket 07a mapped it onto the Harness mode that asks, then found that starting such a Run without a prompt tool produces one that stalls on its first tool call while looking like it is working. The Run service throws, the composer offers Full access and shows Ask as unavailable. Serving the prompt is what makes Ask selectable again, and removing that refusal is part of this ticket.
+
+The mode a Run really ran under is already read back from the init event and recorded in the Conversation when it differs from what was asked for. Approvals depend on that being true: a rule that never took effect must not look like one that did.
+
 **Blocked by:** 07a
 
 **Status:** ready-for-agent

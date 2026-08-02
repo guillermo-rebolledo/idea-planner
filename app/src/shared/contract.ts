@@ -184,7 +184,9 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     harness: harnessIdSchema.optional(),
     skill: skillNameSchema.optional(),
     model: z.string().min(1).optional(),
-    restorationNote: z.boolean().optional()
+    restorationNote: z.boolean().optional(),
+    /** The native mode this app asked for, to compare with what the Harness reports. */
+    askedPermissionMode: z.string().min(1).max(100).optional()
   }),
   z.object({
     type: z.literal('conversation/ingest'),

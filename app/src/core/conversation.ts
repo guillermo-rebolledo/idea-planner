@@ -43,6 +43,12 @@ const MAX_DIFF_LINES = 400
 /** How much of one command's output is worth keeping. */
 const MAX_OUTPUT_CHARACTERS = 16_000
 
+/** A command line, bounded, and honest about it when it is cut. */
+function describeCommand(command: string): string {
+  const redacted = redactCredentials(command)
+  return redacted.length <= 2_000 ? redacted : `${redacted.slice(0, 2_000)}…`
+}
+
 /**
  * What a command printed, as the Conversation should hold it: redacted,
  * because a command prints whatever it prints, and bounded, because a build
@@ -101,6 +107,8 @@ export interface BeginConversationRunInput {
   skill?: SkillName
   model?: string
   restorationNote?: boolean
+  /** The native mode this app asked for, to compare with what the Harness reports. */
+  askedPermissionMode?: string
 }
 
 export interface ApplyHarnessEventInput {
@@ -264,6 +272,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
             ...(input.skill ? { skill: input.skill } : {}),
             ...(input.model ? { model: input.model } : {}),
             ...(input.restorationNote ? { restorationNote: true } : {}),
+            ...(input.askedPermissionMode
+              ? { askedPermissionMode: input.askedPermissionMode }
+              : {}),
             submissionId: input.submissionId,
             recovery: null
           })
@@ -416,6 +427,26 @@ export function createConversationEffects(options: ConversationOptions): Convers
                   model: event.model
                 })
               )
+              // Managed settings outrank what the app asked for, so the mode a
+              // Run really ran under belongs in the Conversation rather than
+              // only in an activity panel nobody has open. A Run whose record
+              // says only what was chosen is one that lies about itself.
+              const asked = started.askedPermissionMode
+              if (event.permissionMode !== undefined && asked !== undefined) {
+                if (event.permissionMode !== asked) {
+                  yield* append(
+                    sessionDir,
+                    conversationEntrySchema.parse({
+                      kind: 'boundary',
+                      id: `boundary:${input.runId}:permission-mode`,
+                      at: now.toISOString(),
+                      runId: input.runId,
+                      boundary: 'configuration',
+                      summary: `This Run is running as ${event.permissionMode}, not the ${asked} this app asked for. Your machine's settings decide.`
+                    })
+                  )
+                }
+              }
               return
             }
             case 'unsupported':
@@ -435,7 +466,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
                   id: `command:${input.runId}:${ordinal}`,
                   at: now.toISOString(),
                   runId: input.runId,
-                  command: redactCredentials(event.command).slice(0, 2_000),
+                  command: describeCommand(event.command),
                   output: describeOutput(event.output),
                   failed: event.failed
                 })

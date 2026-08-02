@@ -250,3 +250,30 @@ describe('the mode a Run is actually running under', () => {
     })
   })
 })
+
+describe('a command that never finished', () => {
+  it('still reports what the Run was running when it stopped', () => {
+    const adapter = createClaudeAdapter()
+    adapter.ingest(
+      `${JSON.stringify({
+        type: 'assistant',
+        message: {
+          id: 'msg_1',
+          content: [
+            { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'pnpm test' } }
+          ]
+        }
+      })}\n`
+    )
+
+    // The Run was stopped before the command returned. Saying nothing would
+    // leave the person guessing what it had been doing.
+    expect(adapter.flush()).toContainEqual({
+      type: 'command',
+      id: 'toolu_1',
+      command: 'pnpm test',
+      output: '',
+      failed: false
+    })
+  })
+})

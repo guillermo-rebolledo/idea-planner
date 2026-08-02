@@ -55,7 +55,8 @@ async function startRun(prompt: string, submissionId: string): Promise<string> {
     submissionId,
     harness: 'codex',
     skill: 'grilling',
-    model: 'gpt-5-codex'
+    model: 'gpt-5-codex',
+    askedPermissionMode: 'bypassPermissions'
   })
   return run.id
 }
@@ -782,6 +783,34 @@ describe('commands in the Conversation', () => {
     expect(commands).toMatchObject([{ command: 'pnpm test', failed: false, runId }])
     const [only] = commands
     if (only?.kind !== 'command') throw new Error('expected a command entry')
-    expect(only.output.length).toBeLessThan(20_000)
+    expect(only.output.length).toBeLessThanOrEqual(16_100)
+    // Says that something was dropped rather than pretending it is whole.
+    expect(only.output).toContain('earlier output not kept')
+  })
+})
+
+describe('the mode a Run really ran under', () => {
+  it('records it in the Conversation when it is not the one that was asked for', async () => {
+    const runId = await startRun('Change something', 'submission-mode')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'thread-ready',
+        harness: 'codex',
+        threadId: 'thread-1',
+        model: 'a-model',
+        // Managed settings can override what the app asked for. A Run whose
+        // provenance says only what was chosen is a Run that lies about
+        // itself.
+        permissionMode: 'plan'
+      }
+    })
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    const notices = reloaded.entries.filter(
+      (entry) => entry.kind === 'boundary' && entry.summary.includes('plan')
+    )
+    expect(notices).toHaveLength(1)
   })
 })

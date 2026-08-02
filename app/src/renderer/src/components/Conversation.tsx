@@ -70,7 +70,9 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
   const [skill, setSkill] = useState('grilling')
   const [model, setModel] = useState(HARNESS_DEFAULT_MODEL)
   const [effort, setEffort] = useState('medium')
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
+  // Full access until ticket 07b serves the approval prompt: offering Ask
+  // as the default would start Runs that stall on their first tool call.
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('auto')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
@@ -450,8 +452,10 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
               onChange={(event) => setPermissionMode(event.target.value as PermissionMode)}
               className="h-8 rounded-md border border-border bg-background px-2 text-xs"
             >
-              <option value="ask">Ask</option>
-              <option value="auto">Auto</option>
+              <option value="auto">Full access</option>
+              <option value="ask" disabled>
+                Ask — needs the approval prompt, not built yet
+              </option>
             </select>
           </Field>
           <Button
@@ -558,6 +562,7 @@ function CommandRow({
             {long && (
               <button
                 type="button"
+                aria-expanded={expanded}
                 className="mt-1 text-[11px] text-muted-foreground underline-offset-2 hover:underline"
                 onClick={() => setExpanded((current) => !current)}
               >

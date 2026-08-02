@@ -24,7 +24,6 @@ import {
   runSnapshotSchema,
   startRunInputSchema,
   type PermissionMode,
-  type RunConfiguration,
   type RunActivityKind,
   type RunSnapshot,
   type StartRunInput
@@ -163,6 +162,15 @@ export class RunService {
 
   async start(rawInput: StartRunInput): Promise<RunSnapshot> {
     const input = startRunInputSchema.parse(rawInput)
+    // Ask reaches the Harness as the mode that asks, and nothing answers it
+    // until ticket 07b serves the approval prompt. A Run started anyway stalls
+    // on its first tool call while looking like it is working, which is worse
+    // than not starting: refuse it out loud.
+    if (input.permissionMode === 'ask') {
+      throw new Error(
+        'Ask mode needs the approval prompt, which is not built yet. Use Full access.'
+      )
+    }
     const checkout = await this.checkoutFor(input.sessionId)
     const readiness = await this.deps.readiness.refresh(input.harness)
     const harness = readiness.harnesses.find((entry) => entry.harness === input.harness)
@@ -264,6 +272,7 @@ export class RunService {
       harness: input.harness,
       skill: input.skill,
       model: input.model,
+      askedPermissionMode: CLAUDE_PERMISSION_MODES[input.permissionMode],
       restorationNote: latestHarness === input.harness && !threadCompatible
     })
     await this.record(
@@ -481,7 +490,7 @@ export class RunService {
         runId: run.id,
         event
       })
-      const activity = describeActivity(event, run.configuration)
+      const activity = describeActivity(event, run.configuration.permissionMode)
       if (activity) {
         await this.record(run, undefined, activity.kind, sanitize(activity.summary, checkout))
       }
@@ -779,17 +788,6 @@ function sanitize(value: string, checkout: string): string {
 }
 
 /**
- * What a normalized event contributes to the collapsed activity stream.
- * Assistant text and Suggested Responses are Conversation content, not
- * activity, so they deliberately produce nothing here.
- */
-/**
- * The app's two Permission Modes as Claude names them
- * (`docs/harness-permission-mapping.md`). Ask is not yet wired to a prompt
- * tool — ticket 07b does that — so it maps to the mode that asks and simply
- * has nobody to ask yet.
- */
-/**
  * What this app is willing to put in a Run's settings file. Narrow on purpose:
  * the Harness ignores what it cannot read without saying so, so anything this
  * schema does not describe would fail silently at the far end.
@@ -802,14 +800,25 @@ const claudeSettingsSchema = z.object({
   })
 })
 
+/**
+ * The app's two Permission Modes as Claude names them
+ * (`docs/harness-permission-mapping.md`). Ask maps to the mode that asks; a
+ * Run in that mode is refused until ticket 07b serves the prompt that answers
+ * it, because one that starts anyway stalls on its first tool call.
+ */
 const CLAUDE_PERMISSION_MODES: Record<PermissionMode, string> = {
   ask: 'default',
   auto: 'bypassPermissions'
 }
 
+/**
+ * What a normalized event contributes to the collapsed activity stream.
+ * Assistant text and Suggested Responses are Conversation content, not
+ * activity, so they deliberately produce nothing here.
+ */
 function describeActivity(
   event: HarnessEvent,
-  configuration: RunConfiguration
+  permissionMode: PermissionMode
 ): { kind: RunActivityKind; summary: string } | undefined {
   switch (event.type) {
     case 'reasoning':
@@ -835,10 +844,10 @@ function describeActivity(
       // Managed settings outrank command-line arguments, so the mode the app
       // asked for is not necessarily the one running. Saying so is the whole
       // point of reading it back.
-      const asked = CLAUDE_PERMISSION_MODES[configuration.permissionMode]
+      const asked = CLAUDE_PERMISSION_MODES[permissionMode]
       const mismatch =
         event.permissionMode !== undefined && event.permissionMode !== asked
-          ? ` — running as ${event.permissionMode}, not the ${configuration.permissionMode} you chose`
+          ? ` — running as ${event.permissionMode}, not the ${permissionMode} you chose`
           : ''
       return {
         kind: mismatch ? 'error' : 'lifecycle',

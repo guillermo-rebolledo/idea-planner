@@ -149,7 +149,7 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       skill: { name: 'grilling', path: '/skills/grilling', hash: 'b'.repeat(64) },
       environment: {},
       checkout: projectRoot,
-      permissionMode: 'ask'
+      permissionMode: 'auto'
     }),
     status: 'accepted',
     acceptedAt: '2026-07-31T12:00:00.000Z',
@@ -252,7 +252,7 @@ describe('Run service', () => {
       model: 'claude-sonnet-4-5',
       effort: 'high',
       skill: 'wayfinder',
-      permissionMode: 'ask'
+      permissionMode: 'auto'
     })
     expect(broker.launch?.args).toEqual(
       expect.arrayContaining([
@@ -278,9 +278,8 @@ describe('Run service', () => {
     const args = broker.launch?.args ?? []
     const settingsPath = args[args.indexOf('--settings') + 1]
     if (!settingsPath) throw new Error('Claude launch did not include a settings file')
-    // The Run asked for Ask, so its settings say the mode that asks.
     expect(JSON.parse(await readFile(settingsPath, 'utf8'))).toMatchObject({
-      permissions: { defaultMode: 'default' }
+      permissions: { defaultMode: 'bypassPermissions' }
     })
   })
 
@@ -341,7 +340,7 @@ describe('Run service', () => {
       model: 'claude-sonnet-4-5',
       effort: 'medium',
       skill: 'wayfinder',
-      permissionMode: 'ask'
+      permissionMode: 'auto'
     })
     expect(broker.launch?.args).toEqual(expect.arrayContaining(['--resume', 'saved-thread']))
   })
@@ -435,7 +434,7 @@ describe('Run service', () => {
       model: 'gpt-5',
       effort: 'high',
       skill: 'grilling',
-      permissionMode: 'ask'
+      permissionMode: 'auto'
     })
     expect(order.indexOf('run/accept')).toBeLessThan(order.indexOf('harness/start'))
     const accept = core.send.mock.calls.find(([command]) => command.type === 'run/accept')?.[0]
@@ -476,7 +475,7 @@ describe('Run service', () => {
       harness: 'claude',
       model: 'gpt-5-codex',
       effort: 'medium',
-      permissionMode: 'ask'
+      permissionMode: 'auto'
     })
     expect(core.commands.indexOf('conversation/submit')).toBeLessThan(
       core.commands.indexOf('run/accept')
@@ -506,7 +505,7 @@ describe('Run service', () => {
         model: 'gpt-5-codex',
         effort: 'medium',
         skill: 'to-spec',
-        permissionMode: 'ask'
+        permissionMode: 'auto'
       })
     ).rejects.toThrow('is not a verified Skill')
   })
@@ -539,7 +538,7 @@ describe('Run service', () => {
       model: 'gpt-5-codex',
       effort: 'medium',
       skill: 'grilling',
-      permissionMode: 'ask'
+      permissionMode: 'auto'
     })
     broker.launch?.onOutput?.('stdout', '{"type":"turn.started"}\n')
     await Promise.resolve()
@@ -596,7 +595,7 @@ describe('Run service', () => {
       model: 'default',
       effort: 'medium',
       skill: 'wayfinder',
-      permissionMode: 'ask'
+      permissionMode: 'auto'
     })
     broker.launch?.onOutput?.('stdout', '{"type":"system","subtype":"future"}\n')
     broker.launch?.onExit?.(0, null)
@@ -639,7 +638,7 @@ describe('Run service', () => {
       harness: 'claude',
       model: 'gpt-5-codex',
       effort: 'medium',
-      permissionMode: 'ask'
+      permissionMode: 'auto'
     })
     expect(core.commands).toContain('conversation/finalize')
     expect(snapshot.recovery).toMatchObject({
@@ -693,7 +692,7 @@ describe('Run service', () => {
       model: 'default',
       effort: 'medium',
       skill: 'grilling',
-      permissionMode: 'ask'
+      permissionMode: 'auto'
     })
     broker.launch?.onOutput?.('stderr', 'codex: cannot open .git/HEAD: Operation not permitted\n')
     broker.launch?.onExit?.(1, null)
@@ -734,7 +733,7 @@ describe('Run service', () => {
         harness: 'claude',
         model: 'gpt-5-codex',
         effort: 'medium',
-        permissionMode: 'ask'
+        permissionMode: 'auto'
       })
     ).rejects.toThrow('is not ready')
   })
@@ -788,6 +787,22 @@ describe('staged settings', () => {
     })
 
     await expect(service.start(startInput())).rejects.toThrow(/settings/i)
+    expect(broker.start).not.toHaveBeenCalled()
+  })
+})
+
+describe('Ask before it can ask', () => {
+  it('refuses an Ask Run rather than starting one that can never be answered', async () => {
+    const root = await readyClaudeRoot('run-claude-ask-')
+    const broker = fakeBroker()
+    const service = new RunService(claudeDeps(root, broker))
+
+    // Ask maps to the Harness mode that asks, and nothing serves the prompt
+    // tool until ticket 07b. Starting anyway produces a Run that stalls on its
+    // first tool call and looks like it is working.
+    await expect(service.start({ ...startInput(), permissionMode: 'ask' })).rejects.toThrow(
+      /approval/i
+    )
     expect(broker.start).not.toHaveBeenCalled()
   })
 })
