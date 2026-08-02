@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Bot, ChevronRight, Send, Square, User } from 'lucide-react'
+import { Bot, ChevronRight, FileDiff, Send, Square, User } from 'lucide-react'
 import {
   HARNESS_DEFAULT_MODEL,
   SKILL_ATTRIBUTION,
   type ConversationEntry,
   type ConversationRecovery,
+  type DiffHunk,
   type ConversationSnapshot,
   type HarnessId,
   type HarnessUsage,
@@ -32,6 +33,8 @@ interface LiveRun {
   runId: string
   /** One entry per Harness message, in the order the Harness opened them. */
   messages: { id: string; text: string }[]
+  /** Files changed so far in this Run, shown while it is still working. */
+  changes: { id: string; path: string; hunks: DiffHunk[] }[]
   suggestedResponses: SuggestedResponse[]
 }
 
@@ -112,8 +115,23 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           const base: LiveRun =
             current?.runId === streamed.runId
               ? current
-              : { runId: streamed.runId, messages: [], suggestedResponses: [] }
+              : { runId: streamed.runId, messages: [], changes: [], suggestedResponses: [] }
           if (event.type === 'choices') return { ...base, suggestedResponses: event.options }
+          // A change is already on disk when it arrives, so it is shown as it
+          // happens rather than waiting for the Run to finish.
+          if (event.type === 'file-change') {
+            return {
+              ...base,
+              changes: [
+                ...base.changes,
+                {
+                  id: `${streamed.runId}:${base.changes.length + 1}`,
+                  path: event.path,
+                  hunks: event.hunks
+                }
+              ]
+            }
+          }
           if (event.type !== 'assistant-message') return base
           // Each event carries the whole message so far, so a later one for
           // the same Harness item replaces the earlier one.
@@ -133,7 +151,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' })
-  }, [snapshot?.entries.length, live?.messages])
+  }, [snapshot?.entries.length, live?.messages, live?.changes])
 
   const send = useCallback(
     async (text: string, source: 'composer' | 'suggested-response', submissionId?: string) => {
@@ -271,6 +289,19 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
               </div>
             </li>
           ))}
+        {liveForActiveRun?.changes.map((change) => (
+          <FileChangeRow
+            key={change.id}
+            entry={{
+              kind: 'file-change',
+              id: change.id,
+              at: '',
+              runId: liveForActiveRun.runId,
+              path: change.path,
+              hunks: change.hunks
+            }}
+          />
+        ))}
         {activeRunId && !liveForActiveRun?.messages.some((message) => message.text) && (
           <li className="text-xs text-muted-foreground">Waiting for the Harness to answer…</li>
         )}
@@ -483,8 +514,67 @@ function Field({
   )
 }
 
+/**
+ * A file the Run changed, shown as it happened. The change is already on disk
+ * — edits land in the Checkout in place (ADR 0004) — so this is a record, not
+ * an offer: there is nothing here to accept or reject, and git is the undo.
+ */
+function FileChangeRow({
+  entry
+}: {
+  entry: Extract<ConversationEntry, { kind: 'file-change' }>
+}): React.JSX.Element {
+  const added = entry.hunks.reduce(
+    (total, hunk) => total + hunk.lines.filter((line) => line.startsWith('+')).length,
+    0
+  )
+  const removed = entry.hunks.reduce(
+    (total, hunk) => total + hunk.lines.filter((line) => line.startsWith('-')).length,
+    0
+  )
+  return (
+    <li className="flex gap-2">
+      <FileDiff aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <p className="flex flex-wrap items-baseline gap-x-2 text-xs">
+          <span className="font-mono break-all select-text">{entry.path}</span>
+          <span className="text-[11px] text-muted-foreground">
+            <span className="text-positive">+{added}</span>{' '}
+            <span className="text-destructive">−{removed}</span>
+          </span>
+        </p>
+        <pre className="mt-1 overflow-x-auto rounded-md border border-border bg-surface p-2 font-mono text-[11px] select-text">
+          {entry.hunks.map((hunk, index) => (
+            // A hunk is identified by where it starts and how far it runs.
+            <div key={`${hunk.oldStart}:${hunk.newStart}:${hunk.lines.length}`}>
+              {index > 0 && <div className="text-muted-foreground">⋯</div>}
+              {hunk.lines.map((line, lineIndex) => (
+                <div
+                  // A diff line has no identity beyond its position.
+                  // eslint-disable-next-line @eslint-react/no-array-index-key
+                  key={lineIndex}
+                  className={
+                    line.startsWith('+')
+                      ? 'text-positive'
+                      : line.startsWith('-')
+                        ? 'text-destructive'
+                        : 'text-muted-foreground'
+                  }
+                >
+                  {line}
+                </div>
+              ))}
+            </div>
+          ))}
+        </pre>
+      </div>
+    </li>
+  )
+}
+
 function EntryRow({ entry }: { entry: ConversationEntry }): React.JSX.Element | null {
   if (entry.kind === 'usage' || entry.kind === 'thread') return null
+  if (entry.kind === 'file-change') return <FileChangeRow entry={entry} />
   if (entry.kind === 'boundary') {
     return (
       <li className="text-[11px] text-muted-foreground">

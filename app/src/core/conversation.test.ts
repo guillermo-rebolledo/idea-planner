@@ -663,3 +663,33 @@ describe('recovering from a Run that ended badly', () => {
     expect(snapshot.activeRunId).toBe(runId)
   })
 })
+
+describe('file changes', () => {
+  it('keeps what a Run changed in the Conversation across a reload', async () => {
+    const runId = await startRun('Rename the greeting', 'submission-change')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'file-change',
+        path: '/tmp/a-project/greeting.ts',
+        hunks: [
+          {
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            lines: ['-const a = 1', '+const a = 2']
+          }
+        ]
+      }
+    })
+
+    // The Checkout records the change; the Conversation records the Run having
+    // made it, and both outlive the process that watched it happen.
+    const reloaded = await makeCore().getConversation(sessionId)
+    expect(reloaded.entries.filter((entry) => entry.kind === 'file-change')).toMatchObject([
+      { path: '/tmp/a-project/greeting.ts', runId }
+    ])
+  })
+})

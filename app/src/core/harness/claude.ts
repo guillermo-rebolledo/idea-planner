@@ -24,6 +24,26 @@ const contentBlockSchema = z.discriminatedUnion('type', [
   })
 ])
 
+/**
+ * The payload Claude puts beside a tool result when it changed a file. It is
+ * undocumented, so it is parsed strictly and pinned by a recorded fixture: a
+ * shape change should be visible, not silently drop the diff.
+ */
+const fileChangeSchema = z.object({
+  filePath: z.string().min(1),
+  structuredPatch: z
+    .array(
+      z.object({
+        oldStart: z.number().int().nonnegative(),
+        oldLines: z.number().int().nonnegative(),
+        newStart: z.number().int().nonnegative(),
+        newLines: z.number().int().nonnegative(),
+        lines: z.array(z.string())
+      })
+    )
+    .min(1)
+})
+
 const assistantSchema = z.object({
   id: z.string().min(1).max(200),
   content: z.array(contentBlockSchema),
@@ -104,6 +124,7 @@ export function createClaudeAdapter(): HarnessAdapter {
       case 'result':
         return describeResult(frame)
       case 'user':
+        return describeFileChange(frame['tool_use_result'])
       case 'rate_limit_event':
         return []
       default:
@@ -194,6 +215,23 @@ function describeAssistant(raw: unknown): HarnessEvent[] {
     })
   }
   return events
+}
+
+/**
+ * A file the Harness changed. The edit is already on disk when this arrives —
+ * edits land in the Checkout in place (ADR 0004) — so this reports what
+ * happened rather than proposing it.
+ *
+ * A tool result that carries no patch is not a failure: most tools do not
+ * change files.
+ */
+function describeFileChange(raw: unknown): HarnessEvent[] {
+  if (raw === null || typeof raw !== 'object' || !('structuredPatch' in raw)) return []
+  const parsed = fileChangeSchema.safeParse(raw)
+  if (!parsed.success) {
+    return [protocolFailure('Unsupported Claude file-change payload')]
+  }
+  return [{ type: 'file-change', path: parsed.data.filePath, hunks: parsed.data.structuredPatch }]
 }
 
 function describeResult(frame: Record<string, unknown>): HarnessEvent[] {

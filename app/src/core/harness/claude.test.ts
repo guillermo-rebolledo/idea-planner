@@ -158,3 +158,44 @@ describe('Claude harness Adapter', () => {
     }
   })
 })
+
+describe('file changes', () => {
+  it('reports an edit as a change with the hunks the Harness computed', async () => {
+    // Recorded from claude 2.1.220 against a throwaway repository. The payload
+    // that carries the diff is undocumented, so this fixture is the contract:
+    // if the Harness stops sending it in this shape, this test says so rather
+    // than the diffs quietly disappearing from the Conversation.
+    const events = await replay('claude-edit.jsonl')
+
+    expect(events.filter((event) => event.type === 'file-change')).toEqual([
+      {
+        type: 'file-change',
+        path: '/tmp/a-project/greeting.ts',
+        hunks: [
+          {
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            lines: [
+              '-export const greeting = "hello world"',
+              '+export const greeting = "goodbye world"'
+            ]
+          }
+        ]
+      }
+    ])
+  })
+
+  it('normalizes a file change identically regardless of chunk boundaries', async () => {
+    expect(await replay('claude-edit.jsonl', 1)).toEqual(
+      await replay('claude-edit.jsonl', 1_000_000)
+    )
+  })
+
+  it('emits only events the shared contract accepts', async () => {
+    for (const event of await replay('claude-edit.jsonl')) {
+      expect(harnessEventSchema.safeParse(event).success).toBe(true)
+    }
+  })
+})

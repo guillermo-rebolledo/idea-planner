@@ -84,13 +84,12 @@ export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
     command: 'codex',
     versionArgs: ['--version'],
     minimumVersion: '0.100.0',
-    // `codex exec --json` began emitting the thread/turn/item events this
-    // app's Adapter parses in 0.44.0 (openai/codex 7fc3edf, released as
-    // 0.44.0 on npm); earlier versions emit a shape it cannot read. This is
-    // below `minimumVersion`, so today it never binds — it is here so the
-    // Adapter's real requirement is recorded and enforced when either number
-    // moves.
-    conversation: { minimumVersion: '0.44.0' },
+    // Codex cannot run a Session today. Its Adapter parses `codex exec
+    // --json`, which has no approval flag and carries no diff, so it can
+    // support neither Ask mode nor inline changes; the app-server protocol
+    // that can arrives with its rewrite. Saying so is better than offering a
+    // Harness that starts and then does nothing.
+    conversation: null,
     untestedFrom: '0.147.0',
     authProbe: { kind: 'exit-code', args: ['login', 'status'] },
     authRemediationCommand: 'codex login',

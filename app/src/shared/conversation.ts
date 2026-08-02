@@ -47,6 +47,17 @@ export type HarnessUsage = z.infer<typeof harnessUsageSchema>
  * frame it does not model: unknown protocol never fails a Run and never
  * reaches Conversation content.
  */
+/** One contiguous run of changed lines, as the Harness computed it. */
+export const diffHunkSchema = z.object({
+  oldStart: z.number().int().nonnegative(),
+  oldLines: z.number().int().nonnegative(),
+  newStart: z.number().int().nonnegative(),
+  newLines: z.number().int().nonnegative(),
+  /** Unified-diff lines, each already prefixed with ' ', '-' or '+'. */
+  lines: z.array(z.string())
+})
+export type DiffHunk = z.infer<typeof diffHunkSchema>
+
 export const harnessEventSchema = z.discriminatedUnion('type', [
   /**
    * One assistant message, identified by the Harness's own item id. A Run may
@@ -60,6 +71,17 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
     complete: z.boolean()
   }),
   z.object({ type: z.literal('reasoning'), summary: z.string().min(1) }),
+  /**
+   * One file the Harness changed in the Checkout, with the hunks it computed.
+   * The change is already on disk when this arrives: edits land in place and
+   * git is the only undo (ADR 0004), so this reports what happened rather than
+   * proposing it.
+   */
+  z.object({
+    type: z.literal('file-change'),
+    path: z.string().min(1),
+    hunks: z.array(diffHunkSchema).min(1)
+  }),
   z.object({ type: z.literal('tool'), name: z.string().min(1), summary: z.string().min(1) }),
   z.object({
     type: z.literal('choices'),
@@ -173,6 +195,19 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     harness: harnessIdSchema,
     threadId: z.string().min(1).max(200),
     model: z.string().min(1).max(200)
+  }),
+  /**
+   * A file the Harness changed, kept in the Conversation because it is part of
+   * what happened in it. The Checkout is the record of the change itself; this
+   * is the record of the Run having made it.
+   */
+  z.object({
+    kind: z.literal('file-change'),
+    id: z.string().min(1),
+    at: z.string().datetime(),
+    runId: z.string().min(1),
+    path: z.string().min(1),
+    hunks: z.array(diffHunkSchema).min(1)
   })
 ])
 export type ConversationEntry = z.infer<typeof conversationEntrySchema>

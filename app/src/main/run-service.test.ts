@@ -21,14 +21,58 @@ async function readyHarnessRoot(prefix: string): Promise<string> {
   temporaryDirectories.push(root)
   await Promise.all([
     mkdir(join(root, '.agents', 'skills', 'grilling'), { recursive: true }),
+    mkdir(join(root, '.claude', 'skills', 'grilling'), { recursive: true }),
     mkdir(join(root, '.codex'), { recursive: true })
   ])
   await Promise.all([
     writeFile(join(root, '.agents', 'skills', 'grilling', 'SKILL.md'), '# Grilling'),
+    writeFile(join(root, '.claude', 'skills', 'grilling', 'SKILL.md'), '# Grilling'),
     writeFile(join(root, 'codex'), '#!/bin/sh\n'),
+    writeFile(join(root, 'claude'), '#!/bin/sh\n'),
     writeFile(join(root, '.codex', 'auth.json'), '{}')
   ])
   return root
+}
+
+/** The dependencies a Claude Run needs, with a ready Harness on disk. */
+function claudeDeps(root: string, broker: ReturnType<typeof fakeBroker>) {
+  return {
+    core: fakeCore(join(root, 'a-project')),
+    broker,
+    readiness: {
+      refresh: vi.fn(() =>
+        Promise.resolve({
+          harnesses: [
+            {
+              harness: 'claude' as const,
+              available: true,
+              executablePath: join(root, 'claude'),
+              version: '2.1.220 (Claude Code)'
+            }
+          ]
+        })
+      )
+    },
+    homeDirectory: root,
+    privateRoot: join(root, 'private'),
+    proxyExecutable: '/usr/bin/true',
+    proxyScript: '/tmp/mcp-proxy.js',
+    claudeOauthToken: fakeClaudeOauthToken
+  }
+}
+
+function developInput() {
+  return {
+    submissionId: 'submission-1',
+    sessionId: 'session',
+    text: 'Rename the greeting',
+    source: 'composer' as const,
+    harness: 'claude' as const,
+    model: 'claude-sonnet-4-5',
+    effort: 'high',
+    skill: 'wayfinder',
+    permissionMode: 'auto' as const
+  }
 }
 
 async function readyClaudeRoot(prefix: string): Promise<string> {
@@ -141,10 +185,10 @@ function readyReadiness(executablePath: string): {
       Promise.resolve({
         harnesses: [
           {
-            harness: 'codex',
+            harness: 'claude' as const,
             available: true,
             executablePath,
-            version: 'codex-cli 0.146.0'
+            version: '2.1.220 (Claude Code)'
           }
         ]
       })
@@ -208,7 +252,6 @@ describe('Run service', () => {
     )
     expect(broker.launch?.args).not.toContain('--input-format')
     expect(broker.launch?.args).toEqual(expect.arrayContaining(['--setting-sources', 'user']))
-    expect(broker.launch?.args).toEqual(expect.arrayContaining(['--tools', 'ToolSearch']))
     expect(broker.launch?.args.at(-1)).toContain('/wayfinder Develop this Session')
     expect(broker.launch?.args).not.toContain('--disable-slash-commands')
     const mcpConfigPath = broker.launch?.args[broker.launch.args.indexOf('--mcp-config') + 1]
@@ -217,19 +260,14 @@ describe('Run service', () => {
       mcpServers: { app: Record<string, unknown> }
     }
     expect(mcpConfig.mcpServers.app).not.toHaveProperty('args')
-    expect(broker.launch?.args).toEqual(expect.arrayContaining(['--allowedTools', 'mcp__app__*']))
-    expect(broker.launch?.environment['CLAUDE_CONFIG_DIR']).toContain('claude-config')
-    await expect(
-      readFile(
-        join(
-          broker.launch?.environment['CLAUDE_CONFIG_DIR'] ?? '',
-          'skills',
-          'wayfinder',
-          'SKILL.md'
-        ),
-        'utf8'
-      )
-    ).resolves.toBe('# Wayfinder')
+    // The Skill comes from the person's own installed Skills, which readiness
+    // already requires and the Run configuration already hashes.
+    const args = broker.launch?.args ?? []
+    const settingsPath = args[args.indexOf('--settings') + 1]
+    if (!settingsPath) throw new Error('Claude launch did not include a settings file')
+    expect(JSON.parse(await readFile(settingsPath, 'utf8'))).toMatchObject({
+      permissions: { defaultMode: 'bypassPermissions' }
+    })
   })
 
   it('resumes compatible Claude continuity but hands off local history when switching Harnesses', async () => {
@@ -296,8 +334,8 @@ describe('Run service', () => {
   it('persists acceptance before starting Harness contact and freezes provenance', async () => {
     const root = await mkdtemp(join(tmpdir(), 'run-service-'))
     temporaryDirectories.push(root)
-    const skillPath = join(root, '.agents', 'skills', 'grilling', 'SKILL.md')
-    const executablePath = join(root, 'codex')
+    const skillPath = join(root, '.claude', 'skills', 'grilling', 'SKILL.md')
+    const executablePath = join(root, 'claude')
     await Promise.all([
       mkdir(join(skillPath, '..'), { recursive: true }),
       mkdir(join(root, '.codex'), { recursive: true })
@@ -361,10 +399,10 @@ describe('Run service', () => {
           Promise.resolve({
             harnesses: [
               {
-                harness: 'codex',
+                harness: 'claude',
                 available: true,
                 executablePath,
-                version: 'codex-cli 0.146.0'
+                version: '2.1.220 (Claude Code)'
               }
             ]
           })
@@ -379,7 +417,7 @@ describe('Run service', () => {
       submissionId: 'submission-1',
       sessionId: 'session',
       prompt: 'Develop this',
-      harness: 'codex',
+      harness: 'claude',
       model: 'gpt-5',
       effort: 'high',
       skill: 'grilling',
@@ -392,19 +430,13 @@ describe('Run service', () => {
     const configuration = runConfigurationSchema.parse(acceptance.input.configuration)
     expect(configuration).toMatchObject({
       executable: executablePath,
-      harnessVersion: 'codex-cli 0.146.0',
-      skill: { name: 'grilling', path: join(root, '.agents', 'skills', 'grilling') }
+      harnessVersion: '2.1.220 (Claude Code)',
+      skill: { name: 'grilling', path: join(root, '.claude', 'skills', 'grilling') }
     })
     expect(configuration.executableHash).toMatch(/^[a-f0-9]{64}$/)
     const launch = broker.start.mock.calls[0]?.[0]
     expect(launch).toBeDefined()
-    for (const argument of [
-      '--ephemeral',
-      '--ignore-rules',
-      '--disable',
-      'shell_tool',
-      'unified_exec'
-    ]) {
+    for (const argument of ['--print', '--output-format', 'stream-json']) {
       expect(launch?.args).toContain(argument)
     }
   })
@@ -415,7 +447,7 @@ describe('Run service', () => {
     const service = new RunService({
       core,
       broker: fakeBroker(),
-      readiness: readyReadiness(join(root, 'codex')),
+      readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -427,7 +459,7 @@ describe('Run service', () => {
       text: 'Grill me',
       source: 'composer',
       skill: 'grilling',
-      harness: 'codex',
+      harness: 'claude',
       model: 'gpt-5-codex',
       effort: 'medium',
       permissionMode: 'ask'
@@ -445,7 +477,7 @@ describe('Run service', () => {
     const service = new RunService({
       core: fakeCore(join(root, 'a-project')),
       broker: fakeBroker(),
-      readiness: readyReadiness(join(root, 'codex')),
+      readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -456,7 +488,7 @@ describe('Run service', () => {
         submissionId: 'submission-1',
         sessionId: 'session',
         prompt: 'Develop this',
-        harness: 'codex',
+        harness: 'claude',
         model: 'gpt-5-codex',
         effort: 'medium',
         skill: 'to-spec',
@@ -478,7 +510,7 @@ describe('Run service', () => {
     const service = new RunService({
       core,
       broker,
-      readiness: readyReadiness(join(root, 'codex')),
+      readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -489,7 +521,7 @@ describe('Run service', () => {
       submissionId: 'submission-1',
       sessionId: 'session',
       prompt: 'Grill me',
-      harness: 'codex',
+      harness: 'claude',
       model: 'gpt-5-codex',
       effort: 'medium',
       skill: 'grilling',
@@ -578,7 +610,7 @@ describe('Run service', () => {
       broker: fakeBroker({
         start: vi.fn(() => Promise.reject(new Error('spawn failed')))
       }),
-      readiness: readyReadiness(join(root, 'codex')),
+      readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -590,7 +622,7 @@ describe('Run service', () => {
       text: 'Grill me',
       source: 'composer',
       skill: 'grilling',
-      harness: 'codex',
+      harness: 'claude',
       model: 'gpt-5-codex',
       effort: 'medium',
       permissionMode: 'ask'
@@ -609,7 +641,7 @@ describe('Run service', () => {
     const service = new RunService({
       core,
       broker: fakeBroker(),
-      readiness: readyReadiness(join(root, 'codex')),
+      readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -633,7 +665,7 @@ describe('Run service', () => {
     const service = new RunService({
       core,
       broker,
-      readiness: readyReadiness(join(root, 'codex')),
+      readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -643,7 +675,7 @@ describe('Run service', () => {
       submissionId: 'submission-1',
       sessionId: 'session',
       prompt: 'Grill me',
-      harness: 'codex',
+      harness: 'claude',
       model: 'default',
       effort: 'medium',
       skill: 'grilling',
@@ -667,7 +699,9 @@ describe('Run service', () => {
       readiness: {
         refresh: vi.fn(() =>
           Promise.resolve({
-            harnesses: [{ harness: 'codex', available: false, executablePath: null, version: null }]
+            harnesses: [
+              { harness: 'claude', available: false, executablePath: null, version: null }
+            ]
           })
         )
       },
@@ -683,11 +717,46 @@ describe('Run service', () => {
         text: 'Grill me',
         source: 'composer',
         skill: 'grilling',
-        harness: 'codex',
+        harness: 'claude',
         model: 'gpt-5-codex',
         effort: 'medium',
         permissionMode: 'ask'
       })
     ).rejects.toThrow('is not ready')
+  })
+})
+
+describe('Claude launch', () => {
+  it('gives Claude its native tools and the Full access permission mode', async () => {
+    const root = await readyClaudeRoot('run-claude-native-')
+    const broker = fakeBroker()
+    const service = new RunService(claudeDeps(root, broker))
+
+    await service.develop(developInput())
+    const args = broker.launch?.args ?? []
+
+    // The muzzle is gone: an allow-list naming only the app's MCP tool is what
+    // left Claude with no native tools at all.
+    expect(args).not.toContain('--allowedTools')
+    expect(args).toEqual(expect.arrayContaining(['--permission-mode', 'bypassPermissions']))
+    // Per-Run configuration is a staged settings file. CLAUDE_CONFIG_DIR is a
+    // dead end: a staged directory reports the person as not logged in.
+    expect(args).toEqual(
+      expect.arrayContaining(['--settings', expect.stringContaining('settings.json')])
+    )
+    expect(Object.keys(broker.launch?.environment ?? {})).not.toContain('CLAUDE_CONFIG_DIR')
+  })
+
+  it('tells the model nothing about tools the app no longer owns', async () => {
+    const root = await readyClaudeRoot('run-claude-prompt-')
+    const broker = fakeBroker()
+    const service = new RunService(claudeDeps(root, broker))
+
+    await service.develop(developInput())
+
+    const prompt = (broker.launch?.args ?? []).join('\n')
+    // A false instruction is worse than a stale comment: the model acts on it.
+    expect(prompt).not.toContain('app-owned')
+    expect(prompt).not.toContain('planning')
   })
 })

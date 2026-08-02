@@ -8,6 +8,8 @@ Standing Approvals map onto Codex's own execpolicy rules, which split compound s
 
 Generate protocol bindings from the CLI's own schema command; the published documentation disagrees with the shipped binary on enum spellings.
 
+Codex is currently reported as unable to run a Session at all. Ticket 06 set its conversation capability to none rather than leaving a Harness that starts and then does nothing: its Adapter parses `codex exec --json`, which carries no diff and has no approval flag, so it can support neither of the two things tickets 06 and 07 added. Restoring the capability is part of this rewrite.
+
 **Blocked by:** 08
 
 **Status:** ready-for-agent

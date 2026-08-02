@@ -100,6 +100,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
   // How much of a Run's protocol this app could not model. A Run that says
   // nothing else is the only evidence the person will ever get.
   const drift = Effect.runSync(Ref.make<ReadonlyMap<string, number>>(new Map()))
+  // How many files a Run has changed, so each change gets a stable entry id.
+  const fileChanges = Effect.runSync(Ref.make<ReadonlyMap<string, number>>(new Map()))
   // One writer at a time: a streaming checkpoint must never interleave with a
   // submission or a finalize on the same journal.
   const writeLock = Effect.runSync(Effect.makeSemaphore(1))
@@ -374,6 +376,25 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 new Map(current).set(input.runId, (current.get(input.runId) ?? 0) + 1)
               )
               return
+            case 'file-change': {
+              // What the Run did to the Checkout is part of what happened in
+              // the Conversation, so it is durable rather than only streamed.
+              const changeCount = yield* Ref.updateAndGet(fileChanges, (current) =>
+                new Map(current).set(input.runId, (current.get(input.runId) ?? 0) + 1)
+              )
+              yield* append(
+                sessionDir,
+                conversationEntrySchema.parse({
+                  kind: 'file-change',
+                  id: `file-change:${input.runId}:${changeCount.get(input.runId) ?? 1}`,
+                  at: now.toISOString(),
+                  runId: input.runId,
+                  path: event.path,
+                  hunks: event.hunks
+                })
+              )
+              return
+            }
             case 'reasoning':
             case 'tool':
             case 'retrying':

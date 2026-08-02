@@ -21,7 +21,6 @@ import {
 } from '@shared/conversation'
 import {
   MCP_SERVER_NAME,
-  MCP_TOOL_PREFIX,
   runSnapshotSchema,
   startRunInputSchema,
   type RunActivityKind,
@@ -293,14 +292,7 @@ export class RunService {
       // A socket file left behind by a crash would otherwise make this Run's
       // capability socket unbindable; the path belongs to this Run alone.
       await rm(socketPath, { force: true })
-      await this.prepareHarnessHome(
-        input.harness,
-        runDirectory,
-        socketPath,
-        capabilityToken,
-        skillName,
-        skillFile
-      )
+      await this.prepareHarnessHome(input.harness, runDirectory, socketPath, capabilityToken)
       toolHost = new ToolHost({
         socketPath,
         capabilityToken,
@@ -568,9 +560,7 @@ export class RunService {
     harness: StartRunInput['harness'],
     runDirectory: string,
     socketPath: string,
-    capabilityToken: string,
-    skillName: string,
-    skillFile: string
+    capabilityToken: string
   ): Promise<void> {
     const proxy = {
       command: this.deps.proxyExecutable,
@@ -587,9 +577,14 @@ export class RunService {
       { mode: 0o600 }
     )
     if (harness === 'claude') {
-      const stagedSkill = join(runDirectory, 'claude-config', 'skills', skillName)
-      await mkdir(stagedSkill, { recursive: true, mode: 0o700 })
-      await copyFile(skillFile, join(stagedSkill, 'SKILL.md'))
+      // This Run's settings, layered over the person's own and never written
+      // into them: their terminal use of the Harness is not ours to change.
+      // Ticket 07 adds permission rules here; today it carries the mode only.
+      await writeFile(
+        join(runDirectory, 'settings.json'),
+        JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' } }),
+        { mode: 0o600 }
+      )
       return
     }
     const codexHome = join(runDirectory, 'codex-home')
@@ -638,8 +633,10 @@ function minimalEnvironment(
     HOME: home,
     LANG: 'en_US.UTF-8',
     LC_ALL: 'en_US.UTF-8',
-    ...(harness === 'codex' ? { CODEX_HOME: join(runDirectory, 'codex-home') } : {}),
-    ...(harness === 'claude' ? { CLAUDE_CONFIG_DIR: join(runDirectory, 'claude-config') } : {})
+    ...(harness === 'codex' ? { CODEX_HOME: join(runDirectory, 'codex-home') } : {})
+    // Claude's per-Run configuration is a staged settings file, not a staged
+    // home: CLAUDE_CONFIG_DIR relocates account state too, and a staged one
+    // reports the person as not logged in.
   }
 }
 
@@ -684,17 +681,18 @@ function harnessArguments(
   }
   return [
     '--print',
+    // The person's own sources, so their installed Skills are discoverable,
+    // plus this Run's settings layered on top.
     '--setting-sources',
     'user',
-    '--strict-mcp-config',
+    '--settings',
+    join(runDirectory, 'settings.json'),
     '--mcp-config',
     join(runDirectory, 'mcp.json'),
-    '--tools',
-    'ToolSearch',
-    '--allowedTools',
-    `${MCP_TOOL_PREFIX}*`,
+    // No allow-list: naming only the app's MCP tool is what left the Harness
+    // with no native tools at all. It edits the Checkout with its own.
     '--permission-mode',
-    'dontAsk',
+    'bypassPermissions',
     '--no-chrome',
     '--output-format',
     'stream-json',
@@ -774,6 +772,10 @@ function describeActivity(
       // What the Harness reported doing. The app no longer adjudicates it, so
       // this is an observation, not a verdict.
       return { kind: 'output', summary: `${event.name}: ${event.summary}` }
+    case 'file-change':
+      // The diff itself belongs to the Conversation; the activity stream says
+      // only that the Checkout was changed, and where.
+      return { kind: 'output', summary: `Changed ${event.path}` }
     case 'failed':
       return { kind: 'error', summary: event.summary }
     case 'thread-ready':

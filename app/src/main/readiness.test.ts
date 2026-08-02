@@ -282,7 +282,23 @@ function capability(readiness: HarnessReadiness): HarnessCapability {
 describe('developing a Session', () => {
   it('is available when the Harness is ready and new enough', async () => {
     await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
-    expect(capability(await probeCodex())).toMatchObject({ available: true, command: null })
+    // Codex has no Adapter that can run a Session, so the general shape of
+    // this answer is exercised through the Harness that does.
+    await fakeExecutable('codex', READY_CODEX_SCRIPT)
+    const readiness = await probeHarness(
+      { ...HARNESS_SPECS.codex, conversation: { minimumVersion: '0.44.0' } },
+      { pathEntries: [binDir], homeDir, probeTimeoutMs: 5000 }
+    )
+    expect(capability(readiness)).toMatchObject({ available: true, command: null })
+  })
+
+  it('says plainly that Codex cannot run a Session yet', async () => {
+    await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
+    // Offering a Harness that starts and then does nothing is worse than
+    // saying it is not supported: its Adapter can carry neither approvals nor
+    // diffs until it is rewritten.
+    expect(capability(await probeCodex())).toMatchObject({ available: false })
+    expect(capability(await probeCodex()).summary).toContain('not supported yet')
   })
 
   it('names the version needed when the Adapter needs a newer Harness', async () => {
@@ -319,7 +335,13 @@ exit 1`
   })
 
   it('points at the failing checks rather than a version when the Harness is unready', async () => {
-    const readiness = await probeCodex()
+    // Again through a spec that can run a Session, so the answer is about
+    // readiness rather than about Codex having no Adapter.
+    await fakeExecutable('codex', READY_CODEX_SCRIPT)
+    const readiness = await probeHarness(
+      { ...HARNESS_SPECS.codex, conversation: { minimumVersion: '0.44.0' } },
+      { pathEntries: [binDir], homeDir, probeTimeoutMs: 5000 }
+    )
     expect(readiness.available).toBe(false)
     expect(capability(readiness).summary).toContain('not ready yet')
   })
