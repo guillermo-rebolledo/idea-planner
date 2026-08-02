@@ -881,6 +881,48 @@ Run under `$TMPDIR/opencode/permexp/` (`mcpsrv.mjs`, `run.sh`, `cfg/*.json`, `wo
 
 ---
 
+---
+
+## Verified: mid-session rules, symlinks, and protected paths
+
+Verification date: **2026-08-02**. Harness: `claude --version` → **`2.1.220 (Claude Code)`**. Same instrument as the section above: a stdio MCP server exposing `approve` that logs every `tools/call` and answers from an env var. A logged line means the prompt tool was consulted; no line means the rules bypassed it.
+
+### 1. `updatedPermissions` on the prompt tool's answer — works
+
+The permission prompt tool's allow result accepts `updatedPermissions`, the same field the Agent SDK's `canUseTool` takes, and the rule applies to the **running** session.
+
+Prompt (both runs): `Run exactly these two bash commands, as two separate Bash tool calls, and nothing else: first python3 -c 'print(11)' then python3 -c 'print(22)'`
+
+| Run | `approve` answers with | invocations | Meaning |
+| --- | --- | --- | --- |
+| **control** | `{"behavior":"allow","updatedInput":…}` every time | **2** | each Bash call is asked |
+| **treatment** | first answer adds `updatedPermissions:[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"python3:*"}],"behavior":"allow","destination":"session"}]` | **1** | the second call was auto-approved by the rule just added |
+
+`permission_denials` was `[]` and both commands ran in both runs.
+
+This is how a "always allow" granted mid-Run takes effect in the Run that granted it, without the app matching anything itself. `destination: "session"` is in-memory and discarded at session end, which is the only destination acceptable here — the others write into the user's repo or home config.
+
+T3 Code uses the same field for its "accept for session" decision, via the Agent SDK rather than the prompt tool ([`ClaudeAdapter.ts`](https://github.com/pingdotgg/t3code/blob/e60821f0e0d82a5d671ca3b94719c49d333921c8/apps/server/src/provider/Layers/ClaudeAdapter.ts), `canUseTool`): it returns `updatedPermissions: [...pendingApproval.suggestions]` on `acceptForSession`, taking the suggestions the SDK hands it. The SDK gives its callback `suggestions`; the MCP prompt tool's request carries no equivalent, which is why this app synthesises rules itself.
+
+### 2. A path rule must name the **resolved** path
+
+Setup: `$B/real/work/demo.txt`, `$B/link -> $B/real`, cwd `$B/link/work`, prompt to edit `demo.txt`. `$B` outside any symlinked parent.
+
+| Run | staged `permissions.allow` | invocations | Meaning |
+| --- | --- | --- | --- |
+| **link form** | `Edit(//$B/link/work/**)` | **1** | not consulted — no match |
+| **real form** | `Edit(//$B/real/work/**)` | **0** | matched |
+
+In the link-form run the request the prompt tool received carried `"file_path": "$B/real/work/demo.txt"` — the Harness had already resolved the symlink. So a rule written from the path the user sees goes on asking; write it from `realpath`.
+
+This also settles what the earlier Edit pair could not: it staged both `/private/var/...` and `/var/...` forms and could not tell which was doing the work. It was the resolved one.
+
+### 3. Allow rules never cover protected paths
+
+Both symlink conditions first ran under `~/.claude/jobs/…` and **both prompted**, including an exact-path `Edit(//…/**)` match. `.claude` is a protected path, and protected paths are not covered by allow rules in any mode except `bypassPermissions` — the documented behaviour, observed. A Project inside one keeps prompting whatever is stored, and no rule the app writes can change that.
+
+**Trap for anyone repeating this:** run the experiment outside `~/.claude`, `.git`, and dotfile directories, or a real match will read as a failure to match.
+
 ## Open questions / could not verify
 
 - **Why `touch <path-inside-cwd>` was refused** with `may only create or modify files in the allowed working directories for this session` naming that same directory. Reproduced in two directories and both with and without `--setting-sources ''`. Not isolated to `--settings`, `--setting-sources`, or `$TMPDIR`. Could be `touch`-specific handling, a symlink-resolution issue, or an interaction with `default` mode. Needs a controlled reproduction before the app treats working-directory errors as retryable.

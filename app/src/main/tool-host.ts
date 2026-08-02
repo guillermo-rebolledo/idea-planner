@@ -11,13 +11,30 @@ export interface ApprovalRequest {
 }
 
 /**
+ * A rule to add to the Harness Thread that is already running, carried back
+ * with an allow. Measured on 2.1.220: answering one request this way stopped
+ * the next matching one being asked at all, so a permission granted mid-Run
+ * takes effect in the Run that granted it — natively, with the Harness's own
+ * matcher deciding what it covers.
+ */
+export interface SessionRule {
+  toolName: string
+  content: string
+}
+
+/**
  * The answer, in the shape the Harness expects back
  * (`.scratch/research/claude-code-permissions-and-protocol.md`): an allow
  * carries the input the tool should run with, a deny carries what the agent
  * is told instead.
  */
 export type ApprovalAnswer =
-  | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
+  | {
+      behavior: 'allow'
+      updatedInput?: Record<string, unknown>
+      /** Added to the running Harness Thread, so it stops asking this. */
+      sessionRule?: SessionRule
+    }
   | { behavior: 'deny'; message: string }
 
 interface ToolHostCallbacks {
@@ -358,7 +375,30 @@ export class ToolHost {
       toolText(
         JSON.stringify(
           answer.behavior === 'allow'
-            ? { behavior: 'allow', updatedInput: answer.updatedInput ?? parsed.data.input }
+            ? {
+                behavior: 'allow',
+                updatedInput: answer.updatedInput ?? parsed.data.input,
+                // `session` is the only destination this app will ever write:
+                // the others put rules in the person's own repository or home
+                // configuration, which is not ours to change (ADR 0003).
+                ...(answer.sessionRule
+                  ? {
+                      updatedPermissions: [
+                        {
+                          type: 'addRules',
+                          rules: [
+                            {
+                              toolName: answer.sessionRule.toolName,
+                              ruleContent: answer.sessionRule.content
+                            }
+                          ],
+                          behavior: 'allow',
+                          destination: 'session'
+                        }
+                      ]
+                    }
+                  : {})
+              }
             : answer
         )
       )

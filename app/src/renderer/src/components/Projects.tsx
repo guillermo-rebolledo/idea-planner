@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, FolderGit2, FolderPlus, Plus, X } from 'lucide-react'
-import type { ChooseProjectResult, ProjectView, StandingApproval } from '@shared/contract'
+import {
+  ruleText,
+  type ChooseProjectResult,
+  type ProjectView,
+  type StandingApproval
+} from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
 
@@ -283,7 +288,7 @@ function StandingApprovals({ project }: { project: ProjectView }): React.JSX.Ele
                 </span>
                 {/* The rule itself, because the rule is what actually decides. */}
                 <span className="block font-mono text-[10px] break-all select-text">
-                  {approval.rule}
+                  {ruleText(approval)}
                 </span>
               </span>
               <Button

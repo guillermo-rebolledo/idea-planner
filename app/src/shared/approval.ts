@@ -23,13 +23,25 @@ import { harnessIdSchema } from './readiness'
 export const standingApprovalKindSchema = z.enum(['command', 'edit'])
 export type StandingApprovalKind = z.infer<typeof standingApprovalKindSchema>
 
-/** A rule this app is willing to write, and what it is a rule about. */
+/**
+ * A rule this app is willing to write, in parts. The Harness wants it two
+ * ways — as `Tool(content)` in a settings file, and as a tool name beside its
+ * content when a rule is added to a running Harness Thread — so the parts are
+ * what is kept and the written form is derived from them.
+ */
 export const proposedRuleSchema = z.object({
   kind: standingApprovalKindSchema,
-  /** The literal rule string, shown to the person before they accept it. */
-  rule: z.string().min(1).max(500)
+  /** The Harness tool the rule governs, such as `Bash` or `Edit`. */
+  toolName: z.string().min(1).max(100),
+  /** What it allows: a command prefix, or a path pattern. */
+  content: z.string().min(1).max(400)
 })
 export type ProposedRule = z.infer<typeof proposedRuleSchema>
+
+/** The literal rule, as it is written down and as the person reads it. */
+export function ruleText(rule: Pick<ProposedRule, 'toolName' | 'content'>): string {
+  return `${rule.toolName}(${rule.content})`
+}
 
 export const standingApprovalSchema = z.object({
   id: z.string().min(1),
@@ -38,7 +50,8 @@ export const standingApprovalSchema = z.object({
   /** Whose rule syntax this is written in, and therefore who may be given it. */
   harness: harnessIdSchema,
   kind: standingApprovalKindSchema,
-  rule: z.string().min(1).max(500),
+  toolName: z.string().min(1).max(100),
+  content: z.string().min(1).max(400),
   /** What was being asked when it was granted, so the list reads as history. */
   summary: z.string().min(1).max(500),
   grantedAt: z.string().datetime()
@@ -129,13 +142,21 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Updat
 export function proposeStandingApproval(
   tool: string,
   input: Record<string, unknown>,
-  projectRoot: string
+  /**
+   * The Project root with every symlink resolved. Measured on 2.1.220, the
+   * Harness resolves a path before it checks any rule against it: working
+   * through a symlinked root, a rule naming that root was not consulted and a
+   * rule naming its target was. A rule written from the path the person sees
+   * would therefore go on asking.
+   */
+  resolvedProjectRoot: string
 ): ProposedRule | null {
-  const root = trimTrailingSlash(projectRoot)
+  const root = trimTrailingSlash(resolvedProjectRoot)
   if (EDIT_TOOLS.has(tool)) {
     // Offered on the file in front of the person, and only when the rule would
     // actually cover it: a Project-wide rule proposed for a file outside the
-    // Project is a grant that goes on asking.
+    // Project is a grant that goes on asking. The path arrives resolved, so it
+    // is compared against the resolved root.
     const path = typeof input['file_path'] === 'string' ? input['file_path'] : ''
     if (!path.startsWith(`${root}/`)) return null
     // One rule for the whole Project rather than one per file: a file-by-file
@@ -144,13 +165,13 @@ export function proposeStandingApproval(
     //
     // `//` anchors at the filesystem root. A single leading slash would anchor
     // at the staged settings file, which lives outside the repository.
-    return { kind: 'edit', rule: `Edit(/${root}/**)` }
+    return { kind: 'edit', toolName: 'Edit', content: `/${root}/**` }
   }
   if (tool !== 'Bash') return null
   const command = typeof input['command'] === 'string' ? input['command'].trim() : ''
   if (!command || COMPOUND.test(command)) return null
   const prefix = commandPrefix(command)
-  return prefix ? { kind: 'command', rule: `Bash(${prefix}:*)` } : null
+  return prefix ? { kind: 'command', toolName: 'Bash', content: `${prefix}:*` } : null
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { proposeStandingApproval } from './approval'
+import { proposeStandingApproval, ruleText } from './approval'
 
 /**
  * A Standing Approval is a rule the Harness consults *before* it asks, so an
@@ -11,7 +11,8 @@ import { proposeStandingApproval } from './approval'
 const PROJECT = '/Users/someone/dev/receipts'
 
 function ruleFor(command: string): string | null {
-  return proposeStandingApproval('Bash', { command }, PROJECT)?.rule ?? null
+  const proposed = proposeStandingApproval('Bash', { command }, PROJECT)
+  return proposed ? ruleText(proposed) : null
 }
 
 describe('a command approval', () => {
@@ -97,17 +98,18 @@ describe('repo-wide edit approval', () => {
     )
     expect(proposed).toEqual({
       kind: 'edit',
-      rule: 'Edit(//Users/someone/dev/receipts/**)'
+      toolName: 'Edit',
+      content: '//Users/someone/dev/receipts/**'
     })
+    expect(proposed && ruleText(proposed)).toBe('Edit(//Users/someone/dev/receipts/**)')
   })
 
   it('is the same rule for every file-editing tool, because only Edit is consulted', () => {
     // A path rule written for Write or NotebookEdit is accepted and never
     // read, so all of them become one `Edit(...)` rule.
     for (const tool of ['Write', 'MultiEdit', 'NotebookEdit']) {
-      expect(proposeStandingApproval(tool, { file_path: `${PROJECT}/a.ts` }, PROJECT)?.rule).toBe(
-        'Edit(//Users/someone/dev/receipts/**)'
-      )
+      const proposed = proposeStandingApproval(tool, { file_path: `${PROJECT}/a.ts` }, PROJECT)
+      expect(proposed && ruleText(proposed)).toBe('Edit(//Users/someone/dev/receipts/**)')
     }
   })
 })

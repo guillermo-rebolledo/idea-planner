@@ -48,12 +48,19 @@ describe('granting', () => {
       projectRoot: workRoot,
       harness: 'claude',
       kind: 'command',
-      rule: 'Bash(pnpm test:*)',
+      toolName: 'Bash',
+      content: 'pnpm test:*',
       summary: 'pnpm test'
     })
 
     expect(await makeCore().listStandingApprovals(workRoot)).toMatchObject([
-      { projectRoot: workRoot, kind: 'command', rule: 'Bash(pnpm test:*)', summary: 'pnpm test' }
+      {
+        projectRoot: workRoot,
+        kind: 'command',
+        toolName: 'Bash',
+        content: 'pnpm test:*',
+        summary: 'pnpm test'
+      }
     ])
   })
 
@@ -63,7 +70,8 @@ describe('granting', () => {
         projectRoot: workRoot,
         harness: 'claude',
         kind: 'command',
-        rule: 'Bash(pnpm test:*)',
+        toolName: 'Bash',
+        content: 'pnpm test:*',
         summary: 'pnpm test'
       })
     await grant()
@@ -78,7 +86,8 @@ describe('granting', () => {
         projectRoot: join(workRoot, 'not-a-project'),
         harness: 'claude',
         kind: 'command',
-        rule: 'Bash(pnpm test:*)',
+        toolName: 'Bash',
+        content: 'pnpm test:*',
         summary: 'pnpm test'
       })
     ).rejects.toThrow(/Project/)
@@ -91,7 +100,8 @@ describe('what a Project lends to another', () => {
       projectRoot: workRoot,
       harness: 'claude',
       kind: 'edit',
-      rule: `Edit(/${workRoot}/**)`,
+      toolName: 'Edit',
+      content: `/${workRoot}/**`,
       summary: 'Every file in this Project'
     })
 
@@ -104,14 +114,16 @@ describe('what a Project lends to another', () => {
       projectRoot: workRoot,
       harness: 'claude',
       kind: 'command',
-      rule: 'Bash(pnpm test:*)',
+      toolName: 'Bash',
+      content: 'pnpm test:*',
       summary: 'pnpm test'
     })
     await core.grantStandingApproval({
       projectRoot: otherRoot,
       harness: 'claude',
       kind: 'command',
-      rule: 'Bash(cargo build:*)',
+      toolName: 'Bash',
+      content: 'cargo build:*',
       summary: 'cargo build'
     })
 
@@ -125,14 +137,16 @@ describe('revoking', () => {
       projectRoot: workRoot,
       harness: 'claude',
       kind: 'command',
-      rule: 'Bash(pnpm test:*)',
+      toolName: 'Bash',
+      content: 'pnpm test:*',
       summary: 'pnpm test'
     })
     const revoked = await core.grantStandingApproval({
       projectRoot: workRoot,
       harness: 'claude',
       kind: 'command',
-      rule: 'Bash(git push:*)',
+      toolName: 'Bash',
+      content: 'git push:*',
       summary: 'git push'
     })
 
@@ -148,7 +162,8 @@ describe('revoking', () => {
       projectRoot: workRoot,
       harness: 'claude',
       kind: 'command',
-      rule: 'Bash(pnpm test:*)',
+      toolName: 'Bash',
+      content: 'pnpm test:*',
       summary: 'pnpm test'
     })
 
@@ -165,7 +180,8 @@ describe('forgetting a Project', () => {
       projectRoot: workRoot,
       harness: 'claude',
       kind: 'command',
-      rule: 'Bash(pnpm test:*)',
+      toolName: 'Bash',
+      content: 'pnpm test:*',
       summary: 'pnpm test'
     })
 

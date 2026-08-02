@@ -12,6 +12,7 @@ import {
 import {
   HARNESS_DEFAULT_MODEL,
   SKILL_ATTRIBUTION,
+  ruleText,
   type ApprovalDecision,
   type ConversationEntry,
   type ConversationRecovery,
@@ -480,7 +481,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
                   is stored the Harness answers with it before this app is asked
                   anything, so this line is the last chance to read it. */}
               <p className="mt-1 font-mono text-[11px] break-all select-text">
-                {pendingApproval.proposedRule.rule}
+                {ruleText(pendingApproval.proposedRule)}
               </p>
               <Button
                 className="mt-2"
@@ -859,7 +860,7 @@ function ApprovalRow({
           {entry.decision === null ? 'Waiting for your answer' : APPROVAL_OUTCOME[entry.decision]}
           {entry.decision === 'denied' && entry.message ? ` — “${entry.message}”` : ''}
           {entry.remembered && entry.proposedRule
-            ? ` — and always allow ${entry.proposedRule.rule}`
+            ? ` — and always allow ${ruleText(entry.proposedRule)}`
             : ''}
         </p>
       </div>

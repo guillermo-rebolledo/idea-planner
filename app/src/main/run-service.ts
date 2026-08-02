@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -20,7 +20,7 @@ import {
   type HarnessEvent,
   type HarnessFailureCategory
 } from '@shared/conversation'
-import { proposeStandingApproval, type ProposedRule } from '@shared/approval'
+import { proposeStandingApproval, ruleText, type ProposedRule } from '@shared/approval'
 import {
   APPROVAL_TOOL,
   APP_TOOLS,
@@ -93,8 +93,6 @@ export class RunService {
    * record deliberately bounds.
    */
   private readonly proposals = new Map<string, Map<string, RequestProposal>>()
-  /** Rules granted mid-Run, which the Run's own staged settings predate. */
-  private readonly granted = new Map<string, Set<string>>()
 
   constructor(private readonly deps: RunServiceDeps) {}
 
@@ -569,23 +567,14 @@ export class RunService {
     request: ApprovalRequest
   ): Promise<void> {
     const described = describeApproval(request.tool, request.input)
-    const proposedRule = proposeStandingApproval(request.tool, request.input, projectRoot)
+    // A rule is written from the Project root with its symlinks resolved,
+    // because that is the form the Harness compares against.
+    const proposedRule = proposeStandingApproval(
+      request.tool,
+      request.input,
+      await realPath(projectRoot)
+    )
     const summary = sanitize(described.summary, projectRoot)
-    // A Standing Approval granted mid-Run reaches the Harness only in the next
-    // Run's staged settings, so without this the person would grant "never ask
-    // again" and immediately be asked again. What is auto-allowed here is a
-    // subset of what the stored rule permits: the same request, proposing the
-    // same rule.
-    if (proposedRule && this.granted.get(run.id)?.has(proposedRule.rule)) {
-      this.toolHosts.get(run.id)?.resolveApproval(request.id, { behavior: 'allow' })
-      await this.record(
-        run,
-        undefined,
-        'allowed',
-        `Allowed by your Standing Approval ${proposedRule.rule}: ${summary}`
-      )
-      return
-    }
     const proposals = this.proposals.get(run.id) ?? new Map<string, RequestProposal>()
     proposals.set(request.id, { projectRoot, harness, proposed: proposedRule, summary })
     this.proposals.set(run.id, proposals)
@@ -639,18 +628,33 @@ export class RunService {
           projectRoot: proposal.projectRoot,
           harness: proposal.harness,
           kind: proposal.proposed.kind,
-          rule: proposal.proposed.rule,
+          toolName: proposal.proposed.toolName,
+          content: proposal.proposed.content,
           summary: proposal.summary
         }
       })
-      const granted = this.granted.get(input.runId) ?? new Set<string>()
-      granted.add(proposal.proposed.rule)
-      this.granted.set(input.runId, granted)
     }
     this.proposals.get(input.runId)?.delete(input.approvalId)
     host.resolveApproval(
       input.approvalId,
-      allowed ? { behavior: 'allow' } : { behavior: 'deny', message }
+      allowed
+        ? {
+            behavior: 'allow',
+            // This Run's settings were staged before the grant existed, so the
+            // rule rides along with the answer and the Harness applies it to
+            // the Thread it is already running. Nothing in this app decides
+            // what it covers: its own matcher does, exactly as it will next
+            // Run from the settings file.
+            ...(remembered && proposal?.proposed
+              ? {
+                  sessionRule: {
+                    toolName: proposal.proposed.toolName,
+                    content: proposal.proposed.content
+                  }
+                }
+              : {})
+          }
+        : { behavior: 'deny', message }
     )
     const event: HarnessEvent = {
       type: 'approval-resolved',
@@ -680,7 +684,7 @@ export class RunService {
       allowed ? 'allowed' : 'blocked',
       allowed
         ? remembered && proposal?.proposed
-          ? `You approved the request, and always allow ${proposal.proposed.rule}`
+          ? `You approved the request, and always allow ${ruleText(proposal.proposed)}`
           : 'You approved the request'
         : `You declined: ${message}`
     )
@@ -698,7 +702,6 @@ export class RunService {
     const diagnostic = this.diagnostics.get(run.id)
     this.failures.delete(run.id)
     this.diagnostics.delete(run.id)
-    this.granted.delete(run.id)
     this.proposals.delete(run.id)
     // A bare "it failed" helps nobody. When the Harness said nothing the app
     // could categorize, its own last diagnostic line is the explanation.
@@ -970,6 +973,15 @@ async function hashFile(path: string): Promise<string> {
   return createHash('sha256')
     .update(await readFile(path))
     .digest('hex')
+}
+
+/**
+ * A path with its symlinks resolved, or the path itself when it cannot be
+ * resolved. A rule is compared against the resolved form, so this is what one
+ * has to be written from.
+ */
+async function realPath(path: string): Promise<string> {
+  return realpath(path).catch(() => path)
 }
 
 function sanitize(value: string, checkout: string): string {

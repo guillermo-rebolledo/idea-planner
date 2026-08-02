@@ -82,7 +82,27 @@ Three consequences the app is built on:
 - **A too-broad rule is unrecoverable at runtime**, because there is no interception point left after it matches. Breadth is therefore constrained where the rule is written: `app/src/shared/approval.ts` synthesises the narrowest rule that would stop the same question, refuses anything it cannot narrow honestly, and the literal string is shown before it is accepted.
 - `system/init` does not report the effective rules, so the app cannot read back that its own rules loaded. Validate the staged JSON in-process before spawning — invalid settings are ignored in silence.
 
-Two consequences of rules being staged per Run:
+## Granting a rule mid-Run
 
-- **A rule granted mid-Run is not in that Run's settings**, which were written at spawn. The app therefore answers a later request in the same Run itself when that request proposes a rule it has just granted. This compares one synthesised rule string with another; it is not a second matcher and it never consults the store, so the Harness's own semantics stay the only thing deciding what a rule covers.
-- **A Project root reached through a symlink may keep prompting.** Allow rules require both the link path and its target to match, and the app writes one `Edit(//…/**)` rule from the Project root as git resolved it. The failure is a grant that goes on asking, never a grant that reaches further than it said.
+A Run's settings are written at spawn, so a rule granted while it is running is not in them. The answer is native rather than app-side: the approval tool's allow result carries
+
+```json
+{ "behavior": "allow", "updatedInput": {…},
+  "updatedPermissions": [ { "type": "addRules",
+    "rules": [ { "toolName": "Bash", "ruleContent": "pnpm test:*" } ],
+    "behavior": "allow", "destination": "session" } ] }
+```
+
+and the Harness applies it to the Thread it is already running. Verified on 2.1.220: the next matching request was not asked at all (`.scratch/research/…`, "Verified: mid-session rules"). Nothing in the app matches anything — its own matcher decides, exactly as it will next Run from the settings file.
+
+`destination: "session"` is the only one this app will ever write. The others put rules in the person's own repository or home configuration.
+
+T3 Code uses the same field for "accept for session", through the Agent SDK's `canUseTool` rather than an MCP tool. The SDK hands its callback ready-made `suggestions`; the prompt tool's request carries none, which is why rules are synthesised here.
+
+## Path rules name the resolved path
+
+The Harness resolves a path before checking any rule against it. Working through a symlinked root, a rule naming that root was **not** consulted and a rule naming its target **was**, and the request the app received already carried the resolved path. So an `Edit(//…/**)` rule is written from `realpath` of the Project root, not from the root as the person sees it.
+
+## Allow rules never cover protected paths
+
+`.claude`, `.git`, `.vscode`, and the documented dotfiles are outside any allow rule in every mode except `bypassPermissions` — observed, with an exact-path rule that still prompted. A Project inside one keeps asking whatever is stored, and no Standing Approval can change that.

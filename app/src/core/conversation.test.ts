@@ -844,13 +844,13 @@ describe('a command from start to finish', () => {
 })
 
 describe('an approval from request to answer', () => {
-  const request: HarnessEvent = {
+  const request: Extract<HarnessEvent, { type: 'approval-request' }> = {
     type: 'approval-request',
     id: 'toolu_approve_1',
     tool: 'Bash',
     summary: 'pnpm test',
     detail: '{"command":"pnpm test"}',
-    proposedRule: { kind: 'command', rule: 'Bash(pnpm test:*)' }
+    proposedRule: { kind: 'command', toolName: 'Bash', content: 'pnpm test:*' }
   }
 
   it('blocks the Run on the request and leaves that state when it is answered', async () => {
@@ -937,7 +937,7 @@ describe('an approval from request to answer', () => {
       {
         decision: 'allowed',
         remembered: true,
-        proposedRule: { kind: 'command', rule: 'Bash(pnpm test:*)' }
+        proposedRule: { kind: 'command', toolName: 'Bash', content: 'pnpm test:*' }
       }
     ])
   })

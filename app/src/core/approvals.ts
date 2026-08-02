@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { Effect } from 'effect'
 import { CoreError } from '@shared/contract'
 import {
+  ruleText,
   standingApprovalSchema,
   type GrantStandingApprovalInput,
   type RevokeStandingApprovalInput,
@@ -47,7 +48,10 @@ export class StandingApprovalStore {
         // Granting the same rule twice is one permission, not two. The person
         // said yes to a thing, and it is allowed.
         const existing = stored.find(
-          (entry) => entry.projectRoot === input.projectRoot && entry.rule === input.rule
+          (entry) =>
+            entry.projectRoot === input.projectRoot &&
+            entry.toolName === input.toolName &&
+            entry.content === input.content
         )
         if (existing) return existing
         const approval: StandingApproval = {
@@ -55,7 +59,8 @@ export class StandingApprovalStore {
           projectRoot: input.projectRoot,
           harness: input.harness,
           kind: input.kind,
-          rule: input.rule,
+          toolName: input.toolName,
+          content: input.content,
           summary: input.summary,
           grantedAt: this.now().toISOString()
         }
@@ -79,7 +84,7 @@ export class StandingApprovalStore {
   rules(projectRoot: string, harness: HarnessId): Effect.Effect<string[], CoreError> {
     return this.list(projectRoot).pipe(
       Effect.map((granted) =>
-        granted.filter((entry) => entry.harness === harness).map((entry) => entry.rule)
+        granted.filter((entry) => entry.harness === harness).map((entry) => ruleText(entry))
       )
     )
   }

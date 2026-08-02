@@ -1,4 +1,13 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile
+} from 'node:fs/promises'
 import { createConnection, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -952,7 +961,7 @@ describe('Ask mode', () => {
       // Narrow by construction: the rule names this command, not the family
       // `pnpm` belongs to. Once stored there is no interception point left.
       expect(applied(core, 'approval-request')).toMatchObject({
-        proposedRule: { kind: 'command', rule: 'Bash(pnpm test:*)' }
+        proposedRule: { kind: 'command', toolName: 'Bash', content: 'pnpm test:*' }
       })
     })
   })
@@ -986,24 +995,83 @@ describe('Ask mode', () => {
     expect(grant).toMatchObject({
       projectRoot: join(root, 'a-project'),
       kind: 'command',
-      rule: 'Bash(pnpm test:*)'
+      toolName: 'Bash',
+      content: 'pnpm test:*'
     })
     expect(applied(core, 'approval-resolved')).toMatchObject({ remembered: true })
 
-    // This Run's settings were staged before the grant existed, so without
-    // honouring it here the person would grant "never ask again" and be asked
-    // again by the very next command.
-    const second = await requestApproval(root, {
-      tool_name: 'Bash',
-      input: { command: 'pnpm test src/app.test.ts' },
-      tool_use_id: 'toolu_again'
+    // This Run's settings were staged before the grant existed, so the rule
+    // rides back on the answer and the Harness adds it to the Thread it is
+    // already running — measured on 2.1.220, that is what stops the next
+    // matching request being asked at all. Nothing in this app decides what it
+    // covers; the Harness's own matcher does, exactly as it will next Run.
+    expect(JSON.parse(await first.answer)).toMatchObject({
+      updatedPermissions: [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'pnpm test:*' }],
+          behavior: 'allow',
+          // Never the person's own repository or home configuration.
+          destination: 'session'
+        }
+      ]
     })
-    expect(JSON.parse(await second.answer)).toMatchObject({ behavior: 'allow' })
-    expect(
-      (core.send.mock.calls as [{ type: string; event?: { id?: string } }][]).filter(
-        ([command]) => command.type === 'conversation/apply' && command.event?.id === 'toolu_again'
-      )
-    ).toHaveLength(0)
+  })
+
+  it('adds nothing to the running Thread when the person only allows once', async () => {
+    const root = await readyClaudeRoot('run-claude-once-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    const service = new RunService({ ...claudeDeps(root, broker), core })
+    const run = await service.start({ ...startInput(), permissionMode: 'ask' })
+
+    const { answer } = await requestApproval(root, {
+      tool_name: 'Bash',
+      input: { command: 'pnpm test' },
+      tool_use_id: 'toolu_once'
+    })
+    await vi.waitFor(() => expect(applied(core, 'approval-request')).toBeDefined())
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId: run.id,
+      approvalId: 'toolu_once',
+      decision: 'allow'
+    })
+
+    expect(JSON.parse(await answer)).not.toHaveProperty('updatedPermissions')
+    expect(core.commands).not.toContain('approval/grant')
+  })
+
+  it('writes an edit rule from the Project root the Harness will compare against', async () => {
+    // Measured on 2.1.220: working through a symlinked root, a rule naming
+    // that root was not consulted and a rule naming its target was — the
+    // Harness resolves a path before it checks any rule. A rule written from
+    // the path the person sees would go on asking.
+    const real = await readyClaudeRoot('run-claude-real-')
+    const link = join(await mkdtemp(join(tmpdir(), 'run-claude-link-')), 'project')
+    temporaryDirectories.push(link)
+    await mkdir(join(real, 'a-project'), { recursive: true })
+    await symlink(join(real, 'a-project'), link)
+    const broker = fakeBroker()
+    const core = fakeCore(link)
+    const service = new RunService({ ...claudeDeps(real, broker), core })
+    await service.start({ ...startInput(), permissionMode: 'ask' })
+
+    await requestApproval(real, {
+      tool_name: 'Edit',
+      // The path arrives resolved, which is why the rule has to be.
+      input: { file_path: join(await realpath(link), 'src', 'app.ts') },
+      tool_use_id: 'toolu_symlink'
+    })
+
+    const resolved = await realpath(link)
+    await vi.waitFor(() => {
+      expect(applied(core, 'approval-request')).toMatchObject({
+        proposedRule: { kind: 'edit', content: `/${resolved}/**` }
+      })
+    })
+    // The Project as the person knows it is not what the rule names.
+    expect(resolved).not.toBe(link)
   })
 
   it('refuses to remember what it could not narrow into a rule', async () => {
@@ -1039,6 +1107,7 @@ describe('Ask mode', () => {
     const broker = fakeBroker()
     const core = fakeCore(join(root, 'a-project'))
     core.standingRules = ['Bash(pnpm test:*)', `Edit(/${join(root, 'a-project')}/**)`]
+
     const service = new RunService({ ...claudeDeps(root, broker), core })
 
     await service.start({ ...startInput(), permissionMode: 'ask' })
