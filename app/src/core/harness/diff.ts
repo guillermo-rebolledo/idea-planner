@@ -1,27 +1,35 @@
 import { redactCredentials, type DiffHunk } from '@shared/conversation'
 
 /**
- * A unified diff, read into the hunks the Conversation holds. Three things
- * send patches — the Codex Adapter, the Claude Adapter, and the comparison of
- * a Checkout before and after a Run — and a diff that is read differently
- * depending on who sent it is a diff nobody can trust.
- *
- * `wholeFileWhenNoHunks` is the one difference between them. Codex sends a new
- * file's whole content instead of a diff of it, so a patch with no hunk header
- * is everything in it being added. Git never does that: a patch of its with no
- * hunks changed no text at all — a binary file, or only a mode — and reading
- * its headers as added lines would invent a change.
+ * A patch from git, read into the hunks the Conversation holds. A patch with
+ * no hunk header changed no text at all — a binary file, or only a mode — and
+ * reading its own headers as added lines would invent a change.
  */
-export function parseUnifiedDiff(
-  diff: string,
-  options: { wholeFileWhenNoHunks: boolean }
-): DiffHunk[] {
+export function parseGitPatch(diff: string): DiffHunk[] {
+  return parse(diff, false)
+}
+
+/**
+ * A patch from Codex. It sends a new file's whole content instead of a diff of
+ * it, so a patch with no hunk header is everything in it being added.
+ */
+export function parseCodexPatch(diff: string): DiffHunk[] {
+  return parse(diff, true)
+}
+
+/**
+ * Codex and a comparison of a Checkout both send patches, and a diff read
+ * differently depending on who sent it is a diff nobody can trust. This is the
+ * one reading; what differs is only what a patch with no hunks means. Claude
+ * needs none of it — it sends the hunks already parsed.
+ */
+function parse(diff: string, wholeFileWhenNoHunks: boolean): DiffHunk[] {
   const empty: DiffHunk = { oldStart: 0, oldLines: 0, newStart: 1, newLines: 0, lines: [] }
   if (!diff) return [empty]
   const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
   const lines = diff.split('\n')
   if (!lines.some((line) => header.test(line))) {
-    if (!options.wholeFileWhenNoHunks) return [empty]
+    if (!wholeFileWhenNoHunks) return [empty]
     return [bounded({ ...empty, newLines: lines.length, lines: lines.map((line) => `+${line}`) })]
   }
   const hunks: DiffHunk[] = []

@@ -134,34 +134,58 @@ export async function diffSnapshots(
 ): Promise<SnapshotChange[]> {
   if (before.status !== 'taken' || after.status !== 'taken') return []
   if (before.tree === after.tree) return []
+  const env = await snapshotEnvironment(checkout, appOwnedDirectory, options)
+  const trees = [before.tree, after.tree]
+  let names: string[]
   try {
-    const { stdout } = await run(
-      'git',
-      ['diff-tree', '-r', '-p', '--no-color', '--no-ext-diff', before.tree, after.tree],
-      {
-        cwd: checkout,
-        env: await snapshotEnvironment(checkout, appOwnedDirectory, options),
-        timeout: TIMEOUT_MS,
-        maxBuffer: MAX_DIFF_BYTES
-      }
-    )
-    return splitPatch(stdout)
+    // The paths, asked for separately and NUL-separated. They cannot be read
+    // out of the patch itself: git quotes a path with a quote or a control
+    // character in it, and `diff --git a/a b/ar.txt b/a b/ar.txt` is what a
+    // path containing " b/" looks like — both were verified against git.
+    const { stdout } = await run('git', ['diff-tree', '-r', '--name-only', '-z', ...trees], {
+      cwd: checkout,
+      env,
+      timeout: TIMEOUT_MS,
+      maxBuffer: MAX_DIFF_BYTES
+    })
+    names = stdout.split('\0').filter(Boolean).slice(0, MAX_CHANGED_FILES)
   } catch {
     return []
   }
+  if (names.length === 0) return []
+  // The patch bodies, in the order git already named them. A diff too large
+  // to read back leaves every file listed with no body: what changed still
+  // beats nothing at all.
+  const patches = await patchBodies(checkout, env, trees, names.length)
+  return names.map((path, index) => ({ path, diff: patches[index] ?? '' }))
 }
 
-/** One patch per file, named the way git names it. */
-function splitPatch(patch: string): SnapshotChange[] {
-  const changes: SnapshotChange[] = []
-  for (const section of patch.split(/^diff --git /m).slice(1)) {
-    // `b/<path>` is the file as it is now; a deletion keeps the old name in
-    // both, so this names something either way.
-    const path = /^a\/(.*?) b\/(.*)$/m.exec(section)?.[2]
-    if (path === undefined) continue
-    changes.push({ path, diff: `diff --git ${section}`.trimEnd() })
+/**
+ * One patch per changed file, positionally. `diff-tree` walks the trees once,
+ * so the patch sections arrive in the same order as the names; anything else
+ * means this read the output wrong, and a body attached to the wrong file is
+ * worse than no body.
+ */
+async function patchBodies(
+  checkout: string,
+  env: NodeJS.ProcessEnv,
+  trees: string[],
+  expected: number
+): Promise<string[]> {
+  try {
+    const { stdout } = await run(
+      'git',
+      ['diff-tree', '-r', '-p', '--no-color', '--no-ext-diff', ...trees],
+      { cwd: checkout, env, timeout: TIMEOUT_MS, maxBuffer: MAX_DIFF_BYTES }
+    )
+    const sections = stdout
+      .split(/^diff --git /m)
+      .slice(1)
+      .map((section) => `diff --git ${section}`.trimEnd())
+    return sections.length === expected ? sections : []
+  } catch {
+    return []
   }
-  return changes
 }
 
 async function snapshotEnvironment(
@@ -194,6 +218,13 @@ const OBJECTS = 'objects'
 
 /** A diff larger than this is not one anybody was going to read. */
 const MAX_DIFF_BYTES = 8 * 1024 * 1024
+
+/**
+ * How many files one Run is reported to have changed. A codemod can touch
+ * thousands; what the person needs to know is that it happened, and a list
+ * beyond this is not one anybody reads either.
+ */
+const MAX_CHANGED_FILES = 500
 
 /**
  * The environment a git call runs in. Anything the process inherited that

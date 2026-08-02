@@ -29,7 +29,7 @@ import {
 import type { HarnessId } from '@shared/readiness'
 import type { SkillName } from '@shared/run'
 import { createCodexAdapter, type HarnessAdapter } from './harness/codex'
-import { parseUnifiedDiff } from './harness/diff'
+import { parseGitPatch } from './harness/diff'
 import { createClaudeAdapter } from './harness/claude'
 
 /**
@@ -623,23 +623,17 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const checkout = yield* options.checkoutFor(input.sessionId)
       yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const written = yield* readEntries(sessionDir)
-          const reported = new Set(
-            written
-              .filter((entry) => entry.kind === 'file-change' && entry.runId === input.runId)
-              .map((entry) => (entry.kind === 'file-change' ? entry.path : ''))
-          )
-          let ordinal = written.filter(
+          const already = (yield* readEntries(sessionDir)).filter(
             (entry) => entry.kind === 'file-change' && entry.runId === input.runId
-          ).length
+          )
+          const accounted = new Set(
+            already.map((entry) => (entry.kind === 'file-change' ? entry.path : ''))
+          )
+          let ordinal = already.length
           const now = yield* options.clock
           for (const file of input.files) {
-            const described = describeChange(
-              file.path,
-              parseUnifiedDiff(file.diff, { wholeFileWhenNoHunks: false }),
-              checkout
-            )
-            if (reported.has(described.path)) continue
+            const described = describeChange(file.path, parseGitPatch(file.diff), checkout)
+            if (accounted.has(described.path)) continue
             ordinal += 1
             yield* append(
               sessionDir,

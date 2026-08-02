@@ -207,6 +207,22 @@ describe('snapshotting a Checkout', () => {
     await rm(linked, { recursive: true, force: true })
   })
 
+  it('names files git itself would quote or that read as two paths', async () => {
+    // Both verified against git: a path containing `" b/"` makes the patch
+    // header ambiguous, and one with a quote in it is escaped entirely.
+    await mkdir(join(root, 'a b'), { recursive: true })
+    await writeFile(join(root, 'a b', 'ar.txt'), 'x\n')
+    await writeFile(join(root, 'weird"name.txt'), 'y\n')
+    const before = await snapshotCheckout(root, appOwned)
+    await writeFile(join(root, 'a b', 'ar.txt'), 'x\nagent\n')
+    await writeFile(join(root, 'weird"name.txt'), 'y\nagent\n')
+    const after = await snapshotCheckout(root, appOwned)
+
+    const changed = await diffSnapshots(root, appOwned, before, after)
+    expect(changed.map((file) => file.path).sort()).toEqual(['a b/ar.txt', 'weird"name.txt'])
+    for (const file of changed) expect(file.diff).toContain('+agent')
+  })
+
   it('says so rather than failing when the Checkout is not a repository', async () => {
     const plain = await mkdtemp(join(tmpdir(), 'git-plain-'))
     await expect(snapshotCheckout(plain, appOwned)).resolves.toEqual({ status: 'unavailable' })

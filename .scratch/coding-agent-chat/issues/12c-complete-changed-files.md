@@ -37,6 +37,24 @@ Beside the Run, not inside it. A Run that ends badly has its directory removed, 
 
 The Harness-reported record still says *how* each change happened, and it is live while the Run is going. The comparison runs once, when the Run ends, and Core keeps only the paths the Harness did not already account for — recording both would double what the panel says the Run did. A row nothing accounted for reads `changed without being reported`, so what the agent narrated can be told from what merely happened.
 
+## Answer — the paths are git's, not this app's
+
+The first version read each file's name out of its patch header, which is wrong in two ways git will actually produce: a path containing `" b/"` makes `diff --git a/a b/ar.txt b/a b/ar.txt` ambiguous, and a path with a quote in it is escaped entirely and matches nothing. Both were checked against git, and the old parser turned the first into `ar.txt b/a b/ar.txt` and dropped the second. The paths are now asked for with `--name-only -z`, and the patch bodies are attached in the order git already named them — a body is dropped rather than attached to the wrong file if those two ever disagree.
+
 ## Answer — what it still cannot do
 
-A person editing the Project while a Run is in flight lands in that Run's comparison; there is no way to tell their save from the agent's from the outside. A Checkout that is not a repository, or a machine with no git, has no snapshot, and the Run ends exactly as it would have — the reported record is all there is, which is what this ticket started with.
+A person editing the Project while a Run is in flight lands in that Run's comparison; there is no way to tell their save from the agent's from the outside.
+
+A Checkout that is not a repository, or a machine with no git, has no snapshot, and the Run ends exactly as it would have — the reported record is all there is, which is what this ticket started with.
+
+A Run reports at most 500 changed files. A codemod can touch thousands, and what the person needs to know is that it happened.
+
+A file the agent reported *and* then rewrote with a shell command reads as reported: the app knows the path was accounted for once, not that it was changed again afterwards behind the report.
+
+Deletions and renames are shown as changes to a path — a deletion as a patch that removes every line, a rename as one path losing its lines and another gaining them. The panel has no vocabulary for either yet, and inventing one is not this ticket.
+
+A binary file, or a change to a file's mode alone, is listed with an empty diff. Nothing was going to be readable there, and inventing lines for it would be worse.
+
+## Answer — the inherited environment
+
+Not asked for, and fixed here because this ticket is what found it: a git hook exports `GIT_DIR` and `GIT_INDEX_FILE`, and every git call this app made inherited them — enough to make any folder answer for a repository nobody asked about. The repo's own pre-commit hook is what surfaced it. `environment()` now drops the redirecting variables for every caller, with a test that fails when the fix is removed.

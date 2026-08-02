@@ -832,8 +832,8 @@ describe('what this Session changed', () => {
           diff: 'diff --git a/reported.ts b/reported.ts\n@@ -1 +1 @@\n-const a = 0\n+const a = 1'
         },
         {
-          path: 'renamed.ts',
-          diff: 'diff --git a/renamed.ts b/renamed.ts\n@@ -0,0 +1,2 @@\n+const b = 2\n+const c = 3'
+          path: 'codemodded.ts',
+          diff: 'diff --git a/codemodded.ts b/codemodded.ts\n@@ -0,0 +1,2 @@\n+const b = 2\n+const c = 3'
         }
       ]
     })
@@ -843,7 +843,7 @@ describe('what this Session changed', () => {
       // Reported once by the agent, and not counted a second time for being
       // seen again on disk.
       { path: 'reported.ts', changes: 1, added: 1, removed: 0, reported: true },
-      { path: 'renamed.ts', changes: 1, added: 2, removed: 0, reported: false }
+      { path: 'codemodded.ts', changes: 1, added: 2, removed: 0, reported: false }
     ])
   })
 

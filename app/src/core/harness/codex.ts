@@ -7,7 +7,7 @@ import {
 import type { StandingApprovalKind } from '@shared/approval'
 import type { CodexLaunch } from '@shared/conversation'
 import type { HarnessId } from '@shared/readiness'
-import { parseUnifiedDiff } from './diff'
+import { parseCodexPatch } from './diff'
 import type { AskForApproval } from './codex-protocol/v2/AskForApproval'
 import type { SandboxMode } from './codex-protocol/v2/SandboxMode'
 import type { ThreadResumeParams } from './codex-protocol/v2/ThreadResumeParams'
@@ -415,7 +415,7 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
         return (item.changes ?? []).map((change) => ({
           type: 'file-change' as const,
           path: change.path,
-          hunks: parseUnifiedDiff(change.diff, { wholeFileWhenNoHunks: true })
+          hunks: parseCodexPatch(change.diff)
         }))
       case 'userMessage':
       case 'plan':

@@ -84,6 +84,9 @@ interface RunServiceDeps {
   onConversationEvent?: (event: ConversationStreamEvent) => void
 }
 
+/** App-owned state holding what a Run's Checkout looked like before it ran. */
+const SNAPSHOTS = 'checkout-snapshots'
+
 /** A Run's Checkout as it was before the Harness touched it. */
 interface CheckoutBaseline {
   checkout: string
@@ -128,7 +131,14 @@ export class RunService {
    */
   private readonly baselines = new Map<string, CheckoutBaseline>()
 
-  constructor(private readonly deps: RunServiceDeps) {}
+  constructor(private readonly deps: RunServiceDeps) {
+    // No Run is in flight when the app starts, so every Checkout snapshot
+    // still on disk belongs to one that never got to conclude — a crash, or a
+    // quit mid-Run. Left alone they accumulate forever.
+    void rm(join(deps.privateRoot, SNAPSHOTS), { recursive: true, force: true }).catch(
+      () => undefined
+    )
+  }
 
   /**
    * Develops a Session through its Conversation: the person's message is
@@ -439,7 +449,7 @@ export class RunService {
       // It is kept beside the Run rather than inside it: a Run that ends badly
       // has its directory removed, and a baseline that went with it would take
       // the answer to "what changed" away exactly when it is wanted.
-      const snapshotDirectory = join(this.deps.privateRoot, 'checkout-snapshots', runKey)
+      const snapshotDirectory = join(this.deps.privateRoot, SNAPSHOTS, runKey)
       this.baselines.set(accepted.id, {
         checkout,
         directory: snapshotDirectory,
