@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { chmod, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -87,6 +87,29 @@ interface RunServiceDeps {
 /** App-owned state holding what a Run's Checkout looked like before it ran. */
 const SNAPSHOTS = 'checkout-snapshots'
 
+/** What a snapshot is of, kept with it so a restart can still read it. */
+const BASELINE = 'baseline.json'
+
+const baselineFileSchema = z.object({
+  sessionId: z.string().min(1),
+  runId: z.string().min(1),
+  checkout: z.string().min(1),
+  snapshot: z.object({ status: z.literal('taken'), tree: z.string().min(1) })
+})
+
+/** What a snapshot directory says it is, or nothing anybody can use. */
+async function readBaseline(directory: string): Promise<z.infer<typeof baselineFileSchema> | null> {
+  const text = await readFile(join(directory, BASELINE), 'utf8').catch(() => '')
+  let written: unknown
+  try {
+    written = JSON.parse(text)
+  } catch {
+    return null
+  }
+  const parsed = baselineFileSchema.safeParse(written)
+  return parsed.success ? parsed.data : null
+}
+
 /** A Run's Checkout as it was before the Harness touched it. */
 interface CheckoutBaseline {
   checkout: string
@@ -131,13 +154,43 @@ export class RunService {
    */
   private readonly baselines = new Map<string, CheckoutBaseline>()
 
-  constructor(private readonly deps: RunServiceDeps) {
-    // No Run is in flight when the app starts, so every Checkout snapshot
-    // still on disk belongs to one that never got to conclude — a crash, or a
-    // quit mid-Run. Left alone they accumulate forever.
-    void rm(join(deps.privateRoot, SNAPSHOTS), { recursive: true, force: true }).catch(
-      () => undefined
-    )
+  constructor(private readonly deps: RunServiceDeps) {}
+
+  /**
+   * Every Checkout snapshot still on disk when the app starts belongs to a Run
+   * that never got to conclude — a crash, or a quit mid-Run. Each one is the
+   * record of work nobody ever compared, which is the worst case to lose it
+   * in: the person cannot ask the agent what it was doing either.
+   *
+   * So the comparison is made now, and only then is the snapshot cleaned up.
+   * One honesty cost, stated in ticket 12e rather than hidden: this measures
+   * the Checkout as it is *now*, so anything the person changed between the
+   * crash and reopening the app lands in that Run.
+   */
+  async recoverAbandonedSnapshots(): Promise<void> {
+    this.recovering ??= this.recoverAll()
+    await this.recovering
+  }
+
+  private recovering?: Promise<void>
+
+  private async recoverAll(): Promise<void> {
+    const root = join(this.deps.privateRoot, SNAPSHOTS)
+    const abandoned = await readdir(root, { withFileTypes: true }).catch(() => [])
+    for (const entry of abandoned) {
+      if (!entry.isDirectory()) continue
+      const directory = join(root, entry.name)
+      const baseline = await readBaseline(directory)
+      // A snapshot this cannot read is a snapshot nobody can use. It goes,
+      // rather than being kept forever in the hope of an answer.
+      if (baseline) {
+        await this.compareAndRecord(
+          { id: baseline.runId, sessionId: baseline.sessionId },
+          { checkout: baseline.checkout, directory, snapshot: baseline.snapshot }
+        ).catch(() => undefined)
+      }
+      await rm(directory, { recursive: true, force: true })
+    }
   }
 
   /**
@@ -146,6 +199,10 @@ export class RunService {
    * never reaches the Harness leaves the message and a recovery choice.
    */
   async develop(rawInput: DevelopSessionInput): Promise<ConversationSnapshot> {
+    // Before this Run takes a snapshot of its own: the sweep removes whatever
+    // it finds, and a Run resent under the same key would be swept out from
+    // under itself.
+    await this.recoverAbandonedSnapshots().catch(() => undefined)
     const input = developSessionInputSchema.parse(rawInput)
     if (!HARNESS_SPECS[input.harness].conversation) {
       throw new Error(
@@ -450,11 +507,24 @@ export class RunService {
       // has its directory removed, and a baseline that went with it would take
       // the answer to "what changed" away exactly when it is wanted.
       const snapshotDirectory = join(this.deps.privateRoot, SNAPSHOTS, runKey)
-      this.baselines.set(accepted.id, {
+      const baseline: CheckoutBaseline = {
         checkout,
         directory: snapshotDirectory,
         snapshot: await snapshotCheckout(checkout, snapshotDirectory)
-      })
+      }
+      this.baselines.set(accepted.id, baseline)
+      // Written beside its own objects, so a Run the app never gets to finish
+      // can still be compared on the next start (ticket 12e).
+      await writeFile(
+        join(snapshotDirectory, BASELINE),
+        JSON.stringify({
+          sessionId: accepted.sessionId,
+          runId: accepted.id,
+          checkout,
+          snapshot: baseline.snapshot
+        }),
+        { mode: 0o600 }
+      ).catch(() => undefined)
       await this.deps.broker.start({
         id: accepted.id,
         executable: harness.executablePath,
@@ -922,11 +992,25 @@ export class RunService {
     const baseline = this.baselines.get(run.id)
     this.baselines.delete(run.id)
     if (!baseline) return
-    if (baseline.snapshot.status !== 'taken') {
-      await rm(baseline.directory, { recursive: true, force: true })
-      return
-    }
     try {
+      await this.compareAndRecord(run, baseline)
+    } catch {
+      // A comparison that cannot be made leaves the reported record alone.
+      // Ending the Run is what matters here, and it has already happened.
+    } finally {
+      // The snapshot's objects have done their job; what they described is in
+      // the Conversation now.
+      await rm(baseline.directory, { recursive: true, force: true })
+    }
+  }
+
+  /** The comparison itself, made when a Run ends or when one is found unfinished. */
+  private async compareAndRecord(
+    run: Pick<RunSnapshot, 'id' | 'sessionId'>,
+    baseline: CheckoutBaseline
+  ): Promise<void> {
+    if (baseline.snapshot.status !== 'taken') return
+    {
       const comparison = await diffSnapshots(
         baseline.checkout,
         baseline.directory,
@@ -949,13 +1033,6 @@ export class RunService {
           )} changed files are listed; the rest changed too`
         )
       }
-    } catch {
-      // A comparison that cannot be made leaves the reported record alone.
-      // Ending the Run is what matters here, and it has already happened.
-    } finally {
-      // The snapshot's objects have done their job; what they described is in
-      // the Conversation now.
-      await rm(baseline.directory, { recursive: true, force: true })
     }
   }
 

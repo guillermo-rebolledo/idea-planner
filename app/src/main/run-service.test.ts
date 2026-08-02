@@ -8,9 +8,11 @@ import {
   symlink,
   writeFile
 } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
 import { createConnection, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   emptyUsage,
@@ -21,6 +23,7 @@ import {
 import type { SessionSummary } from '@shared/contract'
 import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
 import type { RunLaunch } from './run-process-broker'
+import { snapshotCheckout } from './git'
 import { RunService } from './run-service'
 import { discoverSkills } from './skills'
 
@@ -1491,3 +1494,60 @@ async function requestApproval(
   )
   return { answer }
 }
+
+describe('a Run the app never got to finish', () => {
+  /** A Project with one commit, as any Checkout would be. */
+  async function project(root: string): Promise<string> {
+    const checkout = join(root, 'a-project')
+    await mkdir(checkout, { recursive: true })
+    const git = promisify(execFile)
+    await git('git', ['init', '--quiet'], { cwd: checkout })
+    await writeFile(join(checkout, 'tracked.ts'), 'a\n')
+    await git('git', ['add', '-A'], { cwd: checkout })
+    await git(
+      'git',
+      ['-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '--quiet', '-m', 'init'],
+      { cwd: checkout }
+    )
+    return checkout
+  }
+
+  it('reports what it changed on the next start, and cleans up after itself', async () => {
+    const root = await readyClaudeRoot('run-service-abandoned-')
+    const checkout = await project(root)
+    const deps = claudeDeps(root, fakeBroker())
+    // A Run that started, changed something, and never concluded: the app was
+    // quit or it crashed, so nothing compared its Checkout.
+    const abandoned = join(deps.privateRoot, 'checkout-snapshots', 'run-key')
+    const snapshot = await snapshotCheckout(checkout, abandoned)
+    await writeFile(
+      join(abandoned, 'baseline.json'),
+      JSON.stringify({ sessionId: 'session', runId: 'run-abandoned', checkout, snapshot })
+    )
+    await writeFile(join(checkout, 'tracked.ts'), 'changed by the agent\n')
+
+    const service = new RunService(deps)
+    await service.recoverAbandonedSnapshots()
+
+    expect(deps.core.commands).toContain('conversation/checkout-changes')
+    const recorded = deps.core.send.mock.calls
+      .map(([command]) => command as { type: string; input?: { files?: { path: string }[] } })
+      .find((command) => command.type === 'conversation/checkout-changes')
+    expect(recorded?.input?.files?.map((file) => file.path)).toEqual(['tracked.ts'])
+    await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([])
+  })
+
+  it('throws away a snapshot it cannot make sense of, rather than keeping it forever', async () => {
+    const root = await readyClaudeRoot('run-service-rubbish-')
+    const deps = claudeDeps(root, fakeBroker())
+    const rubbish = join(deps.privateRoot, 'checkout-snapshots', 'run-key')
+    await mkdir(rubbish, { recursive: true })
+    await writeFile(join(rubbish, 'baseline.json'), 'not json at all')
+
+    const service = new RunService(deps)
+    await service.recoverAbandonedSnapshots()
+
+    expect(deps.core.commands).not.toContain('conversation/checkout-changes')
+    await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([])
+  })
+})
