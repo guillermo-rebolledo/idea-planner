@@ -6,10 +6,12 @@ import {
   MAX_APPROVAL_DETAIL,
   addUsage,
   conversationEntrySchema,
+  countDiffLines,
   emptyUsage,
   assistantMessageId,
   hasPlainOptions,
   redactCredentials,
+  type ChangedFile,
   type DiffHunk,
   submitConversationMessageInputSchema,
   type ConversationEntry,
@@ -75,7 +77,7 @@ function describeChange(
   path: string,
   hunks: DiffHunk[],
   checkout: string
-): { path: string; hunks: DiffHunk[] } {
+): { path: string; hunks: DiffHunk[]; added: number; removed: number } {
   const relative = path.startsWith(`${checkout}/`) ? path.slice(checkout.length + 1) : path
   let budget = MAX_DIFF_LINES
   const kept: DiffHunk[] = []
@@ -88,7 +90,11 @@ function describeChange(
   return {
     path: redactCredentials(relative),
     // A change with nothing left to show is still a change that happened.
-    hunks: kept.length > 0 ? kept : [{ ...hunks[0], lines: [] } as DiffHunk]
+    hunks: kept.length > 0 ? kept : [{ ...hunks[0], lines: [] } as DiffHunk],
+    // Counted from the whole change, not from what survived the budget: a
+    // clipped diff that also reports a smaller change is a diff that lies
+    // twice.
+    ...countDiffLines(hunks)
   }
 }
 /** Streaming deltas persist at most this often; every other change persists at once. */
@@ -832,12 +838,29 @@ function describeRecovery(
   }
 }
 
+/** One more change to a file, folded into whatever this Session knew of it. */
+function tally(
+  known: ChangedFile | undefined,
+  entry: Extract<ConversationEntry, { kind: 'file-change' }>
+): ChangedFile {
+  return {
+    path: entry.path,
+    changes: (known?.changes ?? 0) + 1,
+    added: (known?.added ?? 0) + entry.added,
+    removed: (known?.removed ?? 0) + entry.removed
+  }
+}
+
 function summarize(sessionId: string, entries: ConversationEntry[]): ConversationSnapshot {
   let activeRunId: string | null = null
   let recovery: ConversationRecovery | null = null
   let latestRunUsage: HarnessUsage | null = null
   let sessionUsage = emptyUsage()
   const harnessThreads: Partial<Record<HarnessId, string>> = {}
+  // One row per file, in the order the Session first touched each: what this
+  // work has done to the Project, kept as it was reported rather than read
+  // back off disk.
+  const changed = new Map<string, ChangedFile>()
   for (const entry of entries) {
     if (entry.kind === 'boundary') {
       if (entry.boundary === 'run-started') {
@@ -853,6 +876,7 @@ function summarize(sessionId: string, entries: ConversationEntry[]): Conversatio
       latestRunUsage = entry.usage
     }
     if (entry.kind === 'thread') harnessThreads[entry.harness] = entry.threadId
+    if (entry.kind === 'file-change') changed.set(entry.path, tally(changed.get(entry.path), entry))
   }
   return {
     sessionId,
@@ -860,6 +884,7 @@ function summarize(sessionId: string, entries: ConversationEntry[]): Conversatio
     usage: { run: latestRunUsage, session: sessionUsage },
     recovery,
     harnessThreads,
+    changedFiles: [...changed.values()],
     activeRunId,
     // The Run is blocked for exactly as long as a request stands unanswered.
     // The oldest is the one put to the person, so that answering it reveals

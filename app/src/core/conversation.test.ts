@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { ConversationEntry, HarnessEvent } from '@shared/conversation'
+import type { ConversationEntry, DiffHunk, HarnessEvent } from '@shared/conversation'
 import { createCore, type Core } from './core'
 
 /**
@@ -722,6 +722,115 @@ describe('file change identity', () => {
     const reloaded = await makeCore().getConversation(sessionId)
     const changes = reloaded.entries.filter((entry) => entry.kind === 'file-change')
     expect(changes).toHaveLength(2)
+  })
+})
+
+describe('what this Session changed', () => {
+  const hunk = (lines: string[]): DiffHunk => ({
+    oldStart: 1,
+    oldLines: 1,
+    newStart: 1,
+    newLines: lines.length,
+    lines
+  })
+
+  it('gathers one row per file across every Run, counting what it did to each', async () => {
+    const first = await startRun('Rename the greeting', 'submission-one')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId: first,
+      event: {
+        type: 'file-change',
+        path: `${projectRoot}/greeting.ts`,
+        hunks: [hunk(['-const a = 1', '+const a = 2'])]
+      }
+    })
+    await core.applyHarnessEvent({
+      sessionId,
+      runId: first,
+      event: {
+        type: 'file-change',
+        path: `${projectRoot}/README.md`,
+        hunks: [hunk(['+Now with greetings'])]
+      }
+    })
+    await core.finalizeConversationRun({
+      sessionId,
+      runId: first,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness process completed'
+    })
+
+    // A second Run touching the same file is the same file, not a second row.
+    const second = await startRun('And again', 'submission-two')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId: second,
+      event: {
+        type: 'file-change',
+        path: `${projectRoot}/greeting.ts`,
+        hunks: [hunk(['+const b = 3'])]
+      }
+    })
+
+    const changed = (await makeCore().getConversation(sessionId)).changedFiles
+    expect(changed).toMatchObject([
+      { path: 'greeting.ts', changes: 2, added: 2, removed: 1 },
+      { path: 'README.md', changes: 1, added: 1, removed: 0 }
+    ])
+  })
+
+  it('reports nothing for a Session whose agent changed nothing', async () => {
+    const runId = await startRun('Just have a look', 'submission-look')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: { type: 'assistant-message', id: 'msg_1', text: 'Looks fine.', complete: true }
+    })
+
+    expect((await core.getConversation(sessionId)).changedFiles).toEqual([])
+  })
+
+  it('counts the whole change, not the part of the diff it kept', async () => {
+    // A long diff is shortened before it is stored. Counting what survived
+    // would report a smaller change than the one that actually happened.
+    const runId = await startRun('Rewrite it all', 'submission-long')
+    const long = Array.from({ length: 500 }, (_, index) => `+line ${String(index)}`)
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'file-change',
+        path: `${projectRoot}/generated.ts`,
+        hunks: [hunk(long)]
+      }
+    })
+
+    const [file] = (await makeCore().getConversation(sessionId)).changedFiles
+    expect(file).toMatchObject({ path: 'generated.ts', added: 500, removed: 0 })
+  })
+
+  it('reports only what the agent changed, never what was already dirty', async () => {
+    // The Checkout is edited in place (ADR 0004), so a Project the person had
+    // already been working in would hand `git diff` their edits as the
+    // agent's. This record comes from what the Harness reported instead — so
+    // this passes by construction today, and stands as the guard against
+    // anybody later reaching for the repository to answer this.
+    await writeFile(join(projectRoot, 'mine.ts'), 'export const mine = true')
+    const runId = await startRun('Change yours', 'submission-dirty')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'file-change',
+        path: `${projectRoot}/theirs.ts`,
+        hunks: [hunk(['+export const theirs = true'])]
+      }
+    })
+
+    const changed = (await core.getConversation(sessionId)).changedFiles
+    expect(changed.map((file) => file.path)).toEqual(['theirs.ts'])
   })
 })
 

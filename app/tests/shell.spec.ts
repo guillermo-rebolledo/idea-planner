@@ -380,6 +380,53 @@ test('the inbox groups by what a Session is doing and filters by Project', async
   }
 })
 
+/** A Harness that edits one file and says so, the way Claude Code reports it. */
+const EDITING_CLAUDE_FAKE = `case "$1" in
+  --version) echo "2.1.220 (Claude Code)"; exit 0;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  --print)
+    echo '{"type":"system","subtype":"init"}'
+    echo '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok"}]},"session_id":"thread-1","tool_use_result":{"filePath":"greeting.ts","oldString":"hello","newString":"goodbye","structuredPatch":[{"oldStart":1,"oldLines":1,"newStart":1,"newLines":1,"lines":["-export const greeting = \\"hello\\"","+export const greeting = \\"goodbye\\""]}]}}'
+    echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}]},"session_id":"thread-1"}'
+    /bin/sleep 1
+    exit 0;;
+esac`
+
+test('a Session says which files it changed, and offers nothing to accept', async () => {
+  await installFakeHarness('claude', EDITING_CLAUDE_FAKE)
+  // The person was already working here before the agent was. Their own edit
+  // must never be reported as the agent's (ADR 0004).
+  await writeFile(join(sandbox.projectDir, 'mine.ts'), 'export const mine = true')
+
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Change the greeting')
+
+    const panel = page.getByRole('region', { name: 'Files this Session changed' })
+    // Nothing has been developed yet, so there is nothing to summarise.
+    await expect(panel).toHaveCount(0)
+
+    await page.getByLabel('Your message').fill('Go on then')
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
+
+    await expect(panel.getByText('greeting.ts')).toBeVisible()
+    await expect(panel.getByText('+1')).toBeVisible()
+    await expect(panel.getByText('−1')).toBeVisible()
+    // The person's own dirty file is not the agent's work.
+    await expect(panel.getByText('mine.ts')).toHaveCount(0)
+
+    // Opening it shows the diff, and there is nothing to accept or reject:
+    // the change is already on disk and git is the only undo.
+    await panel.getByRole('button', { name: 'greeting.ts', exact: false }).click()
+    await expect(panel.getByText('+export const greeting = "goodbye"')).toBeVisible()
+    await expect(panel.getByRole('button', { name: /accept|reject|revert|undo/i })).toHaveCount(0)
+  } finally {
+    await app.close()
+  }
+})
+
 test('deleting a Session forgets it and leaves the Project alone', async () => {
   await writeFile(join(sandbox.projectDir, 'source.ts'), 'export const kept = true')
 

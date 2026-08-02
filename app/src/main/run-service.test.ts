@@ -145,6 +145,7 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       usage: { run: null, session: emptyUsage() },
       recovery: null,
       harnessThreads: {},
+      changedFiles: [],
       activeRunId: null,
       pendingApprovalId: null
     },
@@ -425,6 +426,7 @@ describe('Run service', () => {
             usage: { run: null, session: emptyUsage() },
             recovery: null,
             harnessThreads: {},
+            changedFiles: [],
             activeRunId: null
           })
         }

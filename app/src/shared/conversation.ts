@@ -74,6 +74,19 @@ export const diffHunkSchema = z.object({
 })
 export type DiffHunk = z.infer<typeof diffHunkSchema>
 
+/**
+ * What a set of hunks added and removed. One definition, because a diff that
+ * counts differently in the panel than in the Conversation is a diff nobody
+ * can quote.
+ */
+export function countDiffLines(hunks: DiffHunk[]): { added: number; removed: number } {
+  const lines = hunks.flatMap((hunk) => hunk.lines)
+  return {
+    added: lines.filter((line) => line.startsWith('+')).length,
+    removed: lines.filter((line) => line.startsWith('-')).length
+  }
+}
+
 export const harnessEventSchema = z.discriminatedUnion('type', [
   /**
    * One assistant message, identified by the Harness's own item id. A Run may
@@ -347,10 +360,33 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     at: z.string().datetime(),
     runId: z.string().min(1),
     path: z.string().min(1),
-    hunks: z.array(diffHunkSchema).min(1)
+    hunks: z.array(diffHunkSchema).min(1),
+    /**
+     * What the change did, counted before the diff was shortened for storage.
+     * A long change keeps only the first of its lines, and counting those
+     * would report a smaller change than the one that happened.
+     */
+    added: z.number().int().nonnegative().default(0),
+    removed: z.number().int().nonnegative().default(0)
   })
 ])
 export type ConversationEntry = z.infer<typeof conversationEntrySchema>
+
+/**
+ * One file this Session's agent changed, gathered from what the Harness
+ * reported at the time rather than from the repository now. The Checkout is
+ * edited in place (ADR 0004), so a Project that was already dirty when the
+ * Session started would hand `git diff` the person's own edits as the agent's.
+ */
+export const changedFileSchema = z.object({
+  /** Relative to the Checkout, as the Conversation recorded it. */
+  path: z.string().min(1),
+  /** How many separate times the agent wrote to it, across every Run. */
+  changes: z.number().int().positive(),
+  added: z.number().int().nonnegative(),
+  removed: z.number().int().nonnegative()
+})
+export type ChangedFile = z.infer<typeof changedFileSchema>
 
 export const conversationSnapshotSchema = z.object({
   sessionId: z.string().min(1),
@@ -363,6 +399,13 @@ export const conversationSnapshotSchema = z.object({
     codex: z.string().min(1).optional(),
     claude: z.string().min(1).optional()
   }),
+  /**
+   * What this Session has done to the Project, one row per file. It answers
+   * "what is the state of this work" without reading the chat log, and the
+   * app never offers to accept or reject any of it: the change is already on
+   * disk and git is the only undo (ADR 0004).
+   */
+  changedFiles: z.array(changedFileSchema),
   /** The Run the Conversation is currently waiting on, when there is one. */
   activeRunId: z.string().min(1).nullable(),
   /**

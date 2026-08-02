@@ -10,6 +10,7 @@ import {
   User
 } from 'lucide-react'
 import {
+  countDiffLines,
   HARNESS_DEFAULT_MODEL,
   SKILL_ATTRIBUTION,
   ruleText,
@@ -29,6 +30,8 @@ import {
   type SuggestedResponse
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
+import { ChangedFiles } from '@renderer/components/ChangedFiles'
+import { DiffView } from '@renderer/components/Diff'
 import { cn } from '@renderer/lib/utils'
 
 /**
@@ -360,498 +363,515 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
   )
 
   return (
-    <section
-      className="mt-4 flex flex-col rounded-md border border-border bg-surface"
-      aria-labelledby="conversation-heading"
-    >
-      <header className="flex flex-wrap items-center gap-2 border-b border-border p-3">
-        <div>
-          <h3 id="conversation-heading" className="text-sm font-medium">
-            Conversation
-          </h3>
-          <p className="text-xs text-muted-foreground">
-            One permanent history for this Session. The work itself lives in your Project, under
-            git.
-          </p>
-        </div>
-        {activeRunId && (
-          <Button
-            className="ml-auto"
-            size="sm"
-            variant="secondary"
-            onClick={() =>
-              void window.shell.stopRun({ runId: activeRunId, sessionId }).then(
-                () => refresh(),
-                () => setError('The Run could not be stopped.')
-              )
-            }
-          >
-            <Square aria-hidden="true" className="size-3" /> Stop
-          </Button>
-        )}
-      </header>
-
-      <ol
-        className="flex max-h-96 flex-col gap-3 overflow-y-auto p-3"
-        aria-label="Conversation history"
-        aria-live="polite"
-        aria-busy={activeRunId !== null}
+    <>
+      {/* Above the log on purpose: the state of the work is what a person
+          coming back to this Session is looking for. */}
+      <ChangedFiles
+        files={phase.snapshot.changedFiles}
+        entries={entries.filter((entry) => entry.kind === 'file-change')}
+      />
+      <section
+        className="mt-4 flex flex-col rounded-md border border-border bg-surface"
+        aria-labelledby="conversation-heading"
       >
-        {!started && (
-          <li className="text-xs text-muted-foreground">
-            Nothing has been developed yet. Send your first message — and if you have Skills
-            installed, type / to work to one.
-          </li>
-        )}
-        {entries.map((entry) => (
-          <EntryRow key={entry.id} entry={entry} />
-        ))}
-        {liveForActiveRun?.messages
-          .filter((message) => message.text)
-          .map((message) => (
-            <li key={message.id} className="flex gap-2">
-              <Bot aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-              <div className="min-w-0">
-                <p className="text-xs font-medium text-muted-foreground">Assistant</p>
-                <p className="text-sm whitespace-pre-wrap select-text">{message.text}</p>
-              </div>
-            </li>
-          ))}
-        {liveForActiveRun?.commands
-          .filter(
-            (entry) =>
-              !entries.some(
-                (durable) =>
-                  durable.kind === 'command' &&
-                  durable.id === `command:${liveForActiveRun.runId}:${entry.id}`
-              )
-          )
-          .map((entry) => (
-            <CommandRow
-              key={entry.id}
-              command={entry.command}
-              output={entry.output}
-              failed={entry.failed}
-              running={entry.running}
-            />
-          ))}
-        {liveForActiveRun?.changes
-          .slice(
-            entries.filter(
-              (entry) => entry.kind === 'file-change' && entry.runId === liveForActiveRun.runId
-            ).length
-          )
-          .map((change) => (
-            <FileChangeRow key={change.id} path={change.path} hunks={change.hunks} />
-          ))}
-        {activeRunId &&
-          !pendingApproval &&
-          !liveForActiveRun?.messages.some((message) => message.text) && (
-            <li className="text-xs text-muted-foreground">Waiting for the Harness to answer…</li>
-          )}
-        <div ref={endRef} />
-      </ol>
-
-      {catalog?.projectTrusted && catalog.available.some((entry) => entry.source === 'project') && (
-        <p className="mx-3 mb-3 text-[11px] text-muted-foreground">
-          This Project’s own Skills are offered because you trusted them.{' '}
-          <button
-            type="button"
-            className="underline underline-offset-2"
-            onClick={() =>
-              void window.shell
-                .trustProjectSkills({
-                  root: session.projectRoot,
-                  harness: chosenHarness ?? 'claude',
-                  trusted: false
-                })
-                .then(setCatalog, () => setError('That could not be withdrawn.'))
-            }
-          >
-            Stop trusting them
-          </button>
-        </p>
-      )}
-
-      {catalog && catalog.untrusted.length > 0 && (
-        <div
-          role="alert"
-          aria-label="Project Skills"
-          className="mx-3 mb-3 rounded-md border border-border bg-muted/50 p-3"
-        >
-          <p className="text-xs">
-            This Project brings {catalog.untrusted.length === 1 ? 'a Skill' : 'Skills'} of its own.
-            A Skill is instructions for an agent that can edit files and run commands, and these
-            arrived with the repository — so they are not offered until you say so.
-          </p>
-          <ul className="mt-2 flex flex-col gap-1">
-            {catalog.untrusted.map((entry) => (
-              <li key={entry.name} className="text-xs">
-                <span className="font-medium">{entry.name}</span>
-                {entry.description && (
-                  <span className="text-muted-foreground"> — {entry.description}</span>
-                )}
-                <span className="block font-mono text-[10px] break-all text-muted-foreground select-text">
-                  {entry.path}
-                </span>
-              </li>
-            ))}
-          </ul>
-          <Button
-            className="mt-2"
-            size="sm"
-            variant="secondary"
-            onClick={() =>
-              void window.shell
-                .trustProjectSkills({
-                  root: session.projectRoot,
-                  harness: chosenHarness ?? 'claude',
-                  trusted: true
-                })
-                .then(setCatalog, () => setError('Those Skills could not be trusted.'))
-            }
-          >
-            Trust this Project’s Skills
-          </Button>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            Read them first — they are files in the repository. You can withdraw this at any time.
-          </p>
-        </div>
-      )}
-
-      {pendingApproval && (
-        <div
-          role="alert"
-          aria-label="Approval request"
-          className="mx-3 mb-3 rounded-md border border-border bg-muted/50 p-3"
-        >
-          <p className="flex items-center gap-2 text-xs font-medium">
-            <ShieldQuestion aria-hidden="true" className="size-3.5 shrink-0" />
-            The agent is asking before it uses {pendingApproval.tool}. This Run is blocked until you
-            answer.
-          </p>
-          <p className="mt-2 font-mono text-xs break-all select-text">{pendingApproval.summary}</p>
-          {pendingApproval.detail && (
-            <details className="mt-1">
-              <summary className="cursor-pointer text-[11px] text-muted-foreground">
-                What it sent
-              </summary>
-              <pre className="mt-1 max-h-40 overflow-auto rounded-md border border-border bg-surface p-2 font-mono text-[11px] whitespace-pre-wrap select-text">
-                {pendingApproval.detail}
-              </pre>
-            </details>
-          )}
-          <label className="sr-only" htmlFor="approval-message">
-            What to tell the agent if you decline
-          </label>
-          <input
-            id="approval-message"
-            value={denyMessage}
-            disabled={deciding}
-            onChange={(event) => setDenyMessage(event.target.value)}
-            placeholder="If you decline, what should it do instead? (optional)"
-            className="mt-2 h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
-          />
-          <div className="mt-2 flex flex-wrap gap-2">
+        <header className="flex flex-wrap items-center gap-2 border-b border-border p-3">
+          <div>
+            <h3 id="conversation-heading" className="text-sm font-medium">
+              Conversation
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              One permanent history for this Session. The work itself lives in your Project, under
+              git.
+            </p>
+          </div>
+          {activeRunId && (
             <Button
-              size="sm"
-              disabled={deciding}
-              onClick={() => void decide(pendingApproval, 'allow')}
-            >
-              Approve
-            </Button>
-            <Button
+              className="ml-auto"
               size="sm"
               variant="secondary"
-              disabled={deciding}
-              onClick={() => void decide(pendingApproval, 'deny')}
+              onClick={() =>
+                void window.shell.stopRun({ runId: activeRunId, sessionId }).then(
+                  () => refresh(),
+                  () => setError('The Run could not be stopped.')
+                )
+              }
             >
-              Decline
+              <Square aria-hidden="true" className="size-3" /> Stop
             </Button>
-          </div>
-          <p className="mt-2 text-[11px] text-muted-foreground">
-            Declining is not a stop: the agent is told why and carries on without it.
-          </p>
-          {pendingApproval.proposedRule && (
-            <div className="mt-2 border-t border-border pt-2">
-              <p className="text-[11px] text-muted-foreground">
-                {STANDING_EXPLANATION[pendingApproval.proposedRule.kind]}. The agent stops asking,
-                so this is the exact rule that gets stored:
-              </p>
-              {/* Shown before it is accepted, and never paraphrased. Once a rule
-                  is stored the Harness answers with it before this app is asked
-                  anything, so this line is the last chance to read it. */}
-              <p className="mt-1 font-mono text-[11px] break-all select-text">
-                {ruleText(pendingApproval.proposedRule)}
-              </p>
-              <Button
-                className="mt-2"
-                size="sm"
-                variant="secondary"
-                disabled={deciding}
-                onClick={() => void decide(pendingApproval, 'allow', true)}
-              >
-                Always allow this
-              </Button>
-              <p className="mt-1 text-[11px] break-all text-muted-foreground">
-                {/* Named in full, because which Project this applies to is the
-                    whole scope of what is being granted. */}
-                Only in {session.projectRoot}, and you can take it back at any time.
-              </p>
-            </div>
           )}
-        </div>
-      )}
+        </header>
 
-      {phase.snapshot.recovery && (
-        <div role="alert" className="mx-3 mb-3 rounded-md border border-border bg-muted/50 p-3">
-          <p className="text-xs text-foreground">
-            {RECOVERY_GUIDANCE[phase.snapshot.recovery.category]}
-          </p>
-          <p className="mt-1 text-xs break-words text-muted-foreground">
-            What happened: {phase.snapshot.recovery.summary}
-          </p>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            The full sanitized activity for this Run is below.
-          </p>
-          {resumable && resumableText?.kind === 'message' && (
+        <ol
+          className="flex max-h-96 flex-col gap-3 overflow-y-auto p-3"
+          aria-label="Conversation history"
+          aria-live="polite"
+          aria-busy={activeRunId !== null}
+        >
+          {!started && (
+            <li className="text-xs text-muted-foreground">
+              Nothing has been developed yet. Send your first message — and if you have Skills
+              installed, type / to work to one.
+            </li>
+          )}
+          {entries.map((entry) => (
+            <EntryRow key={entry.id} entry={entry} />
+          ))}
+          {liveForActiveRun?.messages
+            .filter((message) => message.text)
+            .map((message) => (
+              <li key={message.id} className="flex gap-2">
+                <Bot
+                  aria-hidden="true"
+                  className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+                />
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-muted-foreground">Assistant</p>
+                  <p className="text-sm whitespace-pre-wrap select-text">{message.text}</p>
+                </div>
+              </li>
+            ))}
+          {liveForActiveRun?.commands
+            .filter(
+              (entry) =>
+                !entries.some(
+                  (durable) =>
+                    durable.kind === 'command' &&
+                    durable.id === `command:${liveForActiveRun.runId}:${entry.id}`
+                )
+            )
+            .map((entry) => (
+              <CommandRow
+                key={entry.id}
+                command={entry.command}
+                output={entry.output}
+                failed={entry.failed}
+                running={entry.running}
+              />
+            ))}
+          {liveForActiveRun?.changes
+            .slice(
+              entries.filter(
+                (entry) => entry.kind === 'file-change' && entry.runId === liveForActiveRun.runId
+              ).length
+            )
+            .map((change) => (
+              <FileChangeRow key={change.id} path={change.path} hunks={change.hunks} />
+            ))}
+          {activeRunId &&
+            !pendingApproval &&
+            !liveForActiveRun?.messages.some((message) => message.text) && (
+              <li className="text-xs text-muted-foreground">Waiting for the Harness to answer…</li>
+            )}
+          <div ref={endRef} />
+        </ol>
+
+        {catalog?.projectTrusted &&
+          catalog.available.some((entry) => entry.source === 'project') && (
+            <p className="mx-3 mb-3 text-[11px] text-muted-foreground">
+              This Project’s own Skills are offered because you trusted them.{' '}
+              <button
+                type="button"
+                className="underline underline-offset-2"
+                onClick={() =>
+                  void window.shell
+                    .trustProjectSkills({
+                      root: session.projectRoot,
+                      harness: chosenHarness ?? 'claude',
+                      trusted: false
+                    })
+                    .then(setCatalog, () => setError('That could not be withdrawn.'))
+                }
+              >
+                Stop trusting them
+              </button>
+            </p>
+          )}
+
+        {catalog && catalog.untrusted.length > 0 && (
+          <div
+            role="alert"
+            aria-label="Project Skills"
+            className="mx-3 mb-3 rounded-md border border-border bg-muted/50 p-3"
+          >
+            <p className="text-xs">
+              This Project brings {catalog.untrusted.length === 1 ? 'a Skill' : 'Skills'} of its
+              own. A Skill is instructions for an agent that can edit files and run commands, and
+              these arrived with the repository — so they are not offered until you say so.
+            </p>
+            <ul className="mt-2 flex flex-col gap-1">
+              {catalog.untrusted.map((entry) => (
+                <li key={entry.name} className="text-xs">
+                  <span className="font-medium">{entry.name}</span>
+                  {entry.description && (
+                    <span className="text-muted-foreground"> — {entry.description}</span>
+                  )}
+                  <span className="block font-mono text-[10px] break-all text-muted-foreground select-text">
+                    {entry.path}
+                  </span>
+                </li>
+              ))}
+            </ul>
             <Button
               className="mt-2"
               size="sm"
               variant="secondary"
-              disabled={busy}
               onClick={() =>
-                void send(
-                  resumableText.text,
-                  resumableText.source === 'suggested-response' ? 'suggested-response' : 'composer',
-                  resumable
-                )
+                void window.shell
+                  .trustProjectSkills({
+                    root: session.projectRoot,
+                    harness: chosenHarness ?? 'claude',
+                    trusted: true
+                  })
+                  .then(setCatalog, () => setError('Those Skills could not be trusted.'))
               }
             >
-              Send that message again
+              Trust this Project’s Skills
             </Button>
-          )}
-        </div>
-      )}
-
-      {suggested.length > 0 && (
-        <div className="border-t border-border p-3">
-          <p className="text-xs text-muted-foreground">
-            Suggested Responses send straight away. You can always write your own instead.
-          </p>
-          <ul className="mt-2 flex flex-wrap gap-2">
-            {suggested.map((option) => (
-              <li key={option.id}>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={busy || blocked || activeRunId !== null}
-                  onClick={() => void send(option.value, 'suggested-response')}
-                >
-                  {option.label}
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {plainOptions && suggested.length === 0 && (
-        <p className="border-t border-border px-3 pt-3 text-xs text-muted-foreground">
-          The assistant listed options in prose rather than as structured choices, so write your
-          answer below.
-        </p>
-      )}
-
-      <form
-        className="flex flex-col gap-2 border-t border-border p-3"
-        onSubmit={(event) => {
-          event.preventDefault()
-          if (draft.trim()) void send(draft.trim(), 'composer')
-        }}
-      >
-        <label className="sr-only" htmlFor="conversation-composer">
-          Your message
-        </label>
-        {slashQuery !== null && (
-          <ul
-            aria-label="Skills"
-            className="max-h-40 overflow-y-auto rounded-md border border-border bg-surface"
-          >
-            {matchingSkills.length === 0 && (
-              <li className="px-2 py-1.5 text-xs text-muted-foreground">
-                No installed Skill matches. Keep typing your message — a Skill is optional.
-              </li>
-            )}
-            {matchingSkills.map((entry) => (
-              <li key={`${entry.source}:${entry.name}`}>
-                <button
-                  type="button"
-                  className="flex w-full flex-col items-start px-2 py-1.5 text-left hover:bg-muted/60"
-                  onClick={() => chooseSkill(entry.name)}
-                >
-                  <span className="text-xs font-medium">
-                    {entry.name}
-                    {entry.source === 'project' && (
-                      <span className="ml-1 font-normal text-muted-foreground">this Project</span>
-                    )}
-                  </span>
-                  {entry.description && (
-                    <span className="text-[11px] text-muted-foreground">{entry.description}</span>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <textarea
-          id="conversation-composer"
-          value={draft}
-          disabled={activeRunId !== null}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder={started ? 'Write your answer…' : 'What should we develop or decide?'}
-          className="min-h-20 rounded-md border border-border bg-background p-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-        />
-        {chosenSkill && (
-          <p className="text-[11px] text-muted-foreground">
-            This message asks for the{' '}
-            <span className="font-medium text-foreground">{chosenSkill}</span> Skill.{' '}
-            <button
-              type="button"
-              className="underline underline-offset-2"
-              onClick={() => setSkill(null)}
-            >
-              Send without it
-            </button>
-          </p>
-        )}
-        <div className="flex flex-wrap items-center gap-2">
-          <Field label="Skill">
-            <select
-              aria-label="Skill"
-              value={chosenSkill ?? ''}
-              disabled={(catalog?.available.length ?? 0) === 0}
-              onChange={(event) => setSkill(event.target.value || null)}
-              className="h-8 max-w-44 rounded-md border border-border bg-background px-2 text-xs"
-            >
-              <option value="">{catalog?.available.length ? 'None' : 'None installed'}</option>
-              {catalog?.available.map((entry) => (
-                <option key={`${entry.source}:${entry.name}`} value={entry.name}>
-                  {entry.name}
-                  {entry.source === 'project' ? ' (this Project)' : ''}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Harness">
-            <select
-              aria-label="Harness"
-              value={selected?.harness ?? ''}
-              onChange={(event) => setHarness(event.target.value as HarnessId)}
-              className="h-8 rounded-md border border-border bg-background px-2 text-xs"
-            >
-              {harnesses.length === 0 && <option value="">No Harness available</option>}
-              {harnesses.map((entry) => (
-                <option key={entry.harness} value={entry.harness}>
-                  {entry.displayName}
-                  {entry.capabilities.developSession.available ? '' : ' — unavailable'}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Model">
-            <input
-              aria-label="Model"
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              placeholder={HARNESS_DEFAULT_MODEL}
-              title={`Leave as “${HARNESS_DEFAULT_MODEL}” to use the Harness’s configured model.`}
-              className="h-8 w-36 rounded-md border border-border bg-background px-2 text-xs"
-            />
-          </Field>
-          <Field label="Effort">
-            <select
-              aria-label="Effort"
-              value={effort}
-              onChange={(event) => setEffort(event.target.value)}
-              className="h-8 rounded-md border border-border bg-background px-2 text-xs capitalize"
-            >
-              {EFFORT_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Permission">
-            <select
-              aria-label="Permission Mode"
-              value={permissionMode}
-              onChange={(event) => setPermissionMode(event.target.value as PermissionMode)}
-              className="h-8 rounded-md border border-border bg-background px-2 text-xs"
-            >
-              <option value="ask">Ask</option>
-              <option value="auto">Full access</option>
-            </select>
-          </Field>
-          <Button
-            className="ml-auto"
-            size="sm"
-            type="submit"
-            disabled={busy || blocked || activeRunId !== null || !draft.trim()}
-          >
-            <Send aria-hidden="true" className="size-3.5" />
-            {busy ? 'Sending…' : started ? 'Send' : 'Start developing'}
-          </Button>
-        </div>
-        {blocked && canDevelop && (
-          <div role="status" className="rounded-md border border-border bg-muted/50 p-2">
-            <p className="text-xs text-foreground">{canDevelop.summary}</p>
-            {canDevelop.command && (
-              <code className="mt-1 block font-mono text-[11px] break-all select-text">
-                {canDevelop.command}
-              </code>
-            )}
             <p className="mt-1 text-[11px] text-muted-foreground">
-              This app never installs or updates a Harness for you.
+              Read them first — they are files in the repository. You can withdraw this at any time.
             </p>
           </div>
         )}
-        <p className="text-[11px] text-muted-foreground">
-          {permissionMode === 'ask'
-            ? 'In Ask, the agent stops for your approval before it edits or runs anything.'
-            : 'In Full access, the agent edits and runs without asking. The Harness applies its own permissions for this Run.'}
-        </p>
-        {/* The mapping onto each Harness is lossy, and ADR 0003 says the
-            differences are stated rather than discovered. */}
-        {chosenHarness === 'codex' && (
-          <p className="text-[11px] text-muted-foreground">
-            Codex differs from Claude Code here: in Ask it edits inside this Project without asking
-            and stops for commands, it proposes its own “always allow” rule rather than being given
-            one, and a Skill reaches it as instructions for the Run rather than natively.
+
+        {pendingApproval && (
+          <div
+            role="alert"
+            aria-label="Approval request"
+            className="mx-3 mb-3 rounded-md border border-border bg-muted/50 p-3"
+          >
+            <p className="flex items-center gap-2 text-xs font-medium">
+              <ShieldQuestion aria-hidden="true" className="size-3.5 shrink-0" />
+              The agent is asking before it uses {pendingApproval.tool}. This Run is blocked until
+              you answer.
+            </p>
+            <p className="mt-2 font-mono text-xs break-all select-text">
+              {pendingApproval.summary}
+            </p>
+            {pendingApproval.detail && (
+              <details className="mt-1">
+                <summary className="cursor-pointer text-[11px] text-muted-foreground">
+                  What it sent
+                </summary>
+                <pre className="mt-1 max-h-40 overflow-auto rounded-md border border-border bg-surface p-2 font-mono text-[11px] whitespace-pre-wrap select-text">
+                  {pendingApproval.detail}
+                </pre>
+              </details>
+            )}
+            <label className="sr-only" htmlFor="approval-message">
+              What to tell the agent if you decline
+            </label>
+            <input
+              id="approval-message"
+              value={denyMessage}
+              disabled={deciding}
+              onChange={(event) => setDenyMessage(event.target.value)}
+              placeholder="If you decline, what should it do instead? (optional)"
+              className="mt-2 h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
+            />
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                disabled={deciding}
+                onClick={() => void decide(pendingApproval, 'allow')}
+              >
+                Approve
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={deciding}
+                onClick={() => void decide(pendingApproval, 'deny')}
+              >
+                Decline
+              </Button>
+            </div>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Declining is not a stop: the agent is told why and carries on without it.
+            </p>
+            {pendingApproval.proposedRule && (
+              <div className="mt-2 border-t border-border pt-2">
+                <p className="text-[11px] text-muted-foreground">
+                  {STANDING_EXPLANATION[pendingApproval.proposedRule.kind]}. The agent stops asking,
+                  so this is the exact rule that gets stored:
+                </p>
+                {/* Shown before it is accepted, and never paraphrased. Once a rule
+                  is stored the Harness answers with it before this app is asked
+                  anything, so this line is the last chance to read it. */}
+                <p className="mt-1 font-mono text-[11px] break-all select-text">
+                  {ruleText(pendingApproval.proposedRule)}
+                </p>
+                <Button
+                  className="mt-2"
+                  size="sm"
+                  variant="secondary"
+                  disabled={deciding}
+                  onClick={() => void decide(pendingApproval, 'allow', true)}
+                >
+                  Always allow this
+                </Button>
+                <p className="mt-1 text-[11px] break-all text-muted-foreground">
+                  {/* Named in full, because which Project this applies to is the
+                    whole scope of what is being granted. */}
+                  Only in {session.projectRoot}, and you can take it back at any time.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {phase.snapshot.recovery && (
+          <div role="alert" className="mx-3 mb-3 rounded-md border border-border bg-muted/50 p-3">
+            <p className="text-xs text-foreground">
+              {RECOVERY_GUIDANCE[phase.snapshot.recovery.category]}
+            </p>
+            <p className="mt-1 text-xs break-words text-muted-foreground">
+              What happened: {phase.snapshot.recovery.summary}
+            </p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              The full sanitized activity for this Run is below.
+            </p>
+            {resumable && resumableText?.kind === 'message' && (
+              <Button
+                className="mt-2"
+                size="sm"
+                variant="secondary"
+                disabled={busy}
+                onClick={() =>
+                  void send(
+                    resumableText.text,
+                    resumableText.source === 'suggested-response'
+                      ? 'suggested-response'
+                      : 'composer',
+                    resumable
+                  )
+                }
+              >
+                Send that message again
+              </Button>
+            )}
+          </div>
+        )}
+
+        {suggested.length > 0 && (
+          <div className="border-t border-border p-3">
+            <p className="text-xs text-muted-foreground">
+              Suggested Responses send straight away. You can always write your own instead.
+            </p>
+            <ul className="mt-2 flex flex-wrap gap-2">
+              {suggested.map((option) => (
+                <li key={option.id}>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy || blocked || activeRunId !== null}
+                    onClick={() => void send(option.value, 'suggested-response')}
+                  >
+                    {option.label}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {plainOptions && suggested.length === 0 && (
+          <p className="border-t border-border px-3 pt-3 text-xs text-muted-foreground">
+            The assistant listed options in prose rather than as structured choices, so write your
+            answer below.
           </p>
         )}
-      </form>
 
-      {error && (
-        <p role="alert" className="px-3 pb-3 text-xs text-destructive">
-          {error}
-        </p>
-      )}
+        <form
+          className="flex flex-col gap-2 border-t border-border p-3"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (draft.trim()) void send(draft.trim(), 'composer')
+          }}
+        >
+          <label className="sr-only" htmlFor="conversation-composer">
+            Your message
+          </label>
+          {slashQuery !== null && (
+            <ul
+              aria-label="Skills"
+              className="max-h-40 overflow-y-auto rounded-md border border-border bg-surface"
+            >
+              {matchingSkills.length === 0 && (
+                <li className="px-2 py-1.5 text-xs text-muted-foreground">
+                  No installed Skill matches. Keep typing your message — a Skill is optional.
+                </li>
+              )}
+              {matchingSkills.map((entry) => (
+                <li key={`${entry.source}:${entry.name}`}>
+                  <button
+                    type="button"
+                    className="flex w-full flex-col items-start px-2 py-1.5 text-left hover:bg-muted/60"
+                    onClick={() => chooseSkill(entry.name)}
+                  >
+                    <span className="text-xs font-medium">
+                      {entry.name}
+                      {entry.source === 'project' && (
+                        <span className="ml-1 font-normal text-muted-foreground">this Project</span>
+                      )}
+                    </span>
+                    {entry.description && (
+                      <span className="text-[11px] text-muted-foreground">{entry.description}</span>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <textarea
+            id="conversation-composer"
+            value={draft}
+            disabled={activeRunId !== null}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={started ? 'Write your answer…' : 'What should we develop or decide?'}
+            className="min-h-20 rounded-md border border-border bg-background p-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          />
+          {chosenSkill && (
+            <p className="text-[11px] text-muted-foreground">
+              This message asks for the{' '}
+              <span className="font-medium text-foreground">{chosenSkill}</span> Skill.{' '}
+              <button
+                type="button"
+                className="underline underline-offset-2"
+                onClick={() => setSkill(null)}
+              >
+                Send without it
+              </button>
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <Field label="Skill">
+              <select
+                aria-label="Skill"
+                value={chosenSkill ?? ''}
+                disabled={(catalog?.available.length ?? 0) === 0}
+                onChange={(event) => setSkill(event.target.value || null)}
+                className="h-8 max-w-44 rounded-md border border-border bg-background px-2 text-xs"
+              >
+                <option value="">{catalog?.available.length ? 'None' : 'None installed'}</option>
+                {catalog?.available.map((entry) => (
+                  <option key={`${entry.source}:${entry.name}`} value={entry.name}>
+                    {entry.name}
+                    {entry.source === 'project' ? ' (this Project)' : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Harness">
+              <select
+                aria-label="Harness"
+                value={selected?.harness ?? ''}
+                onChange={(event) => setHarness(event.target.value as HarnessId)}
+                className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+              >
+                {harnesses.length === 0 && <option value="">No Harness available</option>}
+                {harnesses.map((entry) => (
+                  <option key={entry.harness} value={entry.harness}>
+                    {entry.displayName}
+                    {entry.capabilities.developSession.available ? '' : ' — unavailable'}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Model">
+              <input
+                aria-label="Model"
+                value={model}
+                onChange={(event) => setModel(event.target.value)}
+                placeholder={HARNESS_DEFAULT_MODEL}
+                title={`Leave as “${HARNESS_DEFAULT_MODEL}” to use the Harness’s configured model.`}
+                className="h-8 w-36 rounded-md border border-border bg-background px-2 text-xs"
+              />
+            </Field>
+            <Field label="Effort">
+              <select
+                aria-label="Effort"
+                value={effort}
+                onChange={(event) => setEffort(event.target.value)}
+                className="h-8 rounded-md border border-border bg-background px-2 text-xs capitalize"
+              >
+                {EFFORT_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Permission">
+              <select
+                aria-label="Permission Mode"
+                value={permissionMode}
+                onChange={(event) => setPermissionMode(event.target.value as PermissionMode)}
+                className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+              >
+                <option value="ask">Ask</option>
+                <option value="auto">Full access</option>
+              </select>
+            </Field>
+            <Button
+              className="ml-auto"
+              size="sm"
+              type="submit"
+              disabled={busy || blocked || activeRunId !== null || !draft.trim()}
+            >
+              <Send aria-hidden="true" className="size-3.5" />
+              {busy ? 'Sending…' : started ? 'Send' : 'Start developing'}
+            </Button>
+          </div>
+          {blocked && canDevelop && (
+            <div role="status" className="rounded-md border border-border bg-muted/50 p-2">
+              <p className="text-xs text-foreground">{canDevelop.summary}</p>
+              {canDevelop.command && (
+                <code className="mt-1 block font-mono text-[11px] break-all select-text">
+                  {canDevelop.command}
+                </code>
+              )}
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                This app never installs or updates a Harness for you.
+              </p>
+            </div>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            {permissionMode === 'ask'
+              ? 'In Ask, the agent stops for your approval before it edits or runs anything.'
+              : 'In Full access, the agent edits and runs without asking. The Harness applies its own permissions for this Run.'}
+          </p>
+          {/* The mapping onto each Harness is lossy, and ADR 0003 says the
+            differences are stated rather than discovered. */}
+          {chosenHarness === 'codex' && (
+            <p className="text-[11px] text-muted-foreground">
+              Codex differs from Claude Code here: in Ask it edits inside this Project without
+              asking and stops for commands, it proposes its own “always allow” rule rather than
+              being given one, and a Skill reaches it as instructions for the Run rather than
+              natively.
+            </p>
+          )}
+        </form>
 
-      <UsagePanel usage={phase.snapshot.usage} />
+        {error && (
+          <p role="alert" className="px-3 pb-3 text-xs text-destructive">
+            {error}
+          </p>
+        )}
 
-      {activeRun && (
-        <ActivityPanel
-          run={activeRun}
-          // A Run that ended badly is exactly when the detail matters, so it
-          // does not stay hidden behind a disclosure.
-          defaultOpen={FAILED_STATUSES.has(activeRun.status)}
-        />
-      )}
+        <UsagePanel usage={phase.snapshot.usage} />
 
-      <Attribution />
-    </section>
+        {activeRun && (
+          <ActivityPanel
+            run={activeRun}
+            // A Run that ended badly is exactly when the detail matters, so it
+            // does not stay hidden behind a disclosure.
+            defaultOpen={FAILED_STATUSES.has(activeRun.status)}
+          />
+        )}
+
+        <Attribution />
+      </section>
+    </>
   )
 }
 
@@ -936,15 +956,21 @@ function CommandRow({
  * — edits land in the Checkout in place (ADR 0004) — so this is a record, not
  * an offer: there is nothing here to accept or reject, and git is the undo.
  */
-function FileChangeRow({ path, hunks }: { path: string; hunks: DiffHunk[] }): React.JSX.Element {
-  const added = hunks.reduce(
-    (total, hunk) => total + hunk.lines.filter((line) => line.startsWith('+')).length,
-    0
-  )
-  const removed = hunks.reduce(
-    (total, hunk) => total + hunk.lines.filter((line) => line.startsWith('-')).length,
-    0
-  )
+function FileChangeRow({
+  path,
+  hunks,
+  counted
+}: {
+  path: string
+  hunks: DiffHunk[]
+  /**
+   * What the whole change did, when it is known. A stored diff is shortened,
+   * so counting the lines on screen would report less than happened; a change
+   * still streaming has every line it has produced so far.
+   */
+  counted?: { added: number; removed: number }
+}): React.JSX.Element {
+  const { added, removed } = counted ?? countDiffLines(hunks)
   return (
     <li className="flex gap-2">
       <FileDiff aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
@@ -956,30 +982,7 @@ function FileChangeRow({ path, hunks }: { path: string; hunks: DiffHunk[] }): Re
             <span className="text-destructive">−{removed}</span>
           </span>
         </p>
-        <pre className="mt-1 overflow-x-auto rounded-md border border-border bg-surface p-2 font-mono text-[11px] select-text">
-          {hunks.map((hunk, index) => (
-            // A hunk is identified by where it starts and how far it runs.
-            <div key={`${hunk.oldStart}:${hunk.newStart}:${hunk.lines.length}`}>
-              {index > 0 && <div className="text-muted-foreground">⋯</div>}
-              {hunk.lines.map((line, lineIndex) => (
-                <div
-                  // A diff line has no identity beyond its position.
-                  // eslint-disable-next-line @eslint-react/no-array-index-key
-                  key={lineIndex}
-                  className={
-                    line.startsWith('+')
-                      ? 'text-positive'
-                      : line.startsWith('-')
-                        ? 'text-destructive'
-                        : 'text-muted-foreground'
-                  }
-                >
-                  {line}
-                </div>
-              ))}
-            </div>
-          ))}
-        </pre>
+        <DiffView hunks={hunks} />
       </div>
     </li>
   )
@@ -1037,7 +1040,14 @@ function EntryRow({ entry }: { entry: ConversationEntry }): React.JSX.Element | 
         running={entry.running}
       />
     )
-  if (entry.kind === 'file-change') return <FileChangeRow path={entry.path} hunks={entry.hunks} />
+  if (entry.kind === 'file-change')
+    return (
+      <FileChangeRow
+        path={entry.path}
+        hunks={entry.hunks}
+        counted={{ added: entry.added, removed: entry.removed }}
+      />
+    )
   if (entry.kind === 'approval') return <ApprovalRow entry={entry} />
   if (entry.kind === 'boundary') {
     return (
