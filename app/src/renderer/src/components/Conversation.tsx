@@ -66,7 +66,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
   const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
   const [live, setLive] = useState<LiveRun | null>(null)
   const [draft, setDraft] = useState('')
-  const [harness, setHarness] = useState<HarnessId>('codex')
+  const [harness, setHarness] = useState<HarnessId | null>(null)
   const [skill, setSkill] = useState('grilling')
   const [model, setModel] = useState(HARNESS_DEFAULT_MODEL)
   const [effort, setEffort] = useState('medium')
@@ -77,6 +77,16 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
 
   const snapshot = phase.state === 'ready' ? phase.snapshot : null
   const activeRunId = snapshot?.activeRunId ?? null
+
+  const harnesses = readiness?.harnesses ?? []
+  // Defaults to a Harness that can actually run a Session rather than to a
+  // fixed name: offering one the app has just said it cannot use is how a
+  // person ends up watching nothing happen.
+  const selected =
+    harnesses.find((entry) => entry.harness === harness) ??
+    harnesses.find((entry) => entry.capabilities.developSession.available) ??
+    harnesses[0]
+  const chosenHarness = selected?.harness ?? null
 
   const refresh = useCallback(async () => {
     try {
@@ -155,6 +165,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
 
   const send = useCallback(
     async (text: string, source: 'composer' | 'suggested-response', submissionId?: string) => {
+      if (!chosenHarness) return
       setBusy(true)
       setError(null)
       try {
@@ -164,7 +175,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           text,
           source,
           skill,
-          harness,
+          harness: chosenHarness,
           model,
           effort,
           permissionMode
@@ -183,7 +194,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
         setBusy(false)
       }
     },
-    [sessionId, harness, skill, model, effort, permissionMode, refresh]
+    [sessionId, chosenHarness, skill, model, effort, permissionMode, refresh]
   )
 
   if (phase.state === 'loading') {
@@ -223,8 +234,6 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
   const plainOptions =
     activeRunId === null && latestAssistant?.kind === 'message' && latestAssistant.plainOptions
   const activeRun = runs.find((run) => run.id === activeRunId) ?? runs[0]
-  const harnesses = readiness?.harnesses ?? []
-  const selected = harnesses.find((entry) => entry.harness === harness)
   const canDevelop = selected?.capabilities.developSession
   const blocked = readiness !== null && canDevelop?.available !== true
   const resumable = phase.snapshot.recovery?.resumableSubmissionId ?? null
@@ -289,19 +298,15 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
               </div>
             </li>
           ))}
-        {liveForActiveRun?.changes.map((change) => (
-          <FileChangeRow
-            key={change.id}
-            entry={{
-              kind: 'file-change',
-              id: change.id,
-              at: '',
-              runId: liveForActiveRun.runId,
-              path: change.path,
-              hunks: change.hunks
-            }}
-          />
-        ))}
+        {liveForActiveRun?.changes
+          .slice(
+            entries.filter(
+              (entry) => entry.kind === 'file-change' && entry.runId === liveForActiveRun.runId
+            ).length
+          )
+          .map((change) => (
+            <FileChangeRow key={change.id} path={change.path} hunks={change.hunks} />
+          ))}
         {activeRunId && !liveForActiveRun?.messages.some((message) => message.text) && (
           <li className="text-xs text-muted-foreground">Waiting for the Harness to answer…</li>
         )}
@@ -401,11 +406,11 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           <Field label="Harness">
             <select
               aria-label="Harness"
-              value={harness}
+              value={selected?.harness ?? ''}
               onChange={(event) => setHarness(event.target.value as HarnessId)}
               className="h-8 rounded-md border border-border bg-background px-2 text-xs"
             >
-              {harnesses.length === 0 && <option value="codex">Codex</option>}
+              {harnesses.length === 0 && <option value="">No Harness available</option>}
               {harnesses.map((entry) => (
                 <option key={entry.harness} value={entry.harness}>
                   {entry.displayName}
@@ -519,16 +524,12 @@ function Field({
  * — edits land in the Checkout in place (ADR 0004) — so this is a record, not
  * an offer: there is nothing here to accept or reject, and git is the undo.
  */
-function FileChangeRow({
-  entry
-}: {
-  entry: Extract<ConversationEntry, { kind: 'file-change' }>
-}): React.JSX.Element {
-  const added = entry.hunks.reduce(
+function FileChangeRow({ path, hunks }: { path: string; hunks: DiffHunk[] }): React.JSX.Element {
+  const added = hunks.reduce(
     (total, hunk) => total + hunk.lines.filter((line) => line.startsWith('+')).length,
     0
   )
-  const removed = entry.hunks.reduce(
+  const removed = hunks.reduce(
     (total, hunk) => total + hunk.lines.filter((line) => line.startsWith('-')).length,
     0
   )
@@ -537,14 +538,14 @@ function FileChangeRow({
       <FileDiff aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
         <p className="flex flex-wrap items-baseline gap-x-2 text-xs">
-          <span className="font-mono break-all select-text">{entry.path}</span>
+          <span className="font-mono break-all select-text">{path}</span>
           <span className="text-[11px] text-muted-foreground">
             <span className="text-positive">+{added}</span>{' '}
             <span className="text-destructive">−{removed}</span>
           </span>
         </p>
         <pre className="mt-1 overflow-x-auto rounded-md border border-border bg-surface p-2 font-mono text-[11px] select-text">
-          {entry.hunks.map((hunk, index) => (
+          {hunks.map((hunk, index) => (
             // A hunk is identified by where it starts and how far it runs.
             <div key={`${hunk.oldStart}:${hunk.newStart}:${hunk.lines.length}`}>
               {index > 0 && <div className="text-muted-foreground">⋯</div>}
@@ -574,7 +575,7 @@ function FileChangeRow({
 
 function EntryRow({ entry }: { entry: ConversationEntry }): React.JSX.Element | null {
   if (entry.kind === 'usage' || entry.kind === 'thread') return null
-  if (entry.kind === 'file-change') return <FileChangeRow entry={entry} />
+  if (entry.kind === 'file-change') return <FileChangeRow path={entry.path} hunks={entry.hunks} />
   if (entry.kind === 'boundary') {
     return (
       <li className="text-[11px] text-muted-foreground">

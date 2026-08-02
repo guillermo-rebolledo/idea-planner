@@ -284,11 +284,20 @@ describe('developing a Session', () => {
     await installSkills('.agents/skills', ['grill-me', 'grilling', 'wayfinder'])
     // Codex has no Adapter that can run a Session, so the general shape of
     // this answer is exercised through the Harness that does.
-    await fakeExecutable('codex', READY_CODEX_SCRIPT)
-    const readiness = await probeHarness(
-      { ...HARNESS_SPECS.codex, conversation: { minimumVersion: '0.44.0' } },
-      { pathEntries: [binDir], homeDir, probeTimeoutMs: 5000 }
+    await installSkills('.claude/skills', ['grill-me', 'grilling', 'wayfinder'])
+    await fakeExecutable(
+      'claude',
+      `case "$1" in
+  --version) echo "2.1.220 (Claude Code)"; exit 0;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+esac
+exit 1`
     )
+    const readiness = await probeHarness(HARNESS_SPECS.claude, {
+      pathEntries: [binDir],
+      homeDir,
+      probeTimeoutMs: 5000
+    })
     expect(capability(readiness)).toMatchObject({ available: true, command: null })
   })
 

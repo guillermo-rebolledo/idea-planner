@@ -8,6 +8,14 @@ Two verified hazards to design around. Managed enterprise settings outrank CLI a
 
 `blocked` means the agent is mid-Run and cannot proceed — an approval request or a structured question. A Run that simply finished its turn is `idle`, never `blocked`.
 
+Ticket 06 left three things here, all named in `docs/harness-permission-mapping.md`:
+
+- **The effective mode is never read back.** Managed enterprise settings outrank command-line arguments, so the mode the app asked for is not necessarily the one running. The init event reports it; assert it and surface a mismatch rather than assuming.
+- **Staged settings are not validated before spawn.** They are silently ignored when invalid, so a Standing Approval that never loaded looks exactly like one that did.
+- **A Run's permission mode is recorded as `auto` regardless of what was asked for**, because Full access is all ticket 06 could honestly run. This ticket makes the recorded mode the one that ran.
+
+Also unimplemented and belonging here: the Bash tool's *output*. Ticket 06 reports that a command was called but never what it printed, so a Run that compiles or tests something says nothing about the result.
+
 **Blocked by:** 06
 
 **Status:** ready-for-agent

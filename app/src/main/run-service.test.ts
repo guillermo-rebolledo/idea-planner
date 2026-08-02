@@ -747,16 +747,16 @@ describe('Claude launch', () => {
     expect(Object.keys(broker.launch?.environment ?? {})).not.toContain('CLAUDE_CONFIG_DIR')
   })
 
-  it('tells the model nothing about tools the app no longer owns', async () => {
+  it("sends the person's request and the Skill, and nothing else", async () => {
     const root = await readyClaudeRoot('run-claude-prompt-')
     const broker = fakeBroker()
     const service = new RunService(claudeDeps(root, broker))
 
     await service.develop(developInput())
 
-    const prompt = (broker.launch?.args ?? []).join('\n')
-    // A false instruction is worse than a stale comment: the model acts on it.
-    expect(prompt).not.toContain('app-owned')
-    expect(prompt).not.toContain('planning')
+    // The whole prompt, not an absence of particular words: an instruction
+    // about tools the app no longer owns is one the model would act on, and
+    // asserting it is gone by name would pass again if it came back reworded.
+    expect((broker.launch?.args ?? []).at(-1)).toBe('/wayfinder Rename the greeting')
   })
 })

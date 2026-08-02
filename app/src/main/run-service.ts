@@ -197,7 +197,10 @@ export class RunService {
       skill: { name: skillName, path: skillDirectory, hash: skillHash },
       environment,
       checkout,
-      permissionMode: input.permissionMode
+      // Full access only until ticket 07 maps Ask onto the Harness. Recording
+      // the mode that was asked for rather than the one that ran would put a
+      // falsehood in the Run's durable provenance.
+      permissionMode: 'auto' as const
     }
     const accepted = runSnapshotSchema.parse(
       await this.deps.core.send({
@@ -687,6 +690,7 @@ function harnessArguments(
     'user',
     '--settings',
     join(runDirectory, 'settings.json'),
+    '--strict-mcp-config',
     '--mcp-config',
     join(runDirectory, 'mcp.json'),
     // No allow-list: naming only the app's MCP tool is what left the Harness

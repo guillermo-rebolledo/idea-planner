@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import {
+  diffHunkSchema,
   redactCredentials,
   type HarnessEvent,
   type HarnessFailureCategory
@@ -31,17 +32,7 @@ const contentBlockSchema = z.discriminatedUnion('type', [
  */
 const fileChangeSchema = z.object({
   filePath: z.string().min(1),
-  structuredPatch: z
-    .array(
-      z.object({
-        oldStart: z.number().int().nonnegative(),
-        oldLines: z.number().int().nonnegative(),
-        newStart: z.number().int().nonnegative(),
-        newLines: z.number().int().nonnegative(),
-        lines: z.array(z.string())
-      })
-    )
-    .min(1)
+  structuredPatch: z.array(diffHunkSchema).min(1)
 })
 
 const assistantSchema = z.object({
@@ -226,7 +217,15 @@ function describeAssistant(raw: unknown): HarnessEvent[] {
  * change files.
  */
 function describeFileChange(raw: unknown): HarnessEvent[] {
-  if (raw === null || typeof raw !== 'object' || !('structuredPatch' in raw)) return []
+  if (raw === null || typeof raw !== 'object') return []
+  // Most tool results change no file at all, so a payload with neither of
+  // these is simply not a change. One that edits a file but has lost the
+  // patch is the shape change this fixture exists to catch, and it is said
+  // out loud rather than quietly producing no diff.
+  const edited = 'oldString' in raw || 'newString' in raw
+  if (!('structuredPatch' in raw)) {
+    return edited ? [protocolFailure('Claude reported an edit with no diff')] : []
+  }
   const parsed = fileChangeSchema.safeParse(raw)
   if (!parsed.success) {
     return [protocolFailure('Unsupported Claude file-change payload')]

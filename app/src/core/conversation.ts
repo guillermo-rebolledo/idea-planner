@@ -9,6 +9,7 @@ import {
   assistantMessageId,
   hasPlainOptions,
   redactCredentials,
+  type DiffHunk,
   submitConversationMessageInputSchema,
   type ConversationEntry,
   type ConversationRecovery,
@@ -35,12 +36,44 @@ import { createClaudeAdapter } from './harness/claude'
  */
 
 const JOURNAL = 'conversation.jsonl'
+
+/** How much of one file's diff is worth keeping in the Conversation. */
+const MAX_DIFF_LINES = 400
+
+/**
+ * A file change as the Conversation should hold it: relative to the Checkout
+ * so no path leaves the person's machine, redacted because a diff carries
+ * whatever the Harness has just written, and bounded because a generated file
+ * can be enormous.
+ */
+function describeChange(
+  path: string,
+  hunks: DiffHunk[],
+  checkout: string
+): { path: string; hunks: DiffHunk[] } {
+  const relative = path.startsWith(`${checkout}/`) ? path.slice(checkout.length + 1) : path
+  let budget = MAX_DIFF_LINES
+  const kept: DiffHunk[] = []
+  for (const hunk of hunks) {
+    if (budget <= 0) break
+    const lines = hunk.lines.slice(0, budget).map((line) => redactCredentials(line))
+    budget -= lines.length
+    kept.push({ ...hunk, lines })
+  }
+  return {
+    path: redactCredentials(relative),
+    // A change with nothing left to show is still a change that happened.
+    hunks: kept.length > 0 ? kept : [{ ...hunks[0], lines: [] } as DiffHunk]
+  }
+}
 /** Streaming deltas persist at most this often; every other change persists at once. */
 const CHECKPOINT_INTERVAL_MS = 250
 
 interface ConversationOptions {
   /** The app-owned directory holding one Session's journal and Runs. */
   directoryFor: (sessionId: string) => Effect.Effect<string, CoreError>
+  /** The Session's Checkout, so file paths can be kept relative to it. */
+  checkoutFor: (sessionId: string) => Effect.Effect<string, CoreError>
   clock: Effect.Effect<Date>
 }
 
@@ -100,8 +133,6 @@ export function createConversationEffects(options: ConversationOptions): Convers
   // How much of a Run's protocol this app could not model. A Run that says
   // nothing else is the only evidence the person will ever get.
   const drift = Effect.runSync(Ref.make<ReadonlyMap<string, number>>(new Map()))
-  // How many files a Run has changed, so each change gets a stable entry id.
-  const fileChanges = Effect.runSync(Ref.make<ReadonlyMap<string, number>>(new Map()))
   // One writer at a time: a streaming checkpoint must never interleave with a
   // submission or a finalize on the same journal.
   const writeLock = Effect.runSync(Effect.makeSemaphore(1))
@@ -379,18 +410,28 @@ export function createConversationEffects(options: ConversationOptions): Convers
             case 'file-change': {
               // What the Run did to the Checkout is part of what happened in
               // the Conversation, so it is durable rather than only streamed.
-              const changeCount = yield* Ref.updateAndGet(fileChanges, (current) =>
-                new Map(current).set(input.runId, (current.get(input.runId) ?? 0) + 1)
-              )
+              //
+              // The ordinal is counted from the journal rather than from
+              // memory: a restart part-way through a Run would otherwise start
+              // again at one, and an id that repeats is an entry that
+              // overwrites the change before it.
+              const written = yield* readEntries(sessionDir)
+              const ordinal =
+                written.filter(
+                  (entry) => entry.kind === 'file-change' && entry.runId === input.runId
+                ).length + 1
               yield* append(
                 sessionDir,
                 conversationEntrySchema.parse({
                   kind: 'file-change',
-                  id: `file-change:${input.runId}:${changeCount.get(input.runId) ?? 1}`,
+                  id: `file-change:${input.runId}:${ordinal}`,
                   at: now.toISOString(),
                   runId: input.runId,
-                  path: event.path,
-                  hunks: event.hunks
+                  ...describeChange(
+                    event.path,
+                    event.hunks,
+                    yield* options.checkoutFor(input.sessionId)
+                  )
                 })
               )
               return

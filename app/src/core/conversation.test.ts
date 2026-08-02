@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -690,6 +690,67 @@ describe('file changes', () => {
     const reloaded = await makeCore().getConversation(sessionId)
     expect(reloaded.entries.filter((entry) => entry.kind === 'file-change')).toMatchObject([
       { path: '/tmp/a-project/greeting.ts', runId }
+    ])
+  })
+})
+
+describe('file change identity', () => {
+  it('keeps every change when the process restarts part-way through a Run', async () => {
+    const runId = await startRun('Rename twice', 'submission-restart')
+    const change = (line: string): Parameters<Core['applyHarnessEvent']>[0] => ({
+      sessionId,
+      runId,
+      event: {
+        type: 'file-change',
+        path: '/tmp/a-project/greeting.ts',
+        hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [line] }]
+      }
+    })
+
+    await core.applyHarnessEvent(change('+first'))
+    // A restart loses whatever was only in memory. The change already written
+    // must survive the one written after it.
+    await makeCore().applyHarnessEvent(change('+second'))
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    const changes = reloaded.entries.filter((entry) => entry.kind === 'file-change')
+    expect(changes).toHaveLength(2)
+  })
+})
+
+describe('what a diff is allowed to carry', () => {
+  it('redacts a credential the Harness has just written into a file', async () => {
+    const runId = await startRun('Add the key', 'submission-secret')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'file-change',
+        path: `${projectRoot}/.env`,
+        hunks: [
+          {
+            oldStart: 1,
+            oldLines: 0,
+            newStart: 1,
+            newLines: 1,
+            lines: ['+OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789']
+          }
+        ]
+      }
+    })
+
+    const stored = await readFile(
+      join(stateDir, 'sessions', sessionId, 'conversation.jsonl'),
+      'utf8'
+    )
+    // A diff is Conversation content like any other, and it is the one kind
+    // that carries whatever the Harness just wrote.
+    expect(stored).not.toContain('sk-proj-abcdefghijklmnopqrstuvwxyz0123456789')
+    // The path is relative to the Checkout, so it cannot leak a home directory.
+    expect(stored).not.toContain(projectRoot)
+    const snapshot = await core.getConversation(sessionId)
+    expect(snapshot.entries.filter((entry) => entry.kind === 'file-change')).toMatchObject([
+      { path: '.env' }
     ])
   })
 })
