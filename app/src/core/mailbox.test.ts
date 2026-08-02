@@ -22,7 +22,7 @@ function makeCore(): Core {
 }
 
 function query(overrides: Partial<MailboxCoreQuery> = {}): MailboxCoreQuery {
-  return { search: '', view: 'active', dormantAfterDays: 14, ...overrides }
+  return { search: '', view: 'active', projectRoot: null, dormantAfterDays: 14, ...overrides }
 }
 
 function group(snapshot: MailboxSnapshot, key: string): string[] {
@@ -163,5 +163,166 @@ describe('search and filters', () => {
     const snapshot = await core.queryMailbox(query({ search: 'zeppelin' }))
     expect(snapshot.total).toBe(2)
     expect(snapshot.matched).toBe(0)
+  })
+
+  it('narrows to one Project without hiding that the others exist', async () => {
+    const otherRoot = await mkdtemp(join(tmpdir(), 'session-mailbox-other-'))
+    await core.addProject(otherRoot)
+    now = new Date(now.getTime() + 1000)
+    await core.startSession({ projectRoot: otherRoot, message: 'Elsewhere entirely' })
+
+    const everything = await core.queryMailbox(query())
+    expect(everything.matched).toBe(3)
+
+    const narrowed = await core.queryMailbox(query({ projectRoot: otherRoot }))
+    expect(group(narrowed, 'recent')).toEqual(['Elsewhere entirely'])
+    // The Sessions it filtered out are still in view, so the person can be
+    // told the list is narrowed rather than emptied.
+    expect(narrowed.total).toBe(3)
+    await rm(otherRoot, { recursive: true, force: true })
+  })
+})
+
+describe('what is waiting for me', () => {
+  /** Puts a Session mid-Run, as developing one does. */
+  async function beginRun(sessionId: string): Promise<string> {
+    const run = await core.acceptRun({
+      submissionId: `submission-${sessionId}`,
+      sessionId,
+      prompt: 'Change the greeting',
+      configuration: {
+        harness: 'claude',
+        executable: '/usr/local/bin/claude',
+        executableHash: 'a'.repeat(64),
+        harnessVersion: '2.1.220 (Claude Code)',
+        model: 'default',
+        effort: 'medium',
+        skill: null,
+        environment: {},
+        checkout: projectRoot,
+        permissionMode: 'ask'
+      }
+    })
+    await core.beginConversationRun({
+      sessionId,
+      runId: run.id,
+      submissionId: `submission-${sessionId}`,
+      harness: 'claude'
+    })
+    return run.id
+  }
+
+  it('puts a Session blocked on an approval in needs-attention, and nothing else', async () => {
+    const waiting = await start('Waiting on me')
+    const working = await start('Still working')
+    const quiet = await start('Replied and stopped')
+
+    const waitingRun = await beginRun(waiting.id)
+    await core.applyHarnessEvent({
+      sessionId: waiting.id,
+      runId: waitingRun,
+      event: {
+        type: 'approval-request',
+        id: 'toolu_1',
+        tool: 'Bash',
+        summary: 'rm -rf build',
+        detail: '{}',
+        proposedRule: null
+      }
+    })
+    await beginRun(working.id)
+    // Replied and stopped is exactly the case that must not be in the group.
+    const quietRun = await beginRun(quiet.id)
+    await core.applyHarnessEvent({
+      sessionId: quiet.id,
+      runId: quietRun,
+      event: { type: 'assistant-message', id: 'msg_1', text: 'Done.', complete: true }
+    })
+    await core.finalizeConversationRun({
+      sessionId: quiet.id,
+      runId: quietRun,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness process completed'
+    })
+
+    const snapshot = await core.queryMailbox(query())
+    expect(group(snapshot, 'needs-attention')).toEqual(['Waiting on me'])
+    expect(group(snapshot, 'running')).toEqual(['Still working'])
+    expect(group(snapshot, 'recent')).toEqual(['Replied and stopped'])
+  })
+
+  it('counts an unanswered structured question as waiting, and prose as not', async () => {
+    const asked = await start('Asked me something')
+    const runId = await beginRun(asked.id)
+    await core.applyHarnessEvent({
+      sessionId: asked.id,
+      runId,
+      event: { type: 'assistant-message', id: 'msg_1', text: 'Which one?', complete: true }
+    })
+    await core.applyHarnessEvent({
+      sessionId: asked.id,
+      runId,
+      event: {
+        type: 'choices',
+        question: 'Which one?',
+        options: [{ id: 'option-1', label: 'The first', value: 'The first' }]
+      }
+    })
+    await core.finalizeConversationRun({
+      sessionId: asked.id,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness process completed'
+    })
+
+    const waiting = await core.queryMailbox(query())
+    expect(group(waiting, 'needs-attention')).toEqual(['Asked me something'])
+
+    // Answering it is what stops it waiting.
+    await core.submitConversationMessage({
+      sessionId: asked.id,
+      submissionId: 'submission-answer',
+      text: 'The first',
+      source: 'suggested-response'
+    })
+    const answered = await core.queryMailbox(query())
+    expect(group(answered, 'needs-attention')).toEqual([])
+    expect(group(answered, 'recent')).toEqual(['Asked me something'])
+  })
+
+  it('does not call a Run the person stopped a failure', async () => {
+    const stopped = await start('Stopped it myself')
+    const runId = await beginRun(stopped.id)
+    await core.finalizeConversationRun({
+      sessionId: stopped.id,
+      runId,
+      outcome: 'stopped',
+      category: null,
+      summary: 'Stopped on request'
+    })
+
+    const snapshot = await core.queryMailbox(query())
+    const [session] = snapshot.groups.find((entry) => entry.key === 'recent')?.sessions ?? []
+    expect(session).toMatchObject({ title: 'Stopped it myself', status: 'idle' })
+  })
+
+  it('leaves a failed Run out of needs-attention, and says so on its row', async () => {
+    const failed = await start('Ended badly')
+    const runId = await beginRun(failed.id)
+    await core.finalizeConversationRun({
+      sessionId: failed.id,
+      runId,
+      outcome: 'failed',
+      category: 'process-crash',
+      summary: 'Harness process failed'
+    })
+
+    const snapshot = await core.queryMailbox(query())
+    // Nothing is waiting on an answer, so nothing is asking for attention.
+    expect(group(snapshot, 'needs-attention')).toEqual([])
+    const [session] = snapshot.groups.find((entry) => entry.key === 'recent')?.sessions ?? []
+    expect(session).toMatchObject({ title: 'Ended badly', status: 'failed' })
   })
 })

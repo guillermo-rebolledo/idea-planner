@@ -55,7 +55,12 @@ export type MailboxView = z.infer<typeof mailboxViewSchema>
 /** The Renderer's mailbox request; Main adds the configured thresholds. */
 export const mailboxQuerySchema = z.object({
   search: z.string().max(500),
-  view: mailboxViewSchema
+  view: mailboxViewSchema,
+  /**
+   * Narrow the flat list to one Project. A filter, never a container: the list
+   * stays flat and cross-repository, and clearing this shows everything again.
+   */
+  projectRoot: z.string().min(1).nullable()
 })
 export type MailboxQuery = z.infer<typeof mailboxQuerySchema>
 
@@ -65,8 +70,24 @@ export const mailboxCoreQuerySchema = mailboxQuerySchema.extend({
 })
 export type MailboxCoreQuery = z.infer<typeof mailboxCoreQuerySchema>
 
+/**
+ * What a Session is doing, derived from its Conversation rather than stored:
+ * the Conversation is the truth, and a status written beside it is one that
+ * can disagree with it.
+ *
+ * `blocked` is the one that earns the inbox its keep — the agent is mid-Run
+ * and cannot proceed without an answer. A Session whose agent replied and
+ * stopped is `idle`, and calling that blocked would put every quiet Session in
+ * the group and make it worth nothing.
+ */
+export const sessionStatusSchema = z.enum(['running', 'blocked', 'idle', 'failed'])
+export type SessionStatus = z.infer<typeof sessionStatusSchema>
+
 export const mailboxSessionSchema = sessionSummarySchema.extend({
-  dormant: z.boolean()
+  dormant: z.boolean(),
+  status: sessionStatusSchema,
+  /** What it is waiting for, when it is waiting on the person. */
+  waitingFor: z.enum(['approval', 'question']).nullable().default(null)
 })
 export type MailboxSession = z.infer<typeof mailboxSessionSchema>
 

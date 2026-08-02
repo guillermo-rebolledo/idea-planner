@@ -26,12 +26,22 @@ type RootConfirmation = Extract<ChooseProjectResult, { status: 'confirm-root' }>
  */
 export function Projects({
   onProjectsChanged,
-  onNewChat
+  onNewChat,
+  filteredRoot = null,
+  onFilter
 }: {
   /** Lets a host surface react to the list, such as leaving onboarding. */
   onProjectsChanged?: (projects: ProjectView[]) => void
   /** Starts a chat already bound to a Project. Absent during onboarding. */
   onNewChat?: (projectRoot: string) => void
+  /** Which Project the Session list is narrowed to, if any. */
+  filteredRoot?: string | null
+  /**
+   * Narrows the flat Session list to one Project. Clicking a Project filters
+   * rather than navigating: Project is a filter, never a container. Absent
+   * during onboarding, where there is no list to narrow.
+   */
+  onFilter?: (projectRoot: string | null) => void
 } = {}): React.JSX.Element {
   const [list, setList] = useState<ProjectList>({ state: 'loading' })
   const [refusal, setRefusal] = useState<Refusal | null>(null)
@@ -150,6 +160,8 @@ export function Projects({
         onRetry={() => void refresh()}
         onRemove={(project) => void removeProject(project)}
         onNewChat={onNewChat}
+        filteredRoot={filteredRoot}
+        onFilter={onFilter}
       />
 
       {refusal && (
@@ -187,12 +199,16 @@ function ProjectListContent({
   list,
   onRetry,
   onRemove,
-  onNewChat
+  onNewChat,
+  filteredRoot,
+  onFilter
 }: {
   list: ProjectList
   onRetry: () => void
   onRemove: (project: ProjectView) => void
   onNewChat?: (projectRoot: string) => void
+  filteredRoot: string | null
+  onFilter?: (projectRoot: string | null) => void
 }): React.JSX.Element {
   if (list.state === 'loading') {
     return <p className="px-1 py-1 text-[11px] text-muted-foreground">Reading your Projects…</p>
@@ -225,6 +241,8 @@ function ProjectListContent({
           project={project}
           onRemove={onRemove}
           onNewChat={onNewChat}
+          filtered={filteredRoot === project.root}
+          onFilter={onFilter}
         />
       ))}
     </ul>
@@ -315,35 +333,71 @@ function StandingApprovals({ project }: { project: ProjectView }): React.JSX.Ele
 function ProjectRow({
   project,
   onRemove,
-  onNewChat
+  onNewChat,
+  filtered,
+  onFilter
 }: {
   project: ProjectView
   onRemove: (project: ProjectView) => void
   onNewChat?: (projectRoot: string) => void
+  filtered: boolean
+  onFilter?: (projectRoot: string | null) => void
 }): React.JSX.Element {
+  const rowClass = cn(
+    'flex w-full items-center gap-2 rounded-md py-1.5 pr-8 pl-2 text-left',
+    project.available ? 'text-foreground' : 'text-muted-foreground'
+  )
+  const body = (
+    <>
+      <FolderGit2 aria-hidden="true" className="size-3.5 shrink-0" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-xs">{project.name}</span>
+        {/* The exact identity of the Project, never abbreviated away. */}
+        <span className="block truncate font-mono text-[10px] text-muted-foreground select-text">
+          {project.root}
+        </span>
+      </span>
+      {!project.available && (
+        <span className="flex shrink-0 items-center gap-1 rounded-sm bg-notice px-1 text-[10px] font-medium text-notice-foreground">
+          <AlertTriangle aria-hidden="true" className="size-2.5" />
+          Unavailable
+        </span>
+      )}
+    </>
+  )
+
   return (
     <li className="group relative">
-      <div
-        className={cn(
-          'flex w-full items-center gap-2 rounded-md py-1.5 pr-8 pl-2 text-left',
-          project.available ? 'text-foreground' : 'text-muted-foreground'
-        )}
-      >
-        <FolderGit2 aria-hidden="true" className="size-3.5 shrink-0" />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs">{project.name}</span>
-          {/* The exact identity of the Project, never abbreviated away. */}
-          <span className="block truncate font-mono text-[10px] text-muted-foreground select-text">
-            {project.root}
-          </span>
-        </span>
-        {!project.available && (
-          <span className="flex shrink-0 items-center gap-1 rounded-sm bg-notice px-1 text-[10px] font-medium text-notice-foreground">
-            <AlertTriangle aria-hidden="true" className="size-2.5" />
-            Unavailable
-          </span>
-        )}
-      </div>
+      {onFilter ? (
+        // Filtering, not opening: the Session list stays flat and simply
+        // narrows, and clicking the same Project again shows every Project.
+        <button
+          type="button"
+          aria-pressed={filtered}
+          // Named for what it does, not for what it shows: the row is a
+          // control, and its Project's name and root are read out beside it.
+          aria-label={
+            filtered
+              ? 'Show Sessions from every Project'
+              : `Show only Sessions in “${project.name}”`
+          }
+          title={
+            filtered
+              ? 'Show Sessions from every Project'
+              : `Show only Sessions in “${project.name}”`
+          }
+          onClick={() => onFilter(filtered ? null : project.root)}
+          className={cn(
+            rowClass,
+            'hover:bg-border focus-visible:ring-2 focus-visible:ring-ring',
+            filtered && 'bg-border'
+          )}
+        >
+          {body}
+        </button>
+      ) : (
+        <div className={rowClass}>{body}</div>
+      )}
       {onNewChat && project.available && (
         <button
           type="button"

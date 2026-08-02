@@ -8,8 +8,10 @@ import {
   startSessionInputSchema,
   type MailboxCoreQuery,
   type MailboxGroup,
+  type MailboxGroupKey,
   type MailboxSession,
   type MailboxSnapshot,
+  type SessionStatus,
   type SessionSummary,
   type StartSessionInput
 } from '@shared/contract'
@@ -225,37 +227,58 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
    * memory: there is no corpus of documents left to index.
    */
   const queryMailbox = (query: MailboxCoreQuery): Effect.Effect<MailboxSnapshot, CoreError> =>
-    sessions.list().pipe(
-      Effect.map((all) => {
-        const inView = all.filter((session) =>
-          query.view === 'archived' ? session.archivedAt !== null : session.archivedAt === null
+    Effect.gen(function* () {
+      const all = yield* sessions.list()
+      const inView = all.filter((session) =>
+        query.view === 'archived' ? session.archivedAt !== null : session.archivedAt === null
+      )
+      const terms = query.search.trim().toLowerCase().split(/\s+/).filter(Boolean)
+      const dormantBefore = now().getTime() - query.dormantAfterDays * DAY_MS
+      const matched = inView
+        .filter((session) => {
+          if (query.projectRoot !== null && session.projectRoot !== query.projectRoot) return false
+          const title = session.title.toLowerCase()
+          return terms.every((term) => title.includes(term))
+        })
+        .sort(
+          (left, right) =>
+            right.updatedAt.localeCompare(left.updatedAt) || left.title.localeCompare(right.title)
         )
-        const terms = query.search.trim().toLowerCase().split(/\s+/).filter(Boolean)
-        const dormantBefore = now().getTime() - query.dormantAfterDays * DAY_MS
-        const matched = inView
-          .filter((session) => {
-            const title = session.title.toLowerCase()
-            return terms.every((term) => title.includes(term))
-          })
-          .sort(
-            (left, right) =>
-              right.updatedAt.localeCompare(left.updatedAt) || left.title.localeCompare(right.title)
-          )
-          .map((session): MailboxSession => ({
-            ...session,
-            dormant:
-              query.view === 'active' &&
-              session.pinned &&
-              Date.parse(session.updatedAt) <= dormantBefore
-          }))
-        return {
-          view: query.view,
-          total: inView.length,
-          matched: matched.length,
-          groups: groupSessions(matched, query.view)
-        }
-      })
-    )
+      const described = yield* Effect.forEach(
+        matched,
+        (session) =>
+          conversation.get(session.id).pipe(
+            Effect.map((snapshot): MailboxSession => ({
+              ...session,
+              dormant:
+                query.view === 'active' &&
+                session.pinned &&
+                Date.parse(session.updatedAt) <= dormantBefore,
+              ...describeSessionState(snapshot)
+            })),
+            // A Conversation that cannot be read still leaves a Session in the
+            // inbox: losing the row would hide the Session rather than the
+            // problem.
+            Effect.catchAll(() =>
+              Effect.succeed<MailboxSession>({
+                ...session,
+                dormant: false,
+                status: 'idle',
+                waitingFor: null
+              })
+            )
+          ),
+        // Every Session in the inbox costs one Conversation read, so reading
+        // them one after another is what makes a large inbox slow to open.
+        { concurrency: 8 }
+      )
+      return {
+        view: query.view,
+        total: inView.length,
+        matched: described.length,
+        groups: groupSessions(described, query.view)
+      }
+    })
 
   const acceptRun = (rawInput: AcceptRunInput): Effect.Effect<RunSnapshot, CoreError> =>
     provide(
@@ -483,8 +506,44 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
 }
 
 /**
- * The inbox groups. Ticket 12 owns Session status, so `needs-attention` and
- * `running` are presented and stay empty until something fills them.
+ * What a Session is doing, read from its Conversation.
+ *
+ * Blocked is deliberately narrow. An outstanding approval is one way an agent
+ * cannot proceed; a structured question it asked and nobody answered is the
+ * other. Prose that merely lists options is not a question the app can answer
+ * for anybody, which is why it never becomes Suggested Responses and never
+ * lands here.
+ */
+function describeSessionState(
+  snapshot: ConversationSnapshot
+): Pick<MailboxSession, 'status' | 'waitingFor'> {
+  if (snapshot.pendingApprovalId !== null) return { status: 'blocked', waitingFor: 'approval' }
+  // The last thing anybody said, rather than the last thing that happened: a
+  // Run's own ending is written after the message that asked the question.
+  const spoken = snapshot.entries.filter((entry) => entry.kind === 'message').at(-1)
+  if (
+    spoken?.kind === 'message' &&
+    spoken.role === 'assistant' &&
+    spoken.suggestedResponses.length > 0
+  ) {
+    // Asked and unanswered: a reply would be the later message.
+    return { status: 'blocked', waitingFor: 'question' }
+  }
+  if (snapshot.activeRunId !== null) return { status: 'running', waitingFor: null }
+  // A Run the person stopped is not a failure: they got what they asked for.
+  if (snapshot.recovery !== null && snapshot.recovery.category !== 'stopped') {
+    return { status: 'failed', waitingFor: null }
+  }
+  return { status: 'idle', waitingFor: null }
+}
+
+/**
+ * The inbox groups: one flat list across every Project, because the question
+ * worth answering is whether anything is waiting anywhere.
+ *
+ * Pinned wins over everything, because it is the person's own answer to where
+ * a Session belongs. A failed Run is not in needs-attention: nothing is
+ * waiting on an answer, and the Session says so on its own row.
  */
 function groupSessions(sessions: MailboxSession[], view: MailboxCoreQuery['view']): MailboxGroup[] {
   if (view === 'archived') return [{ key: 'archived', sessions }]
@@ -496,9 +555,18 @@ function groupSessions(sessions: MailboxSession[], view: MailboxCoreQuery['view'
   ]
   const byKey = new Map(groups.map((group) => [group.key, group]))
   for (const session of sessions) {
-    byKey.get(session.pinned ? 'pinned' : 'recent')?.sessions.push(session)
+    const key = session.pinned ? 'pinned' : GROUP_OF_STATUS[session.status]
+    byKey.get(key)?.sessions.push(session)
   }
   return groups
+}
+
+/** Where each status belongs, stated once so a new one has one place to go. */
+const GROUP_OF_STATUS: Record<SessionStatus, MailboxGroupKey> = {
+  blocked: 'needs-attention',
+  running: 'running',
+  idle: 'recent',
+  failed: 'recent'
 }
 
 const RUN_STATUS_TRANSITIONS: Record<RunStatus, readonly RunStatus[]> = {

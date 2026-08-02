@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Archive,
@@ -22,6 +22,7 @@ import type {
   MailboxSession,
   MailboxQuery,
   MailboxSnapshot,
+  SessionStatus,
   ThemePreference,
   ThemeState
 } from '@shared/contract'
@@ -64,6 +65,9 @@ const GROUP_META: Record<MailboxGroupKey, GroupMeta> = {
   archived: { label: 'Archived', icon: Archive, colorClass: 'text-muted-foreground' }
 }
 
+/** What the rail asks for: every active Session, narrowed by nothing. */
+const RAIL_QUERY: MailboxQuery = { search: '', view: 'active', projectRoot: null }
+
 /**
  * The Focus Mailbox production frame: a collapsible Session inbox on the left
  * (expanded list or compact rail) and the primary center surface, which this
@@ -74,7 +78,11 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   const [inboxCollapsed, setInboxCollapsed] = useState(false)
   const [readinessOpen, setReadinessOpen] = useState(false)
   const [announcement, setAnnouncement] = useState('')
-  const [query, setQuery] = useState<MailboxQuery>({ search: '', view: 'active' })
+  const [query, setQuery] = useState<MailboxQuery>({
+    search: '',
+    view: 'active',
+    projectRoot: null
+  })
   const [mailbox, setMailbox] = useState<MailboxData>({ state: 'reading' })
   // Sessions whose record could not be read. Shown rather than left out: a
   // Session that disappears without a word is the failure the store exists to
@@ -82,6 +90,14 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   const [damaged, setDamaged] = useState<string[]>([])
   const searchRef = useRef<HTMLInputElement>(null)
   const requestSequenceRef = useRef(0)
+
+  // Collapsing hides the filters, so it also drops them: a rail narrowed by a
+  // search nobody can see would answer "is anything waiting for me, anywhere"
+  // with a list that leaves things out.
+  const effectiveQuery = useMemo(
+    () => (inboxCollapsed ? RAIL_QUERY : query),
+    [inboxCollapsed, query]
+  )
 
   const refreshMailbox = useCallback(async (nextQuery: MailboxQuery) => {
     const requestId = ++requestSequenceRef.current
@@ -94,9 +110,27 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   }, [])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void refreshMailbox(query), query.search ? 120 : 0)
+    const timer = window.setTimeout(
+      () => void refreshMailbox(effectiveQuery),
+      effectiveQuery.search ? 120 : 0
+    )
     return () => window.clearTimeout(timer)
-  }, [query, refreshMailbox])
+  }, [effectiveQuery, refreshMailbox])
+
+  // A Session's status is derived from its Conversation, so the inbox is only
+  // as true as the last time it read one. Anything that happens in a
+  // Conversation is exactly what can move a Session between groups.
+  useEffect(() => {
+    let timer = 0
+    const stop = window.shell.onConversationEvent(() => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => void refreshMailbox(effectiveQuery), 150)
+    })
+    return () => {
+      window.clearTimeout(timer)
+      stop()
+    }
+  }, [effectiveQuery, refreshMailbox])
 
   useEffect(() => {
     void window.shell
@@ -138,7 +172,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   }, [startNewChat])
 
   function handleStarted(session: SessionSummary): void {
-    void refreshMailbox(query)
+    void refreshMailbox(effectiveQuery)
     openSession(session)
     setAnnouncement(`Started “${session.title}”.`)
   }
@@ -159,7 +193,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     } catch {
       setAnnouncement(`Could not update the pin on “${session.title}”.`)
     }
-    void refreshMailbox(query)
+    void refreshMailbox(effectiveQuery)
   }
 
   async function setArchived(session: SessionSummary, archived: boolean): Promise<void> {
@@ -178,7 +212,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     } catch {
       setAnnouncement(`Could not ${archived ? 'archive' : 'restore'} “${session.title}”.`)
     }
-    void refreshMailbox(query)
+    void refreshMailbox(effectiveQuery)
   }
 
   async function confirmDelete(session: SessionSummary): Promise<void> {
@@ -189,7 +223,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     } catch {
       setAnnouncement(`Deleting “${session.title}” failed. Nothing was lost.`)
     }
-    void refreshMailbox(query)
+    void refreshMailbox(effectiveQuery)
   }
 
   const selectedSession =
@@ -240,7 +274,11 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
           />
         ) : (
           <div className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/40">
-            <Projects onNewChat={(root) => startNewChat(root)} />
+            <Projects
+              onNewChat={(root) => startNewChat(root)}
+              filteredRoot={query.projectRoot}
+              onFilter={(projectRoot) => setQuery((current) => ({ ...current, projectRoot }))}
+            />
             <nav aria-label="Session inbox" className="flex min-h-0 flex-1 flex-col">
               {damaged.length > 0 && (
                 <p
@@ -286,6 +324,20 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
                     />
                   </div>
                 </div>
+                {query.projectRoot !== null && (
+                  // A filter that hides Sessions has to say so, or the list
+                  // looks like an inbox that lost them.
+                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <span className="min-w-0 flex-1 truncate font-mono">{query.projectRoot}</span>
+                    <button
+                      type="button"
+                      onClick={() => setQuery((current) => ({ ...current, projectRoot: null }))}
+                      className="shrink-0 underline-offset-2 hover:underline"
+                    >
+                      Show all Projects
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto py-2">
@@ -295,8 +347,10 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
                   selectedId={selectedSession?.id}
                   onOpen={openSession}
                   onNewChat={() => startNewChat()}
-                  onClearSearch={() => setQuery((current) => ({ ...current, search: '' }))}
-                  onRetry={() => void refreshMailbox(query)}
+                  onClearSearch={() =>
+                    setQuery((current) => ({ ...current, search: '', projectRoot: null }))
+                  }
+                  onRetry={() => void refreshMailbox(effectiveQuery)}
                   onTogglePinned={(session) => void togglePinned(session)}
                   onSetArchived={(session, archived) => void setArchived(session, archived)}
                   onDelete={(session) => setSurface({ kind: 'confirm-delete', session })}
@@ -405,7 +459,7 @@ function InboxContent(props: InboxContentProps): React.JSX.Element {
           No Sessions match {query.search ? `“${query.search}”` : 'the current filters'}.
         </p>
         <Button variant="secondary" size="sm" onClick={props.onClearSearch}>
-          Clear search
+          {query.projectRoot ? 'Clear filters' : 'Clear search'}
         </Button>
       </div>
     )
@@ -469,7 +523,22 @@ function SessionRow({ session, selectedId, ...props }: SessionRowProps): React.J
         )}
       >
         <MessageSquare aria-hidden="true" className="size-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">{session.title}</span>
+        <span className="min-w-0 flex-1 truncate">
+          {session.title}
+          {/* What the Session wants, when it wants something. A failed Run says
+              so here rather than in Needs attention: nothing is waiting on an
+              answer, but the row still has to admit what happened. */}
+          {session.waitingFor !== null && (
+            <span className="block truncate text-[10px] text-amber-600 dark:text-amber-400">
+              {session.waitingFor === 'approval'
+                ? 'Waiting for your approval'
+                : 'Waiting for your answer'}
+            </span>
+          )}
+          {session.status === 'failed' && (
+            <span className="block truncate text-[10px] text-destructive">The last Run failed</span>
+          )}
+        </span>
         {session.dormant && (
           <span className="rounded-sm bg-notice px-1 text-[10px] font-medium text-notice-foreground">
             Dormant
@@ -545,6 +614,32 @@ function ViewToggle({
   )
 }
 
+/**
+ * What the rail says about a Session with no room for words. Only the two
+ * states the inbox exists for get their own mark; the rest read as a chat.
+ */
+const RAIL_STATUS: Partial<
+  Record<SessionStatus, { icon: LucideIcon; colorClass: string; said: string }>
+> = {
+  blocked: {
+    icon: AlertTriangle,
+    colorClass: 'text-amber-600 dark:text-amber-400',
+    said: ', needs attention'
+  },
+  running: {
+    icon: CircleDashed,
+    colorClass: 'text-sky-600 dark:text-sky-400',
+    said: ', running'
+  }
+}
+
+/** What a Session looks like with no room to say anything about it. */
+function RailIcon({ status }: { status: SessionStatus }): React.JSX.Element {
+  const marked = RAIL_STATUS[status]
+  const Icon = marked?.icon ?? MessageSquare
+  return <Icon aria-hidden="true" className={cn('size-3.5 shrink-0', marked?.colorClass)} />
+}
+
 interface CompactRailProps {
   sessions: MailboxSession[]
   selectedId: string | undefined
@@ -564,6 +659,7 @@ function CompactRail({
   onExpand,
   onNewChat
 }: CompactRailProps): React.JSX.Element {
+  const waiting = sessions.filter((session) => session.status === 'blocked').length
   return (
     <nav
       aria-label="Session inbox (compact)"
@@ -587,13 +683,30 @@ function CompactRail({
       >
         <Search aria-hidden="true" className="size-4" />
       </button>
+      {waiting > 0 && (
+        // The one question the rail must still answer: is anything waiting for
+        // me. Collapsing the inbox hides the groups, never this.
+        <button
+          type="button"
+          aria-label={
+            waiting === 1
+              ? '1 Session needs attention. Expand inbox'
+              : `${String(waiting)} Sessions need attention. Expand inbox`
+          }
+          title={waiting === 1 ? '1 Session needs attention' : `${String(waiting)} need attention`}
+          onClick={onExpand}
+          className="flex size-7 items-center justify-center rounded-full bg-amber-500/15 text-[11px] font-semibold text-amber-600 focus-visible:ring-2 focus-visible:ring-ring dark:text-amber-400"
+        >
+          {waiting}
+        </button>
+      )}
       <div aria-hidden="true" className="my-1 h-px w-6 bg-border" />
       <ul className="flex flex-col items-center gap-1">
         {sessions.map((session) => (
           <li key={session.id} className="relative">
             <button
               type="button"
-              aria-label={session.title}
+              aria-label={`${session.title}${RAIL_STATUS[session.status]?.said ?? ''}`}
               title={session.title}
               aria-current={selectedId === session.id ? 'true' : undefined}
               onClick={() => onOpen(session)}
@@ -604,7 +717,7 @@ function CompactRail({
                   : 'text-muted-foreground hover:bg-accent hover:text-foreground'
               )}
             >
-              <MessageSquare aria-hidden="true" className="size-3.5 shrink-0" />
+              <RailIcon status={session.status} />
             </button>
             {session.pinned && (
               <Pin

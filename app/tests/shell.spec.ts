@@ -306,6 +306,80 @@ test('a person organizes the mailbox: pin, search, archive, restore, compact rai
   }
 })
 
+/**
+ * A Harness that answers the readiness probe (`-p`) and then, for a real Run
+ * (`--print`), starts and keeps working — so a Run is genuinely running.
+ */
+const BUSY_CLAUDE_FAKE = `case "$1" in
+  --version) echo "2.1.220 (Claude Code)"; exit 0;;
+  -p|--print) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+esac`
+
+test('the inbox groups by what a Session is doing and filters by Project', async () => {
+  await installFakeHarness('claude', BUSY_CLAUDE_FAKE)
+  // A second Project, because the point of the flat list is that it crosses
+  // repositories and Project is only a filter over it.
+  await promisify(execFile)('git', ['init', '--quiet'], { cwd: sandbox.plainDir })
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    const projects = page.getByRole('region', { name: 'Projects' })
+    await projects.getByRole('button', { name: 'Add Project' }).click()
+    await projects.getByRole('alert').getByRole('button', { name: 'Add this Project' }).click()
+    await expect(projects.getByText(basename(sandbox.plainDir), { exact: true })).toBeVisible()
+
+    await startSession(page, 'Offline recipe planner')
+    await page.getByRole('button', { name: `New chat in “${basename(sandbox.plainDir)}”` }).click()
+    await page
+      .getByRole('form', { name: 'New chat' })
+      .getByLabel('Message')
+      .fill('Elsewhere entirely')
+    await page.getByRole('button', { name: 'Send' }).click()
+    await expect(page.getByRole('heading', { name: 'Elsewhere entirely' })).toBeVisible()
+
+    const inbox = page.getByRole('navigation', { name: 'Session inbox' })
+    const runningGroup = inbox.getByRole('region', { name: 'Running' })
+    const recentGroup = inbox.getByRole('region', { name: 'Recent' })
+
+    // A Session nobody has developed yet is Recent, not Needs attention: a
+    // quiet Session in that group would make the group worth nothing.
+    await expect(recentGroup.getByText('Offline recipe planner')).toBeVisible()
+    await expect(
+      inbox.getByRole('region', { name: 'Needs attention' }).getByRole('listitem')
+    ).toHaveCount(0)
+
+    // Developing one moves it to Running, from its Conversation rather than
+    // from anything stored beside it.
+    await page.getByLabel('Your message').fill('Change the greeting')
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
+    await expect(runningGroup.getByText('Elsewhere entirely')).toBeVisible()
+    await expect(recentGroup.getByText('Offline recipe planner')).toBeVisible()
+
+    // Clicking a Project narrows the flat list; it never navigates into it.
+    await projects
+      .getByRole('button', { name: `Show only Sessions in “${basename(sandbox.plainDir)}”` })
+      .click()
+    await expect(inbox.getByText('Offline recipe planner')).toHaveCount(0)
+    await expect(runningGroup.getByText('Elsewhere entirely')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Elsewhere entirely' })).toBeVisible()
+    await inbox.getByRole('button', { name: 'Show all Projects' }).click()
+    await expect(inbox.getByText('Offline recipe planner')).toBeVisible()
+
+    // The rail keeps the running Session legible with the inbox collapsed, and
+    // is narrowed by nothing: a filter it cannot show is a filter it drops.
+    await projects
+      .getByRole('button', { name: `Show only Sessions in “${basename(sandbox.plainDir)}”` })
+      .click()
+    await page.getByRole('button', { name: 'Collapse inbox to rail' }).click()
+    const rail = page.getByRole('navigation', { name: 'Session inbox (compact)' })
+    await expect(rail.getByRole('button', { name: 'Elsewhere entirely, running' })).toBeVisible()
+    await expect(rail.getByRole('button', { name: 'Offline recipe planner' })).toBeVisible()
+  } finally {
+    await app.close()
+  }
+})
+
 test('deleting a Session forgets it and leaves the Project alone', async () => {
   await writeFile(join(sandbox.projectDir, 'source.ts'), 'export const kept = true')
 

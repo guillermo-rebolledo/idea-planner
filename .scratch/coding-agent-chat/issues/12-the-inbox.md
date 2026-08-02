@@ -6,7 +6,7 @@ The list is flat and cross-repository on purpose. The highest-value question thi
 
 `needs-attention` means the agent is mid-Run and cannot proceed: an outstanding approval, or a structured question. A Session whose agent simply replied and stopped is `recent`. Getting this wrong puts every idle Session in needs-attention and makes the group worthless.
 
-Each Session also carries a **changed-files panel** summarising what it has done to the Project. Inline diffs answer "what is happening"; the panel answers "what is the state of this work" when the user returns tomorrow, without scrolling a chat log. Because [ADR 0004](../../../docs/adr/0004-in-place-primary-checkout.md) edits the primary checkout in place, a dirty starting tree means `git diff` conflates the user's edits with the agent's — so the panel is built from a per-Session record of what the agent changed, not from repository state.
+The changed-files panel this ticket originally carried is now [12b](12b-changed-files-panel.md). It needs a per-Session record of what the agent changed, which is a change to what a Run writes rather than to how Sessions are listed.
 
 Sessions never complete. Archiving is how a Session leaves the list.
 
@@ -14,15 +14,37 @@ Session status arrives here rather than in ticket 03, which deliberately decline
 
 **Blocked by:** 07b, 11
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The sidebar shows New chat, then Projects, then a flat Session list grouped by pinned, needs-attention, running, recent, and archived
-- [ ] Groups are populated across all Projects at once
-- [ ] Clicking a Project filters the Session list without navigating into it
-- [ ] needs-attention contains only Sessions blocked on an approval or a structured question
-- [ ] Search, pin, archive, and restore work across the flat list
-- [ ] Each Session shows the files the agent changed, derived from a per-Session record rather than repository state
-- [ ] The changed-files panel is correct when the Project was already dirty at Session start
-- [ ] Opening a changed file shows a read-only diff; the app offers no accept or reject
-- [ ] The collapsed rail state still surfaces needs-attention and running
-- [ ] `pnpm verify` passes and the packaged-shell acceptance suite covers grouping and archive
+- [x] The sidebar shows New chat, then Projects, then a flat Session list grouped by pinned, needs-attention, running, recent, and archived
+- [x] Groups are populated across all Projects at once
+- [x] Clicking a Project filters the Session list without navigating into it
+- [x] needs-attention contains only Sessions blocked on an approval or a structured question
+- [x] Search, pin, archive, and restore work across the flat list
+- [x] The collapsed rail state still surfaces needs-attention and running
+- [x] `pnpm verify` passes and the packaged-shell acceptance suite covers grouping and archive
+- [ ] The changed-files panel — split out as [12b](12b-changed-files-panel.md) and not built here
+
+## Answer — where status comes from
+
+Status is derived from the Conversation when the inbox is read, never stored beside the Session: a stored status is one that can disagree with the Conversation it describes, and the Conversation is the truth. `blocked` is an outstanding Approval Request or an unanswered structured question — the last thing anybody *said* being an assistant message that offered choices. A Run's own ending is written after that message, which is why the rule reads the last message rather than the last entry.
+
+A Session whose agent replied and stopped is `idle` and lands in Recent. A failed Run is `failed` and also lands in Recent: nothing is waiting on an answer, so nothing is asking for attention, and putting failures in the group would dilute it the same way idle Sessions would.
+
+## Answer — the inbox has to stay true
+
+Status derived at read time is only as true as the last read. The inbox now refreshes on Conversation events, so a Session moves between groups as it happens rather than at the next search keystroke. That is not a checkbox the ticket wrote, but a group that is right only until something happens is not a group anybody can trust.
+
+A stopped Run is `idle`, not `failed`: the person asked for it to stop and got what they asked for. A Run that really failed says so on its own row, which is what earns keeping failures out of Needs attention.
+
+## Answer — the rail drops what it cannot show
+
+Collapsing the inbox hides the search box and the Project filter, so the rail asks for every active Session and ignores both. A rail narrowed by a filter nobody can see would answer "is anything waiting for me, anywhere" with a list that leaves things out. Expanding restores the filters untouched.
+
+## Answer — Project is a filter
+
+Clicking a Project row toggles a filter over the flat list and nothing else — no navigation, no container. The filter is stated above the list with a way out of it, and the snapshot still reports how many Sessions are in view, so a narrowed inbox can be told apart from an empty one.
+
+## Answer — what the shell suite proves
+
+The packaged shell covers grouping across two Projects (a Session that has never been developed is Recent, developing one moves it to Running), the Project filter, archive and restore, and the rail naming a running Session. `needs-attention` itself is proven in the Core tests, where the rule lives: driving a real Approval Request through the packaged shell would need a fake Harness that speaks this app's MCP capability socket, which tests the fake more than the app.
