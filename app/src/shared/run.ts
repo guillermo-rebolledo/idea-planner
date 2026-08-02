@@ -2,6 +2,15 @@ import { z } from 'zod'
 import { sessionRelativePathSchema } from './portable-path'
 import { harnessIdSchema } from './readiness'
 
+/**
+ * The name the app's own MCP server is registered under. Main writes it into
+ * each Harness's configuration and derives Claude's tool-allow pattern from it;
+ * the adapters match tool names against it. A drift between those would fail
+ * silently at runtime rather than at compile time, so they read one constant.
+ */
+export const MCP_SERVER_NAME = 'app'
+export const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`
+
 export const runStatusSchema = z.enum([
   'accepted',
   'starting',

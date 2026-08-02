@@ -51,8 +51,10 @@ describe('opening a library', () => {
   })
 
   it('ignores a library written in the previous format without altering it', async () => {
-    // The retired format kept each Session as `idea.md` in a folder. It is not
-    // migrated: it is left exactly as found and never read.
+    // The retired format kept each Session as `idea.md` in a folder. Those
+    // folders are not migrated: they are left exactly as found and never read.
+    // The app's own disposable index is not part of that promise — it is
+    // rebuilt from what the app can read, which is now nothing.
     const legacyDir = join(libraryDir, 'a-previous-session')
     await mkdir(legacyDir)
     const legacy = [
@@ -72,6 +74,12 @@ describe('opening a library', () => {
 
     const snapshot = await core.openLibrary(libraryDir)
     expect(snapshot.sessions).toEqual([])
+    await expect(readFile(join(legacyDir, 'idea.md'), 'utf8')).resolves.toBe(legacy)
+    expect(await readdir(legacyDir)).toEqual(['idea.md'])
+
+    // Querying rebuilds the disposable index and must still not reach into the
+    // previous format's Session folders.
+    await core.queryMailbox({ search: '', view: 'active', dormantAfterDays: 30 })
     await expect(readFile(join(legacyDir, 'idea.md'), 'utf8')).resolves.toBe(legacy)
     expect(await readdir(legacyDir)).toEqual(['idea.md'])
   })

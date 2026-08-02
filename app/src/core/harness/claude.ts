@@ -4,6 +4,7 @@ import {
   type HarnessEvent,
   type HarnessFailureCategory
 } from '@shared/conversation'
+import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from '@shared/run'
 import type { HarnessAdapter } from './codex'
 
 const usageSchema = z.object({
@@ -241,12 +242,15 @@ function categorize(summary: string): HarnessFailureCategory {
 }
 
 function normalizeToolName(name: string): string {
-  return name.replace(/^mcp__app__/, 'app.')
+  return name.startsWith(MCP_TOOL_PREFIX)
+    ? `${MCP_SERVER_NAME}.${name.slice(MCP_TOOL_PREFIX.length)}`
+    : name
 }
 
 function describeTool(name: string): string {
-  const tool = name.replace(/^mcp__app__/, '')
-  return name.startsWith('mcp__app__') ? `Called app tool ${tool}` : `Called Claude tool ${tool}`
+  return name.startsWith(MCP_TOOL_PREFIX)
+    ? `Called app tool ${name.slice(MCP_TOOL_PREFIX.length)}`
+    : `Called Claude tool ${name}`
 }
 
 function object(value: unknown): Record<string, unknown> {

@@ -20,6 +20,8 @@ import {
   type HarnessFailureCategory
 } from '@shared/conversation'
 import {
+  MCP_SERVER_NAME,
+  MCP_TOOL_PREFIX,
   runSnapshotSchema,
   startRunInputSchema,
   type RunActivityKind,
@@ -628,7 +630,6 @@ export class RunService {
  * gives its tools. Claude's `--allowedTools` filter below is derived from it,
  * so the two can never drift apart.
  */
-const MCP_SERVER_NAME = 'app'
 
 function minimalEnvironment(
   executable: string,
@@ -696,7 +697,7 @@ function harnessArguments(
     '--tools',
     'ToolSearch',
     '--allowedTools',
-    `mcp__${MCP_SERVER_NAME}__*`,
+    `${MCP_TOOL_PREFIX}*`,
     '--permission-mode',
     'dontAsk',
     '--no-chrome',

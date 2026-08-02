@@ -50,8 +50,8 @@ describe('Codex harness Adapter', () => {
     expect(events.filter((event) => event.type === 'tool')).toEqual([
       {
         type: 'tool',
-        name: 'app.read_file',
-        summary: 'Called MCP tool read_file'
+        name: 'app.offer_response_options',
+        summary: 'Called app tool offer_response_options'
       }
     ])
   })

@@ -4,6 +4,7 @@ import {
   type HarnessEvent,
   type HarnessFailureCategory
 } from '@shared/conversation'
+import { MCP_SERVER_NAME } from '@shared/run'
 import type { HarnessId } from '@shared/readiness'
 
 /**
@@ -148,7 +149,7 @@ function describeItem(raw: unknown, completed: boolean): HarnessEvent[] {
             {
               type: 'tool',
               name: `${item.server ?? 'mcp'}.${item.tool ?? 'unknown'}`,
-              summary: `Called MCP tool ${item.tool ?? 'unknown'}`
+              summary: describeTool(item.server, item.tool ?? 'unknown')
             }
           ]
     case 'file_change':
@@ -172,6 +173,13 @@ function describeItem(raw: unknown, completed: boolean): HarnessEvent[] {
         ? []
         : [{ type: 'unsupported', detail: `item:${item.type.slice(0, 100)}` }]
   }
+}
+
+/** One wording for a tool call, whichever Harness reported it. */
+function describeTool(server: string | undefined, tool: string): string {
+  return server === MCP_SERVER_NAME
+    ? `Called app tool ${tool}`
+    : `Called ${server ?? 'MCP'} tool ${tool}`
 }
 
 function describeUsage(raw: unknown): HarnessEvent[] {
