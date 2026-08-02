@@ -30,6 +30,14 @@ import type { HarnessId } from '@shared/readiness'
 import type { SkillName } from '@shared/run'
 import { createCodexAdapter, type HarnessAdapter } from './harness/codex'
 import { parseGitPatch } from './harness/diff'
+import {
+  advance,
+  deriveState,
+  journalSize,
+  stateFile,
+  writeState,
+  type SessionState
+} from './session-state'
 import { createClaudeAdapter } from './harness/claude'
 
 /**
@@ -155,6 +163,12 @@ export interface AnswerHarnessInput {
 
 export interface ConversationEffects {
   get(sessionId: string): Effect.Effect<ConversationSnapshot, CoreError>
+  /**
+   * What the Session is doing, without reading its whole Conversation back.
+   * The projection behind it is checked against the journal on every read, so
+   * this can never answer with something the Conversation did not say.
+   */
+  state(sessionId: string): Effect.Effect<SessionState, CoreError>
   submit(input: unknown): Effect.Effect<ConversationSnapshot, CoreError>
   begin(input: BeginConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
   apply(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
@@ -232,12 +246,50 @@ export function createConversationEffects(options: ConversationOptions): Convers
     })
 
   const append = (sessionDir: string, entry: ConversationEntry): Effect.Effect<void, CoreError> =>
-    Effect.tryPromise({
-      try: async () => {
-        await mkdir(sessionDir, { recursive: true, mode: 0o700 })
-        await appendFile(join(sessionDir, JOURNAL), `${JSON.stringify(entry)}\n`, 'utf8')
-      },
-      catch: () => new CoreError('IO_ERROR', 'The Conversation could not be saved')
+    Effect.gen(function* () {
+      yield* Effect.tryPromise({
+        try: async () => {
+          await mkdir(sessionDir, { recursive: true, mode: 0o700 })
+          await appendFile(join(sessionDir, JOURNAL), `${JSON.stringify(entry)}\n`, 'utf8')
+        },
+        catch: () => new CoreError('IO_ERROR', 'The Conversation could not be saved')
+      })
+      // The journal is written first and the projection after it, so a crash
+      // between them leaves a projection that is behind rather than ahead.
+      // Being behind is detectable; being ahead would be a status the
+      // Conversation never said (ticket 12f).
+      const known = yield* readState(sessionDir)
+      yield* writeState(sessionDir, {
+        ...advance(known, entry),
+        journalBytes: yield* journalSize(join(sessionDir, JOURNAL))
+      }).pipe(Effect.catchAll(() => Effect.void))
+    })
+
+  /**
+   * What this Session is doing, from the projection when it agrees with the
+   * journal and from the journal itself when it does not. A projection that
+   * has fallen behind is repaired rather than trusted: the Conversation is
+   * what happened, and this only says so faster.
+   */
+  const readState = (sessionDir: string): Effect.Effect<SessionState, CoreError> =>
+    Effect.gen(function* () {
+      const bytes = yield* journalSize(join(sessionDir, JOURNAL))
+      const written = yield* Effect.promise(() =>
+        readFile(stateFile(sessionDir), 'utf8').then(
+          (text) => {
+            try {
+              return JSON.parse(text) as SessionState
+            } catch {
+              return null
+            }
+          },
+          () => null
+        )
+      )
+      if (written?.journalBytes === bytes) return written
+      const rebuilt = deriveState(yield* readEntries(sessionDir), bytes)
+      yield* writeState(sessionDir, rebuilt).pipe(Effect.catchAll(() => Effect.void))
+      return rebuilt
     })
 
   const snapshot = (
@@ -245,6 +297,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
     sessionDir: string
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
     readEntries(sessionDir).pipe(Effect.map((entries) => summarize(sessionId, entries)))
+
+  const state = (sessionId: string): Effect.Effect<SessionState, CoreError> =>
+    sessionDirectory(sessionId).pipe(Effect.flatMap(readState))
 
   const get = (sessionId: string): Effect.Effect<ConversationSnapshot, CoreError> =>
     sessionDirectory(sessionId).pipe(
@@ -798,6 +853,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
 
   return {
     get,
+    state,
     submit,
     begin,
     apply,

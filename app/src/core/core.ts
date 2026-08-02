@@ -41,6 +41,7 @@ import {
   type StandingApproval
 } from '@shared/approval'
 import { writeJsonAtomic } from './atomic'
+import { describeState } from './session-state'
 import { suggestSessionTitle } from '@shared/title'
 import { ProjectStore } from './projects'
 import { SessionStore } from './sessions'
@@ -243,11 +244,11 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       const open = yield* Effect.forEach(
         all,
         (session) =>
-          conversation.get(session.id).pipe(
-            Effect.map((snapshot): UnfinishedRun | null =>
-              snapshot.activeRunId === null
+          conversation.state(session.id).pipe(
+            Effect.map((state): UnfinishedRun | null =>
+              state.activeRunId === null
                 ? null
-                : { sessionId: session.id, runId: snapshot.activeRunId }
+                : { sessionId: session.id, runId: state.activeRunId }
             ),
             // A Conversation that cannot be read has nothing to say about
             // whether a Run is open, and this is not the place to decide.
@@ -279,14 +280,18 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       const described = yield* Effect.forEach(
         matched,
         (session) =>
-          conversation.get(session.id).pipe(
-            Effect.map((snapshot): MailboxSession => ({
+          // The projection beside the Conversation, not the Conversation
+          // itself: the inbox is read on every event, and reading every
+          // journal back is what would make that cost grow with how much work
+          // the person has done in this app (ticket 12f).
+          conversation.state(session.id).pipe(
+            Effect.map((state): MailboxSession => ({
               ...session,
               dormant:
                 query.view === 'active' &&
                 session.pinned &&
                 Date.parse(session.updatedAt) <= dormantBefore,
-              ...describeSessionState(snapshot)
+              ...describeState(state)
             })),
             // A Conversation that cannot be read still leaves a Session in the
             // inbox: losing the row would hide the Session rather than the
@@ -537,38 +542,6 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     listUnfinishedRuns,
     finalizeConversationRun: (input) => conversation.finalize(input)
   }
-}
-
-/**
- * What a Session is doing, read from its Conversation.
- *
- * Blocked is deliberately narrow. An outstanding approval is one way an agent
- * cannot proceed; a structured question it asked and nobody answered is the
- * other. Prose that merely lists options is not a question the app can answer
- * for anybody, which is why it never becomes Suggested Responses and never
- * lands here.
- */
-function describeSessionState(
-  snapshot: ConversationSnapshot
-): Pick<MailboxSession, 'status' | 'waitingFor'> {
-  if (snapshot.pendingApprovalId !== null) return { status: 'blocked', waitingFor: 'approval' }
-  // The last thing anybody said, rather than the last thing that happened: a
-  // Run's own ending is written after the message that asked the question.
-  const spoken = snapshot.entries.filter((entry) => entry.kind === 'message').at(-1)
-  if (
-    spoken?.kind === 'message' &&
-    spoken.role === 'assistant' &&
-    spoken.suggestedResponses.length > 0
-  ) {
-    // Asked and unanswered: a reply would be the later message.
-    return { status: 'blocked', waitingFor: 'question' }
-  }
-  if (snapshot.activeRunId !== null) return { status: 'running', waitingFor: null }
-  // A Run the person stopped is not a failure: they got what they asked for.
-  if (snapshot.recovery !== null && snapshot.recovery.category !== 'stopped') {
-    return { status: 'failed', waitingFor: null }
-  }
-  return { status: 'idle', waitingFor: null }
 }
 
 /**

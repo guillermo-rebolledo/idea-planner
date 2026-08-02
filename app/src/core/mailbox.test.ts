@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -180,6 +180,58 @@ describe('search and filters', () => {
     // told the list is narrowed rather than emptied.
     expect(narrowed.total).toBe(3)
     await rm(otherRoot, { recursive: true, force: true })
+  })
+})
+
+describe('what the inbox reads', () => {
+  /** Where the projection for a Session lives, beside its Conversation. */
+  function stateFile(sessionId: string): string {
+    return join(stateDir, 'sessions', sessionId, 'state.json')
+  }
+
+  it('answers from the projection rather than the Conversation', async () => {
+    const session = await start('Quietly idle')
+    await core.queryMailbox(query())
+
+    // Only reading the projection can produce this answer: the Conversation
+    // says nothing of the kind. Tampering is how the difference is visible.
+    const projected = JSON.parse(await readFile(stateFile(session.id), 'utf8')) as {
+      journalBytes: number
+    }
+    await writeFile(
+      stateFile(session.id),
+      JSON.stringify({ ...projected, activeRunId: 'run-invented' })
+    )
+    expect(group(await core.queryMailbox(query()), 'running')).toEqual(['Quietly idle'])
+  })
+
+  it('rebuilds a projection that has fallen behind its Conversation', async () => {
+    const session = await start('Told the truth')
+    await core.queryMailbox(query())
+    // A projection written before a journal that has since grown: exactly what
+    // a crash between the two leaves behind.
+    await writeFile(
+      stateFile(session.id),
+      JSON.stringify({
+        activeRunId: 'run-invented',
+        openApprovals: [],
+        lastMessage: null,
+        recovery: null,
+        journalBytes: 1
+      })
+    )
+
+    const snapshot = await core.queryMailbox(query())
+    expect(group(snapshot, 'running')).toEqual([])
+    expect(group(snapshot, 'recent')).toEqual(['Told the truth'])
+  })
+
+  it('answers without a projection at all, and leaves one behind', async () => {
+    const session = await start('Never projected')
+    await rm(stateFile(session.id), { force: true })
+
+    expect(group(await core.queryMailbox(query()), 'recent')).toEqual(['Never projected'])
+    await expect(readFile(stateFile(session.id), 'utf8')).resolves.toContain('journalBytes')
   })
 })
 
