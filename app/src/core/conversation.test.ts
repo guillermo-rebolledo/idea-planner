@@ -856,7 +856,7 @@ describe('an approval from request to answer', () => {
     tool: 'Bash',
     summary: 'pnpm test',
     detail: '{"command":"pnpm test"}',
-    proposedRule: { kind: 'command', toolName: 'Bash', content: 'pnpm test:*' }
+    proposedRule: { harness: 'claude', kind: 'command', toolName: 'Bash', content: 'pnpm test:*' }
   }
 
   it('blocks the Run on the request and leaves that state when it is answered', async () => {
@@ -943,7 +943,12 @@ describe('an approval from request to answer', () => {
       {
         decision: 'allowed',
         remembered: true,
-        proposedRule: { kind: 'command', toolName: 'Bash', content: 'pnpm test:*' }
+        proposedRule: {
+          harness: 'claude',
+          kind: 'command',
+          toolName: 'Bash',
+          content: 'pnpm test:*'
+        }
       }
     ])
   })

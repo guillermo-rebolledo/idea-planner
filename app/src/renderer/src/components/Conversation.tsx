@@ -105,12 +105,6 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
     harnesses.find((entry) => entry.capabilities.developSession.available) ??
     harnesses[0]
   const chosenHarness = selected?.harness ?? null
-  // Ask is served natively per Harness. Codex's transport can carry it — the
-  // app-server protocol has a full approval round-trip — but nothing answers
-  // it here yet, so offering it would start Runs that stall on their first
-  // request (`docs/harness-permission-mapping.md`).
-  const askable = chosenHarness === 'claude'
-  const effectiveMode: PermissionMode = askable ? permissionMode : 'auto'
 
   const refresh = useCallback(async () => {
     try {
@@ -227,7 +221,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           harness: chosenHarness,
           model,
           effort,
-          permissionMode: effectiveMode
+          permissionMode: permissionMode
         })
         setPhase({ state: 'ready', snapshot: next })
         if (source === 'composer' && !submissionId) setDraft('')
@@ -243,7 +237,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
         setBusy(false)
       }
     },
-    [sessionId, chosenHarness, skill, model, effort, effectiveMode, refresh]
+    [sessionId, chosenHarness, skill, model, effort, permissionMode, refresh]
   )
 
   /**
@@ -636,13 +630,11 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           <Field label="Permission">
             <select
               aria-label="Permission Mode"
-              value={effectiveMode}
+              value={permissionMode}
               onChange={(event) => setPermissionMode(event.target.value as PermissionMode)}
               className="h-8 rounded-md border border-border bg-background px-2 text-xs"
             >
-              <option value="ask" disabled={!askable}>
-                {askable ? 'Ask' : 'Ask — not on this Harness yet'}
-              </option>
+              <option value="ask">Ask</option>
               <option value="auto">Full access</option>
             </select>
           </Field>
@@ -670,7 +662,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           </div>
         )}
         <p className="text-[11px] text-muted-foreground">
-          {effectiveMode === 'ask'
+          {permissionMode === 'ask'
             ? 'In Ask, the agent stops for your approval before it edits or runs anything.'
             : 'In Full access, the agent edits and runs without asking. The Harness applies its own permissions for this Run.'}
         </p>
@@ -678,8 +670,9 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
             differences are stated rather than discovered. */}
         {chosenHarness === 'codex' && (
           <p className="text-[11px] text-muted-foreground">
-            Codex differs from Claude Code here: Ask is not answerable yet, so a Run uses Full
-            access, and a Skill reaches it as instructions for the Run rather than natively.
+            Codex differs from Claude Code here: in Ask it edits inside this Project without asking
+            and stops for commands, it proposes its own “always allow” rule rather than being given
+            one, and a Skill reaches it as instructions for the Run rather than natively.
           </p>
         )}
       </form>

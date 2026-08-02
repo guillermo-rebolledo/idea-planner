@@ -126,6 +126,15 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
         harness: command.harness,
         launch: command.launch
       })
+    case 'harness/answer':
+      return core.answerHarnessApproval({
+        runId: command.runId,
+        approvalId: command.approvalId,
+        allow: command.allow,
+        remember: command.remember
+      })
+    case 'harness/interrupt':
+      return core.interruptHarness(command.runId)
     case 'conversation/ingest':
       return core.ingestHarnessOutput({
         sessionId: command.sessionId,

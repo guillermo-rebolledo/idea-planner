@@ -5,6 +5,7 @@ import {
   type HarnessEvent,
   type HarnessFailureCategory
 } from '@shared/conversation'
+import type { StandingApprovalKind } from '@shared/approval'
 import type { CodexLaunch } from '@shared/conversation'
 import type { HarnessId } from '@shared/readiness'
 import type { AskForApproval } from './codex-protocol/v2/AskForApproval'
@@ -34,6 +35,24 @@ export interface HarnessAdapter {
    * job, because Main is the only part of the app that speaks to a process.
    */
   takeOutgoing(): string[]
+  /**
+   * Answers one Approval Request the Harness raised in-band, and reports
+   * whether there was one to answer. Claude raises none here — its approvals
+   * arrive on the app's own MCP socket — so its Adapter always says no.
+   */
+  answerApproval(approvalId: string, answer: ApprovalAnswer): boolean
+  /** Asks the Harness to end the turn it is running, if it can be asked. */
+  interrupt(): void
+}
+
+/**
+ * What the person decided, in the app's terms. Each Adapter turns it into
+ * whatever its own Harness accepts.
+ */
+export interface ApprovalAnswer {
+  allow: boolean
+  /** Grant the rule the request proposed, so it stops being asked. */
+  remember: boolean
 }
 
 /**
@@ -50,6 +69,7 @@ void GENERATED_CONTRACT_HOLDS
 const INITIALIZE_ID = 1
 const THREAD_ID = 2
 const TURN_ID = 3
+const INTERRUPT_ID = 4
 
 const responseSchema = z.object({
   id: z.number(),
@@ -93,8 +113,27 @@ const threadSchema = z.object({ id: z.string().min(1).max(200) })
 /** Something Codex is asking the app for, and waiting on an answer to. */
 const requestSchema = z.object({
   id: z.union([z.number(), z.string()]),
-  method: z.string().min(1)
+  method: z.string().min(1),
+  params: z.record(z.unknown()).default({})
 })
+
+/**
+ * An Approval Request, as Codex raises it. The command form carries the prefix
+ * Codex computed for a Standing Approval, so the app never guesses one.
+ */
+const approvalParamsSchema = z.object({
+  itemId: z.string().min(1).max(200).default('item'),
+  command: z.string().optional(),
+  cwd: z.string().optional(),
+  reason: z.string().nullable().optional(),
+  proposedExecpolicyAmendment: z.array(z.string().min(1)).nullable().optional()
+})
+
+/** The two requests this app answers; anything else is refused out loud. */
+const APPROVAL_METHODS: Record<string, StandingApprovalKind> = {
+  'item/commandExecution/requestApproval': 'command',
+  'item/fileChange/requestApproval': 'edit'
+}
 
 /**
  * Protocol this Adapter understands and deliberately shows nothing for, so
@@ -118,7 +157,6 @@ const IGNORED_METHODS = new Set([
   'account/rateLimits/updated',
   'account/updated',
   'remoteControl/status/changed',
-  'serverRequest/resolved',
   'model/rerouted',
   'configWarning',
   'deprecationNotice'
@@ -144,6 +182,12 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
   const outgoing: string[] = []
   /** Assistant text so far, by item, because deltas arrive in pieces. */
   const messages = new Map<string, string>()
+  /** Requests Codex is blocked on, by the id its answer is addressed to. */
+  const pendingApprovals = new Map<string, StandingApprovalKind>()
+  /** The prefix Codex proposed for each, so its own amendment can be sent back. */
+  const proposedPrefixes = new Map<string, string[]>()
+  let thread: string | null = null
+  let turn: string | null = null
 
   const send = (message: Record<string, unknown>): void => {
     outgoing.push(JSON.stringify({ jsonrpc: '2.0', ...message }))
@@ -197,18 +241,46 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
   }
 
   /**
-   * A request this app cannot answer yet. Answering with an error is the one
-   * thing that must happen: Codex blocks on a server request until it is
-   * replied to, so silence is a Run that hangs rather than one that says what
-   * it could not do. Approvals arrive this way and are ticket 10b's.
+   * A request Codex is blocked on. An Approval Request becomes one the person
+   * answers; anything else is refused out loud, because Codex waits on a
+   * server request until it is replied to and silence is a Run that hangs
+   * rather than one that says what it could not do.
    */
-  function refuseRequest(raw: z.infer<typeof requestSchema>): HarnessEvent[] {
-    send({
-      id: raw.id,
-      error: { code: -32601, message: `Argos cannot answer ${raw.method} yet` }
-    })
+  function consumeRequest(raw: z.infer<typeof requestSchema>): HarnessEvent[] {
+    const kind = APPROVAL_METHODS[raw.method]
+    if (!kind) {
+      send({ id: raw.id, error: { code: -32601, message: `Argos cannot answer ${raw.method}` } })
+      return [
+        { type: 'unsupported', detail: `Unanswerable Codex request: ${raw.method}`.slice(0, 200) }
+      ]
+    }
+    const params = approvalParamsSchema.safeParse(raw.params)
+    if (!params.success) {
+      send({ id: raw.id, error: { code: -32602, message: 'Argos could not read this request' } })
+      return [protocolFailure('Unreadable Codex approval request')]
+    }
+    const approvalId = String(raw.id)
+    pendingApprovals.set(approvalId, kind)
+    // The prefix Codex computed for a Standing Approval, kept as it was sent.
+    // Ticket 08 synthesises one for Claude only because Claude offers none.
+    const proposed = params.data.proposedExecpolicyAmendment
+    if (proposed?.length) proposedPrefixes.set(approvalId, proposed)
+    const summary =
+      params.data.command ??
+      params.data.reason ??
+      (kind === 'edit' ? `Change files in ${params.data.cwd ?? 'this Project'}` : 'Run a command')
     return [
-      { type: 'unsupported', detail: `Unanswerable Codex request: ${raw.method}`.slice(0, 200) }
+      {
+        type: 'approval-request',
+        id: approvalId,
+        tool: kind === 'command' ? 'Command' : 'File change',
+        summary: redactCredentials(summary).slice(0, 2_000),
+        detail: redactCredentials(JSON.stringify(raw.params, null, 2)),
+        proposedRule:
+          kind === 'command' && proposed?.length
+            ? { harness: 'codex', kind, pattern: proposed }
+            : null
+      }
     ]
   }
 
@@ -227,19 +299,24 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
       return []
     }
     if (raw.id === THREAD_ID) {
-      const thread = threadSchema.safeParse(raw.result?.['thread'])
-      if (!thread.success) return [protocolFailure('Codex started no Harness Thread')]
-      startTurn(thread.data.id)
+      const started = threadSchema.safeParse(raw.result?.['thread'])
+      if (!started.success) return [protocolFailure('Codex started no Harness Thread')]
+      thread = started.data.id
+      startTurn(started.data.id)
       return [
         {
           type: 'thread-ready',
           harness: 'codex',
-          threadId: thread.data.id,
+          threadId: started.data.id,
           model: launch?.model ?? 'default'
         }
       ]
     }
-    // The turn's own acknowledgement carries nothing the notifications do not.
+    if (raw.id === TURN_ID) {
+      // Kept only so the turn can be interrupted by name when the person stops.
+      const acknowledged = z.object({ id: z.string().min(1) }).safeParse(raw.result?.['turn'])
+      if (acknowledged.success) turn = acknowledged.data.id
+    }
     return []
   }
 
@@ -273,6 +350,23 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
             contextWindow: usage.data.modelContextWindow,
             contextUsed: usage.data.total.totalTokens
           }
+        }
+      ]
+    }
+    if (method === 'serverRequest/resolved') {
+      // Codex has stopped waiting on this one — answered, or cleared by the
+      // turn ending. Either way the request is no longer live, and a card that
+      // stayed would be one nobody could answer.
+      const requestId = params['requestId']
+      const approvalId = String(typeof requestId === 'number' ? requestId : text(requestId))
+      if (!pendingApprovals.delete(approvalId)) return []
+      return [
+        {
+          type: 'approval-resolved',
+          id: approvalId,
+          decision: 'abandoned',
+          message: '',
+          remembered: false
         }
       ]
     }
@@ -351,7 +445,7 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
     const notification = notificationSchema.safeParse(record)
     if (notification.success) {
       const request = requestSchema.safeParse(record)
-      return request.success ? refuseRequest(request.data) : consumeNotification(notification.data)
+      return request.success ? consumeRequest(request.data) : consumeNotification(notification.data)
     }
     const response = responseSchema.safeParse(record)
     if (response.success) return consumeResponse(response.data)
@@ -379,6 +473,38 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
     },
     takeOutgoing() {
       return outgoing.splice(0)
+    },
+    answerApproval(approvalId, answer) {
+      const kind = pendingApprovals.get(approvalId)
+      if (kind === undefined) return false
+      pendingApprovals.delete(approvalId)
+      // `acceptWithExecpolicyAmendment` is how Codex is told to keep the rule
+      // it proposed. Only a command approval has one; a file change is
+      // answered plainly, because there is no reliable rule for edits and
+      // `grantRoot` is marked unstable in its own schema.
+      const decision =
+        answer.allow && answer.remember && kind === 'command' && proposedPrefixes.has(approvalId)
+          ? {
+              acceptWithExecpolicyAmendment: {
+                execpolicy_amendment: proposedPrefixes.get(approvalId) ?? []
+              }
+            }
+          : answer.allow
+            ? 'accept'
+            : 'decline'
+      // The id is answered in the shape it arrived in: Codex routes on it.
+      const numeric = Number(approvalId)
+      send({ id: Number.isNaN(numeric) ? approvalId : numeric, result: { decision } })
+      proposedPrefixes.delete(approvalId)
+      return true
+    },
+    interrupt() {
+      if (!thread || !turn) return
+      send({
+        id: INTERRUPT_ID,
+        method: 'turn/interrupt',
+        params: { threadId: thread, turnId: turn }
+      })
     }
   }
 }

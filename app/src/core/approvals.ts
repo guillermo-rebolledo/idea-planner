@@ -47,21 +47,14 @@ export class StandingApprovalStore {
         const stored = yield* this.read()
         // Granting the same rule twice is one permission, not two. The person
         // said yes to a thing, and it is allowed.
+        // One permission is one rule, whatever shape its Harness writes it in.
         const existing = stored.find(
-          (entry) =>
-            entry.projectRoot === input.projectRoot &&
-            entry.toolName === input.toolName &&
-            entry.content === input.content
+          (entry) => entry.projectRoot === input.projectRoot && ruleText(entry) === ruleText(input)
         )
         if (existing) return existing
         const approval: StandingApproval = {
+          ...input,
           id: this.nextId(),
-          projectRoot: input.projectRoot,
-          harness: input.harness,
-          kind: input.kind,
-          toolName: input.toolName,
-          content: input.content,
-          summary: input.summary,
           grantedAt: this.now().toISOString()
         }
         yield* this.write([...stored, approval])

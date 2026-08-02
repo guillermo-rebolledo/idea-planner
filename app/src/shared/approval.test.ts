@@ -97,6 +97,8 @@ describe('repo-wide edit approval', () => {
       PROJECT
     )
     expect(proposed).toEqual({
+      // Claude's, because Claude proposes nothing and the app must.
+      harness: 'claude',
       kind: 'edit',
       toolName: 'Edit',
       content: '//Users/someone/dev/receipts/**'

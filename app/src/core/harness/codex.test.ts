@@ -162,24 +162,135 @@ describe('what the Run did', () => {
   })
 })
 
-describe('a request the app cannot answer', () => {
-  it('refuses it rather than leaving Codex waiting on silence', () => {
+describe('an Approval Request', () => {
+  /** What Codex sends when it wants a command allowed, as its schema declares. */
+  function commandApproval(id = 0): string {
+    return `${JSON.stringify({
+      id,
+      method: 'item/commandExecution/requestApproval',
+      params: {
+        threadId: 't',
+        turnId: 'u',
+        itemId: 'exec-1',
+        startedAtMs: 1,
+        command: 'gh pr view 7888',
+        cwd: '/a-project',
+        proposedExecpolicyAmendment: ['gh', 'pr', 'view']
+      }
+    })}\n`
+  }
+
+  it('becomes a request the person answers, carrying the rule Codex proposed', () => {
     const adapter = createCodexAdapter(launch())
     adapter.takeOutgoing()
     // A server request carries an id *and* a method. Read as an answer it
     // would be dropped, and Codex would block on a reply that never came.
-    const events = adapter.ingest(
+    expect(adapter.ingest(commandApproval())).toMatchObject([
+      {
+        type: 'approval-request',
+        id: '0',
+        summary: 'gh pr view 7888',
+        // Codex computed this prefix; the app never guesses one for it.
+        proposedRule: { harness: 'codex', kind: 'command', pattern: ['gh', 'pr', 'view'] }
+      }
+    ])
+    // Nothing is sent yet: it is the person who answers.
+    expect(adapter.takeOutgoing()).toEqual([])
+  })
+
+  it('is answered on the wire, and remembering sends Codex its own amendment', () => {
+    const adapter = createCodexAdapter(launch())
+    adapter.ingest(commandApproval(3))
+    adapter.takeOutgoing()
+
+    expect(adapter.answerApproval('3', { allow: true, remember: true })).toBe(true)
+    expect(JSON.parse(adapter.takeOutgoing()[0] ?? '{}')).toMatchObject({
+      id: 3,
+      result: {
+        decision: { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['gh', 'pr', 'view'] } }
+      }
+    })
+    // Answered once: a second answer is not a second decision.
+    expect(adapter.answerApproval('3', { allow: true, remember: false })).toBe(false)
+  })
+
+  it('declines plainly, and never claims a rule for a file change', () => {
+    const adapter = createCodexAdapter(launch())
+    adapter.ingest(commandApproval(1))
+    adapter.takeOutgoing()
+    adapter.answerApproval('1', { allow: false, remember: false })
+    expect(JSON.parse(adapter.takeOutgoing()[0] ?? '{}')).toMatchObject({
+      result: { decision: 'decline' }
+    })
+
+    // A file change has no reliable rule — `grantRoot` is unstable in Codex's
+    // own schema — so remembering one is neither offered nor sent.
+    expect(
+      adapter.ingest(
+        `${JSON.stringify({
+          id: 2,
+          method: 'item/fileChange/requestApproval',
+          params: { threadId: 't', turnId: 'u', itemId: 'i', startedAtMs: 1, cwd: '/a-project' }
+        })}\n`
+      )
+    ).toMatchObject([{ type: 'approval-request', proposedRule: null }])
+    adapter.answerApproval('2', { allow: true, remember: true })
+    expect(JSON.parse(adapter.takeOutgoing()[0] ?? '{}')).toMatchObject({
+      result: { decision: 'accept' }
+    })
+  })
+
+  it('drops a request Codex has stopped waiting on', () => {
+    const adapter = createCodexAdapter(launch())
+    adapter.ingest(commandApproval(5))
+    const [resolved] = adapter.ingest(
       `${JSON.stringify({
-        id: 0,
-        method: 'item/fileChange/requestApproval',
-        params: { threadId: 't', turnId: 'u', itemId: 'i', startedAtMs: 1 }
+        method: 'serverRequest/resolved',
+        params: { threadId: 't', requestId: 5 }
       })}\n`
     )
-    expect(events).toMatchObject([{ type: 'unsupported' }])
-    const [reply] = adapter
-      .takeOutgoing()
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    expect(reply).toMatchObject({ id: 0, error: { code: -32601 } })
+    expect(resolved).toMatchObject({ type: 'approval-resolved', id: '5', decision: 'abandoned' })
+    // And it says nothing about one it never had.
+    expect(
+      adapter.ingest(
+        `${JSON.stringify({ method: 'serverRequest/resolved', params: { requestId: 99 } })}\n`
+      )
+    ).toEqual([])
+  })
+
+  it('refuses a request it cannot answer rather than leaving Codex on silence', () => {
+    const adapter = createCodexAdapter(launch())
+    adapter.takeOutgoing()
+    expect(
+      adapter.ingest(
+        `${JSON.stringify({ id: 9, method: 'item/tool/requestUserInput', params: {} })}\n`
+      )
+    ).toMatchObject([{ type: 'unsupported' }])
+    expect(JSON.parse(adapter.takeOutgoing()[0] ?? '{}')).toMatchObject({
+      id: 9,
+      error: { code: -32601 }
+    })
+  })
+})
+
+describe('stopping', () => {
+  it('asks the turn to end, once it knows which turn to name', async () => {
+    const raw = await readFile(join(__dirname, 'fixtures', 'codex-app-server.jsonl'), 'utf8')
+    const adapter = createCodexAdapter(launch())
+    adapter.ingest(raw)
+    adapter.takeOutgoing()
+
+    adapter.interrupt()
+    expect(frames(adapter.takeOutgoing())).toMatchObject([
+      { method: 'turn/interrupt', params: { threadId: '019fc3da-e096-72a3-8bcd-56313b8ca5e9' } }
+    ])
+  })
+
+  it('says nothing when there is no turn to interrupt', () => {
+    const adapter = createCodexAdapter(launch())
+    adapter.takeOutgoing()
+    adapter.interrupt()
+    expect(adapter.takeOutgoing()).toEqual([])
   })
 })
 

@@ -176,6 +176,10 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     if (command.type === 'approval/rules') return Promise.resolve(state.standingRules)
     if (command.type === 'approval/grant') return Promise.resolve(undefined)
     if (command.type === 'harness/open') return Promise.resolve({ events: [], outgoing: [] })
+    if (command.type === 'harness/interrupt') return Promise.resolve([])
+    if (command.type === 'harness/answer') {
+      return Promise.resolve({ answered: true, outgoing: ['{"id":7,"result":{}}'] })
+    }
     if (command.type === 'conversation/ingest') {
       return Promise.resolve({ events: state.events, outgoing: [] })
     }
@@ -396,6 +400,11 @@ describe('Run service', () => {
         }
         if (command.type === 'approval/rules') return Promise.resolve([])
         if (command.type === 'harness/open') return Promise.resolve({ events: [], outgoing: [] })
+        if (command.type === 'harness/interrupt') return Promise.resolve([])
+        if (command.type === 'harness/interrupt') return Promise.resolve([])
+        if (command.type === 'harness/answer') {
+          return Promise.resolve({ answered: true, outgoing: ['{"id":7,"result":{}}'] })
+        }
         if (command.type === 'conversation/get') {
           return Promise.resolve({
             sessionId: 'session',
@@ -967,6 +976,60 @@ describe('Codex on the app-server protocol', () => {
     expect(broker.launch?.answersProtocol).not.toBe(true)
   })
 
+  it('asks the turn to end before killing it, and lets it end itself', async () => {
+    const root = await readyHarnessRoot('run-codex-stop-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    core.send.mockImplementation((command: { type: string }) => {
+      core.commands.push(command.type)
+      if (command.type === 'session/get') {
+        return Promise.resolve(fakeSession(join(root, 'a-project')))
+      }
+      if (command.type === 'approval/rules') return Promise.resolve([])
+      if (command.type === 'harness/open') return Promise.resolve({ events: [], outgoing: [] })
+      // The Adapter knows the turn, so there is something to ask.
+      if (command.type === 'harness/interrupt') {
+        return Promise.resolve(['{"id":4,"method":"turn/interrupt"}'])
+      }
+      if (command.type === 'conversation/ingest') {
+        return Promise.resolve({ events: [], outgoing: [] })
+      }
+      if (command.type.startsWith('conversation/')) return Promise.resolve(core.conversation)
+      return Promise.resolve({
+        id: 'run-codex-stop',
+        submissionId: 'submission-1',
+        sessionId: 'session',
+        prompt: 'Rename the greeting',
+        configuration: runConfigurationSchema.parse({
+          harness: 'codex',
+          executable: join(root, 'codex'),
+          executableHash: 'a'.repeat(64),
+          harnessVersion: 'codex-cli 0.146.0',
+          model: 'gpt-5-codex',
+          effort: 'high',
+          skill: { name: 'grilling', path: '/skills/grilling', hash: 'b'.repeat(64) },
+          environment: {},
+          checkout: join(root, 'a-project'),
+          permissionMode: 'auto'
+        }),
+        status: command.type === 'run/accept' ? 'accepted' : 'running',
+        acceptedAt: '2026-07-31T12:00:00.000Z',
+        updatedAt: '2026-07-31T12:00:00.000Z',
+        activity: []
+      })
+    })
+    // The Harness ends its own turn, so the Run is already gone when asked.
+    broker.activeRunIds.mockReturnValue([])
+    const service = new RunService({ ...codexDeps(root, broker, core), interruptGraceMs: 50 })
+    const run = await service.start(codexInput())
+
+    await service.stop(run.id, 'session')
+
+    expect(broker.written).toContain('{"id":4,"method":"turn/interrupt"}')
+    // Asked, not made: nothing was killed, because it stopped itself.
+    expect(broker.stop).not.toHaveBeenCalled()
+  })
+
   it('stages a Codex home that reaches the person’s credential without copying it', async () => {
     const root = await readyHarnessRoot('run-codex-home-')
     const broker = fakeBroker()
@@ -1295,11 +1358,12 @@ describe('Ask mode', () => {
     })
   })
 
-  it('refuses Ask on Codex, whose transport cannot carry an approval', async () => {
+  it('runs Codex in Ask under the policy that escalates by rule, not by model', async () => {
     const root = await readyHarnessRoot('run-codex-ask-')
     const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
     const service = new RunService({
-      core: fakeCore(join(root, 'a-project')),
+      core,
       broker,
       readiness: {
         refresh: vi.fn(() =>
@@ -1321,13 +1385,22 @@ describe('Ask mode', () => {
       proxyScript: '/tmp/mcp-proxy.js'
     })
 
-    // `codex exec` auto-rejects approvals without emitting an event, so a Run
-    // started this way would look like it was working while refusing
-    // everything. Ticket 10 owns the transport that can ask.
-    await expect(
-      service.start({ ...startInput(), harness: 'codex', skill: 'grilling', permissionMode: 'ask' })
-    ).rejects.toThrow(/Ask/)
-    expect(broker.start).not.toHaveBeenCalled()
+    await service.start({
+      ...startInput(),
+      harness: 'codex',
+      skill: 'grilling',
+      permissionMode: 'ask'
+    })
+
+    const open = (core.send.mock.calls as [{ type: string; launch?: unknown }][]).find(
+      ([command]) => command.type === 'harness/open'
+    )?.[0]
+    // `on-request` would let the model decide when to ask, so somebody who
+    // chose Ask could silently get no prompts. `untrusted` cannot.
+    expect(open?.launch).toMatchObject({
+      approvalPolicy: 'untrusted',
+      sandbox: 'workspace-write'
+    })
   })
 })
 

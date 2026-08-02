@@ -153,8 +153,11 @@ export function createClaudeAdapter(): HarnessAdapter {
 
   return {
     harness: 'claude',
-    // Claude broadcasts: it is read, never answered.
+    // Claude broadcasts: it is read, never answered. Its approvals arrive on
+    // the app's own MCP socket instead, and are answered there.
     takeOutgoing: () => [],
+    answerApproval: () => false,
+    interrupt: () => undefined,
     ingest(chunk) {
       pending += chunk
       const events: HarnessEvent[] = []

@@ -134,6 +134,13 @@ export interface OpenHarnessInput {
   launch?: CodexLaunch
 }
 
+export interface AnswerHarnessInput {
+  runId: string
+  approvalId: string
+  allow: boolean
+  remember: boolean
+}
+
 export interface ConversationEffects {
   get(sessionId: string): Effect.Effect<ConversationSnapshot, CoreError>
   submit(input: unknown): Effect.Effect<ConversationSnapshot, CoreError>
@@ -144,6 +151,16 @@ export interface ConversationEffects {
    * told before it will say anything. Codex speaks only when spoken to.
    */
   open(input: OpenHarnessInput): Effect.Effect<HarnessStream, CoreError>
+  /**
+   * Answers an Approval Request the Harness raised in-band, and reports
+   * whether its Adapter had one to answer. A Harness whose approvals arrive
+   * elsewhere always says no, and the caller answers them where they arrived.
+   */
+  answer(
+    input: AnswerHarnessInput
+  ): Effect.Effect<{ answered: boolean; outgoing: string[] }, CoreError>
+  /** Asks the Harness to end the turn it is running, if it can be asked. */
+  interrupt(runId: string): Effect.Effect<string[], CoreError>
   /** Parses one raw Harness chunk and applies everything it completed. */
   ingest(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
   finalize(input: FinalizeConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
@@ -490,6 +507,11 @@ export function createConversationEffects(options: ConversationOptions): Convers
               return
             }
             case 'approval-request': {
+              // Kept relative to the Checkout, as a file change already is: an
+              // absolute path is this machine's, not this Conversation's.
+              const checkout = yield* options.checkoutFor(input.sessionId)
+              const relative = (value: string): string =>
+                redactCredentials(value).replaceAll(checkout, '.')
               // Keyed by the Harness's own tool-use id, so the answer replaces
               // the request rather than landing beside it. Redacted and bounded
               // like any other durable content: a request carries whatever the
@@ -503,8 +525,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
                   runId: input.runId,
                   requestId: event.id,
                   tool: event.tool,
-                  summary: redactCredentials(event.summary).slice(0, 2_000),
-                  detail: redactCredentials(event.detail).slice(0, MAX_APPROVAL_DETAIL),
+                  summary: relative(event.summary).slice(0, 2_000),
+                  detail: relative(event.detail).slice(0, MAX_APPROVAL_DETAIL),
                   proposedRule: event.proposedRule,
                   decision: null,
                   message: '',
@@ -671,6 +693,31 @@ export function createConversationEffects(options: ConversationOptions): Convers
       Effect.map((adapter) => ({ events: [], outgoing: adapter.takeOutgoing() }))
     )
 
+  const answer = (
+    input: AnswerHarnessInput
+  ): Effect.Effect<{ answered: boolean; outgoing: string[] }, CoreError> =>
+    Ref.get(adapters).pipe(
+      Effect.map((current) => {
+        const adapter = current.get(input.runId)
+        if (!adapter) return { answered: false, outgoing: [] }
+        const answered = adapter.answerApproval(input.approvalId, {
+          allow: input.allow,
+          remember: input.remember
+        })
+        return { answered, outgoing: adapter.takeOutgoing() }
+      })
+    )
+
+  const interrupt = (runId: string): Effect.Effect<string[], CoreError> =>
+    Ref.get(adapters).pipe(
+      Effect.map((current) => {
+        const adapter = current.get(runId)
+        if (!adapter) return []
+        adapter.interrupt()
+        return adapter.takeOutgoing()
+      })
+    )
+
   const ingest = (input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError> =>
     Effect.gen(function* () {
       const adapter = yield* adapterFor(input.runId, input.harness)
@@ -681,7 +728,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       return { events, outgoing: adapter.takeOutgoing() }
     })
 
-  return { get, submit, begin, apply, open, ingest, finalize }
+  return { get, submit, begin, apply, open, answer, interrupt, ingest, finalize }
 }
 
 /** One approval's durable identity: the Run, and the Harness's tool-use id. */

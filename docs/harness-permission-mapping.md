@@ -51,6 +51,10 @@ Neither path mutates the user's own configuration, per ADR 0003.
 
 Never emit Codex's `default_permissions` — it silently disables `sandbox_mode`.
 
+**`thread/start.config` cannot be trusted to have applied anything.** Measured on 0.146.0: a `config` carrying `features.browser_use = false` is accepted, and so is one carrying `this_key_does_not_exist_xyz`. The field is `additionalProperties: true` and unknown keys are swallowed in silence, so acceptance is not evidence that a key was honoured. Use it for what has been observed to work (`model_reasoning_effort`), and never as a containment mechanism — a tool the app believes it disabled this way may simply be enabled.
+
+Consequence for Ask on Codex: the tool-disabling `codex exec --disable browser_use …` argv has no app-server equivalent this app can verify, so Codex's own browser use, computer use, hooks, and plugins are reachable in Ask as well as Full access. Approval gates commands and out-of-workspace writes; a tool that acts without running a command is not a command. This is stated in the composer rather than left to be discovered.
+
 ## Transport
 
 **Codex uses the app-server protocol, not `codex exec`.** `exec` has no `--ask-for-approval` flag and _auto-rejects_ approvals without emitting an event, and its `file_change` items carry only `{path, kind}` with no diff. Both Ask mode and inline diffs are impossible on `exec`. Ticket 10a moved the adapter onto app-server: one long-lived JSON-RPC peer per Run, with policy, sandbox, model, effort, the Skill, and the prompt all carried over the protocol rather than in argv.

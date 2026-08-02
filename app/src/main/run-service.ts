@@ -73,6 +73,8 @@ interface RunServiceDeps {
   claudeOauthToken?: () => Promise<string>
   /** Overridable so a test can stage settings this app would never write. */
   stageSettings?: (permissionMode: PermissionMode) => unknown
+  /** How long a Harness is given to end its own turn before it is stopped. */
+  interruptGraceMs?: number
   /** Delivers normalized assistant and control events straight to the window. */
   onConversationEvent?: (event: ConversationStreamEvent) => void
 }
@@ -194,12 +196,6 @@ export class RunService {
 
   async start(rawInput: StartRunInput): Promise<RunSnapshot> {
     const input = startRunInputSchema.parse(rawInput)
-    // The app-server protocol carries a full approval round-trip, but nothing
-    // answers one yet, so an Ask Run would stall on its first request while
-    // looking like it was working. Ticket 10b answers it.
-    if (input.permissionMode === 'ask' && input.harness === 'codex') {
-      throw new Error('Ask mode is not answerable on Codex yet. Use Full access.')
-    }
     const checkout = await this.checkoutFor(input.sessionId)
     const readiness = await this.deps.readiness.refresh(input.harness)
     const harness = readiness.harnesses.find((entry) => entry.harness === input.harness)
@@ -340,7 +336,8 @@ export class RunService {
         socketPath,
         capabilityToken,
         input.permissionMode,
-        await this.standingRules(checkout, input.harness)
+        await this.standingRules(checkout, input.harness),
+        harness.executablePath
       )
       toolHost = new ToolHost({
         socketPath,
@@ -480,7 +477,7 @@ export class RunService {
         }
       })
       // Now that there is a process to speak to, it is spoken to.
-      for (const frame of opening.outgoing) this.deps.broker.write(accepted.id, frame)
+      this.writeFrames(accepted.id, opening.outgoing)
       return running
     } catch (error) {
       await toolHost.close().catch(() => undefined)
@@ -500,6 +497,14 @@ export class RunService {
   }
 
   async stop(runId: string, sessionId: string): Promise<RunSnapshot> {
+    // Asked to stop before it is made to, and given a moment to do it: a
+    // Harness that ends its own turn leaves its session and the Checkout in a
+    // state it chose. Failing to ask is not a reason to fail to stop.
+    const endedItself = await this.interruptTurn(runId).catch(() => false)
+    if (endedItself) {
+      // It took the hint, and ending its own turn already concluded the Run.
+      return await this.record({ id: runId, sessionId }, undefined, 'lifecycle', 'Run stopped')
+    }
     try {
       await this.deps.broker.stop(runId, 'user')
       return await this.conclude(
@@ -545,7 +550,7 @@ export class RunService {
     )
     // Whatever the Harness is owed in reply. Only Core knows the protocol, so
     // Main writes what Core hands it and reads none of it.
-    for (const frame of stream.outgoing) this.deps.broker.write(run.id, frame)
+    this.writeFrames(run.id, stream.outgoing)
     for (const event of stream.events) {
       if (event.type === 'failed') this.failures.set(run.id, event.category)
       this.deps.onConversationEvent?.({
@@ -556,6 +561,28 @@ export class RunService {
       const activity = describeActivity(event, run.configuration.permissionMode)
       if (activity) {
         await this.record(run, undefined, activity.kind, sanitize(activity.summary, checkout))
+      }
+      // An Approval Request Codex raised in-band. Core has already written it
+      // into the Conversation; what is left is what Claude's path does too —
+      // remember what would answer it, and block the Run while it stands.
+      if (event.type === 'approval-request') {
+        const proposals = this.proposals.get(run.id) ?? new Map<string, RequestProposal>()
+        proposals.set(event.id, {
+          projectRoot: checkout,
+          harness,
+          proposed: event.proposedRule,
+          summary: event.summary
+        })
+        this.proposals.set(run.id, proposals)
+        await this.record(run, 'waiting', 'blocked', `Waiting for you to approve ${event.summary}`)
+      }
+      // Codex says when it has stopped waiting on one, answered or cleared by
+      // the turn ending. A card nobody can answer any more is not left up.
+      if (event.type === 'approval-resolved' && event.decision === 'abandoned') {
+        this.proposals.get(run.id)?.delete(event.id)
+        if (!this.proposals.get(run.id)?.size) {
+          await this.record(run, 'running', 'output', 'The Harness stopped waiting on that request')
+        }
       }
       // `codex app-server` is a server: it answers a turn and then waits for
       // the next one, so nothing ends the Run on its own. The turn ending is
@@ -661,14 +688,13 @@ export class RunService {
    */
   async resolveApproval(rawInput: ResolveApprovalInput): Promise<ConversationSnapshot> {
     const input = resolveApprovalInputSchema.parse(rawInput)
-    const host = this.toolHosts.get(input.runId)
     const written = input.message?.trim() ?? ''
     // A refusal the agent cannot read is one it will simply try again.
     const message =
       written === '' ? 'You declined this in the app. Ask before trying it again.' : written
     const allowed = input.decision === 'allow'
     const proposal = this.proposals.get(input.runId)?.get(input.approvalId)
-    if (!host?.hasOutstandingApproval(input.approvalId)) {
+    if (!proposal) {
       // The Run ended, or somebody already answered. Either way the agent has
       // moved on, and saying so beats silently pretending this took effect.
       throw new Error('That request is no longer waiting for an answer')
@@ -676,45 +702,30 @@ export class RunService {
     // Granted before the agent is told, and never on a request this app cannot
     // narrow: a permission that outlives the Run has to be durable before the
     // Run acts on it, or a crash in between leaves it granted in appearance only.
-    const remembered = Boolean(input.remember && allowed && proposal?.proposed)
+    const remembered = Boolean(input.remember && allowed && proposal.proposed)
     if (input.remember && !remembered) {
       throw new Error('That request cannot be turned into a Standing Approval')
     }
-    if (remembered && proposal?.proposed) {
+    if (remembered && proposal.proposed) {
       await this.deps.core.send({
         type: 'approval/grant',
+        // The rule carries its own Harness, so it is stored exactly as it was
+        // proposed — synthesised for Claude, computed by Codex for Codex.
         input: {
+          ...proposal.proposed,
           projectRoot: proposal.projectRoot,
-          harness: proposal.harness,
-          kind: proposal.proposed.kind,
-          toolName: proposal.proposed.toolName,
-          content: proposal.proposed.content,
           summary: proposal.summary
         }
       })
     }
     this.proposals.get(input.runId)?.delete(input.approvalId)
-    host.resolveApproval(
-      input.approvalId,
-      allowed
-        ? {
-            behavior: 'allow',
-            // This Run's settings were staged before the grant existed, so the
-            // rule rides along with the answer and the Harness applies it to
-            // the Thread it is already running. Nothing in this app decides
-            // what it covers: its own matcher does, exactly as it will next
-            // Run from the settings file.
-            ...(remembered && proposal?.proposed
-              ? {
-                  sessionRule: {
-                    toolName: proposal.proposed.toolName,
-                    content: proposal.proposed.content
-                  }
-                }
-              : {})
-          }
-        : { behavior: 'deny', message }
-    )
+    const answered = await this.answerApproval(input, {
+      allowed,
+      remembered,
+      message,
+      proposal
+    })
+    if (!answered) throw new Error('That request is no longer waiting for an answer')
     const event: HarnessEvent = {
       type: 'approval-resolved',
       id: input.approvalId,
@@ -734,20 +745,100 @@ export class RunService {
       event
     })
     // A denial is an answer, not a failure: the agent was told and carries on.
-    // The Run leaves the blocked state only once nothing else is outstanding.
-    // The host is what knows whether anything else still stands, so it is what
-    // decides when the Run stops being blocked.
+    // The Run leaves the blocked state once nothing else is outstanding.
     await this.record(
       { id: input.runId, sessionId: input.sessionId },
-      host.hasOutstandingApprovals() ? undefined : 'running',
+      this.proposals.get(input.runId)?.size ? undefined : 'running',
       allowed ? 'allowed' : 'blocked',
       allowed
-        ? remembered && proposal?.proposed
+        ? remembered && proposal.proposed
           ? `You approved the request, and always allow ${ruleText(proposal.proposed)}`
           : 'You approved the request'
         : `You declined: ${message}`
     )
     return await this.readConversation(input.sessionId)
+  }
+
+  /**
+   * Asks the Harness to end the turn it is running, and waits briefly for it
+   * to. The wait is what makes this different from killing it: a frame written
+   * and then followed instantly by SIGTERM is a frame nobody could act on.
+   */
+  /** Hands frames to the Harness. Only Main may speak to a process. */
+  private writeFrames(runId: string, frames: string[]): void {
+    for (const frame of frames) this.deps.broker.write(runId, frame)
+  }
+
+  private async interruptTurn(runId: string): Promise<boolean> {
+    const frames = z
+      .array(z.string())
+      .parse(await this.deps.core.send({ type: 'harness/interrupt', runId }))
+    // A Harness with no way to be asked is one there is nothing to wait for.
+    if (frames.length === 0) return false
+    this.writeFrames(runId, frames)
+    const deadline = Date.now() + (this.deps.interruptGraceMs ?? 2_000)
+    while (Date.now() < deadline) {
+      if (!this.deps.broker.activeRunIds().includes(runId)) return true
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    return false
+  }
+
+  /**
+   * Tells the Harness what the person decided, wherever it is waiting.
+   *
+   * The two Harnesses wait in different places and that is the whole of the
+   * difference: Claude's request came in on the app's own MCP socket and is
+   * answered by resolving the tool call it is blocked in, while Codex's came
+   * in on its own protocol and is answered by writing a frame back. Everything
+   * either side of this — the Conversation, the Run's blocked state, the
+   * Standing Approval — is the same for both.
+   */
+  private async answerApproval(
+    input: ResolveApprovalInput,
+    decided: {
+      allowed: boolean
+      remembered: boolean
+      message: string
+      proposal: RequestProposal
+    }
+  ): Promise<boolean> {
+    if (decided.proposal.harness === 'codex') {
+      const answer = z.object({ answered: z.boolean(), outgoing: z.array(z.string()) }).parse(
+        await this.deps.core.send({
+          type: 'harness/answer',
+          runId: input.runId,
+          approvalId: input.approvalId,
+          allow: decided.allowed,
+          // Codex keeps the prefix it proposed, on its own decision.
+          remember: decided.remembered
+        })
+      )
+      this.writeFrames(input.runId, answer.outgoing)
+      return answer.answered
+    }
+    const host = this.toolHosts.get(input.runId)
+    if (!host?.hasOutstandingApproval(input.approvalId)) return false
+    return host.resolveApproval(
+      input.approvalId,
+      decided.allowed
+        ? {
+            behavior: 'allow',
+            // This Run's settings were staged before the grant existed, so the
+            // rule rides along with the answer and Claude applies it to the
+            // Thread it is already running. Nothing here decides what it
+            // covers: its own matcher does, exactly as it will next Run.
+            ...(decided.remembered && decided.proposal.proposed?.harness === 'claude'
+              ? {
+                  sessionRule: {
+                    toolName: decided.proposal.proposed.toolName,
+                    content: decided.proposal.proposed.content
+                  }
+                }
+              : {})
+          }
+        : { behavior: 'deny', message: decided.message }
+    )
   }
 
   /** Records a Run's terminal state and closes its Conversation boundary. */
@@ -808,13 +899,38 @@ export class RunService {
       .parse(await this.deps.core.send({ type: 'approval/rules', projectRoot, harness }))
   }
 
+  /**
+   * Asks Codex whether it can read the rules this app wrote. Refusing to start
+   * is the point: an unreadable rules file is ignored in silence, and a Run
+   * that goes on to ask about something the person already allowed is one that
+   * has lost their answer.
+   */
+  private async validateExecpolicy(executable: string, rulesFile: string): Promise<void> {
+    const checked = await promisify(execFile)(executable, [
+      'execpolicy',
+      'check',
+      '--rules',
+      rulesFile,
+      '--',
+      'true'
+    ]).then(
+      () => null,
+      (error: unknown) => (error instanceof Error ? error.message : 'unknown problem')
+    )
+    if (checked !== null) {
+      throw new Error(`Refusing to start: this Project's Codex rules are not valid — ${checked}`)
+    }
+  }
+
   private async prepareHarnessHome(
     harness: StartRunInput['harness'],
     runDirectory: string,
     socketPath: string,
     capabilityToken: string,
     permissionMode: PermissionMode,
-    standingRules: string[]
+    standingRules: string[],
+    /** The Harness that will read them, which is also what validates them. */
+    executable: string
   ): Promise<void> {
     const proxy = {
       command: this.deps.proxyExecutable,
@@ -866,6 +982,17 @@ export class RunService {
     }
     const codexHome = join(runDirectory, 'codex-home')
     await mkdir(codexHome, { recursive: true, mode: 0o700 })
+    // This Project's Standing Approvals, as Codex's own execpolicy. Validated
+    // with Codex's own checker before the Run uses them, because a rules file
+    // it cannot read is one it ignores — and a permission that silently never
+    // loaded looks exactly like one that did.
+    if (standingRules.length > 0) {
+      const rulesDirectory = join(codexHome, 'rules')
+      await mkdir(rulesDirectory, { recursive: true, mode: 0o700 })
+      const rulesFile = join(rulesDirectory, 'standing-approvals.rules')
+      await writeFile(rulesFile, `${standingRules.join('\n')}\n`, { mode: 0o600 })
+      await this.validateExecpolicy(executable, rulesFile)
+    }
     // Auth follows CODEX_HOME, so a staged home needs it reachable — as a link
     // rather than a copy. It is a credential, and this app does not hold one.
     await symlink(

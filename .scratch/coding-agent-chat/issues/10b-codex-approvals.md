@@ -16,12 +16,24 @@
 
 **Blocked by:** 10a
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Ask maps to `untrusted` with `workspace-write`, and Codex Runs stop being refused in Ask
-- [ ] Approval requests surface in the Conversation and resolve identically to Claude from the user's point of view
-- [ ] Standing Approvals use the rule proposed in the approval request rather than one the app synthesises
-- [ ] A granted rule is written as execpolicy into the staged Codex home, validated before use, and never into the user's own configuration
-- [ ] `serverRequest/resolved` dismisses a request the Harness has stopped waiting on
-- [ ] Stopping a Run interrupts the turn rather than only killing the process
-- [ ] `pnpm verify` passes
+- [x] Ask maps to `untrusted` with `workspace-write`, and Codex Runs stop being refused in Ask
+- [x] Approval requests surface in the Conversation and resolve identically to Claude from the user's point of view
+- [x] Standing Approvals use the rule proposed in the approval request rather than one the app synthesises
+- [x] A granted rule is written as execpolicy into the staged Codex home, validated before use, and never into the user's own configuration
+- [x] `serverRequest/resolved` dismisses a request the Harness has stopped waiting on
+- [x] Stopping a Run interrupts the turn rather than only killing the process
+- [x] `pnpm verify` passes
+
+## Answer — the tool-disabling condition 10a set
+
+10a asked this ticket to verify, before Ask shipped, whether `thread/start.config` could restore the `--disable browser_use …` set that `codex exec` took on the command line.
+
+**It cannot be verified, and that is the finding.** Measured on 0.146.0: `config: {features: {browser_use: false, …}}` is accepted by `thread/start` — and so is `config: {this_key_does_not_exist_xyz: {...}}`. The field is `additionalProperties: true`, unknown keys are swallowed, and acceptance says nothing about whether a key was applied. Proving the tools are actually off would take observing Codex decline to use one, which is a model-behaviour test, not a protocol one.
+
+So Ask ships with the widening rather than with a claim the app cannot support: Codex's own browser use, computer use, hooks, and plugins are reachable, approval gates commands and out-of-workspace writes, and the composer says so. Recorded in `docs/harness-permission-mapping.md` under per-Run configuration injection.
+
+## Answer — what Ask on Codex actually asks about
+
+Unverified, and said that way in the UI. The documentation describes `untrusted` + `workspace-write` as asking before untrusted *commands* while permitting in-workspace edits, and the research file lists this exact combination as not directly tested. The composer therefore says Codex stops for commands and that whether it also stops for edits depends on the version, rather than promising behaviour nobody here has observed.

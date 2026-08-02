@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { harnessIdSchema } from './readiness'
+import type { HarnessId } from './readiness'
 
 /**
  * Standing Approvals: permissions the person has granted permanently for one
@@ -15,54 +15,84 @@ import { harnessIdSchema } from './readiness'
  * So a rule is proposed only when it can be said plainly what it covers: a
  * named command with what it is doing, or every file in one Project. Anything
  * else is refused, and the person goes on answering it each time. Rule syntax
- * here is Claude Code's, per `docs/harness-permission-mapping.md`; each
- * approval records the Harness whose rules it is written in, so it is never
- * handed to one that reads them differently.
+ * here is Claude Code's, per `docs/harness-permission-mapping.md`. Codex needs
+ * none of it: it computes its own prefix and sends it with the request, so the
+ * app uses what it proposed rather than guessing at its matching rules.
  */
 
 export const standingApprovalKindSchema = z.enum(['command', 'edit'])
 export type StandingApprovalKind = z.infer<typeof standingApprovalKindSchema>
 
 /**
- * A rule this app is willing to write, in parts. The Harness wants it two
- * ways — as `Tool(content)` in a settings file, and as a tool name beside its
- * content when a rule is added to a running Harness Thread — so the parts are
- * what is kept and the written form is derived from them.
+ * A rule this app is willing to write, in the parts its Harness needs.
+ *
+ * The two Harnesses differ in who computes it. Claude offers nothing, so the
+ * app synthesises a rule and carries the tool it governs beside what it
+ * allows. Codex computes the prefix itself and hands it over in the approval
+ * request, so the app carries what Codex proposed and never guesses.
  */
-export const proposedRuleSchema = z.object({
-  kind: standingApprovalKindSchema,
-  /** The Harness tool the rule governs, such as `Bash` or `Edit`. */
-  toolName: z.string().min(1).max(100),
-  /** What it allows: a command prefix, or a path pattern. */
-  content: z.string().min(1).max(400)
-})
+export const proposedRuleSchema = z.discriminatedUnion('harness', [
+  z.object({
+    harness: z.literal('claude'),
+    kind: standingApprovalKindSchema,
+    /** The Harness tool the rule governs, such as `Bash` or `Edit`. */
+    toolName: z.string().min(1).max(100),
+    /** What it allows: a command prefix, or a path pattern. */
+    content: z.string().min(1).max(400)
+  }),
+  z.object({
+    harness: z.literal('codex'),
+    kind: standingApprovalKindSchema,
+    /** The command prefix Codex proposed, word by word, as it sent it. */
+    pattern: z.array(z.string().min(1).max(200)).min(1).max(20)
+  })
+])
 export type ProposedRule = z.infer<typeof proposedRuleSchema>
 
-/** The literal rule, as it is written down and as the person reads it. */
-export function ruleText(rule: Pick<ProposedRule, 'toolName' | 'content'>): string {
-  return `${rule.toolName}(${rule.content})`
+/**
+ * The literals above are a discriminant and cannot be derived from the Harness
+ * enum, so this is what stops the two drifting: a new Harness that has no rule
+ * shape here fails to compile rather than losing its Standing Approvals.
+ */
+type EveryHarnessHasARuleShape = HarnessId extends ProposedRule['harness'] ? true : never
+const RULE_SHAPES_COVER_EVERY_HARNESS: EveryHarnessHasARuleShape = true
+void RULE_SHAPES_COVER_EVERY_HARNESS
+
+/**
+ * The literal rule, as it is written down and as the person reads it before
+ * accepting it. Claude's is a permission rule in its settings file; Codex's is
+ * a line of execpolicy Starlark.
+ */
+export function ruleText(rule: ProposedRule): string {
+  if (rule.harness === 'claude') return `${rule.toolName}(${rule.content})`
+  const pattern = rule.pattern.map((word) => JSON.stringify(word)).join(', ')
+  return `prefix_rule(pattern = [${pattern}], decision = "allow")`
 }
 
-export const standingApprovalSchema = z.object({
-  id: z.string().min(1),
-  /** The Project it belongs to, by the root git resolved (ADR 0005). */
-  projectRoot: z.string().min(1),
-  /** Whose rule syntax this is written in, and therefore who may be given it. */
-  harness: harnessIdSchema,
-  kind: standingApprovalKindSchema,
-  toolName: z.string().min(1).max(100),
-  content: z.string().min(1).max(400),
-  /** What was being asked when it was granted, so the list reads as history. */
-  summary: z.string().min(1).max(500),
-  grantedAt: z.string().datetime()
-})
+/**
+ * A granted permission: the rule, and what it belongs to. The rule carries its
+ * own Harness, so one written in Claude's syntax can never be handed to Codex.
+ */
+export const standingApprovalSchema = z.intersection(
+  proposedRuleSchema,
+  z.object({
+    id: z.string().min(1),
+    /** The Project it belongs to, by the root git resolved (ADR 0005). */
+    projectRoot: z.string().min(1),
+    /** What was being asked when it was granted, so the list reads as history. */
+    summary: z.string().min(1).max(500),
+    grantedAt: z.string().datetime()
+  })
+)
 export type StandingApproval = z.infer<typeof standingApprovalSchema>
 
-export const grantStandingApprovalInputSchema = proposedRuleSchema.extend({
-  projectRoot: z.string().min(1),
-  harness: harnessIdSchema,
-  summary: z.string().min(1).max(500)
-})
+export const grantStandingApprovalInputSchema = z.intersection(
+  proposedRuleSchema,
+  z.object({
+    projectRoot: z.string().min(1),
+    summary: z.string().min(1).max(500)
+  })
+)
 export type GrantStandingApprovalInput = z.infer<typeof grantStandingApprovalInputSchema>
 
 export const revokeStandingApprovalInputSchema = z.object({
@@ -165,13 +195,15 @@ export function proposeStandingApproval(
     //
     // `//` anchors at the filesystem root. A single leading slash would anchor
     // at the staged settings file, which lives outside the repository.
-    return { kind: 'edit', toolName: 'Edit', content: `/${root}/**` }
+    return { harness: 'claude', kind: 'edit', toolName: 'Edit', content: `/${root}/**` }
   }
   if (tool !== 'Bash') return null
   const command = typeof input['command'] === 'string' ? input['command'].trim() : ''
   if (!command || COMPOUND.test(command)) return null
   const prefix = commandPrefix(command)
-  return prefix ? { kind: 'command', toolName: 'Bash', content: `${prefix}:*` } : null
+  return prefix
+    ? { harness: 'claude', kind: 'command', toolName: 'Bash', content: `${prefix}:*` }
+    : null
 }
 
 /**

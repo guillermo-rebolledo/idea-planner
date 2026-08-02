@@ -45,6 +45,7 @@ import {
   createConversationEffects,
   type ApplyHarnessEventInput,
   type BeginConversationRunInput,
+  type AnswerHarnessInput,
   type IngestHarnessOutputInput,
   type OpenHarnessInput
 } from './conversation'
@@ -88,6 +89,10 @@ export interface Core {
   beginConversationRun(input: BeginConversationRunInput): Promise<ConversationSnapshot>
   applyHarnessEvent(input: ApplyHarnessEventInput): Promise<void>
   openHarness(input: OpenHarnessInput): Promise<HarnessStream>
+  answerHarnessApproval(
+    input: AnswerHarnessInput
+  ): Promise<{ answered: boolean; outgoing: string[] }>
+  interruptHarness(runId: string): Promise<string[]>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Promise<HarnessStream>
   finalizeConversationRun(input: FinalizeConversationRunInput): Promise<ConversationSnapshot>
 }
@@ -126,6 +131,10 @@ export interface CoreEffects {
   ): Effect.Effect<ConversationSnapshot, CoreError>
   applyHarnessEvent(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
   openHarness(input: OpenHarnessInput): Effect.Effect<HarnessStream, CoreError>
+  answerHarnessApproval(
+    input: AnswerHarnessInput
+  ): Effect.Effect<{ answered: boolean; outgoing: string[] }, CoreError>
+  interruptHarness(runId: string): Effect.Effect<string[], CoreError>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
   finalizeConversationRun(
     input: FinalizeConversationRunInput
@@ -463,6 +472,8 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     beginConversationRun: (input) => conversation.begin(input),
     applyHarnessEvent: (input) => conversation.apply(input),
     openHarness: (input) => conversation.open(input),
+    answerHarnessApproval: (input) => conversation.answer(input),
+    interruptHarness: (runId) => conversation.interrupt(runId),
     ingestHarnessOutput: (input) => conversation.ingest(input),
     finalizeConversationRun: (input) => conversation.finalize(input)
   }
@@ -533,6 +544,8 @@ export function createCore(deps: CoreDeps = {}): Core {
     beginConversationRun: (input) => run(core.beginConversationRun(input)),
     applyHarnessEvent: (input) => run(core.applyHarnessEvent(input)),
     openHarness: (input) => run(core.openHarness(input)),
+    answerHarnessApproval: (input) => run(core.answerHarnessApproval(input)),
+    interruptHarness: (runId) => run(core.interruptHarness(runId)),
     ingestHarnessOutput: (input) => run(core.ingestHarnessOutput(input)),
     finalizeConversationRun: (input) => run(core.finalizeConversationRun(input))
   }

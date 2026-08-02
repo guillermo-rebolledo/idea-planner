@@ -211,6 +211,14 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     launch: codexLaunchSchema.optional()
   }),
   z.object({
+    type: z.literal('harness/answer'),
+    runId: z.string().min(1),
+    approvalId: z.string().min(1).max(200),
+    allow: z.boolean(),
+    remember: z.boolean()
+  }),
+  z.object({ type: z.literal('harness/interrupt'), runId: z.string().min(1) }),
+  z.object({
     type: z.literal('conversation/ingest'),
     sessionId: z.string().min(1),
     runId: z.string().min(1),
