@@ -1,129 +1,224 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { harnessEventSchema, type HarnessEvent } from '@shared/conversation'
+import type { CodexLaunch, HarnessEvent } from '@shared/conversation'
 import { createCodexAdapter } from './codex'
 
 /**
- * The Codex contract suite. The fixtures are recorded from `codex exec --json`
- * (codex-cli 0.146.0), which reports a thread of turns made of items. The
- * suite asserts the normalized events the rest of the app is allowed to see
- * and says nothing about raw frames beyond what the Adapter exposes.
+ * The Codex contract suite. `codex-app-server.jsonl` is a real session
+ * recorded from the installed binary (codex-cli 0.146.0) driving a file change
+ * and a command in a scratch repository, so what this suite asserts is what
+ * that Harness actually says rather than what its documentation claims.
+ *
+ * Re-record it with `pnpm codex:record` when the supported version moves.
  */
 
-async function replay(fixture: string, chunkSize = 64): Promise<HarnessEvent[]> {
-  const raw = await readFile(join(__dirname, 'fixtures', fixture), 'utf8')
-  const adapter = createCodexAdapter()
-  const events: HarnessEvent[] = []
-  // Feed the stream in small chunks so the Adapter must survive split lines.
-  for (let index = 0; index < raw.length; index += chunkSize) {
-    events.push(...adapter.ingest(raw.slice(index, index + chunkSize)))
+function launch(overrides: Partial<CodexLaunch> = {}): CodexLaunch {
+  return {
+    cwd: '/a-project',
+    approvalPolicy: 'never',
+    sandbox: 'danger-full-access',
+    effort: 'low',
+    developerInstructions: 'Be terse.',
+    prompt: 'Change the greeting',
+    ...overrides
   }
-  events.push(...adapter.flush())
-  return events
 }
 
-describe('Codex harness Adapter', () => {
-  it('normalizes a Grill Me turn identically regardless of chunk boundaries', async () => {
-    const [byteAtATime, wholeFile] = await Promise.all([
-      replay('codex-grilling.jsonl', 1),
-      replay('codex-grilling.jsonl', 1_000_000)
-    ])
-    expect(byteAtATime).toEqual(wholeFile)
+/** Replays the recording, answering as the app does, in chunks of `size`. */
+async function replay(size = 64): Promise<{ events: HarnessEvent[]; sent: string[] }> {
+  const raw = await readFile(join(__dirname, 'fixtures', 'codex-app-server.jsonl'), 'utf8')
+  const adapter = createCodexAdapter(launch())
+  const events: HarnessEvent[] = []
+  const sent = [...adapter.takeOutgoing()]
+  for (let index = 0; index < raw.length; index += size) {
+    events.push(...adapter.ingest(raw.slice(index, index + size)))
+    sent.push(...adapter.takeOutgoing())
+  }
+  events.push(...adapter.flush())
+  return { events, sent }
+}
+
+function frames(sent: string[]): { method: string; params: Record<string, unknown> }[] {
+  return sent.map((line) => JSON.parse(line) as { method: string; params: Record<string, unknown> })
+}
+
+describe('the exchange', () => {
+  it('opens by speaking first, because Codex says nothing until it is spoken to', () => {
+    const adapter = createCodexAdapter(launch())
+    expect(frames(adapter.takeOutgoing()).map((frame) => frame.method)).toEqual(['initialize'])
+    // Handed over exactly once: a frame written twice is a turn started twice.
+    expect(adapter.takeOutgoing()).toEqual([])
   })
 
-  it('reports an assistant message as it grows and marks it complete once', async () => {
-    const events = await replay('codex-grilling.jsonl')
-    expect(events.filter((event) => event.type === 'assistant-message')).toEqual([
-      { type: 'assistant-message', id: 'item_2', text: 'Who is this', complete: false },
-      { type: 'assistant-message', id: 'item_2', text: 'Who is this for, exactly?', complete: true }
+  it('starts a Harness Thread and one turn, in that order, as the answers arrive', async () => {
+    const { sent } = await replay()
+    expect(frames(sent).map((frame) => frame.method)).toEqual([
+      'initialize',
+      'initialized',
+      'thread/start',
+      'turn/start'
     ])
   })
 
-  it('keeps reasoning to the Harness’s finished summary and names the tools used', async () => {
-    const events = await replay('codex-grilling.jsonl')
-    expect(events).toContainEqual({
-      type: 'reasoning',
-      summary: 'Reading the Session before asking the first question.'
+  it('carries the Run’s configuration over the protocol rather than in argv', async () => {
+    const { sent } = await replay()
+    const start = frames(sent).find((frame) => frame.method === 'thread/start')
+    expect(start?.params).toMatchObject({
+      cwd: '/a-project',
+      // The wire values the installed binary accepts are kebab-case; the
+      // published documentation's camelCase is rejected outright.
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+      developerInstructions: 'Be terse.',
+      config: { model_reasoning_effort: 'low' }
     })
-    // One activity row per tool, raised when the Harness asks for it.
-    expect(events.filter((event) => event.type === 'tool')).toEqual([
+  })
+
+  it('continues a Harness Thread when there is one to continue', () => {
+    const adapter = createCodexAdapter(launch({ resumeThreadId: 'thread-1' }))
+    adapter.takeOutgoing()
+    adapter.ingest(`${JSON.stringify({ id: 1, result: {} })}\n`)
+    const [, resume] = frames(adapter.takeOutgoing())
+    expect(resume?.method).toBe('thread/resume')
+    expect(resume?.params).toMatchObject({ threadId: 'thread-1', cwd: '/a-project' })
+    // Resume declares its own parameters, and a thread's source is not one:
+    // it was fixed when the thread was started.
+    expect(resume?.params).not.toHaveProperty('threadSource')
+  })
+})
+
+describe('what the Run did', () => {
+  it('normalizes the session identically however the stream is chopped up', async () => {
+    const [byteAtATime, wholeFile] = await Promise.all([replay(1), replay(1_000_000)])
+    expect(byteAtATime.events).toEqual(wholeFile.events)
+    expect(byteAtATime.sent).toEqual(wholeFile.sent)
+  })
+
+  it('reports the Harness Thread so the Conversation can continue it', async () => {
+    const { events } = await replay()
+    expect(events.filter((event) => event.type === 'thread-ready')).toMatchObject([
+      { harness: 'codex', threadId: '019fc3da-e096-72a3-8bcd-56313b8ca5e9' }
+    ])
+  })
+
+  it('grows an assistant message and completes it once', async () => {
+    const { events } = await replay()
+    const messages = events.filter((event) => event.type === 'assistant-message')
+    expect(messages.filter((event) => event.complete)).toHaveLength(2)
+    // Every delta carries the whole message so far, so Core can supersede.
+    const growing = messages.filter((event) => !event.complete)
+    expect(growing[0]?.text.length).toBeLessThan(growing.at(-1)?.text.length ?? 0)
+  })
+
+  it('shows a command when it starts and again with what it printed', async () => {
+    const { events } = await replay()
+    expect(events.filter((event) => event.type === 'command')).toMatchObject([
+      { command: "/bin/zsh -lc 'wc -l greeting.txt'", running: true, output: '' },
       {
-        type: 'tool',
-        name: 'app.offer_response_options',
-        summary: 'Called app tool offer_response_options'
+        command: "/bin/zsh -lc 'wc -l greeting.txt'",
+        running: false,
+        failed: false,
+        output: '       2 greeting.txt\n'
       }
     ])
   })
 
-  it('reports Harness usage without inventing a window or a quota', async () => {
-    const events = await replay('codex-grilling.jsonl')
-    expect(events).toContainEqual({
-      type: 'usage',
-      usage: {
-        inputTokens: 16_506,
-        outputTokens: 29,
-        totalTokens: 16_535,
-        contextWindow: null,
-        contextUsed: null
-      }
-    })
-  })
-
-  it('ends the turn as completed and never fails on unknown protocol', async () => {
-    const events = await replay('codex-grilling.jsonl')
-    expect(events.at(-1)).toEqual({ type: 'completed' })
-    expect(events).toContainEqual({ type: 'unsupported', detail: 'item:future_item_kind' })
-    expect(events.some((event) => event.type === 'failed')).toBe(false)
-  })
-
-  it('surfaces the Harness’s own words when a turn fails', async () => {
-    const events = await replay('codex-failures.jsonl')
-    const failures = events.filter((event) => event.type === 'failed')
-    expect(failures.at(-1)).toEqual({
-      type: 'failed',
-      category: 'unknown',
-      summary: "The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account."
-    })
-    expect(failures).toHaveLength(3)
-    expect(events).toContainEqual({ type: 'unsupported', detail: 'unreadable protocol line' })
-  })
-
-  it('categorizes the failures a person has to recover from', async () => {
-    const events = await replay('codex-recoverable-failures.jsonl')
-    expect(events.map((event) => (event.type === 'failed' ? event.category : event.type))).toEqual([
-      'authentication',
-      'rate-limit',
-      'context-exhausted'
-    ])
-  })
-
-  it('emits only events the shared contract accepts', async () => {
-    const events = [
-      ...(await replay('codex-grilling.jsonl')),
-      ...(await replay('codex-failures.jsonl')),
-      ...(await replay('codex-recoverable-failures.jsonl'))
-    ]
-    for (const event of events) {
-      expect(() => harnessEventSchema.parse(event)).not.toThrow()
-    }
-  })
-
-  it('sanitizes credential-shaped text out of assistant and failure content', () => {
-    const adapter = createCodexAdapter()
-    expect(
-      adapter.ingest(
-        `${JSON.stringify({
-          type: 'error',
-          message: 'request failed with api_key: sk-live-424242424242'
-        })}\n`
-      )
-    ).toEqual([
+  it('renders a file change from the patch Codex computed for it', async () => {
+    const { events } = await replay()
+    // The thing `exec --json` could never do: its file_change items carry a
+    // path and a kind and no diff at all.
+    expect(events.filter((event) => event.type === 'file-change')).toMatchObject([
       {
-        type: 'failed',
-        category: 'unknown',
-        summary: 'request failed with api_key=[REDACTED: credential]'
+        path: '/a-project/greeting.txt',
+        hunks: [
+          {
+            oldStart: 1,
+            oldLines: 2,
+            newStart: 1,
+            newLines: 2,
+            lines: ['-hello world', '+goodbye world', ' second line']
+          }
+        ]
       }
     ])
+  })
+
+  it('reports usage and the end of the turn', async () => {
+    const { events } = await replay()
+    expect(events.filter((event) => event.type === 'usage').at(-1)).toMatchObject({
+      usage: { totalTokens: 52823, contextWindow: 258400 }
+    })
+    expect(events.filter((event) => event.type === 'completed')).toHaveLength(1)
+  })
+
+  it('says nothing about protocol it knows to skip, and names what it does not', async () => {
+    const { events } = await replay()
+    expect(events.filter((event) => event.type === 'unsupported')).toEqual([])
+
+    const adapter = createCodexAdapter(launch())
+    const [event] = adapter.ingest(`${JSON.stringify({ method: 'turn/other', params: {} })}\n`)
+    expect(event).toMatchObject({ type: 'unsupported' })
+  })
+})
+
+describe('a request the app cannot answer', () => {
+  it('refuses it rather than leaving Codex waiting on silence', () => {
+    const adapter = createCodexAdapter(launch())
+    adapter.takeOutgoing()
+    // A server request carries an id *and* a method. Read as an answer it
+    // would be dropped, and Codex would block on a reply that never came.
+    const events = adapter.ingest(
+      `${JSON.stringify({
+        id: 0,
+        method: 'item/fileChange/requestApproval',
+        params: { threadId: 't', turnId: 'u', itemId: 'i', startedAtMs: 1 }
+      })}\n`
+    )
+    expect(events).toMatchObject([{ type: 'unsupported' }])
+    const [reply] = adapter
+      .takeOutgoing()
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(reply).toMatchObject({ id: 0, error: { code: -32601 } })
+  })
+})
+
+describe('a new file', () => {
+  it('is read as every line added, because Codex sends its whole content', () => {
+    const adapter = createCodexAdapter(launch())
+    const [change] = adapter.ingest(
+      `${JSON.stringify({
+        method: 'item/completed',
+        params: {
+          item: {
+            type: 'fileChange',
+            id: 'exec-1',
+            status: 'completed',
+            changes: [{ path: '/a-project/new.txt', kind: { type: 'add' }, diff: 'alpha\nbeta\n' }]
+          }
+        }
+      })}\n`
+    )
+    expect(change).toMatchObject({
+      type: 'file-change',
+      path: '/a-project/new.txt',
+      hunks: [{ lines: ['+alpha', '+beta'] }]
+    })
+  })
+})
+
+describe('failure', () => {
+  it('reports what the Harness said, categorized', () => {
+    const adapter = createCodexAdapter(launch())
+    const [refused] = adapter.ingest(
+      `${JSON.stringify({ id: 2, error: { message: 'Unauthorized: please run codex login' } })}\n`
+    )
+    expect(refused).toMatchObject({ type: 'failed', category: 'authentication' })
+  })
+
+  it('reports a torn final line rather than inventing an ending', () => {
+    const adapter = createCodexAdapter(launch())
+    adapter.ingest('{"method":"item/started","par')
+    expect(adapter.flush()).toEqual([{ type: 'unsupported', detail: 'unreadable protocol line' }])
   })
 })

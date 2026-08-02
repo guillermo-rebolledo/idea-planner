@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { chmod, copyFile, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -15,6 +15,7 @@ import {
   redactCredentials,
   type ConversationSnapshot,
   type ConversationStreamEvent,
+  type CodexLaunch,
   type DevelopSessionInput,
   type FinalizeConversationRunInput,
   type HarnessEvent,
@@ -41,6 +42,12 @@ import type { RunProcessBroker } from './run-process-broker'
 interface CorePort {
   send(command: CoreCommand): Promise<unknown>
 }
+
+/** What Core hands back for one pass of protocol: events, and any reply owed. */
+const harnessStreamSchema = z.object({
+  events: harnessEventSchema.array(),
+  outgoing: z.array(z.string())
+})
 interface ReadinessPort {
   refresh(harness?: 'codex' | 'claude'): Promise<{
     harnesses: {
@@ -54,7 +61,10 @@ interface ReadinessPort {
 
 interface RunServiceDeps {
   core: CorePort
-  broker: Pick<RunProcessBroker, 'start' | 'stop' | 'stopAll' | 'activeRunIds' | 'needsRecovery'>
+  broker: Pick<
+    RunProcessBroker,
+    'start' | 'stop' | 'stopAll' | 'activeRunIds' | 'needsRecovery' | 'write'
+  >
   readiness: ReadinessPort
   homeDirectory: string
   privateRoot: string
@@ -93,6 +103,8 @@ export class RunService {
    * record deliberately bounds.
    */
   private readonly proposals = new Map<string, Map<string, RequestProposal>>()
+  /** Runs already being ended by their own turn completing, so it happens once. */
+  private readonly finishing = new Set<string>()
 
   constructor(private readonly deps: RunServiceDeps) {}
 
@@ -182,13 +194,11 @@ export class RunService {
 
   async start(rawInput: StartRunInput): Promise<RunSnapshot> {
     const input = startRunInputSchema.parse(rawInput)
-    // `codex exec` auto-rejects approvals without emitting an event, so an Ask
-    // Run on it would refuse everything while looking like it was working.
-    // Ticket 10 brings the app-server transport that can actually ask.
+    // The app-server protocol carries a full approval round-trip, but nothing
+    // answers one yet, so an Ask Run would stall on its first request while
+    // looking like it was working. Ticket 10b answers it.
     if (input.permissionMode === 'ask' && input.harness === 'codex') {
-      throw new Error(
-        'Ask mode needs the Codex app-server protocol, which is not built yet. Use Full access.'
-      )
+      throw new Error('Ask mode is not answerable on Codex yet. Use Full access.')
     }
     const checkout = await this.checkoutFor(input.sessionId)
     const readiness = await this.deps.readiness.refresh(input.harness)
@@ -374,6 +384,32 @@ export class RunService {
         throw new Error('Harness executable changed after durable Run acceptance')
       }
       const running = await this.record(accepted, 'running', 'lifecycle', 'Harness process running')
+      // Codex says nothing until it is spoken to, so its Adapter is opened
+      // before the process is started and its opening frame written the moment
+      // it is. Claude is opened the same way and is owed nothing.
+      const opening = harnessStreamSchema.parse(
+        await this.deps.core.send({
+          type: 'harness/open',
+          runId: accepted.id,
+          harness: input.harness,
+          ...(input.harness === 'codex'
+            ? {
+                launch: {
+                  cwd: checkout,
+                  approvalPolicy: CODEX_APPROVAL_POLICIES[input.permissionMode],
+                  sandbox: CODEX_SANDBOXES[input.permissionMode],
+                  ...(input.model === HARNESS_DEFAULT_MODEL ? {} : { model: input.model }),
+                  effort: input.effort,
+                  developerInstructions: await readFile(skillFile, 'utf8'),
+                  prompt: restoreFromHistory
+                    ? `${input.prompt}\n\nDeterministic handoff from the Conversation so far:\n${handoff}`
+                    : input.prompt,
+                  ...(threadCompatible && savedThread ? { resumeThreadId: savedThread } : {})
+                }
+              }
+            : {})
+        })
+      )
       const harnessEnvironment =
         input.harness === 'claude'
           ? {
@@ -386,7 +422,6 @@ export class RunService {
         executable: harness.executablePath,
         args: harnessArguments(
           input,
-          await readFile(skillFile, 'utf8'),
           runDirectory,
           restoreFromHistory ? handoff : undefined,
           threadCompatible ? savedThread : undefined
@@ -394,6 +429,7 @@ export class RunService {
         workingDirectory: checkout,
         runDirectory,
         environment: harnessEnvironment,
+        answersProtocol: input.harness === 'codex',
         onBeforeCleanup: async () => {
           await toolHost.close()
           await rm(socketDirectory, { recursive: true, force: true })
@@ -443,6 +479,8 @@ export class RunService {
           void this.conclude(accepted, 'policy-violation', 'blocked', summary)
         }
       })
+      // Now that there is a process to speak to, it is spoken to.
+      for (const frame of opening.outgoing) this.deps.broker.write(accepted.id, frame)
       return running
     } catch (error) {
       await toolHost.close().catch(() => undefined)
@@ -496,7 +534,7 @@ export class RunService {
     checkout: string,
     chunk: string
   ): Promise<void> {
-    const events = harnessEventSchema.array().parse(
+    const stream = harnessStreamSchema.parse(
       await this.deps.core.send({
         type: 'conversation/ingest',
         sessionId: run.sessionId,
@@ -505,7 +543,10 @@ export class RunService {
         chunk
       })
     )
-    for (const event of events) {
+    // Whatever the Harness is owed in reply. Only Core knows the protocol, so
+    // Main writes what Core hands it and reads none of it.
+    for (const frame of stream.outgoing) this.deps.broker.write(run.id, frame)
+    for (const event of stream.events) {
       if (event.type === 'failed') this.failures.set(run.id, event.category)
       this.deps.onConversationEvent?.({
         sessionId: run.sessionId,
@@ -516,7 +557,25 @@ export class RunService {
       if (activity) {
         await this.record(run, undefined, activity.kind, sanitize(activity.summary, checkout))
       }
+      // `codex app-server` is a server: it answers a turn and then waits for
+      // the next one, so nothing ends the Run on its own. The turn ending is
+      // the Run ending here, and the process is stopped rather than left
+      // running for a turn that will never be asked for.
+      if (event.type === 'completed' && harness === 'codex') await this.finishTurn(run)
     }
+  }
+
+  /**
+   * Ends a Run whose Harness has finished but will not exit. Concluding first
+   * means the Conversation records what happened; stopping through the broker
+   * suppresses the exit path, so the Run is not concluded twice.
+   */
+  private async finishTurn(run: Pick<RunSnapshot, 'id' | 'sessionId'>): Promise<void> {
+    if (this.finishing.has(run.id)) return
+    this.finishing.add(run.id)
+    await this.conclude(run, 'completed', 'lifecycle', 'Harness completed the turn')
+    await this.deps.broker.stop(run.id, 'quit').catch(() => undefined)
+    this.finishing.delete(run.id)
   }
 
   /**
@@ -807,11 +866,12 @@ export class RunService {
     }
     const codexHome = join(runDirectory, 'codex-home')
     await mkdir(codexHome, { recursive: true, mode: 0o700 })
-    await copyFile(
+    // Auth follows CODEX_HOME, so a staged home needs it reachable — as a link
+    // rather than a copy. It is a credential, and this app does not hold one.
+    await symlink(
       join(this.deps.homeDirectory, '.codex', 'auth.json'),
       join(codexHome, 'auth.json')
     )
-    await chmod(join(codexHome, 'auth.json'), 0o600)
     await writeFile(
       join(codexHome, 'config.toml'),
       `[mcp_servers.${MCP_SERVER_NAME}]\ncommand = ${JSON.stringify(proxy.command)}\n\n[mcp_servers.${MCP_SERVER_NAME}.env]\nELECTRON_RUN_AS_NODE = "1"\nNODE_OPTIONS = ${JSON.stringify(proxy.env.NODE_OPTIONS)}\nAPP_MCP_SOCKET = ${JSON.stringify(socketPath)}\nAPP_MCP_CAPABILITY = ${JSON.stringify(capabilityToken)}\n`,
@@ -860,42 +920,15 @@ function minimalEnvironment(
 
 function harnessArguments(
   input: StartRunInput,
-  skillText: string,
   runDirectory: string,
   handoff?: string,
   threadId?: string
 ): string[] {
-  const skillPrompt = `Verified Skill (${input.skill}):\n\n${skillText}\n\nUser request:\n${input.prompt}`
   if (input.harness === 'codex') {
-    return [
-      'exec',
-      '--ephemeral',
-      '--ignore-rules',
-      '--disable',
-      'shell_tool',
-      '--disable',
-      'unified_exec',
-      '--disable',
-      'apps',
-      '--disable',
-      'browser_use',
-      '--disable',
-      'computer_use',
-      '--disable',
-      'hooks',
-      '--disable',
-      'plugins',
-      '--json',
-      '--sandbox',
-      'workspace-write',
-      '--skip-git-repo-check',
-      // `default` means the Harness's own configured model: passing a guess
-      // would fail on accounts that cannot use it.
-      ...(input.model === HARNESS_DEFAULT_MODEL ? [] : ['--model', input.model]),
-      '-c',
-      `model_reasoning_effort=${JSON.stringify(input.effort)}`,
-      skillPrompt
-    ]
+    // One long-lived JSON-RPC peer. Everything that used to be argv — policy,
+    // sandbox, model, effort, the Skill, the prompt — now travels over the
+    // protocol, where approvals and diffs travel too.
+    return ['app-server']
   }
   return [
     '--print',
@@ -1010,6 +1043,22 @@ const claudeSettingsSchema = z.object({
 const CLAUDE_PERMISSION_MODES: Record<PermissionMode, string> = {
   ask: 'default',
   auto: 'bypassPermissions'
+}
+
+/**
+ * The same two Modes as Codex names them (`docs/harness-permission-mapping.md`).
+ * `untrusted` is the only policy that guarantees escalation is decided by a
+ * rule rather than by the model, so a person who chose Ask cannot silently get
+ * no prompts; `never` with full access is the documented no-prompt pairing.
+ */
+const CODEX_APPROVAL_POLICIES: Record<PermissionMode, CodexLaunch['approvalPolicy']> = {
+  ask: 'untrusted',
+  auto: 'never'
+}
+
+const CODEX_SANDBOXES: Record<PermissionMode, CodexLaunch['sandbox']> = {
+  ask: 'workspace-write',
+  auto: 'danger-full-access'
 }
 
 /**

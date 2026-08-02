@@ -120,6 +120,12 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
         // that ran exactly as asked.
         askedPermissionMode: command.askedPermissionMode
       })
+    case 'harness/open':
+      return core.openHarness({
+        runId: command.runId,
+        harness: command.harness,
+        launch: command.launch
+      })
     case 'conversation/ingest':
       return core.ingestHarnessOutput({
         sessionId: command.sessionId,

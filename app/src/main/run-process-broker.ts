@@ -6,6 +6,8 @@ export interface SpawnedProcess {
   pid?: number
   stdout: NodeJS.EventEmitter
   stderr: NodeJS.EventEmitter
+  /** Present only for a Harness this app has to answer. */
+  stdin?: { write(chunk: string): unknown; end?(): unknown } | null
   once(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this
 }
 
@@ -16,6 +18,12 @@ export interface RunLaunch {
   workingDirectory: string
   runDirectory: string
   environment: Record<string, string>
+  /**
+   * True for a Harness the app answers. Everything else keeps stdin closed:
+   * one that reads it for extra input would otherwise wait forever on a pipe
+   * nothing writes to.
+   */
+  answersProtocol?: boolean
   onBeforeCleanup?: () => Promise<void>
   /** Raw Harness bytes, by stream. Main never interprets them itself. */
   onOutput?: (stream: 'stdout' | 'stderr', text: string) => void
@@ -35,6 +43,7 @@ interface BrokerDeps {
 }
 
 interface ActiveRun {
+  process: SpawnedProcess
   pid: number
   runDirectory: string
   outputBytes: number
@@ -44,10 +53,11 @@ interface ActiveRun {
 }
 
 const defaultDeps: BrokerDeps = {
-  // stdin is closed: a Harness that reads stdin for extra input would
-  // otherwise wait forever on a pipe this app never writes to.
+  // stdin is a pipe because one Harness is a conversation: Codex speaks the
+  // app-server protocol and has to be answered. It is closed again for every
+  // Harness that is only read.
   spawn: (file, args, options) =>
-    nodeSpawn(file, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] }),
+    nodeSpawn(file, args, { ...options, stdio: ['pipe', 'pipe', 'pipe'] }),
   killProcessGroup: (pid, signal) => process.kill(-pid, signal),
   waitForGroupExit: async (pid) => {
     const deadline = Date.now() + 2_000
@@ -95,6 +105,7 @@ export class RunProcessBroker {
     }
     const pid = child.pid
     const entry: ActiveRun = {
+      process: child,
       pid,
       runDirectory: launch.runDirectory,
       outputBytes: 0,
@@ -108,6 +119,8 @@ export class RunProcessBroker {
         this.deps.monitorIntervalMs
       )
     }
+    // A Harness nobody answers gets the closed stdin it used to get.
+    if (!launch.answersProtocol) child.stdin?.end?.()
     child.stdout.on('data', (chunk) => this.observeOutput(launch, chunk, 'stdout'))
     child.stderr.on('data', (chunk) => this.observeOutput(launch, chunk, 'stderr'))
     // `close` follows `exit` only after stdout/stderr have drained, so the
@@ -152,6 +165,17 @@ export class RunProcessBroker {
 
   async stopAll(reason: 'core-crash' | 'quit' | 'update'): Promise<void> {
     await Promise.all([...this.active.keys()].map((id) => this.stop(id, reason)))
+  }
+
+  /**
+   * Answers a Harness that is waiting to be answered. Silent when the Run has
+   * already ended: a frame written to a dead process is not a failure of this
+   * app, and the Run's own ending is what the person is told about.
+   */
+  write(runId: string, frame: string): void {
+    const entry = this.active.get(runId)
+    if (!entry || entry.stopping) return
+    entry.process.stdin?.write(`${frame}\n`)
   }
 
   activeRunIds(): string[] {

@@ -273,17 +273,22 @@ exit 1`
     expect(capability(readiness)).toMatchObject({ available: true, command: null })
   })
 
-  it('says plainly that Codex cannot run a Session yet', async () => {
+  it('offers Codex once it is new enough to speak the app-server protocol', async () => {
     await installSkills('.agents/skills', ['grilling', 'wayfinder'])
-    // Offering a Harness that starts and then does nothing is worse than
-    // saying it is not supported: its Adapter can carry neither approvals nor
-    // diffs until it is rewritten.
-    // Said in the person's terms rather than the app's: a Harness that is
-    // installed and signed in is usable, and still cannot run a Session here.
+    // The Adapter's bindings are generated from a known binary; a Codex older
+    // than that one was never checked against what it actually sends.
     const readiness = await probeCodex()
     expect(readiness.available).toBe(true)
-    expect(capability(readiness)).toMatchObject({ available: false })
-    expect(capability(readiness).summary).toContain('cannot run a Session with Codex yet')
+    expect(capability(readiness)).toMatchObject({ available: true, command: null })
+    // The available branch has copy of its own, and it is what the card shows.
+    expect(capability(readiness).summary).toContain('can run a Session with Codex')
+
+    const older = await probeHarness(
+      { ...HARNESS_SPECS.codex, conversation: { minimumVersion: '0.200.0' } },
+      { pathEntries: [binDir], homeDir, probeTimeoutMs: 5000 }
+    )
+    expect(capability(older)).toMatchObject({ available: false })
+    expect(capability(older).summary).toContain('0.200.0')
   })
 
   it('names the version needed when the Adapter needs a newer Harness', async () => {

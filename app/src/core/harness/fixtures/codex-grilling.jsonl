@@ -1,9 +1,0 @@
-{"type":"thread.started","thread_id":"019fbb9a-aaa6-74a1-8b88-05802de70c12"}
-{"type":"turn.started"}
-{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Reading the Session before asking the first question."}}
-{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"app","tool":"offer_response_options","status":"in_progress"}}
-{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"app","tool":"offer_response_options","status":"completed"}}
-{"type":"item.updated","item":{"id":"item_2","type":"agent_message","text":"Who is this"}}
-{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Who is this for, exactly?"}}
-{"type":"item.completed","item":{"id":"item_3","type":"future_item_kind","text":"anything"}}
-{"type":"turn.completed","usage":{"input_tokens":16506,"cached_input_tokens":9984,"cache_write_input_tokens":0,"output_tokens":29,"reasoning_output_tokens":0}}

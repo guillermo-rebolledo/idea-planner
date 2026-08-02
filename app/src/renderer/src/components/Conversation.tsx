@@ -105,9 +105,10 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
     harnesses.find((entry) => entry.capabilities.developSession.available) ??
     harnesses[0]
   const chosenHarness = selected?.harness ?? null
-  // Ask is served natively per Harness, and only Claude's transport can carry
-  // it today (`docs/harness-permission-mapping.md`). Offering it on Codex would
-  // start Runs the app cannot keep its promise about.
+  // Ask is served natively per Harness. Codex's transport can carry it — the
+  // app-server protocol has a full approval round-trip — but nothing answers
+  // it here yet, so offering it would start Runs that stall on their first
+  // request (`docs/harness-permission-mapping.md`).
   const askable = chosenHarness === 'claude'
   const effectiveMode: PermissionMode = askable ? permissionMode : 'auto'
 
@@ -640,7 +641,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
               className="h-8 rounded-md border border-border bg-background px-2 text-xs"
             >
               <option value="ask" disabled={!askable}>
-                {askable ? 'Ask' : 'Ask — not available on this Harness'}
+                {askable ? 'Ask' : 'Ask — not on this Harness yet'}
               </option>
               <option value="auto">Full access</option>
             </select>
@@ -673,6 +674,14 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
             ? 'In Ask, the agent stops for your approval before it edits or runs anything.'
             : 'In Full access, the agent edits and runs without asking. The Harness applies its own permissions for this Run.'}
         </p>
+        {/* The mapping onto each Harness is lossy, and ADR 0003 says the
+            differences are stated rather than discovered. */}
+        {chosenHarness === 'codex' && (
+          <p className="text-[11px] text-muted-foreground">
+            Codex differs from Claude Code here: Ask is not answerable yet, so a Run uses Full
+            access, and a Skill reaches it as instructions for the Run rather than natively.
+          </p>
+        )}
       </form>
 
       {error && (

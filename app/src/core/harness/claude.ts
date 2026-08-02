@@ -153,6 +153,8 @@ export function createClaudeAdapter(): HarnessAdapter {
 
   return {
     harness: 'claude',
+    // Claude broadcasts: it is read, never answered.
+    takeOutgoing: () => [],
     ingest(chunk) {
       pending += chunk
       const events: HarnessEvent[] = []

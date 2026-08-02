@@ -175,7 +175,10 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     if (command.type === 'session/get') return Promise.resolve(fakeSession(projectRoot))
     if (command.type === 'approval/rules') return Promise.resolve(state.standingRules)
     if (command.type === 'approval/grant') return Promise.resolve(undefined)
-    if (command.type === 'conversation/ingest') return Promise.resolve(state.events)
+    if (command.type === 'harness/open') return Promise.resolve({ events: [], outgoing: [] })
+    if (command.type === 'conversation/ingest') {
+      return Promise.resolve({ events: state.events, outgoing: [] })
+    }
     if (command.type.startsWith('conversation/')) return Promise.resolve(state.conversation)
     if (command.type === 'run/accept') return Promise.resolve(run)
     return Promise.resolve({ ...run, status: 'running' })
@@ -189,6 +192,8 @@ function fakeBroker(overrides: { start?: ReturnType<typeof vi.fn> } = {}): {
   stopAll: ReturnType<typeof vi.fn>
   activeRunIds: ReturnType<typeof vi.fn>
   needsRecovery: ReturnType<typeof vi.fn>
+  write: ReturnType<typeof vi.fn>
+  written: string[]
   launch?: RunLaunch
 } {
   const broker = {
@@ -200,6 +205,11 @@ function fakeBroker(overrides: { start?: ReturnType<typeof vi.fn> } = {}): {
     stopAll: vi.fn(() => Promise.resolve()),
     activeRunIds: vi.fn((): string[] => []),
     needsRecovery: vi.fn(() => false),
+    /** Frames the app wrote back to the Harness, in order. */
+    write: vi.fn((_runId: string, frame: string) => {
+      broker.written.push(frame)
+    }),
+    written: [] as string[],
     launch: undefined as RunLaunch | undefined,
     ...overrides
   }
@@ -385,6 +395,7 @@ describe('Run service', () => {
           return Promise.resolve(fakeSession(join(root, 'a-project')))
         }
         if (command.type === 'approval/rules') return Promise.resolve([])
+        if (command.type === 'harness/open') return Promise.resolve({ events: [], outgoing: [] })
         if (command.type === 'conversation/get') {
           return Promise.resolve({
             sessionId: 'session',
@@ -423,7 +434,8 @@ describe('Run service', () => {
       stop: vi.fn(() => Promise.resolve()),
       stopAll: vi.fn(() => Promise.resolve()),
       activeRunIds: vi.fn((): string[] => []),
-      needsRecovery: vi.fn(() => false)
+      needsRecovery: vi.fn(() => false),
+      write: vi.fn()
     }
     const service = new RunService({
       core,
@@ -809,6 +821,163 @@ describe('staged settings', () => {
 
     await expect(service.start(startInput())).rejects.toThrow(/settings/i)
     expect(broker.start).not.toHaveBeenCalled()
+  })
+})
+
+describe('Codex on the app-server protocol', () => {
+  function codexDeps(root: string, broker: ReturnType<typeof fakeBroker>, core: FakeCore) {
+    return {
+      core,
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            harnesses: [
+              {
+                harness: 'codex' as const,
+                available: true,
+                executablePath: join(root, 'codex'),
+                version: 'codex-cli 0.146.0'
+              }
+            ]
+          })
+        )
+      },
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js'
+    }
+  }
+
+  function codexInput() {
+    return { ...startInput(), harness: 'codex' as const, skill: 'grilling', model: 'gpt-5-codex' }
+  }
+
+  it('launches the app-server and carries the Run over the protocol, not argv', async () => {
+    const root = await readyHarnessRoot('run-codex-appserver-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    const service = new RunService(codexDeps(root, broker, core))
+
+    await service.start(codexInput())
+
+    // The whole of `exec --json` is gone: no prompt, no policy, no model.
+    expect(broker.launch?.args).toEqual(['app-server'])
+    const open = (core.send.mock.calls as [{ type: string; launch?: unknown }][]).find(
+      ([command]) => command.type === 'harness/open'
+    )?.[0]
+    expect(open?.launch).toMatchObject({
+      cwd: join(root, 'a-project'),
+      // Full access, as `docs/harness-permission-mapping.md` maps it.
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+      model: 'gpt-5-codex',
+      effort: 'high',
+      prompt: 'Rename the greeting'
+    })
+  })
+
+  it('writes the frames Core hands back, and only after there is a process', async () => {
+    const root = await readyHarnessRoot('run-codex-frames-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    core.send.mockImplementation((command: { type: string }) => {
+      core.commands.push(command.type)
+      if (command.type === 'session/get')
+        return Promise.resolve(fakeSession(join(root, 'a-project')))
+      if (command.type === 'approval/rules') return Promise.resolve([])
+      if (command.type === 'harness/open') {
+        return Promise.resolve({ events: [], outgoing: ['{"id":1,"method":"initialize"}'] })
+      }
+      if (command.type === 'conversation/ingest') {
+        return Promise.resolve({ events: [], outgoing: ['{"id":2,"method":"thread/start"}'] })
+      }
+      if (command.type.startsWith('conversation/')) return Promise.resolve(core.conversation)
+      return Promise.resolve({
+        id: 'run-codex',
+        submissionId: 'submission-1',
+        sessionId: 'session',
+        prompt: 'Rename the greeting',
+        configuration: runConfigurationSchema.parse({
+          harness: 'codex',
+          executable: join(root, 'codex'),
+          executableHash: 'a'.repeat(64),
+          harnessVersion: 'codex-cli 0.146.0',
+          model: 'gpt-5-codex',
+          effort: 'high',
+          skill: { name: 'grilling', path: '/skills/grilling', hash: 'b'.repeat(64) },
+          environment: {},
+          checkout: join(root, 'a-project'),
+          permissionMode: 'auto'
+        }),
+        status: command.type === 'run/accept' ? 'accepted' : 'running',
+        acceptedAt: '2026-07-31T12:00:00.000Z',
+        updatedAt: '2026-07-31T12:00:00.000Z',
+        activity: []
+      })
+    })
+    const service = new RunService(codexDeps(root, broker, core))
+
+    await service.start(codexInput())
+    // Codex says nothing until it is spoken to, so the opening frame goes out
+    // the moment there is something to speak to.
+    expect(broker.written).toEqual(['{"id":1,"method":"initialize"}'])
+
+    broker.launch?.onOutput?.('stdout', '{"id":1,"result":{}}\n')
+    await vi.waitFor(() => {
+      expect(broker.written).toEqual([
+        '{"id":1,"method":"initialize"}',
+        '{"id":2,"method":"thread/start"}'
+      ])
+    })
+  })
+
+  it('ends the Run when the turn ends, because an app-server never exits', async () => {
+    const root = await readyHarnessRoot('run-codex-turn-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    core.events = [{ type: 'completed' }]
+    const service = new RunService(codexDeps(root, broker, core))
+
+    await service.start(codexInput())
+    broker.launch?.onOutput?.('stdout', '{"method":"turn/completed","params":{}}\n')
+
+    await vi.waitFor(() => {
+      const terminal = (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
+        .filter(([command]) => command.type === 'run/event')
+        .at(-1)?.[0].input
+      expect(terminal?.status).toBe('completed')
+    })
+    // And the process is stopped rather than left waiting for a turn nobody
+    // will ask for. Stopping through the broker suppresses the exit path, so
+    // the Run is not concluded a second time as stopped.
+    expect(broker.stop).toHaveBeenCalledWith(expect.any(String), 'quit')
+  })
+
+  it('leaves stdin closed for a Harness nobody answers', async () => {
+    const root = await readyClaudeRoot('run-claude-stdin-')
+    const broker = fakeBroker()
+    const service = new RunService(claudeDeps(root, broker))
+
+    await service.develop(developInput())
+
+    // Claude is read, never answered, and a Harness that reads an open stdin
+    // nothing writes to would wait on it forever.
+    expect(broker.launch?.answersProtocol).not.toBe(true)
+  })
+
+  it('stages a Codex home that reaches the person’s credential without copying it', async () => {
+    const root = await readyHarnessRoot('run-codex-home-')
+    const broker = fakeBroker()
+    const service = new RunService(codexDeps(root, broker, fakeCore(join(root, 'a-project'))))
+
+    await service.start(codexInput())
+
+    const [runKey] = await readdir(join(root, 'private'))
+    const auth = join(root, 'private', runKey ?? '', 'codex-home', 'auth.json')
+    // A link, so the token stays the person's: this app never holds one.
+    expect(await realpath(auth)).toBe(await realpath(join(root, '.codex', 'auth.json')))
   })
 })
 

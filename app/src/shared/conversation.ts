@@ -177,6 +177,36 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
 ])
 export type HarnessEvent = z.infer<typeof harnessEventSchema>
 
+/**
+ * What a Codex Run needs before it can start. It crosses to Core as a payload
+ * rather than reaching the Harness through argv: the app-server protocol takes
+ * all of it, and the person's own configuration is never touched (ADR 0003).
+ *
+ * The wire values are the ones the installed binary accepts — kebab-case, not
+ * the camelCase its published documentation shows. `app/src/core/harness/codex.ts`
+ * asserts at compile time that these still match the generated contract.
+ */
+export const codexLaunchSchema = z.object({
+  cwd: z.string().min(1),
+  approvalPolicy: z.enum(['untrusted', 'on-request', 'never']),
+  sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']),
+  model: z.string().min(1).optional(),
+  effort: z.string().min(1),
+  developerInstructions: z.string(),
+  prompt: z.string().min(1).max(100_000),
+  resumeThreadId: z.string().min(1).max(200).optional()
+})
+export type CodexLaunch = z.infer<typeof codexLaunchSchema>
+
+/**
+ * One pass of Harness protocol: what it said, and what it is owed in reply.
+ * Only Codex is owed anything; Claude broadcasts and is never answered.
+ */
+export interface HarnessStream {
+  events: HarnessEvent[]
+  outgoing: string[]
+}
+
 export const messageCompletenessSchema = z.enum(['complete', 'partial'])
 export type MessageCompleteness = z.infer<typeof messageCompletenessSchema>
 

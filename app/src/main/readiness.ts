@@ -80,12 +80,11 @@ export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
     command: 'codex',
     versionArgs: ['--version'],
     minimumVersion: '0.100.0',
-    // Codex cannot run a Session today. Its Adapter parses `codex exec
-    // --json`, which has no approval flag and carries no diff, so it can
-    // support neither Ask mode nor inline changes; the app-server protocol
-    // that can arrives with its rewrite. Saying so is better than offering a
-    // Harness that starts and then does nothing.
-    conversation: null,
+    // The app-server protocol, whose bindings are generated from the installed
+    // binary. Below this version those bindings were never checked against
+    // what the Harness sends, and a protocol the app misreads is a Run that
+    // reports nothing.
+    conversation: { minimumVersion: '0.146.0' },
     untestedFrom: '0.147.0',
     authProbe: { kind: 'exit-code', args: ['login', 'status'] },
     authRemediationCommand: 'codex login',
@@ -558,7 +557,7 @@ function describeConversationCapability(
   }
   return {
     available: true,
-    summary: `Ready to develop a Session with ${spec.displayName}.`,
+    summary: `This app can run a Session with ${spec.displayName}.`,
     command: null
   }
 }

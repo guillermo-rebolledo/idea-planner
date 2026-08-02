@@ -53,9 +53,9 @@ Never emit Codex's `default_permissions` — it silently disables `sandbox_mode`
 
 ## Transport
 
-**Codex must use the app-server protocol, not `codex exec`.** `exec` has no `--ask-for-approval` flag and _auto-rejects_ approvals without emitting an event, and its `file_change` items carry only `{path, kind}` with no diff. Both Ask mode and inline diffs are impossible on `exec`. The current adapter parses `exec --json`.
+**Codex uses the app-server protocol, not `codex exec`.** `exec` has no `--ask-for-approval` flag and _auto-rejects_ approvals without emitting an event, and its `file_change` items carry only `{path, kind}` with no diff. Both Ask mode and inline diffs are impossible on `exec`. Ticket 10a moved the adapter onto app-server: one long-lived JSON-RPC peer per Run, with policy, sandbox, model, effort, the Skill, and the prompt all carried over the protocol rather than in argv.
 
-Generate Codex bindings with `codex app-server generate-json-schema`; the published docs disagree with the shipped binary on enum spellings.
+Generate Codex bindings with `codex app-server generate-ts`; the published docs disagree with the shipped binary on enum spellings. The generated bindings and a recorded contract fixture live in the repo — see `docs/agents/codex-protocol.md` for regenerating both.
 
 ## Inline diffs
 

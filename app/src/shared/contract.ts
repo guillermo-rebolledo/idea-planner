@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import {
+  codexLaunchSchema,
   finalizeConversationRunInputSchema,
   harnessEventSchema,
   submitConversationMessageInputSchema,
@@ -202,6 +203,12 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     restorationNote: z.boolean().optional(),
     /** The native mode this app asked for, to compare with what the Harness reports. */
     askedPermissionMode: z.string().min(1).max(100).optional()
+  }),
+  z.object({
+    type: z.literal('harness/open'),
+    runId: z.string().min(1),
+    harness: harnessIdSchema,
+    launch: codexLaunchSchema.optional()
   }),
   z.object({
     type: z.literal('conversation/ingest'),

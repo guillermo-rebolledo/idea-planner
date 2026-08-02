@@ -17,7 +17,9 @@ import {
   type ConversationSnapshot,
   type FinalizeConversationRunInput,
   type HarnessEvent,
+  type CodexLaunch,
   type HarnessFailureCategory,
+  type HarnessStream,
   type HarnessUsage,
   type SuggestedResponse
 } from '@shared/conversation'
@@ -125,13 +127,25 @@ export interface IngestHarnessOutputInput {
   chunk: string
 }
 
+export interface OpenHarnessInput {
+  runId: string
+  harness: HarnessId
+  /** Present for a Harness that is answered rather than only read. */
+  launch?: CodexLaunch
+}
+
 export interface ConversationEffects {
   get(sessionId: string): Effect.Effect<ConversationSnapshot, CoreError>
   submit(input: unknown): Effect.Effect<ConversationSnapshot, CoreError>
   begin(input: BeginConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
   apply(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
+  /**
+   * Prepares the Adapter for a Run and returns whatever the Harness must be
+   * told before it will say anything. Codex speaks only when spoken to.
+   */
+  open(input: OpenHarnessInput): Effect.Effect<HarnessStream, CoreError>
   /** Parses one raw Harness chunk and applies everything it completed. */
-  ingest(input: IngestHarnessOutputInput): Effect.Effect<HarnessEvent[], CoreError>
+  ingest(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
   finalize(input: FinalizeConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
 }
 
@@ -631,31 +645,43 @@ export function createConversationEffects(options: ConversationOptions): Convers
       )
     })
 
-  const ingest = (input: IngestHarnessOutputInput): Effect.Effect<HarnessEvent[], CoreError> =>
+  const adapterFor = (
+    runId: string,
+    harness: HarnessId,
+    launch?: CodexLaunch
+  ): Effect.Effect<HarnessAdapter, CoreError> =>
     Effect.gen(function* () {
-      const known = (yield* Ref.get(adapters)).get(input.runId)
-      let adapter = known
-      if (!adapter) {
-        const factory: (() => HarnessAdapter) | undefined = ADAPTER_FACTORIES[input.harness]
-        // Without an Adapter the Harness's answers could never reach the
-        // Conversation, so this is refused rather than silently swallowed.
-        if (!factory) {
-          return yield* Effect.fail(
-            new CoreError('INVALID_INPUT', `${input.harness} cannot stream into a Conversation`)
-          )
-        }
-        const created = factory()
-        adapter = created
-        yield* Ref.update(adapters, (current) => new Map(current).set(input.runId, created))
+      const known = (yield* Ref.get(adapters)).get(runId)
+      if (known) return known
+      const factory = ADAPTER_FACTORIES[harness]
+      // Without an Adapter the Harness's answers could never reach the
+      // Conversation, so this is refused rather than silently swallowed.
+      if (!factory) {
+        return yield* Effect.fail(
+          new CoreError('INVALID_INPUT', `${harness} cannot stream into a Conversation`)
+        )
       }
+      const created = factory(launch)
+      yield* Ref.update(adapters, (current) => new Map(current).set(runId, created))
+      return created
+    })
+
+  const open = (input: OpenHarnessInput): Effect.Effect<HarnessStream, CoreError> =>
+    adapterFor(input.runId, input.harness, input.launch).pipe(
+      Effect.map((adapter) => ({ events: [], outgoing: adapter.takeOutgoing() }))
+    )
+
+  const ingest = (input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError> =>
+    Effect.gen(function* () {
+      const adapter = yield* adapterFor(input.runId, input.harness)
       const events = adapter.ingest(input.chunk)
       for (const event of events) {
         yield* apply({ sessionId: input.sessionId, runId: input.runId, event })
       }
-      return events
+      return { events, outgoing: adapter.takeOutgoing() }
     })
 
-  return { get, submit, begin, apply, ingest, finalize }
+  return { get, submit, begin, apply, open, ingest, finalize }
 }
 
 /** One approval's durable identity: the Run, and the Harness's tool-use id. */
@@ -671,9 +697,9 @@ function runBoundarySummary(input: BeginConversationRunInput): string {
   return input.restorationNote ? `${started}. Harness Thread restored from local history` : started
 }
 
-const ADAPTER_FACTORIES: Partial<Record<HarnessId, () => HarnessAdapter>> = {
-  codex: createCodexAdapter,
-  claude: createClaudeAdapter
+const ADAPTER_FACTORIES: Partial<Record<HarnessId, (launch?: CodexLaunch) => HarnessAdapter>> = {
+  codex: (launch) => createCodexAdapter(launch),
+  claude: () => createClaudeAdapter()
 }
 
 function without<A>(current: ReadonlyMap<string, A>, key: string): ReadonlyMap<string, A> {

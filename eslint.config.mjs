@@ -43,7 +43,9 @@ export default tseslint.config(
       '**/dist/**',
       '**/test-results/**',
       '**/playwright-report/**',
-      '**/coverage/**'
+      '**/coverage/**',
+      // Generated from the installed Codex binary; regenerated, never edited.
+      'app/src/core/harness/codex-protocol/**'
     ]
   },
 
@@ -196,10 +198,10 @@ export default tseslint.config(
     }
   },
 
-  // Repo-level config files.
+  // Repo-level config files, and the maintenance scripts beside them.
   {
     name: 'repo/config-files',
-    files: ['*.mjs', '*.js'],
+    files: ['*.mjs', '*.js', 'scripts/**/*.mjs'],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: { globals: globals.node }
   },

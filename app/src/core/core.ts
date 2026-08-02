@@ -25,7 +25,7 @@ import {
 import type {
   ConversationSnapshot,
   FinalizeConversationRunInput,
-  HarnessEvent,
+  HarnessStream,
   SubmitConversationMessageInput
 } from '@shared/conversation'
 import type { ProjectView } from '@shared/project'
@@ -45,7 +45,8 @@ import {
   createConversationEffects,
   type ApplyHarnessEventInput,
   type BeginConversationRunInput,
-  type IngestHarnessOutputInput
+  type IngestHarnessOutputInput,
+  type OpenHarnessInput
 } from './conversation'
 
 export interface CoreDeps {
@@ -86,7 +87,8 @@ export interface Core {
   submitConversationMessage(input: SubmitConversationMessageInput): Promise<ConversationSnapshot>
   beginConversationRun(input: BeginConversationRunInput): Promise<ConversationSnapshot>
   applyHarnessEvent(input: ApplyHarnessEventInput): Promise<void>
-  ingestHarnessOutput(input: IngestHarnessOutputInput): Promise<HarnessEvent[]>
+  openHarness(input: OpenHarnessInput): Promise<HarnessStream>
+  ingestHarnessOutput(input: IngestHarnessOutputInput): Promise<HarnessStream>
   finalizeConversationRun(input: FinalizeConversationRunInput): Promise<ConversationSnapshot>
 }
 
@@ -123,7 +125,8 @@ export interface CoreEffects {
     input: BeginConversationRunInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
   applyHarnessEvent(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
-  ingestHarnessOutput(input: IngestHarnessOutputInput): Effect.Effect<HarnessEvent[], CoreError>
+  openHarness(input: OpenHarnessInput): Effect.Effect<HarnessStream, CoreError>
+  ingestHarnessOutput(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
   finalizeConversationRun(
     input: FinalizeConversationRunInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
@@ -459,6 +462,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     submitConversationMessage: (input) => conversation.submit(input),
     beginConversationRun: (input) => conversation.begin(input),
     applyHarnessEvent: (input) => conversation.apply(input),
+    openHarness: (input) => conversation.open(input),
     ingestHarnessOutput: (input) => conversation.ingest(input),
     finalizeConversationRun: (input) => conversation.finalize(input)
   }
@@ -528,6 +532,7 @@ export function createCore(deps: CoreDeps = {}): Core {
     submitConversationMessage: (input) => run(core.submitConversationMessage(input)),
     beginConversationRun: (input) => run(core.beginConversationRun(input)),
     applyHarnessEvent: (input) => run(core.applyHarnessEvent(input)),
+    openHarness: (input) => run(core.openHarness(input)),
     ingestHarnessOutput: (input) => run(core.ingestHarnessOutput(input)),
     finalizeConversationRun: (input) => run(core.finalizeConversationRun(input))
   }

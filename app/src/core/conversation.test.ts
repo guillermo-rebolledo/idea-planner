@@ -414,12 +414,18 @@ describe('ingesting raw Harness output', () => {
   it('turns Codex protocol into Conversation content across split chunks', async () => {
     const runId = await startRun('Grill me', 'submission-1')
     const lines = [
-      '{"type":"item.updated","item":{"id":"item_0","type":"agent_message","text":"Who is "}}\n{"type":"item.comp',
-      'leted","item":{"id":"item_0","type":"agent_message","text":"Who is this for?"}}\n{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}\n'
+      '{"method":"item/agentMessage/delta","params":{"itemId":"item_0","delta":"Who is "}}\n{"method":"item/compl',
+      'eted","params":{"item":{"id":"item_0","type":"agentMessage","text":"Who is this for?"}}}\n{"method":"turn/completed","params":{}}\n'
     ]
     const seen = []
     for (const chunk of lines) {
-      seen.push(...(await core.ingestHarnessOutput({ sessionId, runId, harness: 'codex', chunk })))
+      const stream = await core.ingestHarnessOutput({
+        sessionId,
+        runId,
+        harness: 'codex',
+        chunk
+      })
+      seen.push(...stream.events)
     }
     expect(seen.at(-1)).toEqual({ type: 'completed' })
     await core.finalizeConversationRun({
@@ -465,7 +471,7 @@ describe('ingesting raw Harness output', () => {
       runId,
       harness: 'codex',
       chunk:
-        '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Who is this for?"}}\n'
+        '{"method":"item/completed","params":{"item":{"id":"item_0","type":"agentMessage","text":"Who is this for?"}}}\n'
     })
     await core.finalizeConversationRun({
       sessionId,
@@ -553,7 +559,7 @@ describe('ingesting raw Harness output', () => {
       chunk:
         '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-sonnet-4-5"}\n{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"What decision is blocking this Session?"}],"usage":{"input_tokens":10,"output_tokens":7}}}\n{"type":"result","subtype":"success","is_error":false,"result":"What decision is blocking this Session?","usage":{"input_tokens":10,"output_tokens":7}}\n'
     })
-    expect(seen.at(-1)).toEqual({ type: 'completed' })
+    expect(seen.events.at(-1)).toEqual({ type: 'completed' })
     await core.finalizeConversationRun({
       sessionId,
       runId,

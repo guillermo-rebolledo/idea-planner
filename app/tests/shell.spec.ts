@@ -426,10 +426,11 @@ test('readiness reports Codex and Claude independently, with safe repair and re-
     await installFakeHarness('codex', READY_CODEX_FAKE)
     await codexCard.getByRole('button', { name: 'Check Codex again' }).click()
     await expect(codexCard.getByText('Usable', { exact: true })).toBeVisible()
-    // Usable and drivable are different questions, and the card answers both:
-    // "Usable" alone above a Harness no Session can use would be a lie.
+    // Usable and drivable are different questions and the card answers both.
+    // Codex answers yes to the second now that it speaks the app-server
+    // protocol; before that it was usable and could still run nothing.
     await expect(
-      codexCard.getByText('cannot run a Session with Codex yet', { exact: false })
+      codexCard.getByText('can run a Session with Codex', { exact: false })
     ).toBeVisible()
 
     // Skills say what is installed rather than raising an alarm: they cannot

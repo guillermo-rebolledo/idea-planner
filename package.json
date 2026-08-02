@@ -10,6 +10,8 @@
   "scripts": {
     "prototype": "vite prototypes/core-workspace",
     "prototype:check": "tsc -p prototypes/core-workspace/tsconfig.json && vite build prototypes/core-workspace --outDir ../../dist/prototype --emptyOutDir",
+    "codex:protocol": "rm -rf app/src/core/harness/codex-protocol && codex app-server generate-ts --out app/src/core/harness/codex-protocol",
+    "codex:record": "node scripts/record-codex-session.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
