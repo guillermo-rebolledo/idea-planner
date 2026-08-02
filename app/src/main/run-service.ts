@@ -927,17 +927,28 @@ export class RunService {
       return
     }
     try {
-      const files = await diffSnapshots(
+      const comparison = await diffSnapshots(
         baseline.checkout,
         baseline.directory,
         baseline.snapshot,
         await snapshotCheckout(baseline.checkout, baseline.directory)
       )
-      if (files.length === 0) return
+      if (comparison.changes.length === 0) return
       await this.deps.core.send({
         type: 'conversation/checkout-changes',
-        input: { sessionId: run.sessionId, runId: run.id, files }
+        input: { sessionId: run.sessionId, runId: run.id, files: comparison.changes }
       })
+      // A cap nobody is told about turns a partial answer into a wrong one.
+      if (comparison.unlisted > 0) {
+        await this.record(
+          run,
+          undefined,
+          'output',
+          `${String(comparison.changes.length)} of ${String(
+            comparison.changes.length + comparison.unlisted
+          )} changed files are listed; the rest changed too`
+        )
+      }
     } catch {
       // A comparison that cannot be made leaves the reported record alone.
       // Ending the Run is what matters here, and it has already happened.

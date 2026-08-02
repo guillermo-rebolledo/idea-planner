@@ -63,6 +63,10 @@ export type HarnessUsage = z.infer<typeof harnessUsageSchema>
  * frame it does not model: unknown protocol never fails a Run and never
  * reaches Conversation content.
  */
+/** What happened to a file: it appeared, its text changed, or it went. */
+export const changeKindSchema = z.enum(['added', 'changed', 'deleted'])
+export type ChangeKind = z.infer<typeof changeKindSchema>
+
 /** One contiguous run of changed lines, as the Harness computed it. */
 export const diffHunkSchema = z.object({
   oldStart: z.number().int().nonnegative(),
@@ -362,6 +366,16 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     path: z.string().min(1),
     hunks: z.array(diffHunkSchema).min(1),
     /**
+     * What happened to the file. A deletion shown as a change is a row nobody
+     * can read: every line of it is removed either way.
+     */
+    change: changeKindSchema.default('changed'),
+    /**
+     * True when the diff kept is only the start of the one that happened. The
+     * counts are still the whole change; the lines on screen are not.
+     */
+    shortened: z.boolean().default(false),
+    /**
      * Who observed it. `harness` is the agent reporting its own edit;
      * `checkout` is the app finding it by comparing the Checkout before and
      * after the Run, which is the only way a change made by a shell command
@@ -392,6 +406,9 @@ export const changedFileSchema = z.object({
   changes: z.number().int().positive(),
   added: z.number().int().nonnegative(),
   removed: z.number().int().nonnegative(),
+  change: changeKindSchema,
+  /** True when any of the diffs behind this row were shortened for storage. */
+  shortened: z.boolean(),
   /**
    * Whether the agent said it changed this. False means the app found it by
    * comparing the Checkout before and after the Run — the change happened,
@@ -404,6 +421,7 @@ export type ChangedFile = z.infer<typeof changedFileSchema>
 /** One file a Checkout comparison found changed, with git's own patch. */
 export const checkoutChangeSchema = z.object({
   path: z.string().min(1),
+  change: changeKindSchema,
   diff: z.string()
 })
 

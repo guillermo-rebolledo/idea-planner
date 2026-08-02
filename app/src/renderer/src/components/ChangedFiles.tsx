@@ -1,10 +1,24 @@
 import { useState } from 'react'
-import { FileDiff } from 'lucide-react'
-import type { ChangedFile, ConversationEntry } from '@shared/contract'
+import { FileDiff, FilePlus2, FileX2, type LucideIcon } from 'lucide-react'
+import type { ChangeKind, ChangedFile, ConversationEntry } from '@shared/contract'
+import { DiffView } from '@renderer/components/Diff'
+import { cn } from '@renderer/lib/utils'
 
 /** The Conversation entries this panel is about, and the only ones it takes. */
 type FileChange = Extract<ConversationEntry, { kind: 'file-change' }>
-import { DiffView } from '@renderer/components/Diff'
+
+/** What happened to a file, in the row's own words. */
+const CHANGE_WORD: Record<ChangeKind, string> = {
+  added: 'created',
+  changed: 'changed',
+  deleted: 'deleted'
+}
+
+const CHANGE_LOOK: Record<ChangeKind, { icon: LucideIcon; tone: string }> = {
+  added: { icon: FilePlus2, tone: 'text-positive' },
+  changed: { icon: FileDiff, tone: 'text-muted-foreground' },
+  deleted: { icon: FileX2, tone: 'text-destructive' }
+}
 
 /**
  * What this Session has done to the Project. The Conversation answers "what is
@@ -70,6 +84,10 @@ function ChangedFileRow({
   onToggle: () => void
   changes: FileChange[]
 }): React.JSX.Element {
+  const { icon: Icon, tone } = CHANGE_LOOK[file.change]
+  // A change with no lines at all is a binary file, or a mode, or a rename of
+  // one — never a change that did nothing.
+  const textless = file.added === 0 && file.removed === 0
   return (
     <li className="border-b border-border last:border-b-0">
       <button
@@ -78,31 +96,54 @@ function ChangedFileRow({
         onClick={onToggle}
         className="flex w-full items-baseline gap-2 p-3 text-left hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <FileDiff
-          aria-hidden="true"
-          className="size-3.5 shrink-0 self-center text-muted-foreground"
-        />
-        <span className="min-w-0 flex-1 font-mono text-xs break-all">{file.path}</span>
+        <Icon aria-hidden="true" className={cn('size-3.5 shrink-0 self-center', tone)} />
+        <span
+          className={cn(
+            'min-w-0 flex-1 font-mono text-xs break-all',
+            // A path that is no longer there should not read as one you could
+            // go and open.
+            file.change === 'deleted' && 'text-muted-foreground line-through'
+          )}
+        >
+          {file.path}
+        </span>
         <span className="shrink-0 text-[11px]">
-          <span className="text-positive">+{file.added}</span>{' '}
-          <span className="text-destructive">−{file.removed}</span>
+          {textless ? (
+            // No lines to show, and a reason: `+0 −0` on its own reads as a
+            // bug rather than as a binary file or a mode.
+            <span className="text-muted-foreground">no text change</span>
+          ) : (
+            <>
+              <span className="text-positive">+{file.added}</span>{' '}
+              <span className="text-destructive">−{file.removed}</span>
+            </>
+          )}
         </span>
         <span className="shrink-0 text-[11px] text-muted-foreground">
+          {CHANGE_WORD[file.change]}
           {file.reported
-            ? file.changes === 1
-              ? 'changed once'
-              : `changed ${String(file.changes)} times`
+            ? file.changes > 1 && `, ${String(file.changes)} times`
             : // Found on disk with nothing in the Conversation accounting for
               // it: a command the agent ran changed this, and said nothing.
-              'changed without being reported'}
+              ', not reported'}
         </span>
       </button>
       {open && (
         <div className="px-3 pb-3">
+          {textless && (
+            <p className="text-[11px] text-muted-foreground">
+              Nothing to show: this file has no text to diff.
+            </p>
+          )}
           {/* Every change to this file, newest last, exactly as it was made. */}
           {changes.map((entry) => (
             <DiffView key={entry.id} hunks={entry.hunks} />
           ))}
+          {file.shortened && (
+            <p className="text-[11px] text-muted-foreground">
+              This diff is longer than what is kept; the counts above are the whole change.
+            </p>
+          )}
         </div>
       )}
     </li>

@@ -150,7 +150,7 @@ describe('snapshotting a Checkout', () => {
     const after = await snapshotCheckout(root, appOwned)
 
     expect(before.status).toBe('taken')
-    const changed = await diffSnapshots(root, appOwned, before, after)
+    const { changes: changed } = await diffSnapshots(root, appOwned, before, after)
     expect(changed.map((file) => file.path).sort()).toEqual(['added.ts', 'tracked.ts'])
     expect(changed.find((file) => file.path === 'tracked.ts')?.diff).toContain('+agent')
   })
@@ -165,7 +165,7 @@ describe('snapshotting a Checkout', () => {
     await writeFile(join(root, 'tracked.ts'), 'a\nmine\nagent\n')
     const after = await snapshotCheckout(root, appOwned)
 
-    const changed = await diffSnapshots(root, appOwned, before, after)
+    const { changes: changed } = await diffSnapshots(root, appOwned, before, after)
     expect(changed.map((file) => file.path)).toEqual(['tracked.ts'])
     expect(changed[0]?.diff).toContain('+agent')
     expect(changed[0]?.diff).not.toContain('+mine')
@@ -182,7 +182,7 @@ describe('snapshotting a Checkout', () => {
     await mkdir(join(root, 'node_modules'), { recursive: true })
     await writeFile(join(root, 'node_modules', 'x'), 'junk\n')
     const after = await snapshotCheckout(root, appOwned)
-    const changed = await diffSnapshots(root, appOwned, before, after)
+    const { changes: changed } = await diffSnapshots(root, appOwned, before, after)
 
     expect(await loose()).toBe(objectsBefore)
     const { stdout: stagedAfter } = await git('git', ['diff', '--cached', '--name-only'], {
@@ -201,7 +201,7 @@ describe('snapshotting a Checkout', () => {
     await writeFile(join(linked, 'tracked.ts'), 'agent\n')
     const after = await snapshotCheckout(linked, appOwned)
 
-    expect(await diffSnapshots(linked, appOwned, before, after)).toMatchObject([
+    expect((await diffSnapshots(linked, appOwned, before, after)).changes).toMatchObject([
       { path: 'tracked.ts' }
     ])
     await rm(linked, { recursive: true, force: true })
@@ -218,9 +218,27 @@ describe('snapshotting a Checkout', () => {
     await writeFile(join(root, 'weird"name.txt'), 'y\nagent\n')
     const after = await snapshotCheckout(root, appOwned)
 
-    const changed = await diffSnapshots(root, appOwned, before, after)
+    const { changes: changed } = await diffSnapshots(root, appOwned, before, after)
     expect(changed.map((file) => file.path).sort()).toEqual(['a b/ar.txt', 'weird"name.txt'])
     for (const file of changed) expect(file.diff).toContain('+agent')
+  })
+
+  it('says which files were created and which were deleted', async () => {
+    await writeFile(join(root, 'doomed.ts'), 'export const doomed = true\n')
+    const before = await snapshotCheckout(root, appOwned)
+    await rm(join(root, 'doomed.ts'))
+    await writeFile(join(root, 'fresh.ts'), 'export const fresh = true\n')
+    await writeFile(join(root, 'tracked.ts'), 'changed\n')
+    const after = await snapshotCheckout(root, appOwned)
+
+    const { changes: changed } = await diffSnapshots(root, appOwned, before, after)
+    expect(changed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'doomed.ts', change: 'deleted' }),
+        expect.objectContaining({ path: 'fresh.ts', change: 'added' }),
+        expect.objectContaining({ path: 'tracked.ts', change: 'changed' })
+      ])
+    )
   })
 
   it('says so rather than failing when the Checkout is not a repository', async () => {

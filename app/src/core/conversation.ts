@@ -79,7 +79,7 @@ function describeChange(
   path: string,
   hunks: DiffHunk[],
   checkout: string
-): { path: string; hunks: DiffHunk[]; added: number; removed: number } {
+): { path: string; hunks: DiffHunk[]; added: number; removed: number; shortened: boolean } {
   const relative = path.startsWith(`${checkout}/`) ? path.slice(checkout.length + 1) : path
   let budget = MAX_DIFF_LINES
   const kept: DiffHunk[] = []
@@ -89,10 +89,14 @@ function describeChange(
     budget -= lines.length
     kept.push({ ...hunk, lines })
   }
+  const shown = kept.reduce((total, hunk) => total + hunk.lines.length, 0)
   return {
     path: redactCredentials(relative),
     // A change with nothing left to show is still a change that happened.
     hunks: kept.length > 0 ? kept : [{ ...hunks[0], lines: [] } as DiffHunk],
+    // Said out loud, because a diff that stops early looks exactly like one
+    // that was that short.
+    shortened: shown < hunks.reduce((total, hunk) => total + hunk.lines.length, 0),
     // Counted from the whole change, not from what survived the budget: a
     // clipped diff that also reports a smaller change is a diff that lies
     // twice.
@@ -643,6 +647,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 at: now.toISOString(),
                 runId: input.runId,
                 source: 'checkout',
+                change: file.change,
                 ...described
               })
             )
@@ -909,6 +914,10 @@ function tally(
     changes: (known?.changes ?? 0) + 1,
     added: (known?.added ?? 0) + entry.added,
     removed: (known?.removed ?? 0) + entry.removed,
+    // The latest thing to happen to it is what it is now: a file created and
+    // then deleted in one Session is gone.
+    change: entry.change,
+    shortened: (known?.shortened ?? false) || entry.shortened,
     // One report from the agent is enough to account for the file; a Checkout
     // comparison only ever adds what nothing accounted for.
     reported: (known?.reported ?? false) || entry.source === 'harness'

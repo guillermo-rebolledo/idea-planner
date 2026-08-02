@@ -77,12 +77,30 @@ export async function initRepository(
  */
 export type CheckoutSnapshot = { status: 'taken'; tree: string } | { status: 'unavailable' }
 
+/**
+ * What happened to a file between two snapshots. Git says which of the three
+ * it was, and a deletion shown as a change is a row nobody can read: all its
+ * lines are removed either way.
+ */
+export type ChangeKind = 'added' | 'changed' | 'deleted'
+
 /** One file that changed between two snapshots, and how. */
 export interface SnapshotChange {
   /** Relative to the Checkout, as git names it. */
   path: string
+  change: ChangeKind
   /** The unified diff between the two snapshots, as git rendered it. */
   diff: string
+}
+
+/**
+ * How many files changed, when more of them changed than are listed. Zero
+ * means the list is everything: a cap nobody is told about turns a partial
+ * answer into a wrong one.
+ */
+export interface SnapshotComparison {
+  changes: SnapshotChange[]
+  unlisted: number
 }
 
 /**
@@ -131,33 +149,61 @@ export async function diffSnapshots(
   before: CheckoutSnapshot,
   after: CheckoutSnapshot,
   options: GitOptions = {}
-): Promise<SnapshotChange[]> {
-  if (before.status !== 'taken' || after.status !== 'taken') return []
-  if (before.tree === after.tree) return []
+): Promise<SnapshotComparison> {
+  const nothing: SnapshotComparison = { changes: [], unlisted: 0 }
+  if (before.status !== 'taken' || after.status !== 'taken') return nothing
+  if (before.tree === after.tree) return nothing
   const env = await snapshotEnvironment(checkout, appOwnedDirectory, options)
   const trees = [before.tree, after.tree]
-  let names: string[]
+  let named: SnapshotChange[]
   try {
-    // The paths, asked for separately and NUL-separated. They cannot be read
-    // out of the patch itself: git quotes a path with a quote or a control
-    // character in it, and `diff --git a/a b/ar.txt b/a b/ar.txt` is what a
-    // path containing " b/" looks like — both were verified against git.
-    const { stdout } = await run('git', ['diff-tree', '-r', '--name-only', '-z', ...trees], {
+    // The paths and what happened to each, asked for separately and
+    // NUL-separated. They cannot be read out of the patch itself: git quotes a
+    // path with a quote or a control character in it, and
+    // `diff --git a/a b/ar.txt b/a b/ar.txt` is what a path containing " b/"
+    // looks like — both were verified against git.
+    const { stdout } = await run('git', ['diff-tree', '-r', '--name-status', '-z', ...trees], {
       cwd: checkout,
       env,
       timeout: TIMEOUT_MS,
       maxBuffer: MAX_DIFF_BYTES
     })
-    names = stdout.split('\0').filter(Boolean).slice(0, MAX_CHANGED_FILES)
+    named = readNameStatus(stdout)
   } catch {
-    return []
+    return nothing
   }
-  if (names.length === 0) return []
+  if (named.length === 0) return nothing
+  const listed = named.slice(0, MAX_CHANGED_FILES)
   // The patch bodies, in the order git already named them. A diff too large
   // to read back leaves every file listed with no body: what changed still
   // beats nothing at all.
-  const patches = await patchBodies(checkout, env, trees, names.length)
-  return names.map((path, index) => ({ path, diff: patches[index] ?? '' }))
+  const patches = await patchBodies(checkout, env, trees, named.length)
+  return {
+    changes: listed.map((change, index) => ({ ...change, diff: patches[index] ?? '' })),
+    unlisted: named.length - listed.length
+  }
+}
+
+/**
+ * `--name-status -z` output: a status field and a path, each NUL-terminated.
+ * Anything git reports that is not plainly an add or a delete is a change to
+ * the file that is there — including a rename, which without rename detection
+ * arrives as a delete and an add anyway.
+ */
+function readNameStatus(stdout: string): SnapshotChange[] {
+  const fields = stdout.split('\0')
+  const changes: SnapshotChange[] = []
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const status = fields[index]?.trim()
+    const path = fields[index + 1]
+    if (!status || !path) continue
+    changes.push({
+      path,
+      change: status.startsWith('A') ? 'added' : status.startsWith('D') ? 'deleted' : 'changed',
+      diff: ''
+    })
+  }
+  return changes
 }
 
 /**

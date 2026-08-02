@@ -829,10 +829,12 @@ describe('what this Session changed', () => {
       files: [
         {
           path: 'reported.ts',
+          change: 'changed',
           diff: 'diff --git a/reported.ts b/reported.ts\n@@ -1 +1 @@\n-const a = 0\n+const a = 1'
         },
         {
           path: 'codemodded.ts',
+          change: 'added',
           diff: 'diff --git a/codemodded.ts b/codemodded.ts\n@@ -0,0 +1,2 @@\n+const b = 2\n+const c = 3'
         }
       ]
@@ -844,6 +846,52 @@ describe('what this Session changed', () => {
       // seen again on disk.
       { path: 'reported.ts', changes: 1, added: 1, removed: 0, reported: true },
       { path: 'codemodded.ts', changes: 1, added: 2, removed: 0, reported: false }
+    ])
+  })
+
+  it('says a file is gone rather than showing it as changed', async () => {
+    const runId = await startRun('Remove the old one', 'submission-delete')
+    await core.recordCheckoutChanges({
+      sessionId,
+      runId,
+      files: [
+        {
+          path: 'doomed.ts',
+          change: 'deleted',
+          diff: 'diff --git a/doomed.ts b/doomed.ts\n@@ -1 +0,0 @@\n-const gone = true'
+        }
+      ]
+    })
+
+    const [file] = (await makeCore().getConversation(sessionId)).changedFiles
+    expect(file).toMatchObject({ path: 'doomed.ts', change: 'deleted', removed: 1, added: 0 })
+  })
+
+  it('says when the diff it kept is only the start of the one that happened', async () => {
+    const runId = await startRun('Rewrite it all', 'submission-clipped')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'file-change',
+        path: `${projectRoot}/generated.ts`,
+        hunks: [hunk(Array.from({ length: 500 }, (_, index) => `+line ${String(index)}`))]
+      }
+    })
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'file-change',
+        path: `${projectRoot}/small.ts`,
+        hunks: [hunk(['+one line'])]
+      }
+    })
+
+    const changed = (await makeCore().getConversation(sessionId)).changedFiles
+    expect(changed).toMatchObject([
+      { path: 'generated.ts', added: 500, shortened: true },
+      { path: 'small.ts', added: 1, shortened: false }
     ])
   })
 

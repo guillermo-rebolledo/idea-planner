@@ -437,6 +437,7 @@ const QUIET_CLAUDE_FAKE = `case "$1" in
   --print)
     echo '{"type":"system","subtype":"init"}'
     printf 'quietly changed\n' >> quiet.ts
+    rm -f doomed.ts
     echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}]},"session_id":"thread-1"}'
     /bin/sleep 1
     exit 0;;
@@ -445,6 +446,7 @@ esac`
 test('a change nobody reported is still listed, and says nobody reported it', async () => {
   await installFakeHarness('claude', QUIET_CLAUDE_FAKE)
   await writeFile(join(sandbox.projectDir, 'quiet.ts'), 'export const quiet = true\n')
+  await writeFile(join(sandbox.projectDir, 'doomed.ts'), 'export const doomed = true\n')
   // Dirty before the Session, and never the agent's work.
   await writeFile(join(sandbox.projectDir, 'mine.ts'), 'export const mine = true\n')
 
@@ -458,11 +460,15 @@ test('a change nobody reported is still listed, and says nobody reported it', as
 
     const panel = page.getByRole('region', { name: 'Files this Session changed' })
     await expect(panel.getByText('quiet.ts')).toBeVisible()
-    await expect(panel.getByText('changed without being reported')).toBeVisible()
+    await expect(panel.getByText('changed, not reported')).toBeVisible()
     await expect(panel.getByText('mine.ts')).toHaveCount(0)
 
     await panel.getByRole('button', { name: 'quiet.ts', exact: false }).click()
     await expect(panel.getByText('+quietly changed')).toBeVisible()
+
+    // A file it removed says so, rather than reading as one it edited.
+    await expect(panel.getByText('doomed.ts')).toBeVisible()
+    await expect(panel.getByText('deleted, not reported')).toBeVisible()
   } finally {
     await app.close()
   }
