@@ -163,8 +163,12 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
         title: suggestSessionTitle(input.message)
       })
       // The message is what created the Session, so a Session that exists
-      // without it is a Session nobody asked for. If this cannot land, the
-      // record goes with it.
+      // without it is a Session nobody asked for. If this cannot land the
+      // record goes with it — including when the request is interrupted,
+      // which `catchAll` alone would not cover.
+      //
+      // Failing to clean up is not allowed to replace the reason: the caller
+      // needs to know why the message was refused, not that a tidy-up failed.
       yield* conversation
         .submit({
           sessionId: session.id,
@@ -173,8 +177,8 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
           source: 'composer'
         })
         .pipe(
-          Effect.catchAll((error) =>
-            sessions.delete(session.id).pipe(Effect.andThen(Effect.fail(error)))
+          Effect.onExit((exit) =>
+            Exit.isSuccess(exit) ? Effect.void : Effect.ignore(sessions.delete(session.id))
           )
         )
       return session

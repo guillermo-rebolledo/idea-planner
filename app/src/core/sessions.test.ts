@@ -69,6 +69,20 @@ describe('Sessions', () => {
     await expect(core.listDamagedSessions()).resolves.toEqual([])
   })
 
+  it('reports the Project the most recent Session used', async () => {
+    const other = await mkdtemp(join(tmpdir(), 'another-project-'))
+    await mkdir(join(other, '.git'))
+    await core.addProject(other)
+    await core.startSession({ projectRoot, message: 'Older' })
+    await core.startSession({ projectRoot: other, message: 'Newer' })
+
+    // Where the last Session went is where the next one probably goes, and
+    // the Sessions already record it.
+    const [mostRecent] = await core.listSessions()
+    expect(mostRecent?.projectRoot).toBe(other)
+    await rm(other, { recursive: true, force: true })
+  })
+
   it('refuses to start a Session without a Project', async () => {
     await expect(
       core.startSession({ projectRoot: join(tmpdir(), 'never-added'), message: 'Nowhere' })

@@ -160,7 +160,7 @@ export class RunService {
 
   async start(rawInput: StartRunInput): Promise<RunSnapshot> {
     const input = startRunInputSchema.parse(rawInput)
-    const workingDirectory = await this.checkoutFor(input.sessionId)
+    const checkout = await this.checkoutFor(input.sessionId)
     const readiness = await this.deps.readiness.refresh(input.harness)
     const harness = readiness.harnesses.find((entry) => entry.harness === input.harness)
     if (!harness?.available || !harness.executablePath) {
@@ -197,7 +197,7 @@ export class RunService {
       effort: input.effort,
       skill: { name: skillName, path: skillDirectory, hash: skillHash },
       environment,
-      checkout: workingDirectory,
+      checkout,
       permissionMode: input.permissionMode
     }
     const accepted = runSnapshotSchema.parse(
@@ -247,7 +247,7 @@ export class RunService {
       latestHarnessBoundary?.skill === input.skill &&
       latestHarnessBoundary.model === input.model &&
       (input.harness !== 'claude' ||
-        (await claudeThreadExists(this.deps.homeDirectory, workingDirectory, savedThread)))
+        (await claudeThreadExists(this.deps.homeDirectory, checkout, savedThread)))
     const restoreFromHistory =
       switchedHarness || (latestHarness === input.harness && !threadCompatible)
     const handoff = deterministicHandoff(conversation, input.skill)
@@ -306,7 +306,7 @@ export class RunService {
         capabilityToken,
         callbacks: {
           onActivity: (kind, summary) =>
-            this.record(accepted, undefined, kind, sanitize(summary, workingDirectory)).then(
+            this.record(accepted, undefined, kind, sanitize(summary, checkout)).then(
               () => undefined
             ),
           onStop: (summary) => {
@@ -358,7 +358,7 @@ export class RunService {
           restoreFromHistory ? handoff : undefined,
           threadCompatible ? savedThread : undefined
         ),
-        workingDirectory,
+        workingDirectory: checkout,
         runDirectory,
         environment: harnessEnvironment,
         onBeforeCleanup: async () => {
@@ -369,14 +369,14 @@ export class RunService {
         onOutput: (stream, text) => {
           if (stream === 'stdout') {
             const pending = (this.pendingIngest.get(accepted.id) ?? Promise.resolve())
-              .then(() => this.ingest(accepted, input.harness, workingDirectory, text))
+              .then(() => this.ingest(accepted, input.harness, checkout, text))
               .catch(() => {
                 this.failures.set(accepted.id, 'protocol')
               })
             this.pendingIngest.set(accepted.id, pending)
             return
           }
-          const summary = sanitize(text, workingDirectory).trim()
+          const summary = sanitize(text, checkout).trim()
           if (!summary) return
           this.diagnostics.set(accepted.id, summary)
           void this.record(accepted, undefined, 'output', summary)
@@ -460,7 +460,7 @@ export class RunService {
   private async ingest(
     run: Pick<RunSnapshot, 'id' | 'sessionId'>,
     harness: StartRunInput['harness'],
-    workingDirectory: string,
+    checkout: string,
     chunk: string
   ): Promise<void> {
     const events = harnessEventSchema.array().parse(
@@ -481,12 +481,7 @@ export class RunService {
       })
       const activity = describeActivity(event)
       if (activity) {
-        await this.record(
-          run,
-          undefined,
-          activity.kind,
-          sanitize(activity.summary, workingDirectory)
-        )
+        await this.record(run, undefined, activity.kind, sanitize(activity.summary, checkout))
       }
     }
   }
@@ -729,10 +724,10 @@ function deterministicHandoff(conversation: ConversationSnapshot, skill: string)
 
 async function claudeThreadExists(
   homeDirectory: string,
-  workingDirectory: string,
+  checkout: string,
   threadId: string
 ): Promise<boolean> {
-  const projectKey = resolve(workingDirectory).replaceAll('/', '-')
+  const projectKey = resolve(checkout).replaceAll('/', '-')
   const threadPath = join(homeDirectory, '.claude', 'projects', projectKey, `${threadId}.jsonl`)
   return readFile(threadPath, 'utf8').then(
     () => true,
@@ -760,8 +755,8 @@ async function hashFile(path: string): Promise<string> {
     .digest('hex')
 }
 
-function sanitize(value: string, workingDirectory: string): string {
-  return redactCredentials(value.replaceAll(workingDirectory, '<PROJECT>')).slice(0, 2_000)
+function sanitize(value: string, checkout: string): string {
+  return redactCredentials(value.replaceAll(checkout, '<PROJECT>')).slice(0, 2_000)
 }
 
 /**
