@@ -9,7 +9,7 @@ Supersedes the Idea Library storage model of the pre-pivot planning product
 ## Context
 
 The product pivoted from developing Ideas into specifications and tickets, to a
-chat with a coding agent that edits a local git Repository. See `CONTEXT.md` for
+chat with a coding agent that edits a local git Project. See `CONTEXT.md` for
 the current domain language.
 
 Every storage decision in this repo followed from one principle: the durable
@@ -54,7 +54,7 @@ reported pain point for either.
   multi-document transaction staging under `.idea/transactions/`, and the
   `reconciliation` / `missing` / `unrecoverable` center surfaces.
 - Onboarding no longer asks for a folder before the app is usable. It asks the
-  user to add their first Repository.
+  user to add their first Project.
 - What survives is the part that was never about user-visible files: the
   Conversation journal, projection and recovery in `app/src/core/conversation.ts`,
   persist-before-AI, and per-Run usage accounting.

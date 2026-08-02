@@ -1,6 +1,6 @@
 # 06 — Claude Code editing the primary checkout
 
-**What to build:** The first working version of the actual product. The user types a coding request in a Session, and Claude Code edits the files in that Repository's primary checkout while they watch. Diffs render inline in the Conversation as the agent works. Everything survives a restart.
+**What to build:** The first working version of the actual product. The user types a coding request in a Session, and Claude Code edits the files in that Project's primary checkout while they watch. Diffs render inline in the Conversation as the agent works. Everything survives a restart.
 
 This ticket runs in **Full access** only (`--permission-mode bypassPermissions`). Ask mode is ticket 07. That ordering is deliberate: it proves the edit-and-stream loop before adding an approval round-trip on top of it.
 
@@ -22,7 +22,7 @@ Between tickets 02 and 06 the app can therefore converse and nothing else. This 
 
 **Status:** ready-for-agent
 
-- [ ] A Run launches Claude Code against the Session's Repository with the primary checkout as working directory
+- [ ] A Run launches Claude Code against the Session's Project with the primary checkout as working directory
 - [ ] Per-Run configuration is injected via the staged settings mechanism, never by writing to the user's own configuration — note that `CLAUDE_CONFIG_DIR` does not work for this and the current code uses it
 - [ ] File edits appear as inline diffs in the Conversation as they happen
 - [ ] A contract test pins the edit-result payload shape to the installed CLI version and fails loudly when it changes

@@ -6,16 +6,16 @@ This context describes how a developer works with an AI coding agent on a local 
 
 ### Work
 
-**Repository**:
+**Project**:
 A local git repository the user has added to the app. Owns its Sessions and its Standing Approvals, and is identified by the resolved path of its root.
-_Avoid_: Project, folder, workspace
+_Avoid_: Repository, folder, workspace
 
 **Session**:
-One unit of work with the agent against a Repository. Owns a Checkout, a Conversation, and the changes made, and appears as a single item in the inbox.
+One unit of work with the agent against a Project. Owns a Checkout, a Conversation, and the changes made, and appears as a single item in the inbox.
 _Avoid_: Idea, task, thread, chat
 
 **Checkout**:
-The directory a Session operates on — either the **primary checkout**, the Repository's own working directory edited in place, or an **isolated checkout**, a linked git worktree created for the Session from a chosen base branch.
+The directory a Session operates on — either the **primary checkout**, the Project's own working directory edited in place, or an **isolated checkout**, a linked git worktree created for the Session from a chosen base branch.
 _Avoid_: Working Directory, workspace, worktree, sandbox
 
 ### Conversation
@@ -37,7 +37,7 @@ The Harness-specific continuity record behind a Conversation, such as a Codex th
 _Avoid_: Conversation, Run, Harness Session
 
 **Skill**:
-An installed instruction document that gives the agent a defined methodology for a Run, such as test-driven development or bug diagnosis. Discovered from the user's global skill directories or from the Repository, and never installed by the app. A Repository's own Skills stay inert until the user trusts that Repository.
+An installed instruction document that gives the agent a defined methodology for a Run, such as test-driven development or bug diagnosis. Discovered from the user's global skill directories or from the Project, and never installed by the app. A Project's own Skills stay inert until the user trusts that Project.
 _Avoid_: Workflow, command, prompt
 
 ### Permission
@@ -47,7 +47,7 @@ The posture the user selects for a Run: **Ask**, where the agent requests consen
 _Avoid_: Approval policy, sandbox mode, YOLO
 
 **Standing Approval**:
-A permission the user has granted permanently for a Repository — a command the agent may run, or a class of file changes it may make, without asking. Applies across all Sessions in that Repository and is revocable.
+A permission the user has granted permanently for a Project — a command the agent may run, or a class of file changes it may make, without asking. Applies across all Sessions in that Project and is revocable.
 _Avoid_: Allowlist, whitelist, permission
 
 **Readiness**:

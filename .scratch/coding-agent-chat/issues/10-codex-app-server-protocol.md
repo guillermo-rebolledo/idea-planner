@@ -1,6 +1,6 @@
 # 10 — Codex on the app-server protocol
 
-**What to build:** Codex reaches parity with Claude Code as a Harness: the user picks it, chats, watches inline diffs, answers approvals in Ask mode, and grants Standing Approvals that persist for the Repository.
+**What to build:** Codex reaches parity with Claude Code as a Harness: the user picks it, chats, watches inline diffs, answers approvals in Ask mode, and grants Standing Approvals that persist for the Project.
 
 This requires abandoning `codex exec`, which the current adapter parses. Two independent findings make it unusable, both reproduced against the installed binary and recorded in `docs/harness-permission-mapping.md`: `exec` has no approval flag and *auto-rejects* approvals without emitting an event, and its file-change items carry only a path and a kind with no diff. Ask mode and inline diffs are both impossible on it. The app-server protocol provides per-file diffs, a full turn diff, and a complete approval round-trip.
 

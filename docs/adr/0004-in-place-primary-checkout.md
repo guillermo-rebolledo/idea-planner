@@ -6,7 +6,7 @@ Date: 2026-08-01
 ## Context
 
 A Session operates on a **Checkout** (see `CONTEXT.md`), which is either the
-Repository's own working directory — the **primary checkout** — or an
+Project's own working directory — the **primary checkout** — or an
 **isolated checkout**, a linked git worktree created from a chosen base branch.
 
 Codex's cloud product isolates work in a worktree. A codebase as containment-
@@ -18,7 +18,7 @@ needs recording.
 Sessions edit the **primary checkout in place**. Isolated checkouts are modelled
 in the domain from the start and deferred in implementation.
 
-A Repository must be a **git repository**. A plain folder cannot become one; the
+A Project must be a **git repository**. A plain folder cannot become one; the
 app offers `git init` instead.
 
 **Git is the only undo.** The app keeps no version history of the user's source

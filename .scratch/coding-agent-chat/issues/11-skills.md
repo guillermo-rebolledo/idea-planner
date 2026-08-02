@@ -6,7 +6,7 @@ Skills are per-message, not per-Session. Real coding work switches methodology c
 
 Skills are optional. Nothing is required, nothing blocks. When the user has skills installed, the app says so and suggests trying them — encouragement, never a gate.
 
-Discovery covers the user's global skill directories and the Repository's own. **Repository skills stay inert until the user trusts that Repository once.** A skill is instruction text steering an agent that has write and command access; a repo-local skill arrives by `git clone` from someone the user may not know, and the app would be *recommending* it. Trust is granted per Repository, with the skills shown, and is revocable.
+Discovery covers the user's global skill directories and the Project's own. **Project skills stay inert until the user trusts that Project once.** A skill is instruction text steering an agent that has write and command access; a repo-local skill arrives by `git clone` from someone the user may not know, and the app would be *recommending* it. Trust is granted per Project, with the skills shown, and is revocable.
 
 This ticket also wires `offer_response_options` to Suggested Responses: when a skill offers structured choices, they render as buttons, the Session goes `blocked`, and choosing one submits it as the user's turn. Custom text is always available. Prose lists are never treated as choices — a false `blocked` destroys trust in the inbox group.
 
@@ -16,8 +16,8 @@ Skills work better on Claude Code, which supports them natively, than on Codex, 
 
 **Status:** ready-for-agent
 
-- [ ] Skills are discovered from global directories and from the Repository
-- [ ] Repository skills are inert until that Repository's skills are trusted, once, with the skills shown; trust is revocable
+- [ ] Skills are discovered from global directories and from the Project
+- [ ] Project skills are inert until that Project's skills are trusted, once, with the skills shown; trust is revocable
 - [ ] Typing `/` in the composer lists available skills and inserts one for that message
 - [ ] A Run records which Skill it used, with provenance pinned
 - [ ] Structured choices render as Suggested Responses and move the Session to `blocked`; prose lists never do
