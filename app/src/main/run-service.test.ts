@@ -61,6 +61,19 @@ function claudeDeps(root: string, broker: ReturnType<typeof fakeBroker>) {
   }
 }
 
+function startInput() {
+  return {
+    submissionId: 'submission-1',
+    sessionId: 'session',
+    prompt: 'Rename the greeting',
+    harness: 'claude' as const,
+    model: 'claude-sonnet-4-5',
+    effort: 'high',
+    skill: 'wayfinder',
+    permissionMode: 'auto' as const
+  }
+}
+
 function developInput() {
   return {
     submissionId: 'submission-1',
@@ -265,8 +278,9 @@ describe('Run service', () => {
     const args = broker.launch?.args ?? []
     const settingsPath = args[args.indexOf('--settings') + 1]
     if (!settingsPath) throw new Error('Claude launch did not include a settings file')
+    // The Run asked for Ask, so its settings say the mode that asks.
     expect(JSON.parse(await readFile(settingsPath, 'utf8'))).toMatchObject({
-      permissions: { defaultMode: 'bypassPermissions' }
+      permissions: { defaultMode: 'default' }
     })
   })
 
@@ -758,5 +772,22 @@ describe('Claude launch', () => {
     // about tools the app no longer owns is one the model would act on, and
     // asserting it is gone by name would pass again if it came back reworded.
     expect((broker.launch?.args ?? []).at(-1)).toBe('/wayfinder Rename the greeting')
+  })
+})
+
+describe('staged settings', () => {
+  it('refuses to start rather than spawning with settings the Harness would ignore', async () => {
+    const root = await readyClaudeRoot('run-claude-settings-')
+    const broker = fakeBroker()
+    const service = new RunService({
+      ...claudeDeps(root, broker),
+      // Stands in for a settings file this app could generate wrongly. The
+      // Harness ignores invalid settings in silence, so a permission rule that
+      // never loaded is indistinguishable from one that did.
+      stageSettings: () => ({ permissions: { defaultMode: 'not-a-mode' } })
+    })
+
+    await expect(service.start(startInput())).rejects.toThrow(/settings/i)
+    expect(broker.start).not.toHaveBeenCalled()
   })
 })

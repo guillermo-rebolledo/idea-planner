@@ -10,7 +10,7 @@ The app must synthesise those rule strings itself; the documented mechanism for 
 
 Two shapes are needed: a command approval, and blanket edit permission for the Project — which is what makes Ask mode livable and is why there is no separate auto-edit mode.
 
-**Blocked by:** 07
+**Blocked by:** 07b
 
 **Status:** ready-for-agent
 

@@ -754,3 +754,34 @@ describe('what a diff is allowed to carry', () => {
     ])
   })
 })
+
+describe('commands in the Conversation', () => {
+  it('keeps what a command printed, redacted and bounded', async () => {
+    const runId = await startRun('Run the tests', 'submission-command')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'command',
+        id: 'toolu_1',
+        command: 'pnpm test',
+        output: `token=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\n${'log line\n'.repeat(5_000)}`,
+        failed: false
+      }
+    })
+
+    const stored = await readFile(
+      join(stateDir, 'sessions', sessionId, 'conversation.jsonl'),
+      'utf8'
+    )
+    // A command prints whatever it prints, including secrets, and a build log
+    // must not be able to displace the Conversation around it.
+    expect(stored).not.toContain('sk-proj-abcdefghijklmnopqrstuvwxyz0123456789')
+    const reloaded = await makeCore().getConversation(sessionId)
+    const commands = reloaded.entries.filter((entry) => entry.kind === 'command')
+    expect(commands).toMatchObject([{ command: 'pnpm test', failed: false, runId }])
+    const [only] = commands
+    if (only?.kind !== 'command') throw new Error('expected a command entry')
+    expect(only.output.length).toBeLessThan(20_000)
+  })
+})

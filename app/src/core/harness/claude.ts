@@ -54,6 +54,18 @@ const hookEventSchema = z.object({
   hook_name: z.string().min(1).max(200),
   hook_event: z.string().min(1).max(200)
 })
+/** What a Bash tool result carries: what the command printed. */
+const commandResultSchema = z.object({
+  stdout: z.string(),
+  stderr: z.string()
+})
+
+const toolResultBlockSchema = z.object({
+  type: z.literal('tool_result'),
+  tool_use_id: z.string().min(1).max(200),
+  is_error: z.boolean().optional()
+})
+
 const thinkingTokensSchema = z.object({
   estimated_tokens: z.number().int().nonnegative(),
   estimated_tokens_delta: z.number().int().nonnegative()
@@ -64,6 +76,10 @@ export function createClaudeAdapter(): HarnessAdapter {
   let pending = ''
   let streamingMessageId = 'message'
   let streamedText = ''
+  // Commands the Harness has started, by its own call id, so a result can be
+  // paired with the command that produced it rather than with whatever came
+  // last. Cleared as each result arrives.
+  const pendingCommands = new Map<string, string>()
 
   function consumeLine(line: string): HarnessEvent[] {
     if (!line.trim()) return []
@@ -111,11 +127,14 @@ export function createClaudeAdapter(): HarnessAdapter {
         return [protocolFailure(`Unsupported Claude stream event: ${eventType || 'unknown'}`)]
       }
       case 'assistant':
-        return describeAssistant(frame['message'])
+        return describeAssistant(frame['message'], pendingCommands)
       case 'result':
         return describeResult(frame)
       case 'user':
-        return describeFileChange(frame['tool_use_result'])
+        return [
+          ...describeCommandResult(frame, pendingCommands),
+          ...describeFileChange(frame['tool_use_result'])
+        ]
       case 'rate_limit_event':
         return []
       default:
@@ -154,8 +173,20 @@ function describeSystem(frame: Record<string, unknown>): HarnessEvent[] {
     // Harness Thread.
     const threadId = text(frame['session_id'])
     const model = text(frame['model'])
+    // Reported rather than assumed: managed settings can override the mode the
+    // app asked for, and a Run in a different mode than the person chose is
+    // something they need told.
+    const permissionMode = text(frame['permissionMode'])
     return threadId && model
-      ? [{ type: 'thread-ready', harness: 'claude', threadId, model }]
+      ? [
+          {
+            type: 'thread-ready',
+            harness: 'claude',
+            threadId,
+            model,
+            ...(permissionMode ? { permissionMode } : {})
+          }
+        ]
       : [protocolFailure('Invalid Claude init event')]
   }
   if (subtype === 'api_retry') {
@@ -181,7 +212,7 @@ function describeSystem(frame: Record<string, unknown>): HarnessEvent[] {
   return []
 }
 
-function describeAssistant(raw: unknown): HarnessEvent[] {
+function describeAssistant(raw: unknown, pendingCommands: Map<string, string>): HarnessEvent[] {
   const parsed = assistantSchema.safeParse(raw)
   if (!parsed.success) return [protocolFailure('Invalid Claude assistant event')]
   const events: HarnessEvent[] = []
@@ -199,10 +230,57 @@ function describeAssistant(raw: unknown): HarnessEvent[] {
   }
   for (const block of parsed.data.content) {
     if (block.type !== 'tool_use') continue
+    // A command is held until its result arrives, so the Conversation can
+    // report what it printed rather than only that it was called.
+    const command = commandOf(block.name, block.input)
+    if (command !== null) {
+      pendingCommands.set(block.id, command)
+      continue
+    }
     events.push({
       type: 'tool',
       name: normalizeToolName(block.name),
       summary: describeTool(block.name)
+    })
+  }
+  return events
+}
+
+/** The shell command a tool call is running, if it is running one. */
+function commandOf(name: string, input: unknown): string | null {
+  if (name !== 'Bash') return null
+  const parsed = z.object({ command: z.string().min(1) }).safeParse(input)
+  return parsed.success ? parsed.data.command : null
+}
+
+/**
+ * What a command printed, paired to the call that produced it by the id the
+ * Harness gave it. Output is what the person was usually waiting for, so it
+ * belongs in the Conversation rather than only in the activity stream.
+ */
+function describeCommandResult(
+  frame: Record<string, unknown>,
+  pendingCommands: Map<string, string>
+): HarnessEvent[] {
+  const message = object(frame['message'])
+  const blocks = Array.isArray(message['content']) ? message['content'] : []
+  const events: HarnessEvent[] = []
+  for (const raw of blocks) {
+    const block = toolResultBlockSchema.safeParse(raw)
+    if (!block.success) continue
+    const command = pendingCommands.get(block.data.tool_use_id)
+    if (command === undefined) continue
+    pendingCommands.delete(block.data.tool_use_id)
+    const result = commandResultSchema.safeParse(frame['tool_use_result'])
+    const output = result.success
+      ? [result.data.stdout, result.data.stderr].filter(Boolean).join('\n')
+      : ''
+    events.push({
+      type: 'command',
+      id: block.data.tool_use_id,
+      command: redactCredentials(command),
+      output: redactCredentials(output),
+      failed: block.data.is_error ?? false
     })
   }
   return events

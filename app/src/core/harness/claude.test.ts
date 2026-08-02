@@ -28,7 +28,8 @@ describe('Claude harness Adapter', () => {
       type: 'thread-ready',
       harness: 'claude',
       threadId: 'session-claude-1',
-      model: 'claude-sonnet-4-5'
+      model: 'claude-sonnet-4-5',
+      permissionMode: 'dontAsk'
     })
     expect(events.filter((event) => event.type === 'assistant-message')).toEqual([
       {
@@ -197,5 +198,55 @@ describe('file changes', () => {
     for (const event of await replay('claude-edit.jsonl')) {
       expect(harnessEventSchema.safeParse(event).success).toBe(true)
     }
+  })
+})
+
+describe('commands', () => {
+  it('reports the command the Harness ran and what it printed', async () => {
+    // Recorded from claude 2.1.220. Reporting only that a tool was called
+    // leaves a Run that compiles or tests saying nothing about the result.
+    const events = await replay('claude-command.jsonl')
+
+    expect(events.filter((event) => event.type === 'command')).toEqual([
+      {
+        type: 'command',
+        id: 'toolu_015hHJHQrm7DjbErN5tdKwW6',
+        command: 'wc -l lines.txt',
+        output: '       3 lines.txt',
+        failed: false
+      }
+    ])
+  })
+
+  it('does not report a command as a bare tool call as well', async () => {
+    const events = await replay('claude-command.jsonl')
+    expect(events.filter((event) => event.type === 'tool')).toEqual([])
+  })
+
+  it('normalizes a command identically regardless of chunk boundaries', async () => {
+    expect(await replay('claude-command.jsonl', 1)).toEqual(
+      await replay('claude-command.jsonl', 1_000_000)
+    )
+  })
+
+  it('emits only events the shared contract accepts', async () => {
+    for (const event of await replay('claude-command.jsonl')) {
+      expect(harnessEventSchema.safeParse(event).success).toBe(true)
+    }
+  })
+})
+
+describe('the mode a Run is actually running under', () => {
+  it('reports the effective permission mode from the init event', async () => {
+    // Managed settings outrank command-line arguments, so what the app asked
+    // for is not necessarily what is running. The Harness says which.
+    const events = await replay('claude-command.jsonl')
+    expect(events).toContainEqual({
+      type: 'thread-ready',
+      harness: 'claude',
+      threadId: 'thread-fixture',
+      model: 'claude-opus-5[1m]',
+      permissionMode: 'bypassPermissions'
+    })
   })
 })

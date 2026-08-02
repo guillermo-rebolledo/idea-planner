@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Bot, ChevronRight, FileDiff, Send, Square, User } from 'lucide-react'
+import { Bot, ChevronRight, FileDiff, Send, Square, Terminal, User } from 'lucide-react'
 import {
   HARNESS_DEFAULT_MODEL,
   SKILL_ATTRIBUTION,
@@ -519,6 +519,61 @@ function Field({
   )
 }
 
+/** How many lines of output are shown before it is worth collapsing. */
+const OUTPUT_PREVIEW_LINES = 12
+
+/**
+ * A command the Run ran, and what it printed. A compact terminal block: the
+ * output is usually the answer the person was waiting for, so it sits inline
+ * rather than behind a disclosure — until it is long enough that leaving it
+ * open would bury the Conversation around it.
+ */
+function CommandRow({
+  command,
+  output,
+  failed
+}: {
+  command: string
+  output: string
+  failed: boolean
+}): React.JSX.Element {
+  const lines = output ? output.split('\n') : []
+  const long = lines.length > OUTPUT_PREVIEW_LINES
+  const [expanded, setExpanded] = useState(false)
+  const shown = expanded || !long ? lines : lines.slice(-OUTPUT_PREVIEW_LINES)
+
+  return (
+    <li className="flex gap-2">
+      <Terminal aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <p className="flex flex-wrap items-baseline gap-x-2 font-mono text-xs">
+          <span className="text-muted-foreground">$</span>
+          <span className="break-all select-text">{command}</span>
+          {failed && <span className="text-[11px] text-destructive">failed</span>}
+        </p>
+        {lines.length === 0 ? (
+          <p className="mt-1 text-[11px] text-muted-foreground">No output.</p>
+        ) : (
+          <>
+            {long && (
+              <button
+                type="button"
+                className="mt-1 text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                onClick={() => setExpanded((current) => !current)}
+              >
+                {expanded ? 'Show less' : `Show all ${String(lines.length)} lines`}
+              </button>
+            )}
+            <pre className="mt-1 max-h-96 overflow-auto rounded-md border border-border bg-surface p-2 font-mono text-[11px] whitespace-pre-wrap select-text">
+              {shown.join('\n')}
+            </pre>
+          </>
+        )}
+      </div>
+    </li>
+  )
+}
+
 /**
  * A file the Run changed, shown as it happened. The change is already on disk
  * — edits land in the Checkout in place (ADR 0004) — so this is a record, not
@@ -575,6 +630,8 @@ function FileChangeRow({ path, hunks }: { path: string; hunks: DiffHunk[] }): Re
 
 function EntryRow({ entry }: { entry: ConversationEntry }): React.JSX.Element | null {
   if (entry.kind === 'usage' || entry.kind === 'thread') return null
+  if (entry.kind === 'command')
+    return <CommandRow command={entry.command} output={entry.output} failed={entry.failed} />
   if (entry.kind === 'file-change') return <FileChangeRow path={entry.path} hunks={entry.hunks} />
   if (entry.kind === 'boundary') {
     return (

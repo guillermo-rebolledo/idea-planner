@@ -40,6 +40,22 @@ const JOURNAL = 'conversation.jsonl'
 /** How much of one file's diff is worth keeping in the Conversation. */
 const MAX_DIFF_LINES = 400
 
+/** How much of one command's output is worth keeping. */
+const MAX_OUTPUT_CHARACTERS = 16_000
+
+/**
+ * What a command printed, as the Conversation should hold it: redacted,
+ * because a command prints whatever it prints, and bounded, because a build
+ * log would otherwise displace everything around it. The end is kept rather
+ * than the start — a failure says why on its last lines.
+ */
+function describeOutput(output: string): string {
+  const redacted = redactCredentials(output)
+  if (redacted.length <= MAX_OUTPUT_CHARACTERS) return redacted
+  const kept = redacted.slice(-MAX_OUTPUT_CHARACTERS)
+  return `… earlier output not kept …\n${kept}`
+}
+
 /**
  * A file change as the Conversation should hold it: relative to the Checkout
  * so no path leaves the person's machine, redacted because a diff carries
@@ -407,6 +423,25 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 new Map(current).set(input.runId, (current.get(input.runId) ?? 0) + 1)
               )
               return
+            case 'command': {
+              const written = yield* readEntries(sessionDir)
+              const ordinal =
+                written.filter((entry) => entry.kind === 'command' && entry.runId === input.runId)
+                  .length + 1
+              yield* append(
+                sessionDir,
+                conversationEntrySchema.parse({
+                  kind: 'command',
+                  id: `command:${input.runId}:${ordinal}`,
+                  at: now.toISOString(),
+                  runId: input.runId,
+                  command: redactCredentials(event.command).slice(0, 2_000),
+                  output: describeOutput(event.output),
+                  failed: event.failed
+                })
+              )
+              return
+            }
             case 'file-change': {
               // What the Run did to the Checkout is part of what happened in
               // the Conversation, so it is durable rather than only streamed.

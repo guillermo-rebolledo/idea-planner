@@ -83,6 +83,19 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
     hunks: z.array(diffHunkSchema).min(1)
   }),
   z.object({ type: z.literal('tool'), name: z.string().min(1), summary: z.string().min(1) }),
+  /**
+   * One command the Harness ran in the Checkout, and what it printed. Kept
+   * apart from `tool` because the output is the point: a Run that compiles or
+   * tests something says nothing useful without it.
+   */
+  z.object({
+    type: z.literal('command'),
+    /** The Harness's own id for the call, so a result can be paired to it. */
+    id: z.string().min(1).max(200),
+    command: z.string().min(1),
+    output: z.string(),
+    failed: z.boolean()
+  }),
   z.object({
     type: z.literal('choices'),
     question: z.string().max(2_000),
@@ -92,6 +105,12 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('thread-ready'),
     harness: harnessIdSchema,
+    /**
+     * The mode the Harness reports it is actually running under. Managed
+     * settings outrank command-line arguments, so what the app asked for is
+     * not necessarily what is running.
+     */
+    permissionMode: z.string().min(1).max(100).optional(),
     threadId: z.string().min(1).max(200),
     model: z.string().min(1).max(200)
   }),
@@ -195,6 +214,19 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     harness: harnessIdSchema,
     threadId: z.string().min(1).max(200),
     model: z.string().min(1).max(200)
+  }),
+  /**
+   * A command the Run ran, kept in the Conversation because what it printed is
+   * usually the answer the person was waiting for.
+   */
+  z.object({
+    kind: z.literal('command'),
+    id: z.string().min(1),
+    at: z.string().datetime(),
+    runId: z.string().min(1),
+    command: z.string().min(1),
+    output: z.string(),
+    failed: z.boolean()
   }),
   /**
    * A file the Harness changed, kept in the Conversation because it is part of

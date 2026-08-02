@@ -12,7 +12,7 @@ Sessions never complete. Archiving is how a Session leaves the list.
 
 Session status arrives here rather than in ticket 03, which deliberately declined to introduce a four-value status while only one value was reachable. This ticket is where `running`, `blocked`, `idle`, and `failed` all become producible, with pinned and archived as separate user flags.
 
-**Blocked by:** 07, 11
+**Blocked by:** 07b, 11
 
 **Status:** ready-for-agent
 

@@ -23,6 +23,8 @@ import {
   MCP_SERVER_NAME,
   runSnapshotSchema,
   startRunInputSchema,
+  type PermissionMode,
+  type RunConfiguration,
   type RunActivityKind,
   type RunSnapshot,
   type StartRunInput
@@ -54,6 +56,8 @@ interface RunServiceDeps {
   proxyExecutable: string
   proxyScript: string
   claudeOauthToken?: () => Promise<string>
+  /** Overridable so a test can stage settings this app would never write. */
+  stageSettings?: (permissionMode: PermissionMode) => unknown
   /** Delivers normalized assistant and control events straight to the window. */
   onConversationEvent?: (event: ConversationStreamEvent) => void
 }
@@ -197,10 +201,7 @@ export class RunService {
       skill: { name: skillName, path: skillDirectory, hash: skillHash },
       environment,
       checkout,
-      // Full access only until ticket 07 maps Ask onto the Harness. Recording
-      // the mode that was asked for rather than the one that ran would put a
-      // falsehood in the Run's durable provenance.
-      permissionMode: 'auto' as const
+      permissionMode: input.permissionMode
     }
     const accepted = runSnapshotSchema.parse(
       await this.deps.core.send({
@@ -295,7 +296,13 @@ export class RunService {
       // A socket file left behind by a crash would otherwise make this Run's
       // capability socket unbindable; the path belongs to this Run alone.
       await rm(socketPath, { force: true })
-      await this.prepareHarnessHome(input.harness, runDirectory, socketPath, capabilityToken)
+      await this.prepareHarnessHome(
+        input.harness,
+        runDirectory,
+        socketPath,
+        capabilityToken,
+        input.permissionMode
+      )
       toolHost = new ToolHost({
         socketPath,
         capabilityToken,
@@ -453,7 +460,7 @@ export class RunService {
    * frames never leave Core, and nothing here can widen a Run's authority.
    */
   private async ingest(
-    run: Pick<RunSnapshot, 'id' | 'sessionId'>,
+    run: Pick<RunSnapshot, 'id' | 'sessionId' | 'configuration'>,
     harness: StartRunInput['harness'],
     checkout: string,
     chunk: string
@@ -474,7 +481,7 @@ export class RunService {
         runId: run.id,
         event
       })
-      const activity = describeActivity(event)
+      const activity = describeActivity(event, run.configuration)
       if (activity) {
         await this.record(run, undefined, activity.kind, sanitize(activity.summary, checkout))
       }
@@ -563,7 +570,8 @@ export class RunService {
     harness: StartRunInput['harness'],
     runDirectory: string,
     socketPath: string,
-    capabilityToken: string
+    capabilityToken: string,
+    permissionMode: PermissionMode
   ): Promise<void> {
     const proxy = {
       command: this.deps.proxyExecutable,
@@ -582,12 +590,21 @@ export class RunService {
     if (harness === 'claude') {
       // This Run's settings, layered over the person's own and never written
       // into them: their terminal use of the Harness is not ours to change.
-      // Ticket 07 adds permission rules here; today it carries the mode only.
-      await writeFile(
-        join(runDirectory, 'settings.json'),
-        JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' } }),
-        { mode: 0o600 }
-      )
+      // Ticket 07b adds permission rules here; today it carries the mode only.
+      const settings = this.deps.stageSettings
+        ? this.deps.stageSettings(permissionMode)
+        : { permissions: { defaultMode: CLAUDE_PERMISSION_MODES[permissionMode] } }
+      // Checked before the Harness sees them: invalid settings are ignored in
+      // silence, so a rule that never loaded looks exactly like one that did.
+      const validated = claudeSettingsSchema.safeParse(settings)
+      if (!validated.success) {
+        throw new Error(
+          `Refusing to start: this Run's settings are not valid — ${validated.error.issues[0]?.message ?? 'unknown problem'}`
+        )
+      }
+      await writeFile(join(runDirectory, 'settings.json'), JSON.stringify(validated.data), {
+        mode: 0o600
+      })
       return
     }
     const codexHome = join(runDirectory, 'codex-home')
@@ -696,7 +713,7 @@ function harnessArguments(
     // No allow-list: naming only the app's MCP tool is what left the Harness
     // with no native tools at all. It edits the Checkout with its own.
     '--permission-mode',
-    'bypassPermissions',
+    CLAUDE_PERMISSION_MODES[input.permissionMode],
     '--no-chrome',
     '--output-format',
     'stream-json',
@@ -766,8 +783,33 @@ function sanitize(value: string, checkout: string): string {
  * Assistant text and Suggested Responses are Conversation content, not
  * activity, so they deliberately produce nothing here.
  */
+/**
+ * The app's two Permission Modes as Claude names them
+ * (`docs/harness-permission-mapping.md`). Ask is not yet wired to a prompt
+ * tool — ticket 07b does that — so it maps to the mode that asks and simply
+ * has nobody to ask yet.
+ */
+/**
+ * What this app is willing to put in a Run's settings file. Narrow on purpose:
+ * the Harness ignores what it cannot read without saying so, so anything this
+ * schema does not describe would fail silently at the far end.
+ */
+const claudeSettingsSchema = z.object({
+  permissions: z.object({
+    defaultMode: z.enum(['default', 'acceptEdits', 'plan', 'bypassPermissions']),
+    allow: z.array(z.string().min(1)).optional(),
+    deny: z.array(z.string().min(1)).optional()
+  })
+})
+
+const CLAUDE_PERMISSION_MODES: Record<PermissionMode, string> = {
+  ask: 'default',
+  auto: 'bypassPermissions'
+}
+
 function describeActivity(
-  event: HarnessEvent
+  event: HarnessEvent,
+  configuration: RunConfiguration
 ): { kind: RunActivityKind; summary: string } | undefined {
   switch (event.type) {
     case 'reasoning':
@@ -776,14 +818,33 @@ function describeActivity(
       // What the Harness reported doing. The app no longer adjudicates it, so
       // this is an observation, not a verdict.
       return { kind: 'output', summary: `${event.name}: ${event.summary}` }
+    case 'command':
+      // The output belongs to the Conversation; the activity stream says only
+      // that a command ran, and whether it worked.
+      return {
+        kind: event.failed ? 'error' : 'output',
+        summary: `Ran ${event.command}`
+      }
     case 'file-change':
       // The diff itself belongs to the Conversation; the activity stream says
       // only that the Checkout was changed, and where.
       return { kind: 'output', summary: `Changed ${event.path}` }
     case 'failed':
       return { kind: 'error', summary: event.summary }
-    case 'thread-ready':
-      return { kind: 'lifecycle', summary: `Harness Thread ready with ${event.model}` }
+    case 'thread-ready': {
+      // Managed settings outrank command-line arguments, so the mode the app
+      // asked for is not necessarily the one running. Saying so is the whole
+      // point of reading it back.
+      const asked = CLAUDE_PERMISSION_MODES[configuration.permissionMode]
+      const mismatch =
+        event.permissionMode !== undefined && event.permissionMode !== asked
+          ? ` — running as ${event.permissionMode}, not the ${configuration.permissionMode} you chose`
+          : ''
+      return {
+        kind: mismatch ? 'error' : 'lifecycle',
+        summary: `Harness Thread ready with ${event.model}${mismatch}`
+      }
+    }
     case 'retrying':
       return {
         kind: 'output',
