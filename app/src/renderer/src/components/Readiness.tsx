@@ -177,7 +177,7 @@ function HarnessCard({
               : 'border-border text-muted-foreground'
           )}
         >
-          {harness.available ? 'Usable' : 'Not usable — capture still works'}
+          {harness.available ? 'Usable' : 'Not usable yet'}
         </span>
         <div className="ml-auto flex items-center gap-1">
           <Button

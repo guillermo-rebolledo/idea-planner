@@ -66,41 +66,39 @@ function handleMessage(data: unknown): void {
 
 function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
   switch (command.type) {
-    case 'library/open':
-      return core.openLibrary(command.path)
     case 'project/add':
       return core.addProject(command.root)
     case 'project/list':
       return core.listProjects()
     case 'project/remove':
       return core.removeProject(command.root)
-    case 'session/capture':
-      return core.captureSession(command.input)
-    case 'session/open':
-      return core.openSession(command.relativePath)
+    case 'session/start':
+      return core.startSession(command.input)
     case 'session/list':
       return core.listSessions()
+    case 'session/get':
+      return core.getSession(command.sessionId)
     case 'mailbox/query':
       return core.queryMailbox(command.query)
     case 'session/set-pinned':
-      return core.setSessionPinned(command.relativePath, command.pinned)
+      return core.setSessionPinned(command.sessionId, command.pinned)
     case 'session/set-archived':
-      return core.setSessionArchived(command.relativePath, command.archived)
-    case 'session/delete-preview':
-      return core.previewDeleteSession(command.relativePath)
+      return core.setSessionArchived(command.sessionId, command.archived)
+    case 'session/delete':
+      return core.deleteSession(command.sessionId)
     case 'run/accept':
       return core.acceptRun(command.input)
     case 'run/list':
-      return core.listRuns(command.relativePath)
+      return core.listRuns(command.sessionId)
     case 'run/event':
       return core.recordRunEvent(command.input)
     case 'conversation/get':
-      return core.getConversation(command.relativePath)
+      return core.getConversation(command.sessionId)
     case 'conversation/submit':
       return core.submitConversationMessage(command.input)
     case 'conversation/begin':
       return core.beginConversationRun({
-        relativePath: command.relativePath,
+        sessionId: command.sessionId,
         runId: command.runId,
         submissionId: command.submissionId,
         harness: command.harness,
@@ -110,14 +108,14 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       })
     case 'conversation/ingest':
       return core.ingestHarnessOutput({
-        relativePath: command.relativePath,
+        sessionId: command.sessionId,
         runId: command.runId,
         harness: command.harness,
         chunk: command.chunk
       })
     case 'conversation/apply':
       return core.applyHarnessEvent({
-        relativePath: command.relativePath,
+        sessionId: command.sessionId,
         runId: command.runId,
         event: command.event
       })

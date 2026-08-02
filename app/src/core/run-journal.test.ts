@@ -5,27 +5,33 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { runSnapshotSchema } from '@shared/run'
 import { createCore, type Core } from './core'
 
-let libraryDir: string
+let stateDir: string
+let projectRoot: string
 let core: Core
 
 beforeEach(async () => {
-  libraryDir = await mkdtemp(join(tmpdir(), 'run-journal-'))
+  stateDir = await mkdtemp(join(tmpdir(), 'run-journal-state-'))
+  projectRoot = await mkdtemp(join(tmpdir(), 'run-journal-project-'))
   let id = 0
   core = createCore({
+    stateDirectory: stateDir,
     now: () => new Date('2026-07-31T12:00:00.000Z'),
     randomId: () => `id-${++id}`
   })
-  await core.openLibrary(libraryDir)
+  await core.addProject(projectRoot)
 })
 
-afterEach(async () => rm(libraryDir, { recursive: true, force: true }))
+afterEach(async () => {
+  await rm(stateDir, { recursive: true, force: true })
+  await rm(projectRoot, { recursive: true, force: true })
+})
 
 describe('durable Run acceptance', () => {
   it('accepts a stable submission once before Harness contact', async () => {
-    const session = await core.captureSession({ title: 'Sandbox', notes: '' })
+    const session = await core.startSession({ projectRoot, title: 'Sandbox' })
     const input = {
       submissionId: 'submission-1',
-      relativePath: session.relativePath,
+      sessionId: session.id,
       prompt: 'Help me develop this Session.',
       configuration: {
         harness: 'codex' as const,
@@ -36,7 +42,7 @@ describe('durable Run acceptance', () => {
         effort: 'high',
         skill: { name: 'grilling', path: '/skills/grilling', hash: 'a'.repeat(64) },
         environment: { LANG: 'en_US.UTF-8', PATH: '/usr/bin:/bin' },
-        workingDirectory: join(libraryDir, session.relativePath),
+        workingDirectory: projectRoot,
         permissionMode: 'ask' as const
       }
     }
@@ -49,7 +55,7 @@ describe('durable Run acceptance', () => {
     const persisted = runSnapshotSchema.parse(
       JSON.parse(
         await readFile(
-          join(libraryDir, session.relativePath, '.session', 'runs', `${accepted.id}.json`),
+          join(stateDir, 'sessions', session.id, 'runs', `${accepted.id}.json`),
           'utf8'
         )
       )
@@ -58,14 +64,14 @@ describe('durable Run acceptance', () => {
     expect(persisted.prompt).toBe(input.prompt)
 
     await core.recordRunEvent({
-      relativePath: session.relativePath,
+      sessionId: session.id,
       runId: accepted.id,
       status: 'starting',
       kind: 'lifecycle',
       summary: 'Starting the Harness'
     })
     await core.recordRunEvent({
-      relativePath: session.relativePath,
+      sessionId: session.id,
       runId: accepted.id,
       status: 'running',
       kind: 'lifecycle',
@@ -75,10 +81,10 @@ describe('durable Run acceptance', () => {
   })
 
   it('rejects reuse of a submission identity with different content', async () => {
-    const session = await core.captureSession({ title: 'Stable identity', notes: '' })
+    const session = await core.startSession({ projectRoot, title: 'Stable identity' })
     const base = {
       submissionId: 'submission-1',
-      relativePath: session.relativePath,
+      sessionId: session.id,
       prompt: 'First',
       configuration: {
         harness: 'codex' as const,
@@ -89,7 +95,7 @@ describe('durable Run acceptance', () => {
         effort: 'high',
         skill: { name: 'grilling', path: '/skills/grilling', hash: 'b'.repeat(64) },
         environment: { LANG: 'en_US.UTF-8' },
-        workingDirectory: join(libraryDir, session.relativePath),
+        workingDirectory: projectRoot,
         permissionMode: 'auto' as const
       }
     }
@@ -100,10 +106,10 @@ describe('durable Run acceptance', () => {
   })
 
   it('rejects invalid lifecycle transitions in durable state', async () => {
-    const session = await core.captureSession({ title: 'Transitions', notes: '' })
+    const session = await core.startSession({ projectRoot, title: 'Transitions' })
     const accepted = await core.acceptRun({
       submissionId: 'submission-transition',
-      relativePath: session.relativePath,
+      sessionId: session.id,
       prompt: 'Plan safely',
       configuration: {
         harness: 'codex',
@@ -114,14 +120,14 @@ describe('durable Run acceptance', () => {
         effort: 'high',
         skill: { name: 'grilling', path: '/skills/grilling', hash: 'e'.repeat(64) },
         environment: { LANG: 'en_US.UTF-8' },
-        workingDirectory: join(libraryDir, session.relativePath),
+        workingDirectory: projectRoot,
         permissionMode: 'ask'
       }
     })
 
     await expect(
       core.recordRunEvent({
-        relativePath: session.relativePath,
+        sessionId: session.id,
         runId: accepted.id,
         status: 'completed',
         kind: 'lifecycle',
@@ -134,7 +140,7 @@ describe('durable Run acceptance', () => {
     const record = (input: unknown): Promise<unknown> =>
       (core.recordRunEvent as (value: unknown) => Promise<unknown>)(input)
     await expect(
-      record({ relativePath: 'session', runId: 'run-1', kind: 'output', summary: '' })
+      record({ sessionId: 'session', runId: 'run-1', kind: 'output', summary: '' })
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
   })
 })

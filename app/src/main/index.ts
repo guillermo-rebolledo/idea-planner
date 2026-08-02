@@ -1,5 +1,4 @@
-import { mkdir, rename, stat } from 'node:fs/promises'
-import { basename, delimiter, join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import {
   BrowserWindow,
   app,
@@ -16,12 +15,7 @@ import {
   CoreError,
   IPC_CHANNELS,
   sessionSummarySchema,
-  sessionRelativePathSchema,
-  openedSessionSchema,
-  librarySnapshotSchema,
-  captureSessionInputSchema,
-  deleteSessionInputSchema,
-  deleteSessionPreviewSchema,
+  startSessionInputSchema,
   mailboxQuerySchema,
   mailboxSnapshotSchema,
   setSessionArchivedInputSchema,
@@ -35,10 +29,7 @@ import {
   SKILL_ATTRIBUTION,
   projectViewSchema,
   type BootState,
-  type ChooseLibraryResult,
   type ChooseProjectResult,
-  type DeleteSessionResult,
-  type LibrarySnapshot,
   type ThemeState
 } from '@shared/contract'
 import {
@@ -64,13 +55,11 @@ import { RunService } from './run-service'
 // Test-only seams, ignored in packaged builds: redirect userData so test runs
 // are hermetic, and answer the native folder picker without a real dialog.
 const testUserData = process.env['APP_TEST_USER_DATA']
-const testChooseDir = process.env['APP_TEST_CHOOSE_DIR']
 // Folders the Project picker answers with, in order; the last one repeats.
 const testChooseProjectDirs = (process.env['APP_TEST_CHOOSE_PROJECT_DIRS'] ?? '')
   .split(delimiter)
   .filter((entry) => entry !== '')
 let chosenProjectCount = 0
-const testTrashDir = process.env['APP_TEST_TRASH_DIR']
 const testReadinessPath = process.env['APP_TEST_READINESS_PATH']
 const testReadinessHome = process.env['APP_TEST_READINESS_HOME']
 const testChooseExecutable = process.env['APP_TEST_CHOOSE_EXECUTABLE']
@@ -85,18 +74,13 @@ let mainWindow: BrowserWindow | null = null
 let settings: SettingsStore
 let readiness: ReadinessService
 let runService: RunService
-let libraryState: LibrarySnapshot | null = null
-let bootReady: Promise<void> = Promise.resolve()
 
 const coreClient = new CoreClient(
   () => app.getPath('userData'),
   () => {
-    // Core respawned after a crash: restore its only piece of state from the
-    // persisted settings so the renderer keeps working.
-    const libraryPath = settings.get().libraryPath
-    if (libraryPath) {
-      void coreClient.send({ type: 'library/open', path: libraryPath }).catch(() => undefined)
-    }
+    // Core respawned after a crash. It reads its own durable state from the
+    // app-owned store, so nothing has to be handed back to it; the Runs it
+    // was supervising are no longer supervised and are stopped.
     void runService.stopAll('core-crash').catch(() => undefined)
   }
 )
@@ -138,17 +122,6 @@ function handleInvoke<Args, Result>(
       throw error
     }
   })
-}
-
-async function openLibrary(path: string): Promise<LibrarySnapshot> {
-  // The native picker only yields existing folders; Core rejects anything
-  // else. Main never creates a library location on its own.
-  const snapshot = librarySnapshotSchema.parse(
-    await coreClient.send({ type: 'library/open', path })
-  )
-  libraryState = snapshot
-  settings.update({ libraryPath: path })
-  return snapshot
 }
 
 async function chooseProjectDirectory(): Promise<string | undefined> {
@@ -205,37 +178,13 @@ async function acceptProject(root: string): Promise<ChooseProjectResult> {
 }
 
 function registerIpc(): void {
-  handleInvoke(IPC_CHANNELS.bootState, z.undefined(), async (): Promise<BootState> => {
-    await bootReady
+  handleInvoke(IPC_CHANNELS.bootState, z.undefined(), (): BootState => {
     return {
       contractVersion: CONTRACT_VERSION,
       appVersion: app.getVersion(),
-      theme: themeState(),
-      library: libraryState
+      theme: themeState()
     }
   })
-
-  handleInvoke(
-    IPC_CHANNELS.chooseLibraryLocation,
-    z.undefined(),
-    async (): Promise<ChooseLibraryResult> => {
-      if (testChooseDir && !app.isPackaged) {
-        return { canceled: false, path: testChooseDir }
-      }
-      if (!mainWindow) return { canceled: true }
-      const result = await dialog.showOpenDialog(mainWindow, {
-        title: 'Choose or create your library',
-        message: 'Sessions are saved as plain Markdown folders inside this location.',
-        buttonLabel: 'Use this folder',
-        properties: ['openDirectory', 'createDirectory']
-      })
-      const path = result.filePaths[0]
-      if (result.canceled || !path) return { canceled: true }
-      return { canceled: false, path }
-    }
-  )
-
-  handleInvoke(IPC_CHANNELS.openLibrary, z.string().min(1), openLibrary)
 
   handleInvoke(
     IPC_CHANNELS.chooseProject,
@@ -283,27 +232,13 @@ function registerIpc(): void {
     async (root): Promise<ChooseProjectResult> => acceptProject(root)
   )
 
-  handleInvoke(IPC_CHANNELS.captureSession, captureSessionInputSchema, async (input) => {
-    const session = sessionSummarySchema.parse(
-      await coreClient.send({ type: 'session/capture', input })
-    )
-    if (libraryState) {
-      libraryState = { ...libraryState, sessions: [session, ...libraryState.sessions] }
-    }
-    return session
-  })
-
-  handleInvoke(IPC_CHANNELS.openSession, sessionRelativePathSchema, async (relativePath) =>
-    openedSessionSchema.parse(await coreClient.send({ type: 'session/open', relativePath }))
+  handleInvoke(IPC_CHANNELS.startSession, startSessionInputSchema, async (input) =>
+    sessionSummarySchema.parse(await coreClient.send({ type: 'session/start', input }))
   )
 
-  handleInvoke(IPC_CHANNELS.listSessions, z.undefined(), async () => {
-    const sessions = z
-      .array(sessionSummarySchema)
-      .parse(await coreClient.send({ type: 'session/list' }))
-    if (libraryState) libraryState = { ...libraryState, sessions }
-    return sessions
-  })
+  handleInvoke(IPC_CHANNELS.listSessions, z.undefined(), async () =>
+    z.array(sessionSummarySchema).parse(await coreClient.send({ type: 'session/list' }))
+  )
 
   handleInvoke(IPC_CHANNELS.queryMailbox, mailboxQuerySchema, async (query) =>
     mailboxSnapshotSchema.parse(
@@ -318,7 +253,7 @@ function registerIpc(): void {
     sessionSummarySchema.parse(
       await coreClient.send({
         type: 'session/set-pinned',
-        relativePath: sessionRelativePathSchema.parse(input.relativePath),
+        sessionId: input.sessionId,
         pinned: input.pinned
       })
     )
@@ -328,58 +263,17 @@ function registerIpc(): void {
     sessionSummarySchema.parse(
       await coreClient.send({
         type: 'session/set-archived',
-        relativePath: sessionRelativePathSchema.parse(input.relativePath),
+        sessionId: input.sessionId,
         archived: input.archived
       })
     )
   )
 
-  handleInvoke(IPC_CHANNELS.previewDeleteSession, sessionRelativePathSchema, async (relativePath) =>
-    deleteSessionPreviewSchema.parse(
-      await coreClient.send({ type: 'session/delete-preview', relativePath })
-    )
-  )
-
-  handleInvoke(
-    IPC_CHANNELS.deleteSessionPermanently,
-    deleteSessionInputSchema,
-    async ({ relativePath, targets }): Promise<DeleteSessionResult> => {
-      const libraryPath = libraryState?.path ?? settings.get().libraryPath
-      if (!libraryPath) {
-        throw new CoreError('NO_LIBRARY_OPEN', 'Open a library before deleting a Session')
-      }
-      // Delete acts only on the previewed, confirmed app-owned targets. That
-      // keeps what happens identical to what the person read, and lets a
-      // retry finish the remaining targets after a partial failure even when
-      // the Session is no longer recognizable on disk.
-      const folder = sessionRelativePathSchema.parse(relativePath)
-      if (!targets.every((target) => isConfirmedSessionTarget(target, folder))) {
-        throw new CoreError('INVALID_INPUT', 'Delete targets must stay inside the Session folder')
-      }
-      const trashed: string[] = []
-      const failed: DeleteSessionResult['failed'] = []
-      for (const target of targets) {
-        try {
-          await trashTarget(join(libraryPath, target))
-          trashed.push(target)
-        } catch (error) {
-          if (await isMissing(join(libraryPath, target))) {
-            // Already gone (for example after a retried partial delete): the
-            // desired end state is reached.
-            trashed.push(target)
-            continue
-          }
-          failed.push({
-            path: target,
-            message: error instanceof Error ? error.message : 'Could not move to Trash'
-          })
-        }
-      }
-      // Resync canonical state and the search projection after the change.
-      await openLibrary(libraryPath).catch(() => undefined)
-      return { trashed, failed }
-    }
-  )
+  // Forgetting a Session is app state only: the Project it worked in keeps
+  // every file, because that is where the work lives (ADR 0002).
+  handleInvoke(IPC_CHANNELS.deleteSession, z.string().min(1), async (sessionId) => {
+    await coreClient.send({ type: 'session/delete', sessionId })
+  })
 
   handleInvoke(IPC_CHANNELS.setThemePreference, themePreferenceSchema, (preference) => {
     settings.update({ themePreference: preference })
@@ -442,46 +336,19 @@ function registerIpc(): void {
   })
 
   handleInvoke(IPC_CHANNELS.startRun, startRunInputSchema, (input) => runService.start(input))
-  handleInvoke(IPC_CHANNELS.listRuns, sessionRelativePathSchema, async (relativePath) =>
-    runSnapshotSchema.array().parse(await runService.list(relativePath))
+  handleInvoke(IPC_CHANNELS.listRuns, z.string().min(1), async (sessionId) =>
+    runSnapshotSchema.array().parse(await runService.list(sessionId))
   )
-  handleInvoke(IPC_CHANNELS.stopRun, stopRunInputSchema, ({ runId, relativePath }) =>
-    runService.stop(runId, relativePath)
+  handleInvoke(IPC_CHANNELS.stopRun, stopRunInputSchema, ({ runId, sessionId }) =>
+    runService.stop(runId, sessionId)
   )
 
-  handleInvoke(IPC_CHANNELS.getConversation, sessionRelativePathSchema, async (relativePath) =>
-    conversationSnapshotSchema.parse(await runService.conversation(relativePath))
+  handleInvoke(IPC_CHANNELS.getConversation, z.string().min(1), async (sessionId) =>
+    conversationSnapshotSchema.parse(await runService.conversation(sessionId))
   )
   handleInvoke(IPC_CHANNELS.developSession, developSessionInputSchema, async (input) =>
     conversationSnapshotSchema.parse(await runService.develop(input))
   )
-}
-
-/** A previewed target: the Session folder itself or a portable path inside it. */
-function isConfirmedSessionTarget(target: string, folder: string): boolean {
-  if (target === folder) return true
-  if (!target.startsWith(`${folder}/`)) return false
-  return target
-    .split('/')
-    .every((part) => part !== '' && part !== '.' && part !== '..' && !part.includes('\\'))
-}
-
-async function isMissing(absolutePath: string): Promise<boolean> {
-  return stat(absolutePath).then(
-    () => false,
-    () => true
-  )
-}
-
-async function trashTarget(absolutePath: string): Promise<void> {
-  // Test seam: acceptance tests observe the move without touching the real
-  // macOS Trash. Ignored in packaged builds.
-  if (testTrashDir && !app.isPackaged) {
-    await mkdir(testTrashDir, { recursive: true })
-    await rename(absolutePath, join(testTrashDir, `${Date.now()}-${basename(absolutePath)}`))
-    return
-  }
-  await shell.trashItem(absolutePath)
 }
 
 function hardenSession(): void {
@@ -551,7 +418,6 @@ void app.whenReady().then(() => {
     core: coreClient,
     broker: new RunProcessBroker(),
     readiness,
-    libraryPath: () => libraryState?.path ?? settings.get().libraryPath,
     homeDirectory: app.getPath('home'),
     privateRoot: join(app.getPath('userData'), 'runs'),
     proxyExecutable: process.execPath,
@@ -578,18 +444,6 @@ void app.whenReady().then(() => {
     mainWindow.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#101012' : '#fafafa')
     mainWindow.webContents.send(IPC_CHANNELS.themeChanged, themeState())
   })
-
-  const libraryPath = settings.get().libraryPath
-  if (libraryPath) {
-    bootReady = openLibrary(libraryPath).then(
-      () => undefined,
-      () => {
-        // The remembered library is missing or unreadable: fall back to
-        // onboarding instead of failing the launch.
-        libraryState = null
-      }
-    )
-  }
 
   createWindow()
 

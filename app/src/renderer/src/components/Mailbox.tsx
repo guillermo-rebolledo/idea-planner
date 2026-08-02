@@ -17,15 +17,11 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import type {
-  DeleteSessionPreview,
-  DeleteSessionResult,
   SessionSummary,
   MailboxGroupKey,
   MailboxSession,
   MailboxQuery,
   MailboxSnapshot,
-  OpenedSession,
-  LibrarySnapshot,
   ThemePreference,
   ThemeState
 } from '@shared/contract'
@@ -37,23 +33,18 @@ import { ReadinessDialog } from '@renderer/components/Readiness'
 import { cn } from '@renderer/lib/utils'
 
 interface MailboxProps {
-  library: LibrarySnapshot
-  onLibraryChanged: (library: LibrarySnapshot) => void
   theme: ThemeState | null
   onThemePreferenceChange: (preference: ThemePreference) => void
 }
 
 type CenterSurface =
   | { kind: 'empty' }
-  | { kind: 'capture' }
-  | { kind: 'opening'; session: SessionSummary }
-  | { kind: 'session'; openedSession: OpenedSession }
-  | { kind: 'failed'; session: SessionSummary }
-  | { kind: 'delete-preview'; session: SessionSummary; preview: DeleteSessionPreview }
-  | { kind: 'delete-result'; title: string; relativePath: string; result: DeleteSessionResult }
+  | { kind: 'new-session' }
+  | { kind: 'session'; session: SessionSummary }
+  | { kind: 'confirm-delete'; session: SessionSummary }
 
 type MailboxData =
-  { state: 'indexing' } | { state: 'ready'; snapshot: MailboxSnapshot } | { state: 'failed' }
+  { state: 'reading' } | { state: 'ready'; snapshot: MailboxSnapshot } | { state: 'failed' }
 
 interface GroupMeta {
   label: string
@@ -76,20 +67,15 @@ const GROUP_META: Record<MailboxGroupKey, GroupMeta> = {
 /**
  * The Focus Mailbox production frame: a collapsible Session inbox on the left
  * (expanded list or compact rail) and the primary center surface, which this
- * slice uses for capture, reading, and the permanent-delete flow.
+ * slice uses for starting a Session, reading it, and deleting it.
  */
-export function Mailbox({
-  library,
-  onLibraryChanged,
-  theme,
-  onThemePreferenceChange
-}: MailboxProps): React.JSX.Element {
+export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React.JSX.Element {
   const [surface, setSurface] = useState<CenterSurface>({ kind: 'empty' })
   const [inboxCollapsed, setInboxCollapsed] = useState(false)
   const [readinessOpen, setReadinessOpen] = useState(false)
   const [announcement, setAnnouncement] = useState('')
   const [query, setQuery] = useState<MailboxQuery>({ search: '', view: 'active' })
-  const [mailbox, setMailbox] = useState<MailboxData>({ state: 'indexing' })
+  const [mailbox, setMailbox] = useState<MailboxData>({ state: 'reading' })
   const searchRef = useRef<HTMLInputElement>(null)
   const requestSequenceRef = useRef(0)
 
@@ -97,12 +83,7 @@ export function Mailbox({
     const requestId = ++requestSequenceRef.current
     try {
       const snapshot = await window.shell.queryMailbox(nextQuery)
-      if (requestSequenceRef.current === requestId) {
-        setMailbox({ state: 'ready', snapshot })
-        if (snapshot.index === 'rebuilt') {
-          setAnnouncement('The search index was rebuilt from your canonical Session content.')
-        }
-      }
+      if (requestSequenceRef.current === requestId) setMailbox({ state: 'ready', snapshot })
     } catch {
       if (requestSequenceRef.current === requestId) setMailbox({ state: 'failed' })
     }
@@ -113,7 +94,7 @@ export function Mailbox({
     return () => window.clearTimeout(timer)
   }, [query, refreshMailbox])
 
-  const startCapture = useCallback(() => setSurface({ kind: 'capture' }), [])
+  const startNewSession = useCallback(() => setSurface({ kind: 'new-session' }), [])
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
@@ -129,7 +110,7 @@ export function Mailbox({
       }
       if (event.key.toLowerCase() === 'n') {
         event.preventDefault()
-        startCapture()
+        startNewSession()
       }
       if (event.key === '/') {
         event.preventDefault()
@@ -139,29 +120,22 @@ export function Mailbox({
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [startCapture])
+  }, [startNewSession])
 
-  function handleSaved(session: SessionSummary): void {
-    onLibraryChanged({ ...library, sessions: [session, ...library.sessions] })
+  function handleStarted(session: SessionSummary): void {
     void refreshMailbox(query)
-    void openSession(session)
-    setAnnouncement(`Saved “${session.title}” for later.`)
+    openSession(session)
+    setAnnouncement(`Started “${session.title}”.`)
   }
 
-  async function openSession(session: SessionSummary): Promise<void> {
-    setSurface({ kind: 'opening', session })
-    try {
-      const openedSession = await window.shell.openSession(session.relativePath)
-      setSurface({ kind: 'session', openedSession })
-    } catch {
-      setSurface({ kind: 'failed', session })
-    }
+  function openSession(session: SessionSummary): void {
+    setSurface({ kind: 'session', session })
   }
 
   async function togglePinned(session: SessionSummary): Promise<void> {
     try {
       const updated = await window.shell.setSessionPinned({
-        relativePath: session.relativePath,
+        sessionId: session.id,
         pinned: !session.pinned
       })
       setAnnouncement(
@@ -175,16 +149,14 @@ export function Mailbox({
 
   async function setArchived(session: SessionSummary, archived: boolean): Promise<void> {
     try {
-      await window.shell.setSessionArchived({ relativePath: session.relativePath, archived })
+      await window.shell.setSessionArchived({ sessionId: session.id, archived })
       setAnnouncement(
         archived
-          ? `Archived “${session.title}”. Nothing moved on disk; restore it any time.`
+          ? `Archived “${session.title}”. Nothing about it moves; restore it any time.`
           : `Restored “${session.title}” to the inbox.`
       )
       setSurface((current) =>
-        (current.kind === 'session' &&
-          current.openedSession.session.relativePath === session.relativePath) ||
-        (current.kind === 'opening' && current.session.relativePath === session.relativePath)
+        current.kind === 'session' && current.session.id === session.id
           ? { kind: 'empty' }
           : current
       )
@@ -194,44 +166,19 @@ export function Mailbox({
     void refreshMailbox(query)
   }
 
-  async function startDelete(session: SessionSummary): Promise<void> {
+  async function confirmDelete(session: SessionSummary): Promise<void> {
     try {
-      const preview = await window.shell.previewDeleteSession(session.relativePath)
-      setSurface({ kind: 'delete-preview', session, preview })
+      await window.shell.deleteSession(session.id)
+      setAnnouncement(`Deleted “${session.title}”. Your Project was not touched.`)
+      setSurface({ kind: 'empty' })
     } catch {
-      setAnnouncement(`Could not prepare “${session.title}” for deletion.`)
+      setAnnouncement(`Deleting “${session.title}” failed. Nothing was lost.`)
     }
-  }
-
-  // Delete acts on the exact targets the person confirmed in the preview, so
-  // a retry after a partial failure finishes only what is still in place.
-  async function confirmDelete(
-    title: string,
-    relativePath: string,
-    targets: string[]
-  ): Promise<void> {
-    try {
-      const result = await window.shell.deleteSessionPermanently({ relativePath, targets })
-      void refreshMailbox(query)
-      if (result.failed.length > 0) {
-        setAnnouncement(`Some of “${title}” could not be moved to the Trash.`)
-        setSurface({ kind: 'delete-result', title, relativePath, result })
-      } else {
-        setAnnouncement(`Moved “${title}” to the Trash.`)
-        setSurface({ kind: 'empty' })
-      }
-    } catch {
-      setAnnouncement(`Deleting “${title}” failed. Nothing further was moved.`)
-      void refreshMailbox(query)
-    }
+    void refreshMailbox(query)
   }
 
   const selectedSession =
-    surface.kind === 'session'
-      ? surface.openedSession.session
-      : surface.kind === 'opening' || surface.kind === 'failed' || surface.kind === 'delete-preview'
-        ? surface.session
-        : undefined
+    surface.kind === 'session' || surface.kind === 'confirm-delete' ? surface.session : undefined
 
   const snapshot = mailbox.state === 'ready' ? mailbox.snapshot : null
   const allSessions = snapshot?.groups.flatMap((group) => group.sessions) ?? []
@@ -260,7 +207,7 @@ export function Mailbox({
             <Bot aria-hidden="true" className="size-3.5" />
             Harnesses
           </Button>
-          <Button onClick={startCapture} size="sm">
+          <Button onClick={startNewSession} size="sm">
             <Plus aria-hidden="true" className="size-3.5" />
             New Session
           </Button>
@@ -272,9 +219,9 @@ export function Mailbox({
           <CompactRail
             sessions={allSessions}
             selectedId={selectedSession?.id}
-            onOpen={(session) => void openSession(session)}
+            onOpen={openSession}
             onExpand={() => setInboxCollapsed(false)}
-            onCapture={startCapture}
+            onNewSession={startNewSession}
           />
         ) : (
           <div className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/40">
@@ -320,13 +267,13 @@ export function Mailbox({
                   mailbox={mailbox}
                   query={query}
                   selectedId={selectedSession?.id}
-                  onOpen={(session) => void openSession(session)}
-                  onCapture={startCapture}
+                  onOpen={openSession}
+                  onNewSession={startNewSession}
                   onClearSearch={() => setQuery((current) => ({ ...current, search: '' }))}
                   onRetry={() => void refreshMailbox(query)}
                   onTogglePinned={(session) => void togglePinned(session)}
                   onSetArchived={(session, archived) => void setArchived(session, archived)}
-                  onDelete={(session) => void startDelete(session)}
+                  onDelete={(session) => setSurface({ kind: 'confirm-delete', session })}
                 />
               </div>
             </nav>
@@ -334,52 +281,24 @@ export function Mailbox({
         )}
 
         <main className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-          {surface.kind === 'capture' ? (
+          {surface.kind === 'new-session' ? (
             <CaptureForm
-              onSaved={handleSaved}
+              onStarted={handleStarted}
               onCancel={() => setSurface({ kind: 'empty' })}
               onShowReadiness={() => setReadinessOpen(true)}
             />
-          ) : surface.kind === 'opening' ? (
-            <SessionOpening title={surface.session.title} />
-          ) : surface.kind === 'failed' ? (
-            <CenterNotice
-              title={`“${surface.session.title}” could not be opened`}
-              body="The app could not finish reading local content. The Session was not classified as corrupt."
-              actionLabel="Try again"
-              onAction={() => void openSession(surface.session)}
-            />
-          ) : surface.kind === 'delete-preview' ? (
-            <DeletePreviewSurface
-              preview={surface.preview}
+          ) : surface.kind === 'confirm-delete' ? (
+            <DeleteConfirmSurface
+              session={surface.session}
               onCancel={() => setSurface({ kind: 'empty' })}
-              onConfirm={() =>
-                void confirmDelete(
-                  surface.preview.title,
-                  surface.preview.relativePath,
-                  surface.preview.targets
-                )
-              }
-            />
-          ) : surface.kind === 'delete-result' ? (
-            <DeleteResultSurface
-              title={surface.title}
-              result={surface.result}
-              onRetry={() =>
-                void confirmDelete(
-                  surface.title,
-                  surface.relativePath,
-                  surface.result.failed.map((failure) => failure.path)
-                )
-              }
-              onClose={() => setSurface({ kind: 'empty' })}
+              onConfirm={() => void confirmDelete(surface.session)}
             />
           ) : surface.kind === 'session' ? (
             <SessionDetail
-              openedSession={surface.openedSession}
+              session={surface.session}
               onTogglePinned={(session) => void togglePinned(session)}
               onSetArchived={(session, archived) => void setArchived(session, archived)}
-              onDelete={(session) => void startDelete(session)}
+              onDelete={(session) => setSurface({ kind: 'confirm-delete', session })}
             />
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
@@ -388,7 +307,7 @@ export function Mailbox({
                 <p className="font-medium">Start a Session before the thought fades</p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   Press <kbd className="rounded border border-border px-1 font-mono">N</kbd> or use
-                  New Session. Saving never starts a Run.
+                  New Session.
                 </p>
               </div>
             </div>
@@ -410,7 +329,7 @@ interface InboxContentProps {
   query: MailboxQuery
   selectedId: string | undefined
   onOpen: (session: MailboxSession) => void
-  onCapture: () => void
+  onNewSession: () => void
   onClearSearch: () => void
   onRetry: () => void
   onTogglePinned: (session: MailboxSession) => void
@@ -421,14 +340,14 @@ interface InboxContentProps {
 function InboxContent(props: InboxContentProps): React.JSX.Element {
   const { mailbox, query } = props
 
-  if (mailbox.state === 'indexing') {
+  if (mailbox.state === 'reading') {
     return (
       <p
         role="status"
         aria-live="polite"
         className="px-4 py-6 text-center text-xs text-muted-foreground"
       >
-        Indexing Sessions from local content…
+        Reading your Sessions…
       </p>
     )
   }
@@ -449,7 +368,7 @@ function InboxContent(props: InboxContentProps): React.JSX.Element {
   if (snapshot.total === 0) {
     return snapshot.view === 'archived' ? (
       <p className="px-4 py-6 text-center text-xs text-muted-foreground">
-        No archived Sessions. Archiving keeps every file in place.
+        No archived Sessions. Archiving never changes your Project.
       </p>
     ) : (
       <div className="flex flex-col items-center gap-2 px-4 py-6 text-center">
@@ -457,7 +376,7 @@ function InboxContent(props: InboxContentProps): React.JSX.Element {
         <p className="text-xs text-muted-foreground">
           No Sessions yet. Press <kbd className="font-mono">N</kbd> to start one.
         </p>
-        <Button variant="secondary" size="sm" onClick={props.onCapture}>
+        <Button variant="secondary" size="sm" onClick={props.onNewSession}>
           Start a Session
         </Button>
       </div>
@@ -616,7 +535,7 @@ interface CompactRailProps {
   selectedId: string | undefined
   onOpen: (session: MailboxSession) => void
   onExpand: () => void
-  onCapture: () => void
+  onNewSession: () => void
 }
 
 /**
@@ -628,7 +547,7 @@ function CompactRail({
   selectedId,
   onOpen,
   onExpand,
-  onCapture
+  onNewSession
 }: CompactRailProps): React.JSX.Element {
   return (
     <nav
@@ -639,7 +558,7 @@ function CompactRail({
         type="button"
         aria-label="New Session"
         title="New Session"
-        onClick={onCapture}
+        onClick={onNewSession}
         className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
       >
         <Plus aria-hidden="true" className="size-4" />
@@ -685,150 +604,43 @@ function CompactRail({
   )
 }
 
-function SessionOpening({ title }: { title: string }): React.JSX.Element {
-  return (
-    <div className="flex flex-1 items-center justify-center p-8" role="status" aria-live="polite">
-      <p className="text-sm text-muted-foreground">Opening “{title}” from local content…</p>
-    </div>
-  )
-}
-
-function CenterNotice({
-  title,
-  body,
-  actionLabel,
-  onAction
-}: {
-  title: string
-  body: string
-  actionLabel: string
-  onAction: () => void
-}): React.JSX.Element {
-  return (
-    <div
-      className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center"
-      role="alert"
-    >
-      <div>
-        <h2 className="font-semibold">{title}</h2>
-        <p className="mt-1 max-w-md text-sm text-muted-foreground">{body}</p>
-      </div>
-      <Button variant="secondary" onClick={onAction}>
-        {actionLabel}
-      </Button>
-    </div>
-  )
-}
-
-function DeletePreviewSurface({
-  preview,
+function DeleteConfirmSurface({
+  session,
   onCancel,
   onConfirm
 }: {
-  preview: DeleteSessionPreview
+  session: SessionSummary
   onCancel: () => void
   onConfirm: () => void
 }): React.JSX.Element {
-  // Focus lands on the safe action when the destructive preview opens.
+  // Focus lands on the safe action when the destructive surface opens.
   const cancelRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     cancelRef.current?.focus()
   }, [])
   return (
     <section
-      aria-labelledby="delete-preview-title"
+      aria-labelledby="delete-confirm-title"
       className="mx-auto flex w-full max-w-xl flex-col gap-4 p-6"
     >
       <div>
-        <h2 id="delete-preview-title" className="text-lg font-semibold">
-          Delete “{preview.title}” permanently?
+        <h2 id="delete-confirm-title" className="text-lg font-semibold">
+          Delete “{session.title}”?
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Exactly these app-owned items move to the macOS Trash. Nothing else in your library is
-          touched, and you can put them back from the Trash.
+          This forgets the Session and its Conversation. Your Project is not touched, so everything
+          the agent changed stays exactly where it is, under git.
         </p>
       </div>
-      <ul
-        aria-label="Items that move to the Trash"
-        className="flex flex-col gap-1 rounded-md border border-border bg-surface p-3 font-mono text-xs"
-      >
-        {preview.targets.map((target) => (
-          <li key={target} className="break-all select-text">
-            {target}
-          </li>
-        ))}
-      </ul>
-      {preview.keeps.length > 0 && (
-        <div className="rounded-md border border-notice-border bg-notice p-3 text-xs text-notice-foreground">
-          <p className="font-medium">Kept in place — not created by this app:</p>
-          <ul aria-label="Items kept in place" className="mt-1 flex flex-col gap-1 font-mono">
-            {preview.keeps.map((keep) => (
-              <li key={keep} className="break-all select-text">
-                {keep}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <p className="rounded-md border border-border bg-surface p-3 font-mono text-xs break-all text-muted-foreground select-text">
+        {session.projectRoot}
+      </p>
       <div className="flex items-center gap-2">
         <Button ref={cancelRef} variant="secondary" onClick={onCancel}>
           Cancel
         </Button>
         <Button variant="destructive" onClick={onConfirm}>
-          Move to Trash
-        </Button>
-      </div>
-    </section>
-  )
-}
-
-function DeleteResultSurface({
-  title,
-  result,
-  onRetry,
-  onClose
-}: {
-  title: string
-  result: DeleteSessionResult
-  onRetry: () => void
-  onClose: () => void
-}): React.JSX.Element {
-  const closeRef = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    closeRef.current?.focus()
-  }, [])
-  return (
-    <section
-      role="alert"
-      aria-labelledby="delete-result-title"
-      className="mx-auto flex w-full max-w-xl flex-col gap-4 p-6"
-    >
-      <div>
-        <h2 id="delete-result-title" className="text-lg font-semibold">
-          Some of “{title}” is still in place
-        </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {result.trashed.length} item{result.trashed.length === 1 ? '' : 's'} moved to the Trash,
-          but these could not be moved:
-        </p>
-      </div>
-      <ul
-        aria-label="Items that could not be moved to the Trash"
-        className="flex flex-col gap-2 rounded-md border border-border bg-surface p-3 text-xs"
-      >
-        {result.failed.map((failure) => (
-          <li key={failure.path} className="select-text">
-            <span className="font-mono break-all">{failure.path}</span>
-            <span className="mt-0.5 block text-muted-foreground">{failure.message}</span>
-          </li>
-        ))}
-      </ul>
-      <div className="flex items-center gap-2">
-        <Button ref={closeRef} variant="secondary" onClick={onClose}>
-          Close
-        </Button>
-        <Button variant="secondary" onClick={onRetry}>
-          Try the remaining items again
+          Delete Session
         </Button>
       </div>
     </section>
@@ -836,24 +648,23 @@ function DeleteResultSurface({
 }
 
 function SessionDetail({
-  openedSession,
+  session,
   onTogglePinned,
   onSetArchived,
   onDelete
 }: {
-  openedSession: OpenedSession
+  session: SessionSummary
   onTogglePinned: (session: SessionSummary) => void
   onSetArchived: (session: SessionSummary, archived: boolean) => void
   onDelete: (session: SessionSummary) => void
 }): React.JSX.Element {
-  const session = openedSession.session
   const savedAt = new Date(session.updatedAt)
   const archived = session.archivedAt !== null
   return (
     <article className="mx-auto w-full max-w-xl p-6" aria-label={session.title}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span>
-          Saved for later on{' '}
+          Started on{' '}
           {savedAt.toLocaleDateString(undefined, {
             year: 'numeric',
             month: 'long',
@@ -872,10 +683,11 @@ function SessionDetail({
         )}
       </div>
       <h2 className="mt-2 text-lg font-semibold select-text">{session.title}</h2>
+      {/* The Project this Session works in, named exactly. */}
       <p className="mt-4 rounded-md border border-border bg-surface p-3 font-mono text-xs break-all text-muted-foreground select-text">
-        {openedSession.documents.root.path}
+        {session.projectRoot}
       </p>
-      <Conversation key={session.relativePath} session={session} />
+      <Conversation key={session.id} session={session} />
       <div className="mt-4 flex items-center gap-2">
         <Button variant="secondary" size="sm" onClick={() => onTogglePinned(session)}>
           {session.pinned ? (
@@ -903,10 +715,6 @@ function SessionDetail({
           <Trash2 aria-hidden="true" className="size-3.5" /> Delete…
         </Button>
       </div>
-      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-        This Session is plain Markdown inside your library. Developing it with a Harness is always a
-        separate, explicit step you start yourself.
-      </p>
     </article>
   )
 }

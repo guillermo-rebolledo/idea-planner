@@ -8,6 +8,7 @@ import {
   type ConversationStreamEvent,
   type HarnessEvent
 } from '@shared/conversation'
+import type { SessionSummary } from '@shared/contract'
 import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
 import type { RunLaunch } from './run-process-broker'
 import { RunService } from './run-service'
@@ -48,14 +49,27 @@ interface FakeCore {
 
 let nextRunId = 0
 
-function fakeCore(): FakeCore {
+/** The Session the service reads its Checkout from: a Project on disk. */
+function fakeSession(projectRoot: string): SessionSummary {
+  return {
+    id: 'session',
+    projectRoot,
+    title: 'Grill me',
+    createdAt: '2026-07-31T12:00:00.000Z',
+    updatedAt: '2026-07-31T12:00:00.000Z',
+    pinned: false,
+    archivedAt: null
+  }
+}
+
+function fakeCore(projectRoot = '/a-project'): FakeCore {
   const runId = `run-${++nextRunId}`
   const state: FakeCore = {
     send: vi.fn(),
     commands: [],
     events: [],
     conversation: {
-      relativePath: 'session',
+      sessionId: 'session',
       entries: [],
       usage: { run: null, session: emptyUsage() },
       recovery: null,
@@ -66,7 +80,7 @@ function fakeCore(): FakeCore {
   const run: RunSnapshot = {
     id: runId,
     submissionId: 'submission-1',
-    relativePath: 'session',
+    sessionId: 'session',
     prompt: 'Grill me',
     configuration: runConfigurationSchema.parse({
       harness: 'codex',
@@ -77,7 +91,7 @@ function fakeCore(): FakeCore {
       effort: 'medium',
       skill: { name: 'grilling', path: '/skills/grilling', hash: 'b'.repeat(64) },
       environment: {},
-      workingDirectory: '/library/session',
+      workingDirectory: projectRoot,
       permissionMode: 'ask'
     }),
     status: 'accepted',
@@ -87,6 +101,7 @@ function fakeCore(): FakeCore {
   }
   state.send.mockImplementation((command: { type: string }) => {
     state.commands.push(command.type)
+    if (command.type === 'session/get') return Promise.resolve(fakeSession(projectRoot))
     if (command.type === 'conversation/ingest') return Promise.resolve(state.events)
     if (command.type.startsWith('conversation/')) return Promise.resolve(state.conversation)
     if (command.type === 'run/accept') return Promise.resolve(run)
@@ -147,7 +162,7 @@ afterEach(async () => {
 describe('Run service', () => {
   it('starts Claude Wayfinder with the documented stream protocol and native skill invocation', async () => {
     const root = await readyClaudeRoot('run-claude-')
-    const core = fakeCore()
+    const core = fakeCore(join(root, 'a-project'))
     const broker = fakeBroker()
     const service = new RunService({
       core,
@@ -166,7 +181,6 @@ describe('Run service', () => {
           })
         )
       },
-      libraryPath: () => join(root, 'library'),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -175,7 +189,7 @@ describe('Run service', () => {
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'session',
+      sessionId: 'session',
       prompt: 'Develop this Session',
       harness: 'claude',
       model: 'claude-sonnet-4-5',
@@ -218,49 +232,9 @@ describe('Run service', () => {
     ).resolves.toBe('# Wayfinder')
   })
 
-  it('gives Wayfinder its own managed scratch tree', async () => {
-    const root = await readyClaudeRoot('run-wayfinder-tree-')
-    const broker = fakeBroker()
-    const service = new RunService({
-      core: fakeCore(),
-      broker,
-      readiness: {
-        refresh: vi.fn(() =>
-          Promise.resolve({
-            harnesses: [
-              {
-                harness: 'claude',
-                available: true,
-                executablePath: join(root, 'claude'),
-                version: '2.1.220 (Claude Code)'
-              }
-            ]
-          })
-        )
-      },
-      libraryPath: () => join(root, 'library'),
-      homeDirectory: root,
-      privateRoot: join(root, 'private'),
-      proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/mcp-proxy.js',
-      claudeOauthToken: fakeClaudeOauthToken
-    })
-    await service.start({
-      submissionId: 'submission-1',
-      relativePath: 'session',
-      prompt: 'Develop this',
-      harness: 'claude',
-      model: 'claude-sonnet-4-5',
-      effort: 'medium',
-      skill: 'wayfinder',
-      permissionMode: 'ask'
-    })
-    expect(broker.launch?.args.at(-1)).toContain('.scratch/session-wayfinding')
-  })
-
   it('resumes compatible Claude continuity but hands off local history when switching Harnesses', async () => {
     const root = await readyClaudeRoot('run-claude-continuity-')
-    const core = fakeCore()
+    const core = fakeCore(join(root, 'a-project'))
     core.conversation = {
       ...core.conversation,
       harnessThreads: { claude: 'saved-thread' },
@@ -280,7 +254,7 @@ describe('Run service', () => {
         }
       ]
     }
-    const projectKey = join(root, 'library', 'session').replaceAll('/', '-')
+    const projectKey = join(root, 'a-project').replaceAll('/', '-')
     await mkdir(join(root, '.claude', 'projects', projectKey), { recursive: true })
     await writeFile(join(root, '.claude', 'projects', projectKey, 'saved-thread.jsonl'), '{}\n')
     const broker = fakeBroker()
@@ -301,7 +275,6 @@ describe('Run service', () => {
           })
         )
       },
-      libraryPath: () => join(root, 'library'),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -310,7 +283,7 @@ describe('Run service', () => {
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'session',
+      sessionId: 'session',
       prompt: 'Continue',
       harness: 'claude',
       model: 'claude-sonnet-4-5',
@@ -337,9 +310,12 @@ describe('Run service', () => {
     const core = {
       send: vi.fn((command: { type: string; input?: unknown }) => {
         order.push(command.type)
+        if (command.type === 'session/get') {
+          return Promise.resolve(fakeSession(join(root, 'a-project')))
+        }
         if (command.type === 'conversation/get') {
           return Promise.resolve({
-            relativePath: 'session',
+            sessionId: 'session',
             entries: [],
             usage: { run: null, session: emptyUsage() },
             recovery: null,
@@ -394,7 +370,6 @@ describe('Run service', () => {
           })
         )
       },
-      libraryPath: () => join(root, 'library'),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -402,7 +377,7 @@ describe('Run service', () => {
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'session',
+      sessionId: 'session',
       prompt: 'Develop this',
       harness: 'codex',
       model: 'gpt-5',
@@ -436,19 +411,18 @@ describe('Run service', () => {
 
   it('accepts the message durably, then records the Run boundary, then contacts the Harness', async () => {
     const root = await readyHarnessRoot('run-develop-')
-    const core = fakeCore()
+    const core = fakeCore(join(root, 'a-project'))
     const service = new RunService({
       core,
       broker: fakeBroker(),
       readiness: readyReadiness(join(root, 'codex')),
-      libraryPath: () => join(root, 'library'),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js'
     })
     await service.develop({
-      relativePath: 'session',
+      sessionId: 'session',
       submissionId: 'submission-1',
       text: 'Grill me',
       source: 'composer',
@@ -469,10 +443,9 @@ describe('Run service', () => {
   it('refuses a Skill whose identity has not been verified', async () => {
     const root = await readyHarnessRoot('run-unverified-')
     const service = new RunService({
-      core: fakeCore(),
+      core: fakeCore(join(root, 'a-project')),
       broker: fakeBroker(),
       readiness: readyReadiness(join(root, 'codex')),
-      libraryPath: () => join(root, 'library'),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -481,7 +454,7 @@ describe('Run service', () => {
     await expect(
       service.start({
         submissionId: 'submission-1',
-        relativePath: 'session',
+        sessionId: 'session',
         prompt: 'Develop this',
         harness: 'codex',
         model: 'gpt-5-codex',
@@ -494,7 +467,7 @@ describe('Run service', () => {
 
   it('streams normalized events to the window and keeps assistant text out of activity', async () => {
     const root = await readyHarnessRoot('run-stream-')
-    const core = fakeCore()
+    const core = fakeCore(join(root, 'a-project'))
     core.events = [
       { type: 'assistant-message', id: 'item_0', text: 'Who is this for?', complete: true },
       { type: 'reasoning', summary: 'Reading the Session first.' },
@@ -506,7 +479,6 @@ describe('Run service', () => {
       core,
       broker,
       readiness: readyReadiness(join(root, 'codex')),
-      libraryPath: () => join(root, 'library'),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -515,7 +487,7 @@ describe('Run service', () => {
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'session',
+      sessionId: 'session',
       prompt: 'Grill me',
       harness: 'codex',
       model: 'gpt-5-codex',
@@ -545,7 +517,7 @@ describe('Run service', () => {
 
   it('keeps a correctness-critical protocol failure failed even when Claude exits zero', async () => {
     const root = await readyClaudeRoot('run-protocol-failure-')
-    const core = fakeCore()
+    const core = fakeCore(join(root, 'a-project'))
     core.events = [{ type: 'failed', category: 'protocol', summary: 'Unsupported Claude event' }]
     const broker = fakeBroker()
     const service = new RunService({
@@ -565,7 +537,6 @@ describe('Run service', () => {
           })
         )
       },
-      libraryPath: () => join(root, 'library'),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -573,7 +544,7 @@ describe('Run service', () => {
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'session',
+      sessionId: 'session',
       prompt: 'Develop',
       harness: 'claude',
       model: 'default',
@@ -593,7 +564,7 @@ describe('Run service', () => {
 
   it('keeps the message and offers recovery when the Harness is never contacted', async () => {
     const root = await readyHarnessRoot('run-uncertain-')
-    const core = fakeCore()
+    const core = fakeCore(join(root, 'a-project'))
     core.conversation = {
       ...core.conversation,
       recovery: {
@@ -608,14 +579,13 @@ describe('Run service', () => {
         start: vi.fn(() => Promise.reject(new Error('spawn failed')))
       }),
       readiness: readyReadiness(join(root, 'codex')),
-      libraryPath: () => join(root, 'library'),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js'
     })
     const snapshot = await service.develop({
-      relativePath: 'session',
+      sessionId: 'session',
       submissionId: 'submission-1',
       text: 'Grill me',
       source: 'composer',
@@ -634,13 +604,12 @@ describe('Run service', () => {
 
   it('closes a Run the app no longer supervises when the Conversation is reopened', async () => {
     const root = await readyHarnessRoot('run-interrupted-')
-    const core = fakeCore()
+    const core = fakeCore(join(root, 'a-project'))
     core.conversation = { ...core.conversation, activeRunId: 'run-from-a-previous-session' }
     const service = new RunService({
       core,
       broker: fakeBroker(),
       readiness: readyReadiness(join(root, 'codex')),
-      libraryPath: () => join(root, 'library'),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -659,13 +628,12 @@ describe('Run service', () => {
 
   it('explains a failed Run with the Harness’s own last diagnostic line', async () => {
     const root = await readyHarnessRoot('run-diagnostic-')
-    const core = fakeCore()
+    const core = fakeCore(join(root, 'a-project'))
     const broker = fakeBroker()
     const service = new RunService({
       core,
       broker,
       readiness: readyReadiness(join(root, 'codex')),
-      libraryPath: () => join(root, 'library'),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -673,7 +641,7 @@ describe('Run service', () => {
     })
     await service.start({
       submissionId: 'submission-1',
-      relativePath: 'session',
+      sessionId: 'session',
       prompt: 'Grill me',
       harness: 'codex',
       model: 'default',
@@ -694,7 +662,7 @@ describe('Run service', () => {
   it('surfaces an unready Harness as an error rather than false recovery state', async () => {
     const root = await readyHarnessRoot('run-unready-')
     const service = new RunService({
-      core: fakeCore(),
+      core: fakeCore(join(root, 'a-project')),
       broker: fakeBroker(),
       readiness: {
         refresh: vi.fn(() =>
@@ -703,7 +671,6 @@ describe('Run service', () => {
           })
         )
       },
-      libraryPath: () => join(root, 'library'),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
@@ -711,7 +678,7 @@ describe('Run service', () => {
     })
     await expect(
       service.develop({
-        relativePath: 'session',
+        sessionId: 'session',
         submissionId: 'submission-1',
         text: 'Grill me',
         source: 'composer',

@@ -1,5 +1,4 @@
 import { z } from 'zod'
-import { sessionRelativePathSchema } from './portable-path'
 import { harnessIdSchema } from './readiness'
 
 /**
@@ -41,7 +40,7 @@ export type PermissionMode = z.infer<typeof permissionModeSchema>
 
 /**
  * The collapsed activity stream. It is sanitized and deliberately separate
- * from portable Conversation content: `reasoning` carries only
+ * from Conversation content: `reasoning` carries only
  * Harness-supplied summaries, never requested hidden chain-of-thought.
  */
 export const runActivityKindSchema = z.enum([
@@ -78,7 +77,7 @@ export const acceptRunInputSchema = z.object({
     .min(1)
     .max(200)
     .regex(/^[a-zA-Z0-9._:-]+$/),
-  relativePath: sessionRelativePathSchema,
+  sessionId: z.string().min(1),
   prompt: z.string().min(1).max(100_000),
   configuration: runConfigurationSchema
 })
@@ -87,7 +86,7 @@ export type AcceptRunInput = z.infer<typeof acceptRunInputSchema>
 export const runSnapshotSchema = z.object({
   id: z.string().min(1),
   submissionId: z.string().min(1),
-  relativePath: sessionRelativePathSchema,
+  sessionId: z.string().min(1),
   prompt: z.string(),
   configuration: runConfigurationSchema,
   status: runStatusSchema,
@@ -107,7 +106,7 @@ export type RunSnapshot = z.infer<typeof runSnapshotSchema>
 export const startRunInputSchema = acceptRunInputSchema
   .pick({
     submissionId: true,
-    relativePath: true,
+    sessionId: true,
     prompt: true
   })
   .extend({
@@ -121,12 +120,12 @@ export type StartRunInput = z.infer<typeof startRunInputSchema>
 
 export const stopRunInputSchema = z.object({
   runId: z.string().min(1),
-  relativePath: sessionRelativePathSchema
+  sessionId: z.string().min(1)
 })
 export type StopRunInput = z.infer<typeof stopRunInputSchema>
 
 export const recordRunEventInputSchema = z.object({
-  relativePath: sessionRelativePathSchema,
+  sessionId: z.string().min(1),
   runId: z.string().min(1),
   status: runStatusSchema.optional(),
   kind: runActivityKindSchema,

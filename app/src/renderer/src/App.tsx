@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { BootState, LibrarySnapshot, ThemeState } from '@shared/contract'
+import type { BootState, ProjectView, ThemeState } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { Onboarding } from '@renderer/components/Onboarding'
 import { Mailbox } from '@renderer/components/Mailbox'
@@ -9,7 +9,8 @@ type BootPhase =
 
 export default function App(): React.JSX.Element {
   const [bootPhase, setBootPhase] = useState<BootPhase>({ phase: 'loading' })
-  const [library, setLibrary] = useState<LibrarySnapshot | null>(null)
+  // Onboarding is over once the app has somewhere to work: a Project.
+  const [projects, setProjects] = useState<ProjectView[]>([])
   const [theme, setTheme] = useState<ThemeState | null>(null)
 
   const adoptTheme = useCallback((next: ThemeState) => {
@@ -22,7 +23,7 @@ export default function App(): React.JSX.Element {
     try {
       const boot = await window.shell.getBootState()
       adoptTheme(boot.theme)
-      setLibrary(boot.library)
+      setProjects(await window.shell.listProjects())
       setBootPhase({ phase: 'ready', boot })
     } catch {
       setBootPhase({ phase: 'failed', message: 'The app could not read its startup state.' })
@@ -44,7 +45,7 @@ export default function App(): React.JSX.Element {
   if (bootPhase.phase === 'loading') {
     return (
       <div className="flex h-full items-center justify-center" role="status" aria-live="polite">
-        <p className="text-muted-foreground">Opening your library…</p>
+        <p className="text-muted-foreground">Starting up…</p>
       </div>
     )
   }
@@ -60,14 +61,12 @@ export default function App(): React.JSX.Element {
     )
   }
 
-  if (!library) {
-    return <Onboarding onComplete={setLibrary} />
+  if (projects.length === 0) {
+    return <Onboarding onComplete={setProjects} />
   }
 
   return (
     <Mailbox
-      library={library}
-      onLibraryChanged={setLibrary}
       theme={theme}
       onThemePreferenceChange={(preference) => void changeThemePreference(preference)}
     />

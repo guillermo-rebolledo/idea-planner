@@ -1,7 +1,7 @@
-import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Effect, Ref } from 'effect'
-import { CoreError, sessionRelativePathSchema } from '@shared/contract'
+import { CoreError } from '@shared/contract'
 import {
   addUsage,
   conversationEntrySchema,
@@ -25,27 +25,27 @@ import { createCodexAdapter, type HarnessAdapter } from './harness/codex'
 import { createClaudeAdapter } from './harness/claude'
 
 /**
- * The Session's one permanent Conversation.
+ * The Session's one permanent Conversation, inside the app-owned Session
+ * directory (ADR 0002). Nothing about it is written into the Project.
  *
  * Durable truth is an append-only JSONL journal: later entries with the same
  * id supersede earlier ones, so a coalesced streaming checkpoint costs one
  * append and an interrupted Run still reads back as labelled partial content.
- * The portable Markdown document is a projection of that journal and holds
- * only user messages, assistant messages, and visible Run boundaries.
+ * Everything presented is projected from that journal in memory.
  */
 
-const JOURNAL = join('.session', 'conversation.jsonl')
-const DOCUMENT = 'conversation.md'
+const JOURNAL = 'conversation.jsonl'
 /** Streaming deltas persist at most this often; every other change persists at once. */
 const CHECKPOINT_INTERVAL_MS = 250
 
 interface ConversationOptions {
-  library: Effect.Effect<string | null>
+  /** The app-owned directory holding one Session's journal and Runs. */
+  directoryFor: (sessionId: string) => Effect.Effect<string, CoreError>
   clock: Effect.Effect<Date>
 }
 
 export interface BeginConversationRunInput {
-  relativePath: string
+  sessionId: string
   runId: string
   submissionId: string
   harness?: HarnessId
@@ -55,20 +55,20 @@ export interface BeginConversationRunInput {
 }
 
 export interface ApplyHarnessEventInput {
-  relativePath: string
+  sessionId: string
   runId: string
   event: HarnessEvent
 }
 
 export interface IngestHarnessOutputInput {
-  relativePath: string
+  sessionId: string
   runId: string
   harness: HarnessId
   chunk: string
 }
 
 export interface ConversationEffects {
-  get(relativePath: string): Effect.Effect<ConversationSnapshot, CoreError>
+  get(sessionId: string): Effect.Effect<ConversationSnapshot, CoreError>
   submit(input: unknown): Effect.Effect<ConversationSnapshot, CoreError>
   begin(input: BeginConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
   apply(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
@@ -104,17 +104,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
   // submission or a finalize on the same journal.
   const writeLock = Effect.runSync(Effect.makeSemaphore(1))
 
-  const sessionDirectory = (relativePath: string): Effect.Effect<string, CoreError> =>
-    options.library.pipe(
-      Effect.flatMap((library) =>
-        library === null
-          ? Effect.fail(new CoreError('NO_LIBRARY_OPEN', 'Open a library before developing'))
-          : Effect.try({
-              try: () => join(library, sessionRelativePathSchema.parse(relativePath)),
-              catch: () => new CoreError('INVALID_INPUT', 'The Session reference is not portable')
-            })
-      )
-    )
+  const sessionDirectory = options.directoryFor
 
   const readEntries = (sessionDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
     Effect.tryPromise({
@@ -141,37 +131,21 @@ export function createConversationEffects(options: ConversationOptions): Convers
   const append = (sessionDir: string, entry: ConversationEntry): Effect.Effect<void, CoreError> =>
     Effect.tryPromise({
       try: async () => {
-        await mkdir(join(sessionDir, '.session'), { recursive: true, mode: 0o700 })
+        await mkdir(sessionDir, { recursive: true, mode: 0o700 })
         await appendFile(join(sessionDir, JOURNAL), `${JSON.stringify(entry)}\n`, 'utf8')
       },
       catch: () => new CoreError('IO_ERROR', 'The Conversation could not be saved')
     })
 
-  const renderDocument = (sessionDir: string): Effect.Effect<void, CoreError> =>
-    readEntries(sessionDir).pipe(
-      Effect.flatMap((entries) =>
-        Effect.tryPromise({
-          try: async () => {
-            const path = join(sessionDir, DOCUMENT)
-            const existing = await readFile(path, 'utf8').catch(() => '')
-            const staged = `${path}.staged`
-            await writeFile(staged, renderConversation(existing, entries), 'utf8')
-            await rename(staged, path)
-          },
-          catch: () => new CoreError('IO_ERROR', 'The Conversation document could not be written')
-        })
-      )
-    )
-
   const snapshot = (
-    relativePath: string,
+    sessionId: string,
     sessionDir: string
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
-    readEntries(sessionDir).pipe(Effect.map((entries) => summarize(relativePath, entries)))
+    readEntries(sessionDir).pipe(Effect.map((entries) => summarize(sessionId, entries)))
 
-  const get = (relativePath: string): Effect.Effect<ConversationSnapshot, CoreError> =>
-    sessionDirectory(relativePath).pipe(
-      Effect.flatMap((sessionDir) => snapshot(relativePath, sessionDir))
+  const get = (sessionId: string): Effect.Effect<ConversationSnapshot, CoreError> =>
+    sessionDirectory(sessionId).pipe(
+      Effect.flatMap((sessionDir) => snapshot(sessionId, sessionDir))
     )
 
   const submit = (rawInput: unknown): Effect.Effect<ConversationSnapshot, CoreError> =>
@@ -183,7 +157,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
         )
       }
       const input = parsed.data
-      const sessionDir = yield* sessionDirectory(input.relativePath)
+      const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
           const entries = yield* readEntries(sessionDir)
@@ -200,7 +174,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 )
               )
             }
-            return summarize(input.relativePath, entries)
+            return summarize(input.sessionId, entries)
           }
           const at = (yield* options.clock).toISOString()
           const entry = conversationEntrySchema.parse({
@@ -217,8 +191,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             plainOptions: false
           })
           yield* append(sessionDir, entry)
-          yield* renderDocument(sessionDir)
-          return summarize(input.relativePath, [...entries, entry])
+          return summarize(input.sessionId, [...entries, entry])
         })
       )
     })
@@ -227,7 +200,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
     input: BeginConversationRunInput
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
     Effect.gen(function* () {
-      const sessionDir = yield* sessionDirectory(input.relativePath)
+      const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
           const at = (yield* options.clock).toISOString()
@@ -247,8 +220,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
           })
           yield* append(sessionDir, entry)
           yield* forgetRun(input.runId)
-          yield* renderDocument(sessionDir)
-          return yield* snapshot(input.relativePath, sessionDir)
+          return yield* snapshot(input.sessionId, sessionDir)
         })
       )
     })
@@ -324,7 +296,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
 
   const apply = (input: ApplyHarnessEventInput): Effect.Effect<void, CoreError> =>
     Effect.gen(function* () {
-      const sessionDir = yield* sessionDirectory(input.relativePath)
+      const sessionDir = yield* sessionDirectory(input.sessionId)
       yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
           const now = yield* options.clock
@@ -419,12 +391,12 @@ export function createConversationEffects(options: ConversationOptions): Convers
     input: FinalizeConversationRunInput
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
     Effect.gen(function* () {
-      const sessionDir = yield* sessionDirectory(input.relativePath)
+      const sessionDir = yield* sessionDirectory(input.sessionId)
       // Drain a truncated final protocol line before the lock is taken, so
       // the last thing the Harness said is part of what is finalized.
       const trailing = (yield* Ref.get(adapters)).get(input.runId)?.flush() ?? []
       for (const event of trailing) {
-        yield* apply({ relativePath: input.relativePath, runId: input.runId, event })
+        yield* apply({ sessionId: input.sessionId, runId: input.runId, event })
       }
       const open = yield* runStreams(input.runId)
       return yield* writeLock.withPermits(1)(
@@ -469,8 +441,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             })
           )
           yield* forgetRun(input.runId)
-          yield* renderDocument(sessionDir)
-          return yield* snapshot(input.relativePath, sessionDir)
+          return yield* snapshot(input.sessionId, sessionDir)
         })
       )
     })
@@ -494,7 +465,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       }
       const events = adapter.ingest(input.chunk)
       for (const event of events) {
-        yield* apply({ relativePath: input.relativePath, runId: input.runId, event })
+        yield* apply({ sessionId: input.sessionId, runId: input.runId, event })
       }
       return events
     })
@@ -595,7 +566,7 @@ function describeRecovery(
   }
 }
 
-function summarize(relativePath: string, entries: ConversationEntry[]): ConversationSnapshot {
+function summarize(sessionId: string, entries: ConversationEntry[]): ConversationSnapshot {
   let activeRunId: string | null = null
   let recovery: ConversationRecovery | null = null
   let latestRunUsage: HarnessUsage | null = null
@@ -618,43 +589,11 @@ function summarize(relativePath: string, entries: ConversationEntry[]): Conversa
     if (entry.kind === 'thread') harnessThreads[entry.harness] = entry.threadId
   }
   return {
-    relativePath: sessionRelativePathSchema.parse(relativePath),
+    sessionId,
     entries: entries.filter((entry) => entry.kind !== 'usage' && entry.kind !== 'thread'),
     usage: { run: latestRunUsage, session: sessionUsage },
     recovery,
     harnessThreads,
     activeRunId
   }
-}
-
-const BOUNDARY_LABEL: Record<Extract<ConversationEntry, { kind: 'boundary' }>['boundary'], string> =
-  {
-    'run-started': 'Run started',
-    'run-completed': 'Run completed',
-    'run-stopped': 'Run stopped',
-    'run-failed': 'Run failed',
-    configuration: 'Configuration changed'
-  }
-
-/**
- * Rewrites the portable Conversation body while preserving the document's
- * existing frontmatter, which carries its managed identity.
- */
-function renderConversation(existing: string, entries: ConversationEntry[]): string {
-  const frontmatter = existing.startsWith('---\n')
-    ? existing.slice(0, existing.indexOf('\n---\n') + 5)
-    : ''
-  const body = entries.flatMap((entry) => {
-    if (entry.kind === 'usage' || entry.kind === 'thread') return []
-    if (entry.kind === 'boundary') {
-      return [`_${BOUNDARY_LABEL[entry.boundary]} — ${entry.summary}_`, '']
-    }
-    const speaker = entry.role === 'user' ? 'You' : 'Assistant'
-    const label =
-      entry.completeness === 'partial'
-        ? ` _(partial — the Run ended before this message finished)_`
-        : ''
-    return [`## ${speaker}${label}`, '', entry.text.trim(), '']
-  })
-  return [frontmatter || '', '# Conversation', '', ...body].join('\n').replace(/\n{3,}/g, '\n\n')
 }

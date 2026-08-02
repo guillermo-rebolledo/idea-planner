@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -11,13 +11,15 @@ import { createCore, type Core } from './core'
  * survives a Stop, a failure, or a crash.
  */
 
-let libraryDir: string
+let stateDir: string
+let projectRoot: string
 let core: Core
-let relativePath: string
+let sessionId: string
 
 function makeCore(): Core {
   let tick = 0
   return createCore({
+    stateDirectory: stateDir,
     now: () => new Date(Date.UTC(2026, 6, 31, 12, 0, tick++)),
     randomId: (() => {
       let n = 0
@@ -29,7 +31,7 @@ function makeCore(): Core {
 async function startRun(prompt: string, submissionId: string): Promise<string> {
   const run = await core.acceptRun({
     submissionId,
-    relativePath,
+    sessionId,
     prompt,
     configuration: {
       harness: 'codex',
@@ -40,12 +42,12 @@ async function startRun(prompt: string, submissionId: string): Promise<string> {
       effort: 'medium',
       skill: { name: 'grilling', path: '/home/.agents/skills/grilling', hash: 'b'.repeat(64) },
       environment: {},
-      workingDirectory: join(libraryDir, relativePath),
+      workingDirectory: projectRoot,
       permissionMode: 'ask'
     }
   })
   await core.beginConversationRun({
-    relativePath,
+    sessionId,
     runId: run.id,
     submissionId,
     harness: 'codex',
@@ -57,7 +59,7 @@ async function startRun(prompt: string, submissionId: string): Promise<string> {
 
 async function stream(runId: string, events: HarnessEvent[]): Promise<void> {
   for (const event of events) {
-    await core.applyHarnessEvent({ relativePath, runId, event })
+    await core.applyHarnessEvent({ sessionId, runId, event })
   }
 }
 
@@ -66,20 +68,22 @@ function messages(entries: ConversationEntry[]): Extract<ConversationEntry, { ki
 }
 
 beforeEach(async () => {
-  libraryDir = await mkdtemp(join(tmpdir(), 'session-conversation-'))
+  stateDir = await mkdtemp(join(tmpdir(), 'session-conversation-state-'))
+  projectRoot = await mkdtemp(join(tmpdir(), 'session-conversation-project-'))
   core = makeCore()
-  await core.openLibrary(libraryDir)
-  const session = await core.captureSession({ title: 'Offline receipts', notes: '' })
-  relativePath = session.relativePath
+  await core.addProject(projectRoot)
+  const session = await core.startSession({ projectRoot, title: 'Offline receipts' })
+  sessionId = session.id
 })
 
 afterEach(async () => {
-  await rm(libraryDir, { recursive: true, force: true })
+  await rm(stateDir, { recursive: true, force: true })
+  await rm(projectRoot, { recursive: true, force: true })
 })
 
 describe('submitting to the Conversation', () => {
-  it('starts empty for a newly captured Session', async () => {
-    const snapshot = await core.getConversation(relativePath)
+  it('starts empty for a newly started Session', async () => {
+    const snapshot = await core.getConversation(sessionId)
     expect(snapshot.entries).toEqual([])
     expect(snapshot.activeRunId).toBeNull()
     expect(snapshot.usage.session.totalTokens).toBe(0)
@@ -87,7 +91,7 @@ describe('submitting to the Conversation', () => {
 
   it('accepts the user message locally before any Harness is contacted', async () => {
     const snapshot = await core.submitConversationMessage({
-      relativePath,
+      sessionId,
       submissionId: 'submission-1',
       text: 'Grill me about this Session',
       source: 'composer'
@@ -106,7 +110,7 @@ describe('submitting to the Conversation', () => {
 
   it('records a Suggested Response as an ordinary readable user message', async () => {
     const snapshot = await core.submitConversationMessage({
-      relativePath,
+      sessionId,
       submissionId: 'submission-1',
       text: 'Solo freelancers who invoice a handful of clients.',
       source: 'suggested-response'
@@ -122,7 +126,7 @@ describe('submitting to the Conversation', () => {
 
   it('is idempotent for a resent submission id', async () => {
     const input = {
-      relativePath,
+      sessionId,
       submissionId: 'submission-1',
       text: 'Grill me',
       source: 'composer' as const
@@ -134,14 +138,14 @@ describe('submitting to the Conversation', () => {
 
   it('rejects reusing a submission id for different content', async () => {
     await core.submitConversationMessage({
-      relativePath,
+      sessionId,
       submissionId: 'submission-1',
       text: 'Grill me',
       source: 'composer'
     })
     await expect(
       core.submitConversationMessage({
-        relativePath,
+        sessionId,
         submissionId: 'submission-1',
         text: 'Something else',
         source: 'composer'
@@ -153,7 +157,7 @@ describe('submitting to the Conversation', () => {
 describe('streaming a Run into the Conversation', () => {
   beforeEach(async () => {
     await core.submitConversationMessage({
-      relativePath,
+      sessionId,
       submissionId: 'submission-1',
       text: 'Grill me',
       source: 'composer'
@@ -162,7 +166,7 @@ describe('streaming a Run into the Conversation', () => {
 
   it('marks the Run boundary and reports the Run as active', async () => {
     const runId = await startRun('Grill me', 'submission-1')
-    const snapshot = await core.getConversation(relativePath)
+    const snapshot = await core.getConversation(sessionId)
     expect(snapshot.activeRunId).toBe(runId)
     expect(snapshot.entries.at(-1)).toMatchObject({
       kind: 'boundary',
@@ -178,13 +182,13 @@ describe('streaming a Run into the Conversation', () => {
       { type: 'assistant-message', id: 'item_0', text: 'Who is this for?', complete: true }
     ])
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'completed',
       category: null,
       summary: 'Harness process completed'
     })
-    const snapshot = await core.getConversation(relativePath)
+    const snapshot = await core.getConversation(sessionId)
     expect(messages(snapshot.entries).at(-1)).toMatchObject({
       role: 'assistant',
       text: 'Who is this for?',
@@ -199,13 +203,13 @@ describe('streaming a Run into the Conversation', () => {
       { type: 'assistant-message', id: 'item_0', text: 'Who is this f', complete: false }
     ])
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'stopped',
       category: null,
       summary: 'Run stopped by user'
     })
-    const snapshot = await core.getConversation(relativePath)
+    const snapshot = await core.getConversation(sessionId)
     expect(messages(snapshot.entries).at(-1)).toMatchObject({
       role: 'assistant',
       text: 'Who is this f',
@@ -225,13 +229,13 @@ describe('streaming a Run into the Conversation', () => {
       }
     ])
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'completed',
       category: null,
       summary: 'Harness process completed'
     })
-    const snapshot = await core.getConversation(relativePath)
+    const snapshot = await core.getConversation(sessionId)
     expect(messages(snapshot.entries).at(-1)?.suggestedResponses).toEqual([
       { id: 'option-1', label: 'Solo freelancers', value: 'Solo freelancers.' }
     ])
@@ -248,35 +252,37 @@ describe('streaming a Run into the Conversation', () => {
       }
     ])
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'completed',
       category: null,
       summary: 'Harness process completed'
     })
-    const last = messages((await core.getConversation(relativePath)).entries).at(-1)
+    const last = messages((await core.getConversation(sessionId)).entries).at(-1)
     expect(last?.suggestedResponses).toEqual([])
     expect(last?.plainOptions).toBe(true)
   })
 
-  it('keeps reasoning summaries and tool activity out of portable Conversation content', async () => {
+  it('keeps reasoning summaries and tool activity out of Conversation content', async () => {
     const runId = await startRun('Grill me', 'submission-1')
     await stream(runId, [
       { type: 'reasoning', summary: 'Reading the Session first.' },
-      { type: 'tool', name: 'app.read_file', summary: 'Read file session.md' },
+      { type: 'tool', name: 'app.read_file', summary: 'Read file source.ts' },
       { type: 'assistant-message', id: 'item_0', text: 'Who is this for?', complete: true }
     ])
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'completed',
       category: null,
       summary: 'Harness process completed'
     })
-    const markdown = await readFile(join(libraryDir, relativePath, 'conversation.md'), 'utf8')
-    expect(markdown).toContain('Who is this for?')
-    expect(markdown).not.toContain('Reading the Session first.')
-    expect(markdown).not.toContain('read_file')
+    const said = (await core.getConversation(sessionId)).entries.map((entry) =>
+      entry.kind === 'message' ? entry.text : entry.kind === 'boundary' ? entry.summary : ''
+    )
+    expect(said).toContain('Who is this for?')
+    expect(said.join('\n')).not.toContain('Reading the Session first.')
+    expect(said.join('\n')).not.toContain('read_file')
   })
 
   it('keeps every assistant message a Run produced, in order', async () => {
@@ -286,13 +292,13 @@ describe('streaming a Run into the Conversation', () => {
       { type: 'assistant-message', id: 'item_2', text: 'Who is this for?', complete: true }
     ])
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'completed',
       category: null,
       summary: 'Harness process completed'
     })
-    const assistant = messages((await core.getConversation(relativePath)).entries).filter(
+    const assistant = messages((await core.getConversation(sessionId)).entries).filter(
       (entry) => entry.role === 'assistant'
     )
     expect(assistant.map((entry) => entry.text)).toEqual([
@@ -313,13 +319,13 @@ describe('streaming a Run into the Conversation', () => {
       }
     ])
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'completed',
       category: null,
       summary: 'Harness process completed'
     })
-    const assistant = messages((await core.getConversation(relativePath)).entries).filter(
+    const assistant = messages((await core.getConversation(sessionId)).entries).filter(
       (entry) => entry.role === 'assistant'
     )
     expect(assistant.at(-1)?.suggestedResponses).toHaveLength(1)
@@ -341,14 +347,14 @@ describe('streaming a Run into the Conversation', () => {
       }
     ])
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId: first,
       outcome: 'completed',
       category: null,
       summary: 'Harness process completed'
     })
     await core.submitConversationMessage({
-      relativePath,
+      sessionId,
       submissionId: 'submission-2',
       text: 'Small agencies.',
       source: 'suggested-response'
@@ -366,7 +372,7 @@ describe('streaming a Run into the Conversation', () => {
         }
       }
     ])
-    const snapshot = await core.getConversation(relativePath)
+    const snapshot = await core.getConversation(sessionId)
     expect(snapshot.usage.run).toMatchObject({ totalTokens: 340, contextUsed: 340 })
     expect(snapshot.usage.session).toMatchObject({ totalTokens: 460, contextWindow: 272_000 })
   })
@@ -382,7 +388,7 @@ describe('streaming a Run into the Conversation', () => {
       },
       { type: 'completed' }
     ])
-    const snapshot = await core.getConversation(relativePath)
+    const snapshot = await core.getConversation(sessionId)
     expect(snapshot.harnessThreads).toEqual({ codex: 'thread-1' })
     expect(snapshot.entries.some((entry) => entry.kind === 'thread')).toBe(false)
   })
@@ -391,7 +397,7 @@ describe('streaming a Run into the Conversation', () => {
 describe('ingesting raw Harness output', () => {
   beforeEach(async () => {
     await core.submitConversationMessage({
-      relativePath,
+      sessionId,
       submissionId: 'submission-1',
       text: 'Grill me',
       source: 'composer'
@@ -406,19 +412,17 @@ describe('ingesting raw Harness output', () => {
     ]
     const seen = []
     for (const chunk of lines) {
-      seen.push(
-        ...(await core.ingestHarnessOutput({ relativePath, runId, harness: 'codex', chunk }))
-      )
+      seen.push(...(await core.ingestHarnessOutput({ sessionId, runId, harness: 'codex', chunk })))
     }
     expect(seen.at(-1)).toEqual({ type: 'completed' })
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'completed',
       category: null,
       summary: 'Harness process completed'
     })
-    expect(messages((await core.getConversation(relativePath)).entries).at(-1)).toMatchObject({
+    expect(messages((await core.getConversation(sessionId)).entries).at(-1)).toMatchObject({
       role: 'assistant',
       text: 'Who is this for?',
       completeness: 'complete'
@@ -430,19 +434,19 @@ describe('ingesting raw Harness output', () => {
     // A Harness whose protocol this app does not model: the process is
     // perfectly happy and exits zero, but nothing usable ever arrives.
     await core.ingestHarnessOutput({
-      relativePath,
+      sessionId,
       runId,
       harness: 'codex',
       chunk: '{"type":"some.future.event"}\n{"type":"another.one"}\n'
     })
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'completed',
       category: null,
       summary: 'Harness process completed'
     })
-    expect((await core.getConversation(relativePath)).recovery).toMatchObject({
+    expect((await core.getConversation(sessionId)).recovery).toMatchObject({
       category: 'protocol-unsupported'
     })
   })
@@ -450,20 +454,20 @@ describe('ingesting raw Harness output', () => {
   it('stays silent when a Run it could read completes normally', async () => {
     const runId = await startRun('Grill me', 'submission-1')
     await core.ingestHarnessOutput({
-      relativePath,
+      sessionId,
       runId,
       harness: 'codex',
       chunk:
         '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Who is this for?"}}\n'
     })
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'completed',
       category: null,
       summary: 'Harness process completed'
     })
-    expect((await core.getConversation(relativePath)).recovery).toBeNull()
+    expect((await core.getConversation(sessionId)).recovery).toBeNull()
   })
 
   it('reports what the Harness said rather than blaming its protocol', async () => {
@@ -471,19 +475,19 @@ describe('ingesting raw Harness output', () => {
     // Unmodelled protocol arrived, but the Harness also said why it failed.
     // The stated cause is the one the person can act on.
     await core.ingestHarnessOutput({
-      relativePath,
+      sessionId,
       runId,
       harness: 'codex',
       chunk: '{"type":"some.future.event"}\n'
     })
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'failed',
       category: 'authentication',
       summary: 'The Harness reports it is no longer signed in'
     })
-    expect((await core.getConversation(relativePath)).recovery).toMatchObject({
+    expect((await core.getConversation(sessionId)).recovery).toMatchObject({
       category: 'authentication'
     })
   })
@@ -491,19 +495,19 @@ describe('ingesting raw Harness output', () => {
   it('keeps a stop a stop, whatever protocol arrived first', async () => {
     const runId = await startRun('Grill me', 'submission-1')
     await core.ingestHarnessOutput({
-      relativePath,
+      sessionId,
       runId,
       harness: 'codex',
       chunk: '{"type":"some.future.event"}\n'
     })
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'stopped',
       category: null,
       summary: 'Run stopped by user'
     })
-    expect((await core.getConversation(relativePath)).recovery).toMatchObject({
+    expect((await core.getConversation(sessionId)).recovery).toMatchObject({
       category: 'stopped'
     })
   })
@@ -511,7 +515,7 @@ describe('ingesting raw Harness output', () => {
   it('gives Claude the same durable Conversation behavior as Codex', async () => {
     const run = await core.acceptRun({
       submissionId: 'submission-1',
-      relativePath,
+      sessionId,
       prompt: 'Develop this',
       configuration: {
         harness: 'claude',
@@ -522,12 +526,12 @@ describe('ingesting raw Harness output', () => {
         effort: 'medium',
         skill: { name: 'wayfinder', path: '/home/.claude/skills/wayfinder', hash: 'b'.repeat(64) },
         environment: {},
-        workingDirectory: join(libraryDir, relativePath),
+        workingDirectory: projectRoot,
         permissionMode: 'ask'
       }
     })
     await core.beginConversationRun({
-      relativePath,
+      sessionId,
       runId: run.id,
       submissionId: 'submission-1',
       harness: 'claude',
@@ -536,7 +540,7 @@ describe('ingesting raw Harness output', () => {
     })
     const runId = run.id
     const seen = await core.ingestHarnessOutput({
-      relativePath,
+      sessionId,
       runId,
       harness: 'claude',
       chunk:
@@ -544,13 +548,13 @@ describe('ingesting raw Harness output', () => {
     })
     expect(seen.at(-1)).toEqual({ type: 'completed' })
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'completed',
       category: null,
       summary: 'Harness process completed'
     })
-    expect(messages((await core.getConversation(relativePath)).entries).at(-1)).toMatchObject({
+    expect(messages((await core.getConversation(sessionId)).entries).at(-1)).toMatchObject({
       role: 'assistant',
       text: 'What decision is blocking this Session?',
       completeness: 'complete'
@@ -561,7 +565,7 @@ describe('ingesting raw Harness output', () => {
 describe('recovering from a Run that ended badly', () => {
   beforeEach(async () => {
     await core.submitConversationMessage({
-      relativePath,
+      sessionId,
       submissionId: 'submission-1',
       text: 'Grill me',
       source: 'composer'
@@ -572,13 +576,13 @@ describe('recovering from a Run that ended badly', () => {
     const runId = await startRun('Grill me', 'submission-1')
     await stream(runId, [{ type: 'assistant-message', id: 'item_0', text: 'Who', complete: false }])
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'failed',
       category: 'authentication',
       summary: 'The Harness reports it is no longer signed in'
     })
-    const snapshot = await core.getConversation(relativePath)
+    const snapshot = await core.getConversation(sessionId)
     expect(snapshot.recovery).toMatchObject({
       category: 'authentication',
       resumableSubmissionId: 'submission-1'
@@ -590,13 +594,13 @@ describe('recovering from a Run that ended badly', () => {
     const runId = await startRun('Grill me', 'submission-1')
     await stream(runId, [{ type: 'assistant-message', id: 'item_0', text: 'Who', complete: false }])
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'failed',
       category: 'context-exhausted',
       summary: 'The Run ran out of context'
     })
-    expect((await core.getConversation(relativePath)).recovery).toMatchObject({
+    expect((await core.getConversation(sessionId)).recovery).toMatchObject({
       category: 'context-exhausted',
       resumableSubmissionId: null
     })
@@ -605,13 +609,13 @@ describe('recovering from a Run that ended badly', () => {
   it('calls a failure with no Harness output an uncertain submission', async () => {
     const runId = await startRun('Grill me', 'submission-1')
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId,
       outcome: 'failed',
       category: 'process-crash',
       summary: 'Harness process failed'
     })
-    expect((await core.getConversation(relativePath)).recovery).toMatchObject({
+    expect((await core.getConversation(sessionId)).recovery).toMatchObject({
       category: 'uncertain-submission',
       resumableSubmissionId: 'submission-1'
     })
@@ -620,20 +624,20 @@ describe('recovering from a Run that ended badly', () => {
   it('clears the previous recovery once the next Run starts', async () => {
     const first = await startRun('Grill me', 'submission-1')
     await core.finalizeConversationRun({
-      relativePath,
+      sessionId,
       runId: first,
       outcome: 'failed',
       category: 'rate-limit',
       summary: 'The Harness is rate limiting this account'
     })
     await core.submitConversationMessage({
-      relativePath,
+      sessionId,
       submissionId: 'submission-2',
       text: 'Try again',
       source: 'composer'
     })
     await startRun('Try again', 'submission-2')
-    expect((await core.getConversation(relativePath)).recovery).toBeNull()
+    expect((await core.getConversation(sessionId)).recovery).toBeNull()
   })
 
   it('keeps history readable after a crash mid-stream', async () => {
@@ -644,8 +648,7 @@ describe('recovering from a Run that ended badly', () => {
     // A crash means nothing finalizes the Run: a fresh Core must still read
     // the durable history and see the interrupted work labelled.
     const restarted = makeCore()
-    await restarted.openLibrary(libraryDir)
-    const snapshot = await restarted.getConversation(relativePath)
+    const snapshot = await restarted.getConversation(sessionId)
     expect(messages(snapshot.entries).at(-1)).toMatchObject({
       role: 'assistant',
       text: 'Who is this f',

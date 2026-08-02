@@ -12,6 +12,12 @@ The target Project is displayed prominently in the composer rather than tucked i
 - **Renaming `workingDirectory` to `checkout`.** Tickets 03 and 04 both declined it because the field held a Session's own folder rather than a checkout of anything. Once a Session works against its Project's primary checkout, the name is true.
 - **Retiring the capture form.** A Session is created on send, from a message — not from a title and notes saved for later.
 
+## Two things ticket 05a left for the composer
+
+`suggestSessionTitle` was deleted in 05a: with notes gone it had no caller, and dead code is dead code. A composer that derives a Session title from the first message will want it back — it is one `git show` away rather than something to write again.
+
+`listDamagedSessions` exists in Core and is contract-tested, but reaches no channel and no surface. A Session whose record could not be read is reported rather than hidden precisely so it can be shown; deciding where belongs with the surface.
+
 **Blocked by:** 05a
 
 **Status:** ready-for-agent

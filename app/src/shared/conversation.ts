@@ -1,5 +1,4 @@
 import { z } from 'zod'
-import { sessionRelativePathSchema } from './portable-path'
 import { harnessIdSchema } from './readiness'
 import { permissionModeSchema, skillNameSchema } from './run'
 
@@ -8,10 +7,10 @@ import { permissionModeSchema, skillNameSchema } from './run'
  * the normalized harness event contract is the only thing allowed to change it.
  *
  * Every harness Adapter translates its Harness's protocol into these events,
- * so Core, Main, and the Renderer never see raw Harness frames. Portable
- * Conversation content holds user and assistant messages plus visible Run
- * boundaries; reasoning summaries, tool activity, and diagnostics stay in the
- * separate sanitized activity stream.
+ * so Core, Main, and the Renderer never see raw Harness frames. Conversation
+ * content holds user and assistant messages plus visible Run boundaries;
+ * reasoning summaries, tool activity, and diagnostics stay in the separate
+ * sanitized activity stream.
  */
 
 export const suggestedResponseSchema = z.object({
@@ -46,7 +45,7 @@ export type HarnessUsage = z.infer<typeof harnessUsageSchema>
 /**
  * One normalized Harness event. `unsupported` is how an Adapter reports a
  * frame it does not model: unknown protocol never fails a Run and never
- * reaches portable Conversation content.
+ * reaches Conversation content.
  */
 export const harnessEventSchema = z.discriminatedUnion('type', [
   /**
@@ -179,7 +178,7 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
 export type ConversationEntry = z.infer<typeof conversationEntrySchema>
 
 export const conversationSnapshotSchema = z.object({
-  relativePath: sessionRelativePathSchema,
+  sessionId: z.string().min(1),
   entries: z.array(conversationEntrySchema),
   /** Usage for the most recent Run, and the Session's running total. */
   usage: z.object({ run: harnessUsageSchema.nullable(), session: harnessUsageSchema }),
@@ -195,7 +194,7 @@ export const conversationSnapshotSchema = z.object({
 export type ConversationSnapshot = z.infer<typeof conversationSnapshotSchema>
 
 export const submitConversationMessageInputSchema = z.object({
-  relativePath: sessionRelativePathSchema,
+  sessionId: z.string().min(1),
   submissionId: z
     .string()
     .min(1)
@@ -217,7 +216,7 @@ export const developSessionInputSchema = submitConversationMessageInputSchema.ex
 export type DevelopSessionInput = z.infer<typeof developSessionInputSchema>
 
 export const finalizeConversationRunInputSchema = z.object({
-  relativePath: sessionRelativePathSchema,
+  sessionId: z.string().min(1),
   runId: z.string().min(1),
   outcome: z.enum(['completed', 'stopped', 'failed', 'policy-violation', 'supervision-failed']),
   category: harnessFailureCategorySchema.nullable(),
@@ -227,7 +226,7 @@ export type FinalizeConversationRunInput = z.infer<typeof finalizeConversationRu
 
 /** Pushed to the Renderer as it happens, ahead of any durable projection. */
 export const conversationStreamEventSchema = z.object({
-  relativePath: sessionRelativePathSchema,
+  sessionId: z.string().min(1),
   runId: z.string().min(1),
   event: harnessEventSchema
 })

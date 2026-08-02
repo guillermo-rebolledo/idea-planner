@@ -1,35 +1,32 @@
 import { useEffect, useId, useState } from 'react'
-import { ShieldAlert } from 'lucide-react'
-import type { SessionSummary, ReadinessSnapshot } from '@shared/contract'
-import { suggestSessionTitle } from '@shared/title'
+import type { ProjectView, ReadinessSnapshot, SessionSummary } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
-import { Textarea } from '@renderer/components/ui/textarea'
 
 interface CaptureFormProps {
-  onSaved: (session: SessionSummary) => void
+  onStarted: (session: SessionSummary) => void
   onCancel: () => void
   onShowReadiness: () => void
 }
 
 /**
- * New Session capture. Save for later persists locally without any Harness
- * readiness. The title is a deterministic local suggestion until the person
- * edits it themselves.
+ * Starting a Session. A Session belongs to a Project, so the Project is chosen
+ * here and nothing is written into it. Ticket 05b replaces this form with the
+ * composer on the Project row.
  */
 export function CaptureForm({
-  onSaved,
+  onStarted,
   onCancel,
   onShowReadiness
 }: CaptureFormProps): React.JSX.Element {
-  const [notes, setNotes] = useState('')
   const [title, setTitle] = useState('')
-  const [titleEdited, setTitleEdited] = useState(false)
+  const [projects, setProjects] = useState<ProjectView[]>([])
+  const [projectRoot, setProjectRoot] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const titleId = useId()
-  const notesId = useId()
+  const projectId = useId()
   // The same readiness the person saw in onboarding and Settings, restated
   // immediately before any Run could be started from this Session.
   const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
@@ -43,6 +40,14 @@ export function CaptureForm({
     // reflects the machine as it is now, not as it was at launch.
     window.shell.getReadiness().then(adopt, () => undefined)
     window.shell.refreshReadiness().then(adopt, () => undefined)
+    window.shell.listProjects().then(
+      (known) => {
+        if (disposed) return
+        setProjects(known)
+        setProjectRoot((current) => current || (known[0]?.root ?? ''))
+      },
+      () => undefined
+    )
     return () => {
       disposed = true
     }
@@ -50,18 +55,14 @@ export function CaptureForm({
 
   const readyHarnesses = readiness?.harnesses.filter((harness) => harness.available) ?? []
 
-  function handleNotesChange(value: string): void {
-    setNotes(value)
-    if (!titleEdited) setTitle(value.trim() ? suggestSessionTitle(value) : '')
-  }
-
   async function save(): Promise<void> {
+    if (!projectRoot || !title.trim()) return
     setSaving(true)
     setError(null)
     try {
-      onSaved(await window.shell.captureSession({ title, notes }))
+      onStarted(await window.shell.startSession({ projectRoot, title: title.trim() }))
     } catch {
-      setError('The Session could not be saved. Nothing was lost — try again.')
+      setError('The Session could not be started. Nothing was changed — try again.')
       setSaving(false)
     }
   }
@@ -84,49 +85,42 @@ export function CaptureForm({
     >
       <h2 className="text-base font-semibold">New Session</h2>
 
-      <div
-        className="flex items-start gap-2 rounded-md border border-notice-border bg-notice px-3 py-2 text-notice-foreground"
-        role="note"
-      >
-        <ShieldAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
-        <p className="text-xs leading-relaxed">
-          Don&rsquo;t include passwords, API keys, or other secrets. Sessions are saved as plain
-          Markdown files on your Mac.
-        </p>
-      </div>
-
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor={notesId}>What&rsquo;s this Session about?</Label>
-        <Textarea
-          id={notesId}
-          rows={6}
-          // Capture-first: this view exists only because the person chose to
-          // start a Session, so the notes field takes focus deliberately.
-          // eslint-disable-next-line jsx-a11y/no-autofocus
-          autoFocus
-          value={notes}
-          onChange={(event) => handleNotesChange(event.target.value)}
-          placeholder="Capture the rough thought. You can develop it with a Harness later — or never."
+        <Label htmlFor={projectId}>Project</Label>
+        <select
+          id={projectId}
+          value={projectRoot}
+          onChange={(event) => setProjectRoot(event.target.value)}
           disabled={saving}
-        />
+          className="h-8 rounded-md border border-border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {projects.map((project) => (
+            <option key={project.root} value={project.root}>
+              {project.name}
+            </option>
+          ))}
+        </select>
+        {/* The exact directory the Session works in, never abbreviated away. */}
+        {projectRoot && (
+          <p className="font-mono text-xs break-all text-muted-foreground select-text">
+            {projectRoot}
+          </p>
+        )}
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor={titleId}>Title</Label>
+        <Label htmlFor={titleId}>What are you working on?</Label>
         <Input
           id={titleId}
+          // The person opened this view deliberately, so the first field takes
+          // focus rather than making them reach for it.
+          // eslint-disable-next-line jsx-a11y/no-autofocus
+          autoFocus
           value={title}
-          onChange={(event) => {
-            setTitle(event.target.value)
-            setTitleEdited(true)
-          }}
-          placeholder="Untitled Session"
+          onChange={(event) => setTitle(event.target.value)}
+          placeholder="Fix the failing build"
           disabled={saving}
-          aria-description="Suggested automatically from your notes. Edit it freely."
         />
-        {!titleEdited && title && (
-          <p className="text-xs text-muted-foreground">Suggested from your notes — edit freely.</p>
-        )}
       </div>
 
       {error && (
@@ -136,13 +130,15 @@ export function CaptureForm({
       )}
 
       <div className="flex items-center gap-2">
-        <Button type="submit" disabled={saving}>
-          {saving ? 'Saving…' : 'Save for later'}
+        <Button type="submit" disabled={saving || !projectRoot || !title.trim()}>
+          {saving ? 'Starting…' : 'Start Session'}
         </Button>
         <Button variant="ghost" onClick={onCancel} disabled={saving}>
           Cancel
         </Button>
-        <p className="ml-auto text-xs text-muted-foreground">Saves locally. No Run starts.</p>
+        <p className="ml-auto text-xs text-muted-foreground">
+          Nothing is written into your Project.
+        </p>
       </div>
 
       <p className="text-xs text-muted-foreground">
@@ -150,7 +146,7 @@ export function CaptureForm({
           ? 'Checking Harness readiness…'
           : readyHarnesses.length > 0
             ? `Ready Harnesses: ${readyHarnesses.map((harness) => harness.displayName).join(', ')}.`
-            : 'No Harness is ready — this Session saves in capture-only mode.'}{' '}
+            : 'No Harness is ready, so this Session cannot start a Run yet.'}{' '}
         <button
           type="button"
           className="underline underline-offset-2 hover:text-foreground"

@@ -14,11 +14,17 @@ type Refusal = Extract<ChooseProjectResult, { status: 'refused' }>
 type RootConfirmation = Extract<ChooseProjectResult, { status: 'confirm-root' }>
 
 /**
- * The Projects section of the sidebar. A Project is a local git repository the
- * person added; git decides whether a folder qualifies and what its root is
- * (ADR 0005), so this surface only ever offers folders and reports answers.
+ * The Projects section, used both in the sidebar and as the first step of
+ * onboarding. A Project is a local git repository the person added; git
+ * decides whether a folder qualifies and what its root is (ADR 0005), so this
+ * surface only ever offers folders and reports answers.
  */
-export function Projects(): React.JSX.Element {
+export function Projects({
+  onProjectsChanged
+}: {
+  /** Lets a host surface react to the list, such as leaving onboarding. */
+  onProjectsChanged?: (projects: ProjectView[]) => void
+} = {}): React.JSX.Element {
   const [list, setList] = useState<ProjectList>({ state: 'loading' })
   const [refusal, setRefusal] = useState<Refusal | null>(null)
   const [confirmation, setConfirmation] = useState<RootConfirmation | null>(null)
@@ -31,11 +37,13 @@ export function Projects(): React.JSX.Element {
 
   const refresh = useCallback(async () => {
     try {
-      setList({ state: 'ready', projects: await window.shell.listProjects() })
+      const projects = await window.shell.listProjects()
+      setList({ state: 'ready', projects })
+      onProjectsChanged?.(projects)
     } catch {
       setList({ state: 'failed' })
     }
-  }, [])
+  }, [onProjectsChanged])
 
   useEffect(() => {
     void refresh()

@@ -10,7 +10,6 @@ import {
 import { harnessIdSchema } from './readiness'
 import type { ChooseExecutableResult, HarnessId, ReadinessSnapshot } from './readiness'
 import type { ChooseProjectResult, ProjectView } from './project'
-import { sessionRelativePathSchema, type SessionRelativePath } from './portable-path'
 import {
   acceptRunInputSchema,
   recordRunEventInputSchema,
@@ -28,43 +27,18 @@ import {
 export const CONTRACT_VERSION = 2
 
 export const sessionSummarySchema = z.object({
+  /** Opaque identity. A Session is app-owned state, never a path. */
   id: z.string().min(1),
+  /** The Project this Session works against, by the root git resolved. */
+  projectRoot: z.string().min(1),
   title: z.string().min(1),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
-  /** Path of the Session's folder relative to the library root. */
-  relativePath: z.string().min(1),
-  // Defaults keep summaries persisted before these fields existed readable.
   pinned: z.boolean().default(false),
-  /** When set, the Session is archived in place; canonical files never move. */
+  /** When set, the Session is archived; nothing about it moves. */
   archivedAt: z.string().datetime().nullable().default(null)
 })
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
-
-export const managedDocumentSchema = z.object({
-  id: z.string().min(1),
-  kind: z.enum(['root', 'conversation']),
-  path: z.string().min(1)
-})
-export type ManagedDocument = z.infer<typeof managedDocumentSchema>
-
-export const openedSessionSchema = z.object({
-  session: sessionSummarySchema,
-  documents: z.object({
-    root: managedDocumentSchema,
-    conversation: managedDocumentSchema
-  })
-})
-export type OpenedSession = z.infer<typeof openedSessionSchema>
-
-export const librarySnapshotSchema = z.object({
-  path: z.string().min(1),
-  sessions: z.array(sessionSummarySchema)
-})
-export type LibrarySnapshot = z.infer<typeof librarySnapshotSchema>
-
-export { sessionRelativePathSchema }
-export type { SessionRelativePath }
 
 export const mailboxViewSchema = z.enum(['active', 'archived'])
 export type MailboxView = z.infer<typeof mailboxViewSchema>
@@ -108,56 +82,28 @@ export const mailboxSnapshotSchema = z.object({
   total: z.number().int().nonnegative(),
   /** Sessions matching the search across all groups. */
   matched: z.number().int().nonnegative(),
-  /** Whether this answer required rebuilding the disposable search index. */
-  index: z.enum(['ready', 'rebuilt']),
   groups: z.array(mailboxGroupSchema)
 })
 export type MailboxSnapshot = z.infer<typeof mailboxSnapshotSchema>
 
 export const setSessionPinnedInputSchema = z.object({
-  relativePath: z.string().min(1),
+  sessionId: z.string().min(1),
   pinned: z.boolean()
 })
 export type SetSessionPinnedInput = z.infer<typeof setSessionPinnedInputSchema>
 
 export const setSessionArchivedInputSchema = z.object({
-  relativePath: z.string().min(1),
+  sessionId: z.string().min(1),
   archived: z.boolean()
 })
 export type SetSessionArchivedInput = z.infer<typeof setSessionArchivedInputSchema>
 
-export const deleteSessionPreviewSchema = z.object({
-  relativePath: z.string().min(1),
-  title: z.string().min(1),
-  /** Library-relative app-owned paths that permanent delete moves to Trash. */
-  targets: z.array(z.string().min(1)),
-  /** Library-relative content inside the folder that is kept untouched. */
-  keeps: z.array(z.string().min(1))
+export const startSessionInputSchema = z.object({
+  /** The Project the Session works against, by the root git resolved. */
+  projectRoot: z.string().min(1),
+  title: z.string().min(1)
 })
-export type DeleteSessionPreview = z.infer<typeof deleteSessionPreviewSchema>
-
-export const deleteSessionInputSchema = z.object({
-  relativePath: z.string().min(1),
-  /**
-   * The exact previewed targets to move to Trash. Delete acts only on what
-   * the person confirmed, so a retry after a partial failure can finish the
-   * remaining targets even when the Session itself is no longer recognizable.
-   */
-  targets: z.array(z.string().min(1)).min(1)
-})
-export type DeleteSessionInput = z.infer<typeof deleteSessionInputSchema>
-
-export const deleteSessionResultSchema = z.object({
-  trashed: z.array(z.string().min(1)),
-  failed: z.array(z.object({ path: z.string().min(1), message: z.string() }))
-})
-export type DeleteSessionResult = z.infer<typeof deleteSessionResultSchema>
-
-export const captureSessionInputSchema = z.object({
-  title: z.string().max(300),
-  notes: z.string().max(100_000)
-})
-export type CaptureSessionInput = z.infer<typeof captureSessionInputSchema>
+export type StartSessionInput = z.infer<typeof startSessionInputSchema>
 
 export const themePreferenceSchema = z.enum(['system', 'light', 'dark'])
 export type ThemePreference = z.infer<typeof themePreferenceSchema>
@@ -174,21 +120,11 @@ export type ThemeState = z.infer<typeof themeStateSchema>
 export const bootStateSchema = z.object({
   contractVersion: z.literal(CONTRACT_VERSION),
   appVersion: z.string(),
-  theme: themeStateSchema,
-  library: librarySnapshotSchema.nullable()
+  theme: themeStateSchema
 })
 export type BootState = z.infer<typeof bootStateSchema>
 
-export const chooseLibraryResultSchema = z.union([
-  z.object({ canceled: z.literal(true) }),
-  z.object({ canceled: z.literal(false), path: z.string().min(1) })
-])
-export type ChooseLibraryResult = z.infer<typeof chooseLibraryResultSchema>
-
 export const coreErrorCodeSchema = z.enum([
-  'LIBRARY_MISSING',
-  'NOT_A_DIRECTORY',
-  'NO_LIBRARY_OPEN',
   'SESSION_NOT_FOUND',
   'INVALID_INPUT',
   'IO_ERROR',
@@ -209,35 +145,34 @@ export class CoreError extends Error {
 
 /** Commands Main may send to the Core utility process. */
 export const coreCommandSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('library/open'), path: z.string().min(1) }),
   // Main probes with git and hands over the resolved root; Core decides
   // identity, duplication, and persistence (ADR 0005).
   z.object({ type: z.literal('project/add'), root: z.string().min(1) }),
   z.object({ type: z.literal('project/list') }),
   z.object({ type: z.literal('project/remove'), root: z.string().min(1) }),
-  z.object({ type: z.literal('session/capture'), input: captureSessionInputSchema }),
-  z.object({ type: z.literal('session/open'), relativePath: sessionRelativePathSchema }),
+  z.object({ type: z.literal('session/start'), input: startSessionInputSchema }),
   z.object({ type: z.literal('session/list') }),
+  z.object({ type: z.literal('session/get'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('mailbox/query'), query: mailboxCoreQuerySchema }),
   z.object({
     type: z.literal('session/set-pinned'),
-    relativePath: sessionRelativePathSchema,
+    sessionId: z.string().min(1),
     pinned: z.boolean()
   }),
   z.object({
     type: z.literal('session/set-archived'),
-    relativePath: sessionRelativePathSchema,
+    sessionId: z.string().min(1),
     archived: z.boolean()
   }),
-  z.object({ type: z.literal('session/delete-preview'), relativePath: sessionRelativePathSchema }),
+  z.object({ type: z.literal('session/delete'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('run/accept'), input: acceptRunInputSchema }),
-  z.object({ type: z.literal('run/list'), relativePath: sessionRelativePathSchema }),
+  z.object({ type: z.literal('run/list'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('run/event'), input: recordRunEventInputSchema }),
-  z.object({ type: z.literal('conversation/get'), relativePath: sessionRelativePathSchema }),
+  z.object({ type: z.literal('conversation/get'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('conversation/submit'), input: submitConversationMessageInputSchema }),
   z.object({
     type: z.literal('conversation/begin'),
-    relativePath: sessionRelativePathSchema,
+    sessionId: z.string().min(1),
     runId: z.string().min(1),
     submissionId: z.string().min(1),
     harness: harnessIdSchema.optional(),
@@ -247,14 +182,14 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('conversation/ingest'),
-    relativePath: sessionRelativePathSchema,
+    sessionId: z.string().min(1),
     runId: z.string().min(1),
     harness: harnessIdSchema,
     chunk: z.string()
   }),
   z.object({
     type: z.literal('conversation/apply'),
-    relativePath: sessionRelativePathSchema,
+    sessionId: z.string().min(1),
     runId: z.string().min(1),
     event: harnessEventSchema
   }),
@@ -285,10 +220,6 @@ export type CoreResponse = z.infer<typeof coreResponseSchema>
 /** The complete surface Preload exposes to the sandboxed Renderer. */
 export interface ShellApi {
   getBootState(): Promise<BootState>
-  /** Opens the native picker. Reads nothing and writes nothing. */
-  chooseLibraryLocation(): Promise<ChooseLibraryResult>
-  /** Opens (and remembers) the confirmed library location. */
-  openLibrary(path: string): Promise<LibrarySnapshot>
   /**
    * Opens the native picker and offers the chosen folder as a Project. Git
    * decides whether it qualifies and what its root is.
@@ -303,16 +234,14 @@ export interface ShellApi {
    */
   initializeProject(path: string): Promise<ChooseProjectResult>
   confirmProject(root: string): Promise<ChooseProjectResult>
-  captureSession(input: CaptureSessionInput): Promise<SessionSummary>
-  openSession(relativePath: SessionRelativePath): Promise<OpenedSession>
+  /** Starts a Session against a Project. Nothing is written into the Project. */
+  startSession(input: StartSessionInput): Promise<SessionSummary>
   listSessions(): Promise<SessionSummary[]>
   queryMailbox(query: MailboxQuery): Promise<MailboxSnapshot>
   setSessionPinned(input: SetSessionPinnedInput): Promise<SessionSummary>
   setSessionArchived(input: SetSessionArchivedInput): Promise<SessionSummary>
-  /** Enumerates the exact app-owned targets before any permanent delete. */
-  previewDeleteSession(relativePath: SessionRelativePath): Promise<DeleteSessionPreview>
-  /** Moves only the previewed, confirmed app-owned targets to the macOS Trash. */
-  deleteSessionPermanently(input: DeleteSessionInput): Promise<DeleteSessionResult>
+  /** Forgets the Session and its history. The Project is never touched. */
+  deleteSession(sessionId: string): Promise<void>
   setThemePreference(preference: ThemePreference): Promise<ThemeState>
   onThemeChanged(listener: (theme: ThemeState) => void): () => void
   /** Returns the latest readiness snapshot, probing on first demand. */
@@ -328,10 +257,10 @@ export interface ShellApi {
   /** Opens one of the fixed readiness-guidance URLs in the default browser. */
   openExternalLink(url: string): Promise<void>
   startRun(input: StartRunInput): Promise<RunSnapshot>
-  listRuns(relativePath: SessionRelativePath): Promise<RunSnapshot[]>
+  listRuns(sessionId: string): Promise<RunSnapshot[]>
   stopRun(input: StopRunInput): Promise<RunSnapshot>
   /** The Session's permanent Conversation, including partial and recovery state. */
-  getConversation(relativePath: SessionRelativePath): Promise<ConversationSnapshot>
+  getConversation(sessionId: string): Promise<ConversationSnapshot>
   /**
    * Accepts the user message durably, then starts one Run for it. The message
    * survives even when the Run never reaches the Harness.

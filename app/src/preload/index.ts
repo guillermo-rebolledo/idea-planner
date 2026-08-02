@@ -9,23 +9,17 @@ import type { ConversationStreamEvent, ShellApi, ThemeState } from '@shared/cont
  */
 const api: ShellApi = {
   getBootState: () => ipcRenderer.invoke(IPC_CHANNELS.bootState),
-  chooseLibraryLocation: () => ipcRenderer.invoke(IPC_CHANNELS.chooseLibraryLocation),
-  openLibrary: (path) => ipcRenderer.invoke(IPC_CHANNELS.openLibrary, path),
   chooseProject: () => ipcRenderer.invoke(IPC_CHANNELS.chooseProject),
   listProjects: () => ipcRenderer.invoke(IPC_CHANNELS.listProjects),
   removeProject: (root) => ipcRenderer.invoke(IPC_CHANNELS.removeProject, root),
   initializeProject: (path) => ipcRenderer.invoke(IPC_CHANNELS.initializeProject, path),
   confirmProject: (root) => ipcRenderer.invoke(IPC_CHANNELS.confirmProject, root),
-  captureSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.captureSession, input),
-  openSession: (relativePath) => ipcRenderer.invoke(IPC_CHANNELS.openSession, relativePath),
+  startSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.startSession, input),
   listSessions: () => ipcRenderer.invoke(IPC_CHANNELS.listSessions),
   queryMailbox: (query) => ipcRenderer.invoke(IPC_CHANNELS.queryMailbox, query),
   setSessionPinned: (input) => ipcRenderer.invoke(IPC_CHANNELS.setSessionPinned, input),
   setSessionArchived: (input) => ipcRenderer.invoke(IPC_CHANNELS.setSessionArchived, input),
-  previewDeleteSession: (relativePath) =>
-    ipcRenderer.invoke(IPC_CHANNELS.previewDeleteSession, relativePath),
-  deleteSessionPermanently: (input) =>
-    ipcRenderer.invoke(IPC_CHANNELS.deleteSessionPermanently, input),
+  deleteSession: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.deleteSession, sessionId),
   setThemePreference: (preference) =>
     ipcRenderer.invoke(IPC_CHANNELS.setThemePreference, preference),
   getReadiness: () => ipcRenderer.invoke(IPC_CHANNELS.getReadiness),
@@ -38,9 +32,9 @@ const api: ShellApi = {
     ipcRenderer.invoke(IPC_CHANNELS.setLoginShellDiscovery, consent),
   openExternalLink: (url) => ipcRenderer.invoke(IPC_CHANNELS.openExternalLink, url),
   startRun: (input) => ipcRenderer.invoke(IPC_CHANNELS.startRun, input),
-  listRuns: (relativePath) => ipcRenderer.invoke(IPC_CHANNELS.listRuns, relativePath),
+  listRuns: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.listRuns, sessionId),
   stopRun: (input) => ipcRenderer.invoke(IPC_CHANNELS.stopRun, input),
-  getConversation: (relativePath) => ipcRenderer.invoke(IPC_CHANNELS.getConversation, relativePath),
+  getConversation: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.getConversation, sessionId),
   developSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.developSession, input),
   onConversationEvent: (listener) => {
     const subscription = (_event: unknown, streamed: ConversationStreamEvent): void =>

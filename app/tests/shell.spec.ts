@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { basename, delimiter, join } from 'node:path'
@@ -7,7 +7,7 @@ import { _electron as electron, expect, test, type ElectronApplication } from '@
 
 /**
  * Packaged-shell acceptance tests: the built app is launched for real and
- * observed through the window, covering the complete capture behavior and
+ * observed through the window, covering the complete Session behavior and
  * renderer isolation.
  */
 
@@ -17,10 +17,10 @@ import { _electron as electron, expect, test, type ElectronApplication } from '@
 const electronBinary = require('electron') as unknown as string
 const mainEntry = join(__dirname, '../out/main/index.js')
 
+type Page = Awaited<ReturnType<ElectronApplication['firstWindow']>>
+
 interface Sandbox {
   userDataDir: string
-  libraryDir: string
-  trashDir: string
   /** PATH used for readiness discovery; empty means no Harness is found. */
   readinessBinDir: string
   /** HOME used for readiness skill discovery. */
@@ -40,8 +40,6 @@ async function launchShell(): Promise<ElectronApplication> {
     env: {
       ...process.env,
       APP_TEST_USER_DATA: sandbox.userDataDir,
-      APP_TEST_CHOOSE_DIR: sandbox.libraryDir,
-      APP_TEST_TRASH_DIR: sandbox.trashDir,
       APP_TEST_READINESS_PATH: sandbox.readinessBinDir,
       APP_TEST_READINESS_HOME: sandbox.readinessHomeDir,
       // Successive answers from the Project picker, in order.
@@ -57,19 +55,18 @@ async function launchShell(): Promise<ElectronApplication> {
 test.beforeEach(async () => {
   sandbox = {
     userDataDir: await mkdtemp(join(tmpdir(), 'app-shell-userdata-')),
-    libraryDir: await mkdtemp(join(tmpdir(), 'app-shell-library-')),
-    trashDir: await mkdtemp(join(tmpdir(), 'app-shell-trash-')),
     readinessBinDir: await mkdtemp(join(tmpdir(), 'app-shell-readiness-bin-')),
     readinessHomeDir: await mkdtemp(join(tmpdir(), 'app-shell-readiness-home-')),
     projectDir: await mkdtemp(join(tmpdir(), 'app-shell-project-')),
     plainDir: await mkdtemp(join(tmpdir(), 'app-shell-plain-'))
   }
+  // Every test needs somewhere to work, and only git can make a folder a
+  // Project (ADR 0005).
+  await promisify(execFile)('git', ['init', '--quiet'], { cwd: sandbox.projectDir })
 })
 
 test.afterEach(async () => {
   await rm(sandbox.userDataDir, { recursive: true, force: true })
-  await rm(sandbox.libraryDir, { recursive: true, force: true })
-  await rm(sandbox.trashDir, { recursive: true, force: true })
   await rm(sandbox.readinessBinDir, { recursive: true, force: true })
   await rm(sandbox.readinessHomeDir, { recursive: true, force: true })
   await rm(sandbox.projectDir, { recursive: true, force: true })
@@ -88,11 +85,36 @@ async function installFakeSkills(root: string): Promise<void> {
   }
 }
 
+/**
+ * Onboarding step one: the sandbox reaches the Project through a symlink, so
+ * git names a root the person did not pick and the app confirms it first.
+ */
+async function addFirstProject(page: Page): Promise<void> {
+  const projects = page.getByRole('region', { name: 'Projects' })
+  await projects.getByRole('button', { name: 'Add Project' }).click()
+  await projects.getByRole('alert').getByRole('button', { name: 'Add this Project' }).click()
+  await expect(projects.getByText(basename(sandbox.projectDir), { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Continue', exact: true }).click()
+  await page.getByRole('heading', { name: 'Check Harness readiness' }).waitFor()
+}
+
+async function completeOnboarding(page: Page): Promise<void> {
+  await addFirstProject(page)
+  await page.getByRole('button', { name: 'Continue without a Harness' }).click()
+}
+
+async function startSession(page: Page, title: string): Promise<void> {
+  await page.getByRole('button', { name: 'New Session' }).click()
+  await page.getByLabel('What are you working on?').fill(title)
+  await page.getByRole('button', { name: 'Start Session' }).click()
+  await expect(page.getByRole('heading', { name: title })).toBeVisible()
+}
+
 test('renderer is sandboxed with only the narrow preload surface', async () => {
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
-    await page.getByRole('heading', { name: 'Choose your library' }).waitFor()
+    await page.getByRole('heading', { name: 'Add your first Project' }).waitFor()
 
     const exposure = await page.evaluate(() => ({
       requireType: typeof (window as never as Record<string, unknown>)['require'],
@@ -109,13 +131,11 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
     expect(exposure.electronType).toBe('undefined')
     expect(exposure.ipcRendererType).toBe('undefined')
     expect(exposure.shellKeys).toEqual([
-      'captureSession',
       'chooseHarnessExecutable',
-      'chooseLibraryLocation',
       'chooseProject',
       'clearHarnessExecutable',
       'confirmProject',
-      'deleteSessionPermanently',
+      'deleteSession',
       'developSession',
       'getBootState',
       'getConversation',
@@ -127,9 +147,6 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'onConversationEvent',
       'onThemeChanged',
       'openExternalLink',
-      'openLibrary',
-      'openSession',
-      'previewDeleteSession',
       'queryMailbox',
       'refreshReadiness',
       'removeProject',
@@ -138,6 +155,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'setSessionPinned',
       'setThemePreference',
       'startRun',
+      'startSession',
       'stopRun'
     ])
 
@@ -157,52 +175,25 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
   }
 })
 
-test('a person captures a Session and it survives an application restart', async () => {
+test('a person starts a Session and it survives an application restart', async () => {
   const firstRun = await launchShell()
   try {
     const page = await firstRun.firstWindow()
-
-    // First launch: choose the library, with the exact location visible
-    // before anything is written.
-    await page.getByRole('button', { name: 'Choose or create a folder…' }).click()
-    await expect(page.getByText(sandbox.libraryDir)).toBeVisible()
-    await page.getByRole('button', { name: 'Use this library' }).click()
-
-    // The optional readiness step never blocks capture-only onboarding.
-    await page.getByRole('heading', { name: 'Check Harness readiness' }).waitFor()
-    await page.getByRole('button', { name: 'Continue with capture only' }).click()
+    await completeOnboarding(page)
 
     // The mailbox opens empty.
     await expect(page.getByText('No Sessions yet', { exact: false })).toBeVisible()
 
-    // Capture a Session with the no-secrets guidance visible.
-    await page.getByRole('button', { name: 'New Session' }).click()
-    await expect(page.getByText('Don’t include passwords', { exact: false })).toBeVisible()
-    await page
-      .getByLabel('What’s this Session about?')
-      .fill('An offline recipe planner\n\nIt plans weekly meals without any accounts.')
+    await startSession(page, 'Offline recipe planner')
 
-    // The locally generated title suggestion is editable.
-    const title = page.getByLabel('Title')
-    await expect(title).toHaveValue('An offline recipe planner')
-    await title.fill('Offline recipe planner')
-
-    await page.getByRole('button', { name: 'Save for later' }).click()
-    await expect(page.getByRole('heading', { name: 'Offline recipe planner' })).toBeVisible()
-
-    // The Session is canonical local Markdown on disk.
-    const markdown = await readFile(
-      join(sandbox.libraryDir, 'offline-recipe-planner', 'session.md'),
-      'utf8'
-    )
-    expect(markdown).toContain('format: 2')
-    expect(markdown).toContain('# Offline recipe planner')
-    expect(markdown).toContain('It plans weekly meals without any accounts.')
+    // The Session is app-owned state: the Project keeps only what git tracks.
+    expect(await readdir(sandbox.projectDir)).toEqual(['.git'])
   } finally {
     await firstRun.close()
   }
 
-  // Restart the application: the saved Session reappears from local content.
+  // Restart the application: the Session reappears from the app-owned store,
+  // and onboarding is over because the Project is still there.
   const secondRun = await launchShell()
   try {
     const page = await secondRun.firstWindow()
@@ -215,31 +206,13 @@ test('a person captures a Session and it survives an application restart', async
   }
 })
 
-async function chooseLibrary(page: Awaited<ReturnType<ElectronApplication['firstWindow']>>) {
-  await page.getByRole('button', { name: 'Choose or create a folder…' }).click()
-  await page.getByRole('button', { name: 'Use this library' }).click()
-  await page.getByRole('button', { name: 'Continue with capture only' }).click()
-}
-
-async function captureSession(
-  page: Awaited<ReturnType<ElectronApplication['firstWindow']>>,
-  title: string,
-  notes: string
-) {
-  await page.getByRole('button', { name: 'New Session' }).click()
-  await page.getByLabel('What’s this Session about?').fill(notes)
-  await page.getByLabel('Title').fill(title)
-  await page.getByRole('button', { name: 'Save for later' }).click()
-  await expect(page.getByRole('heading', { name: title })).toBeVisible()
-}
-
 test('a person organizes the mailbox: pin, search, archive, restore, compact rail', async () => {
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
-    await chooseLibrary(page)
-    await captureSession(page, 'Offline recipe planner', 'Plans weekly meals without accounts.')
-    await captureSession(page, 'Community tool library', 'Neighbors share tools.')
+    await completeOnboarding(page)
+    await startSession(page, 'Offline recipe planner')
+    await startSession(page, 'Community tool library')
 
     const inbox = page.getByRole('navigation', { name: 'Session inbox' })
     const pinnedGroup = inbox.getByRole('region', { name: 'Pinned' })
@@ -265,14 +238,12 @@ test('a person organizes the mailbox: pin, search, archive, restore, compact rai
     await inbox.getByRole('button', { name: 'Clear search' }).click()
     await expect(inbox.getByText('Community tool library')).toBeVisible()
 
-    // Archive is reversible and files never move.
+    // Archive is reversible and the Project is never touched.
     await inbox.getByRole('button', { name: 'Archive “Community tool library”' }).click()
     await expect(inbox.getByText('Community tool library')).toHaveCount(0)
     await page.getByRole('button', { name: 'Archive', exact: true }).click()
     await expect(inbox.getByText('Community tool library')).toBeVisible()
-    expect(
-      await readFile(join(sandbox.libraryDir, 'community-tool-library', 'session.md'), 'utf8')
-    ).toContain('archived:')
+    expect(await readdir(sandbox.projectDir)).toEqual(['.git'])
     await inbox.getByRole('button', { name: 'Restore “Community tool library”' }).click()
     await page.getByRole('button', { name: 'Inbox', exact: true }).click()
     await expect(inbox.getByText('Community tool library')).toBeVisible()
@@ -290,45 +261,43 @@ test('a person organizes the mailbox: pin, search, archive, restore, compact rai
   }
 })
 
-test('permanent delete previews exact app-owned targets and moves them to the Trash', async () => {
+test('deleting a Session forgets it and leaves the Project alone', async () => {
+  await writeFile(join(sandbox.projectDir, 'source.ts'), 'export const kept = true')
+
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
-    await chooseLibrary(page)
-    await captureSession(page, 'Doomed session', 'This one goes away.')
+    await completeOnboarding(page)
+    await startSession(page, 'Doomed session')
 
     const inbox = page.getByRole('navigation', { name: 'Session inbox' })
     await inbox.getByRole('button', { name: 'Delete “Doomed session” permanently…' }).click()
 
-    // The preview names the exact app-owned targets before anything happens.
+    // The Project is named before anything happens, because what is kept is
+    // the part the person actually cares about.
+    const confirmation = page.getByRole('region', { name: 'Delete “Doomed session”?' })
+    await expect(confirmation.getByRole('heading')).toBeVisible()
     await expect(
-      page.getByRole('heading', { name: 'Delete “Doomed session” permanently?' })
-    ).toBeVisible()
-    await expect(
-      page.getByRole('list', { name: 'Items that move to the Trash' }).getByText('doomed-session')
+      confirmation.getByText(await realpath(sandbox.projectDir), { exact: true })
     ).toBeVisible()
 
-    await page.getByRole('button', { name: 'Move to Trash' }).click()
+    await page.getByRole('button', { name: 'Delete Session' }).click()
     await expect(inbox.getByText('Doomed session')).toHaveCount(0)
     await expect(page.getByText('No Sessions yet', { exact: false })).toBeVisible()
 
-    // The folder moved to the (test) Trash instead of being destroyed.
-    expect(await readdir(sandbox.libraryDir)).not.toContain('doomed-session')
-    const trashed = await readdir(sandbox.trashDir)
-    expect(trashed.some((entry) => entry.endsWith('doomed-session'))).toBe(true)
+    // The work is untouched: it lives in the Project, under git.
+    expect((await readdir(sandbox.projectDir)).sort()).toEqual(['.git', 'source.ts'])
   } finally {
     await app.close()
   }
 })
 
 test('a person adds a Project and a plain folder is refused with an offer to set up git', async () => {
-  await promisify(execFile)('git', ['init', '--quiet'], { cwd: sandbox.projectDir })
   await writeFile(join(sandbox.plainDir, 'notes.md'), 'not under git yet')
 
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
-    await chooseLibrary(page)
 
     const projects = page.getByRole('region', { name: 'Projects' })
     await expect(projects.getByText('No Projects yet', { exact: false })).toBeVisible()
@@ -406,9 +375,7 @@ test('readiness reports Codex and Claude independently, with safe repair and re-
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
-    await page.getByRole('button', { name: 'Choose or create a folder…' }).click()
-    await page.getByRole('button', { name: 'Use this library' }).click()
-    await page.getByRole('heading', { name: 'Check Harness readiness' }).waitFor()
+    await addFirstProject(page)
 
     const codexCard = page.getByRole('region', { name: 'Codex readiness' })
     const claudeCard = page.getByRole('region', { name: 'Claude Code readiness' })
@@ -420,7 +387,7 @@ test('readiness reports Codex and Claude independently, with safe repair and re-
     ).toBeVisible()
 
     // Claude stays visible but not ready, with only the approved remediation.
-    await expect(claudeCard.getByText('Not usable — capture still works')).toBeVisible()
+    await expect(claudeCard.getByText('Not usable yet')).toBeVisible()
     await expect(claudeCard.getByText('npx skills@latest add mattpocock/skills')).toBeVisible()
 
     // The person repairs Claude in their own terminal; Check again recovers.
@@ -429,7 +396,7 @@ test('readiness reports Codex and Claude independently, with safe repair and re-
     await claudeCard.getByRole('button', { name: 'Check Claude Code again' }).click()
     await expect(claudeCard.getByText('Usable', { exact: true })).toBeVisible()
 
-    // With a ready Harness the continue action stops calling itself capture-only.
+    // With a ready Harness the continue action stops offering to go without one.
     await page.getByRole('button', { name: 'Continue', exact: true }).click()
 
     // The same readiness module is reachable from Settings (Harnesses).

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
-import type { CoreCommand } from '@shared/contract'
+import { sessionSummarySchema, type CoreCommand } from '@shared/contract'
 import {
   HARNESS_DEFAULT_MODEL,
   conversationSnapshotSchema,
@@ -50,7 +50,6 @@ interface RunServiceDeps {
   core: CorePort
   broker: Pick<RunProcessBroker, 'start' | 'stop' | 'stopAll' | 'activeRunIds' | 'needsRecovery'>
   readiness: ReadinessPort
-  libraryPath: () => string | undefined
   homeDirectory: string
   privateRoot: string
   proxyExecutable: string
@@ -90,7 +89,7 @@ export class RunService {
     await this.deps.core.send({
       type: 'conversation/submit',
       input: {
-        relativePath: input.relativePath,
+        sessionId: input.sessionId,
         submissionId: input.submissionId,
         text: input.text,
         source: input.source
@@ -99,7 +98,7 @@ export class RunService {
     try {
       await this.start({
         submissionId: input.submissionId,
-        relativePath: input.relativePath,
+        sessionId: input.sessionId,
         prompt: input.text,
         harness: input.harness,
         model: input.model,
@@ -108,14 +107,14 @@ export class RunService {
         permissionMode: input.permissionMode
       })
     } catch (error) {
-      const snapshot = await this.readConversation(input.relativePath)
+      const snapshot = await this.readConversation(input.sessionId)
       // A failure the Conversation already explains becomes recovery state the
       // person can act on. Anything else — an unready Harness, say — is not
       // about this Run and has to reach them as an error.
       if (snapshot.recovery === null && snapshot.activeRunId === null) throw error
       return snapshot
     }
-    return await this.readConversation(input.relativePath)
+    return await this.readConversation(input.sessionId)
   }
 
   /**
@@ -124,34 +123,44 @@ export class RunService {
    * active Run; leaving it that way would block the person out of their own
    * Session, so it is closed as interrupted and offered back for resending.
    */
-  async conversation(relativePath: string): Promise<ConversationSnapshot> {
-    const snapshot = await this.readConversation(relativePath)
+  async conversation(sessionId: string): Promise<ConversationSnapshot> {
+    const snapshot = await this.readConversation(sessionId)
     if (!snapshot.activeRunId || this.deps.broker.activeRunIds().includes(snapshot.activeRunId)) {
       return snapshot
     }
     await this.deps.core.send({
       type: 'conversation/finalize',
       input: {
-        relativePath,
+        sessionId,
         runId: snapshot.activeRunId,
         outcome: 'failed',
         category: 'process-crash',
         summary: 'The app stopped supervising this Run before it answered'
       }
     })
-    return await this.readConversation(relativePath)
+    return await this.readConversation(sessionId)
   }
 
-  private readConversation(relativePath: string): Promise<ConversationSnapshot> {
+  private readConversation(sessionId: string): Promise<ConversationSnapshot> {
     return this.deps.core
-      .send({ type: 'conversation/get', relativePath })
+      .send({ type: 'conversation/get', sessionId })
       .then((result) => conversationSnapshotSchema.parse(result))
+  }
+
+  /**
+   * The Session's Checkout. A Session belongs to a Project (ADR 0002), and
+   * that Project's root is the directory the Harness is allowed to work in.
+   */
+  private async checkoutFor(sessionId: string): Promise<string> {
+    const session = sessionSummarySchema.parse(
+      await this.deps.core.send({ type: 'session/get', sessionId })
+    )
+    return session.projectRoot
   }
 
   async start(rawInput: StartRunInput): Promise<RunSnapshot> {
     const input = startRunInputSchema.parse(rawInput)
-    const library = this.deps.libraryPath()
-    if (!library) throw new Error('Open a library before starting a Run')
+    const workingDirectory = await this.checkoutFor(input.sessionId)
     const readiness = await this.deps.readiness.refresh(input.harness)
     const harness = readiness.harnesses.find((entry) => entry.harness === input.harness)
     if (!harness?.available || !harness.executablePath) {
@@ -169,7 +178,6 @@ export class RunService {
       .update(await readFile(skillFile))
       .digest('hex')
     const executableHash = await hashFile(harness.executablePath)
-    const workingDirectory = join(library, input.relativePath)
     const runKey = createHash('sha256')
       .update(`${workingDirectory}\0${input.submissionId}`)
       .digest('hex')
@@ -197,7 +205,7 @@ export class RunService {
         type: 'run/accept',
         input: {
           submissionId: input.submissionId,
-          relativePath: input.relativePath,
+          sessionId: input.sessionId,
           prompt: input.prompt,
           configuration
         }
@@ -219,7 +227,7 @@ export class RunService {
         'Interrupted Run requires explicit recovery; the Harness was not contacted again'
       )
     }
-    const conversation = await this.readConversation(input.relativePath)
+    const conversation = await this.readConversation(input.sessionId)
     const latestHarness = [...conversation.entries]
       .reverse()
       .find(
@@ -242,17 +250,12 @@ export class RunService {
         (await claudeThreadExists(this.deps.homeDirectory, workingDirectory, savedThread)))
     const restoreFromHistory =
       switchedHarness || (latestHarness === input.harness && !threadCompatible)
-    const handoff = await deterministicHandoff(
-      conversation,
-      input.skill,
-      join(workingDirectory, scratchRelativePathFor(input)),
-      scratchRelativePathFor(input)
-    )
+    const handoff = deterministicHandoff(conversation, input.skill)
     // The Conversation records the Run boundary before anything can fail, so
     // every later outcome has somewhere understandable to land.
     await this.deps.core.send({
       type: 'conversation/begin',
-      relativePath: input.relativePath,
+      sessionId: input.sessionId,
       runId: accepted.id,
       submissionId: input.submissionId,
       harness: input.harness,
@@ -275,7 +278,6 @@ export class RunService {
       )
     }
 
-    const scratchRelativePath = scratchRelativePathFor(input)
     const socketDirectory = join(
       tmpdir(),
       `run-tools-${createHash('sha256').update(accepted.id).digest('hex').slice(0, 16)}`
@@ -353,7 +355,6 @@ export class RunService {
           input,
           await readFile(skillFile, 'utf8'),
           runDirectory,
-          scratchRelativePath,
           restoreFromHistory ? handoff : undefined,
           threadCompatible ? savedThread : undefined
         ),
@@ -421,24 +422,24 @@ export class RunService {
     }
   }
 
-  async list(relativePath: string): Promise<RunSnapshot[]> {
+  async list(sessionId: string): Promise<RunSnapshot[]> {
     return runSnapshotSchema
       .array()
-      .parse(await this.deps.core.send({ type: 'run/list', relativePath }))
+      .parse(await this.deps.core.send({ type: 'run/list', sessionId }))
   }
 
-  async stop(runId: string, relativePath: string): Promise<RunSnapshot> {
+  async stop(runId: string, sessionId: string): Promise<RunSnapshot> {
     try {
       await this.deps.broker.stop(runId, 'user')
       return await this.conclude(
-        { id: runId, relativePath },
+        { id: runId, sessionId },
         'stopped',
         'lifecycle',
         'Run stopped by user'
       )
     } catch (error) {
       await this.conclude(
-        { id: runId, relativePath },
+        { id: runId, sessionId },
         'supervision-failed',
         'error',
         'Harness process cleanup could not be verified'
@@ -457,7 +458,7 @@ export class RunService {
    * frames never leave Core, and nothing here can widen a Run's authority.
    */
   private async ingest(
-    run: Pick<RunSnapshot, 'id' | 'relativePath'>,
+    run: Pick<RunSnapshot, 'id' | 'sessionId'>,
     harness: StartRunInput['harness'],
     workingDirectory: string,
     chunk: string
@@ -465,7 +466,7 @@ export class RunService {
     const events = harnessEventSchema.array().parse(
       await this.deps.core.send({
         type: 'conversation/ingest',
-        relativePath: run.relativePath,
+        sessionId: run.sessionId,
         runId: run.id,
         harness,
         chunk
@@ -474,7 +475,7 @@ export class RunService {
     for (const event of events) {
       if (event.type === 'failed') this.failures.set(run.id, event.category)
       this.deps.onConversationEvent?.({
-        relativePath: run.relativePath,
+        sessionId: run.sessionId,
         runId: run.id,
         event
       })
@@ -495,7 +496,7 @@ export class RunService {
    * the offered options, so it is what tells the Conversation.
    */
   private async offerChoices(
-    run: Pick<RunSnapshot, 'id' | 'relativePath'>,
+    run: Pick<RunSnapshot, 'id' | 'sessionId'>,
     question: string,
     options: { label: string; value: string }[]
   ): Promise<void> {
@@ -510,12 +511,12 @@ export class RunService {
     }
     await this.deps.core.send({
       type: 'conversation/apply',
-      relativePath: run.relativePath,
+      sessionId: run.sessionId,
       runId: run.id,
       event
     })
     this.deps.onConversationEvent?.({
-      relativePath: run.relativePath,
+      sessionId: run.sessionId,
       runId: run.id,
       event
     })
@@ -523,7 +524,7 @@ export class RunService {
 
   /** Records a Run's terminal state and closes its Conversation boundary. */
   private async conclude(
-    run: Pick<RunSnapshot, 'id' | 'relativePath'>,
+    run: Pick<RunSnapshot, 'id' | 'sessionId'>,
     status: 'completed' | 'stopped' | 'failed' | 'policy-violation' | 'supervision-failed',
     kind: RunActivityKind,
     summary: string
@@ -538,7 +539,7 @@ export class RunService {
       status === 'failed' && category === null && diagnostic ? `${summary}: ${diagnostic}` : summary
     const snapshot = await this.record(run, status, kind, explained)
     const finalize: FinalizeConversationRunInput = {
-      relativePath: run.relativePath,
+      sessionId: run.sessionId,
       runId: run.id,
       outcome: status,
       category: status === 'failed' ? category : null,
@@ -549,7 +550,7 @@ export class RunService {
   }
 
   private async record(
-    run: Pick<RunSnapshot, 'id' | 'relativePath'>,
+    run: Pick<RunSnapshot, 'id' | 'sessionId'>,
     status: RunSnapshot['status'] | undefined,
     kind: RunActivityKind,
     summary: string
@@ -558,7 +559,7 @@ export class RunService {
       await this.deps.core.send({
         type: 'run/event',
         input: {
-          relativePath: run.relativePath,
+          sessionId: run.sessionId,
           runId: run.id,
           ...(status ? { status } : {}),
           kind,
@@ -651,7 +652,6 @@ function harnessArguments(
   input: StartRunInput,
   skillText: string,
   runDirectory: string,
-  scratchRelativePath: string,
   handoff?: string,
   threadId?: string
 ): string[] {
@@ -710,38 +710,21 @@ function harnessArguments(
     ...(input.model === HARNESS_DEFAULT_MODEL ? [] : ['--model', input.model]),
     '--effort',
     input.effort,
-    `/${input.skill} ${input.prompt}\n\nManaged scratch location: ${scratchRelativePath}\nThe verified Skill source is available at ${input.skill}'s recorded Run provenance. Use only the app-owned tools.${handoff ? `\n\nDeterministic handoff from canonical local history:\n${handoff}` : ''}`
+    `/${input.skill} ${input.prompt}${handoff ? `\n\nDeterministic handoff from the Conversation so far:\n${handoff}` : ''}`
   ]
 }
 
-function scratchRelativePathFor(input: StartRunInput): string {
-  return input.skill === 'wayfinder'
-    ? join('.scratch', `${input.relativePath}-wayfinding`)
-    : join('.scratch', input.relativePath)
-}
-
-async function deterministicHandoff(
-  conversation: ConversationSnapshot,
-  skill: StartRunInput['skill'],
-  scratchDirectory: string,
-  scratchRelativePath: string
-): Promise<string> {
+/**
+ * What a new Harness Thread needs to continue the Conversation: the Skill in
+ * force and the turns immediately before it.
+ */
+function deterministicHandoff(conversation: ConversationSnapshot, skill: string): string {
   const recent = conversation.entries
     .filter((entry) => entry.kind === 'message')
     .slice(-8)
     .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.text}`)
     .join('\n')
-  const decisions = await readFile(join(scratchDirectory, 'map.md'), 'utf8').catch(
-    () => '(no Wayfinder decisions recorded)'
-  )
-  return [
-    `Skill: ${skill}`,
-    `Decisions:\n${decisions.slice(0, 8_000)}`,
-    `Scratch artifacts: ${scratchRelativePath}`,
-    `Complete conversation: conversation.md`,
-    'Recent turns:',
-    recent || '(none)'
-  ].join('\n')
+  return [`Skill: ${skill}`, 'Recent turns:', recent || '(none)'].join('\n')
 }
 
 async function claudeThreadExists(

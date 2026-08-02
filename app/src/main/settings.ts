@@ -4,7 +4,6 @@ import { z } from 'zod'
 import { themePreferenceSchema, type ThemePreference } from '@shared/contract'
 
 const settingsSchema = z.object({
-  libraryPath: z.string().min(1).optional(),
   themePreference: themePreferenceSchema.default('system'),
   /** Days without activity after which a pinned Session shows as Dormant. */
   dormantAfterDays: z.number().int().positive().default(14),
@@ -15,7 +14,6 @@ const settingsSchema = z.object({
 })
 
 export interface Settings {
-  libraryPath?: string
   themePreference: ThemePreference
   dormantAfterDays: number
   harnessExecutables: Record<string, string>
@@ -23,7 +21,7 @@ export interface Settings {
 }
 
 /**
- * Tiny app-level settings file in userData. Never part of the library:
+ * Tiny app-level settings file in userData. It holds preferences only:
  * losing it can never lose a Session.
  */
 export class SettingsStore {

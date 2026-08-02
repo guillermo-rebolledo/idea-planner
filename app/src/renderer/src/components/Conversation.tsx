@@ -57,7 +57,7 @@ const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
 }
 
 export function Conversation({ session }: { session: SessionSummary }): React.JSX.Element {
-  const relativePath = session.relativePath
+  const sessionId = session.id
   const [phase, setPhase] = useState<Phase>({ state: 'loading' })
   const [runs, setRuns] = useState<RunSnapshot[]>([])
   const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
@@ -77,14 +77,14 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
 
   const refresh = useCallback(async () => {
     try {
-      const next = await window.shell.getConversation(relativePath)
+      const next = await window.shell.getConversation(sessionId)
       setPhase({ state: 'ready', snapshot: next })
       if (next.activeRunId === null) setLive(null)
     } catch {
       setPhase((current) => (current.state === 'ready' ? current : { state: 'failed' }))
     }
-    await window.shell.listRuns(relativePath).then(setRuns, () => undefined)
-  }, [relativePath])
+    await window.shell.listRuns(sessionId).then(setRuns, () => undefined)
+  }, [sessionId])
 
   useEffect(() => {
     void refresh()
@@ -102,7 +102,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
   useEffect(
     () =>
       window.shell.onConversationEvent((streamed) => {
-        if (streamed.relativePath !== relativePath) return
+        if (streamed.sessionId !== sessionId) return
         const event = streamed.event
         if (event.type === 'failed') {
           setError(event.summary)
@@ -128,7 +128,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           }
         })
       }),
-    [relativePath]
+    [sessionId]
   )
 
   useEffect(() => {
@@ -141,7 +141,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
       setError(null)
       try {
         const next = await window.shell.developSession({
-          relativePath,
+          sessionId,
           submissionId: submissionId ?? crypto.randomUUID(),
           text,
           source,
@@ -153,7 +153,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
         })
         setPhase({ state: 'ready', snapshot: next })
         if (source === 'composer' && !submissionId) setDraft('')
-        await window.shell.listRuns(relativePath).then(setRuns, () => undefined)
+        await window.shell.listRuns(sessionId).then(setRuns, () => undefined)
       } catch {
         setError(
           'The Run could not start. Check that the Harness is ready and that supervision has recovered.'
@@ -165,7 +165,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
         setBusy(false)
       }
     },
-    [relativePath, harness, skill, model, effort, permissionMode, refresh]
+    [sessionId, harness, skill, model, effort, permissionMode, refresh]
   )
 
   if (phase.state === 'loading') {
@@ -182,7 +182,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
     return (
       <section className="mt-4 rounded-md border border-border bg-surface p-3">
         <p role="alert" className="text-xs text-destructive">
-          This Session’s Conversation could not be read. Its Markdown on disk is untouched.
+          This Session’s Conversation could not be read. Nothing in your Project was changed.
         </p>
         <Button className="mt-2" size="sm" variant="secondary" onClick={() => void refresh()}>
           Try again
@@ -225,7 +225,8 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
             Conversation
           </h3>
           <p className="text-xs text-muted-foreground">
-            One permanent history for this Session. Everything here is plain Markdown on disk.
+            One permanent history for this Session. The work itself lives in your Project, under
+            git.
           </p>
         </div>
         {activeRunId && (
@@ -234,7 +235,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
             size="sm"
             variant="secondary"
             onClick={() =>
-              void window.shell.stopRun({ runId: activeRunId, relativePath }).then(
+              void window.shell.stopRun({ runId: activeRunId, sessionId }).then(
                 () => refresh(),
                 () => setError('The Run could not be stopped.')
               )
