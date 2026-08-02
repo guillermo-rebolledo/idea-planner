@@ -152,6 +152,7 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('project/remove'), root: z.string().min(1) }),
   z.object({ type: z.literal('session/start'), input: startSessionInputSchema }),
   z.object({ type: z.literal('session/list') }),
+  z.object({ type: z.literal('session/list-damaged') }),
   z.object({ type: z.literal('session/get'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('mailbox/query'), query: mailboxCoreQuerySchema }),
   z.object({
@@ -237,6 +238,8 @@ export interface ShellApi {
   /** Starts a Session against a Project. Nothing is written into the Project. */
   startSession(input: StartSessionInput): Promise<SessionSummary>
   listSessions(): Promise<SessionSummary[]>
+  /** Ids whose record could not be read, so the loss can be shown rather than inferred. */
+  listDamagedSessions(): Promise<string[]>
   queryMailbox(query: MailboxQuery): Promise<MailboxSnapshot>
   setSessionPinned(input: SetSessionPinnedInput): Promise<SessionSummary>
   setSessionArchived(input: SetSessionArchivedInput): Promise<SessionSummary>

@@ -240,6 +240,10 @@ function registerIpc(): void {
     z.array(sessionSummarySchema).parse(await coreClient.send({ type: 'session/list' }))
   )
 
+  handleInvoke(IPC_CHANNELS.listDamagedSessions, z.undefined(), async () =>
+    z.array(z.string()).parse(await coreClient.send({ type: 'session/list-damaged' }))
+  )
+
   handleInvoke(IPC_CHANNELS.queryMailbox, mailboxQuerySchema, async (query) =>
     mailboxSnapshotSchema.parse(
       await coreClient.send({

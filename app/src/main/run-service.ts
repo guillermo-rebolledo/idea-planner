@@ -179,7 +179,7 @@ export class RunService {
       .digest('hex')
     const executableHash = await hashFile(harness.executablePath)
     const runKey = createHash('sha256')
-      .update(`${workingDirectory}\0${input.submissionId}`)
+      .update(`${input.sessionId}\0${input.submissionId}`)
       .digest('hex')
     const runDirectory = join(this.deps.privateRoot, runKey)
     const environment = minimalEnvironment(
@@ -761,10 +761,7 @@ async function hashFile(path: string): Promise<string> {
 }
 
 function sanitize(value: string, workingDirectory: string): string {
-  return redactCredentials(value.replaceAll(workingDirectory, '<WORKING_DIRECTORY>')).slice(
-    0,
-    2_000
-  )
+  return redactCredentials(value.replaceAll(workingDirectory, '<PROJECT>')).slice(0, 2_000)
 }
 
 /**

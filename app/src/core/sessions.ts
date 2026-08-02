@@ -120,12 +120,21 @@ export class SessionStore {
   private read(id: string): Effect.Effect<SessionSummary | null, CoreError> {
     return this.directoryFor(id).pipe(
       Effect.flatMap((directory) =>
-        Effect.promise(() =>
-          readFile(join(directory, RECORD_FILE), 'utf8').then(
-            (raw) => parse(raw),
-            () => null
-          )
-        )
+        Effect.tryPromise({
+          try: () =>
+            readFile(join(directory, RECORD_FILE), 'utf8').then(
+              (raw) => parse(raw),
+              (error: unknown) => {
+                // A record that is absent or unparseable is a damaged Session,
+                // which is reported. A record we were refused is a failure,
+                // and pretending it is damage would tell the person the wrong
+                // thing about their own data.
+                if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return null
+                throw error
+              }
+            ),
+          catch: () => new CoreError('IO_ERROR', 'A Session record could not be read')
+        })
       )
     )
   }
@@ -133,7 +142,17 @@ export class SessionStore {
   private scan(): Effect.Effect<{ intact: SessionSummary[]; damaged: string[] }, CoreError> {
     return this.root().pipe(
       Effect.flatMap((root) =>
-        Effect.promise(() => readdir(root, { withFileTypes: true }).catch(() => []))
+        Effect.tryPromise({
+          try: () =>
+            readdir(root, { withFileTypes: true }).catch((error: unknown) => {
+              // No store yet is an app with no Sessions. Anything else is a
+              // store we could not read, and answering "no Sessions" to that
+              // is the silent vanishing this store exists to prevent.
+              if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return []
+              throw error
+            }),
+          catch: () => new CoreError('IO_ERROR', 'The Sessions could not be read')
+        })
       ),
       Effect.flatMap((entries) =>
         Effect.forEach(

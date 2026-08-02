@@ -76,6 +76,10 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   const [announcement, setAnnouncement] = useState('')
   const [query, setQuery] = useState<MailboxQuery>({ search: '', view: 'active' })
   const [mailbox, setMailbox] = useState<MailboxData>({ state: 'reading' })
+  // Sessions whose record could not be read. Shown rather than left out: a
+  // Session that disappears without a word is the failure the store exists to
+  // prevent, and not listing one is only half of not being silent.
+  const [damaged, setDamaged] = useState<string[]>([])
   const searchRef = useRef<HTMLInputElement>(null)
   const requestSequenceRef = useRef(0)
 
@@ -93,6 +97,13 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     const timer = window.setTimeout(() => void refreshMailbox(query), query.search ? 120 : 0)
     return () => window.clearTimeout(timer)
   }, [query, refreshMailbox])
+
+  useEffect(() => {
+    void window.shell
+      .listDamagedSessions()
+      .then(setDamaged)
+      .catch(() => setDamaged([]))
+  }, [mailbox])
 
   const startNewSession = useCallback(() => setSurface({ kind: 'new-session' }), [])
 
@@ -227,6 +238,17 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
           <div className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/40">
             <Projects />
             <nav aria-label="Session inbox" className="flex min-h-0 flex-1 flex-col">
+              {damaged.length > 0 && (
+                <p
+                  role="status"
+                  className="border-b border-notice-border bg-notice px-2 py-1.5 text-[11px] text-notice-foreground"
+                >
+                  {damaged.length === 1
+                    ? '1 Session could not be read and is not listed.'
+                    : `${damaged.length} Sessions could not be read and are not listed.`}{' '}
+                  Nothing in your Projects was affected.
+                </p>
+              )}
               <div className="flex flex-col gap-2 border-b border-border p-2">
                 <label className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2 focus-within:ring-2 focus-within:ring-ring">
                   <Search aria-hidden="true" className="size-3.5 text-muted-foreground" />

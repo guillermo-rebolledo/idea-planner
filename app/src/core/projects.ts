@@ -1,8 +1,9 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { basename, isAbsolute, join } from 'node:path'
 import { Effect } from 'effect'
 import { CoreError } from '@shared/contract'
 import { projectSchema, type Project, type ProjectView } from '@shared/project'
+import { writeJsonAtomic } from './atomic'
 
 const STORE_FILE = 'projects.json'
 
@@ -112,28 +113,7 @@ export class ProjectStore {
 
   private write(projects: Project[]): Effect.Effect<void, CoreError> {
     return this.directory().pipe(
-      Effect.flatMap((directory) =>
-        Effect.tryPromise({
-          try: async () => {
-            await mkdir(directory, { recursive: true })
-            const path = join(directory, STORE_FILE)
-            const staged = `${path}.staged`
-            let renamed = false
-            try {
-              // Staged then renamed, so an interrupted write leaves the
-              // previous list rather than half of the new one.
-              await writeFile(staged, `${JSON.stringify(projects, null, 2)}\n`, 'utf8')
-              await rename(staged, path)
-              renamed = true
-            } finally {
-              // A staged file that never became the store is litter, whether
-              // the write or the rename was what failed.
-              if (!renamed) await rm(staged, { force: true })
-            }
-          },
-          catch: () => new CoreError('IO_ERROR', 'The Project list could not be saved')
-        })
-      )
+      Effect.flatMap((directory) => writeJsonAtomic(join(directory, STORE_FILE), projects))
     )
   }
 }

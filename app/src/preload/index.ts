@@ -16,6 +16,7 @@ const api: ShellApi = {
   confirmProject: (root) => ipcRenderer.invoke(IPC_CHANNELS.confirmProject, root),
   startSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.startSession, input),
   listSessions: () => ipcRenderer.invoke(IPC_CHANNELS.listSessions),
+  listDamagedSessions: () => ipcRenderer.invoke(IPC_CHANNELS.listDamagedSessions),
   queryMailbox: (query) => ipcRenderer.invoke(IPC_CHANNELS.queryMailbox, query),
   setSessionPinned: (input) => ipcRenderer.invoke(IPC_CHANNELS.setSessionPinned, input),
   setSessionArchived: (input) => ipcRenderer.invoke(IPC_CHANNELS.setSessionArchived, input),

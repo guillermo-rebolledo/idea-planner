@@ -130,3 +130,33 @@ describe('the Conversation journal', () => {
     expect(said).toEqual(['The first thing I asked', 'The second thing I asked'])
   })
 })
+
+describe('a store that cannot be read', () => {
+  it('fails loudly rather than reporting that there are no Sessions', async () => {
+    await core.startSession({ projectRoot, title: 'Exists' })
+    // An unreadable store is not an empty one. Answering "no Sessions" here is
+    // the vanishing-without-a-word failure this store exists to prevent.
+    await rm(join(stateDir, 'sessions'), { recursive: true, force: true })
+    await writeFile(join(stateDir, 'sessions'), 'not a directory')
+
+    await expect(makeCore().listSessions()).rejects.toMatchObject({ code: 'IO_ERROR' })
+  })
+
+  it('orders Sessions newest first', async () => {
+    await core.startSession({ projectRoot, title: 'First' })
+    await core.startSession({ projectRoot, title: 'Second' })
+
+    await expect(makeCore().listSessions()).resolves.toMatchObject([
+      { title: 'Second' },
+      { title: 'First' }
+    ])
+  })
+
+  it('ignores stray files beside the Sessions without failing', async () => {
+    const session = await core.startSession({ projectRoot, title: 'Real' })
+    await writeFile(join(stateDir, 'sessions', '.DS_Store'), 'junk')
+
+    await expect(makeCore().listSessions()).resolves.toEqual([session])
+    await expect(makeCore().listDamagedSessions()).resolves.toEqual([])
+  })
+})

@@ -141,6 +141,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'getConversation',
       'getReadiness',
       'initializeProject',
+      'listDamagedSessions',
       'listProjects',
       'listRuns',
       'listSessions',

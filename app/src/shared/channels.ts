@@ -11,6 +11,7 @@ export const IPC_CHANNELS = {
   confirmProject: 'project:confirm',
   startSession: 'session:start',
   listSessions: 'session:list',
+  listDamagedSessions: 'session:list-damaged',
   queryMailbox: 'mailbox:query',
   setSessionPinned: 'session:set-pinned',
   setSessionArchived: 'session:set-archived',

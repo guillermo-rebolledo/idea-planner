@@ -76,6 +76,8 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.startSession(command.input)
     case 'session/list':
       return core.listSessions()
+    case 'session/list-damaged':
+      return core.listDamagedSessions()
     case 'session/get':
       return core.getSession(command.sessionId)
     case 'mailbox/query':
