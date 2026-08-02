@@ -7,9 +7,9 @@ import { z } from 'zod'
  *
  * Three dimensions decide whether a Harness can be used at all — it has to be
  * there, be a version this app can talk to, and be signed in. `skills` is
- * reported beside them and gates nothing: Skills are optional (ADR 0003), and
- * a Harness that can work is not made unusable by a methodology document
- * missing from the person's home directory.
+ * reported beside them and gates nothing: a Harness that is installed,
+ * compatible, and signed in works, and a methodology document missing from
+ * somebody's home directory is not a reason to tell them it does not.
  */
 
 export const harnessIdSchema = z.enum(['codex', 'claude'])

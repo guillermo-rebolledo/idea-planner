@@ -34,9 +34,10 @@ export function LaunchGate({ snapshot, onContinue }: LaunchGateProps): React.JSX
             This app needs a coding agent to work
           </h1>
           <p className="mt-2 leading-relaxed text-muted-foreground">
-            Every Run is work done by Claude Code or Codex on your Mac — this app never does the
-            thinking itself. None of them can run a Session yet, so there is nothing it can do for
-            you until one can.
+            Every Run is work done by a coding agent on your Mac — this app never does the thinking
+            itself. Nothing here can run a Session yet, and until something can there is nothing for
+            this app to do. Which Harnesses it can drive is below: not every one it checks for is
+            one it can work with today.
           </p>
           {/* Named rather than counted: "nothing is usable" is true of a
               machine with nothing installed and of one signed out of both,
