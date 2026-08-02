@@ -152,6 +152,8 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       })
     case 'conversation/checkout-changes':
       return core.recordCheckoutChanges(command.input)
+    case 'conversation/unfinished':
+      return core.listUnfinishedRuns()
     case 'conversation/finalize':
       return core.finalizeConversationRun(command.input)
   }

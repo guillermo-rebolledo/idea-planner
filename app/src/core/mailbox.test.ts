@@ -292,6 +292,32 @@ describe('what is waiting for me', () => {
     expect(group(answered, 'recent')).toEqual(['Asked me something'])
   })
 
+  it('lists a Run its Conversation still has open, and stops once it is closed', async () => {
+    const abandoned = await start('Quit while it worked')
+    const runId = await beginRun(abandoned.id)
+
+    // What a restart finds: nothing finalized it, so it still reads as
+    // working — which is what makes closing it worth doing.
+    expect(await core.listUnfinishedRuns()).toEqual([{ sessionId: abandoned.id, runId }])
+    expect(group(await core.queryMailbox(query()), 'running')).toEqual(['Quit while it worked'])
+
+    await core.finalizeConversationRun({
+      sessionId: abandoned.id,
+      runId,
+      outcome: 'failed',
+      category: null,
+      summary: 'The app closed while this Run was working'
+    })
+
+    expect(await core.listUnfinishedRuns()).toEqual([])
+    const snapshot = await core.queryMailbox(query())
+    expect(group(snapshot, 'running')).toEqual([])
+    expect(group(snapshot, 'recent')).toEqual(['Quit while it worked'])
+    // The person's message is theirs to send again.
+    const conversation = await core.getConversation(abandoned.id)
+    expect(conversation.recovery?.resumableSubmissionId).toBe(`submission-${abandoned.id}`)
+  })
+
   it('does not call a Run the person stopped a failure', async () => {
     const stopped = await start('Stopped it myself')
     const runId = await beginRun(stopped.id)

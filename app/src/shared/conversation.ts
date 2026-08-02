@@ -427,6 +427,13 @@ export const checkoutChangeSchema = z.object({
   diff: z.string()
 })
 
+/** A Run its Conversation still has open, which after a restart means nobody closed it. */
+export const unfinishedRunSchema = z.object({
+  sessionId: z.string().min(1),
+  runId: z.string().min(1)
+})
+export type UnfinishedRun = z.infer<typeof unfinishedRunSchema>
+
 export const recordCheckoutChangesInputSchema = z.object({
   sessionId: z.string().min(1),
   runId: z.string().min(1),

@@ -29,7 +29,8 @@ import type {
   FinalizeConversationRunInput,
   HarnessStream,
   RecordCheckoutChangesInput,
-  SubmitConversationMessageInput
+  SubmitConversationMessageInput,
+  UnfinishedRun
 } from '@shared/conversation'
 import type { ProjectView } from '@shared/project'
 import type { HarnessId } from '@shared/readiness'
@@ -99,6 +100,7 @@ export interface Core {
   interruptHarness(runId: string): Promise<string[]>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Promise<HarnessStream>
   recordCheckoutChanges(input: RecordCheckoutChangesInput): Promise<void>
+  listUnfinishedRuns(): Promise<UnfinishedRun[]>
   finalizeConversationRun(input: FinalizeConversationRunInput): Promise<ConversationSnapshot>
 }
 
@@ -143,6 +145,7 @@ export interface CoreEffects {
   interruptHarness(runId: string): Effect.Effect<string[], CoreError>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
   recordCheckoutChanges(input: RecordCheckoutChangesInput): Effect.Effect<void, CoreError>
+  listUnfinishedRuns(): Effect.Effect<UnfinishedRun[], CoreError>
   finalizeConversationRun(
     input: FinalizeConversationRunInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
@@ -229,6 +232,32 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
    * The mailbox over the Session store. Searching is over Session titles in
    * memory: there is no corpus of documents left to index.
    */
+  /**
+   * The Runs whose Conversation still has them open. After a quit or a crash
+   * nothing closed them, so they read as working when nothing is working —
+   * and the Session goes on saying so until somebody develops it again.
+   */
+  const listUnfinishedRuns = (): Effect.Effect<UnfinishedRun[], CoreError> =>
+    Effect.gen(function* () {
+      const all = yield* sessions.list()
+      const open = yield* Effect.forEach(
+        all,
+        (session) =>
+          conversation.get(session.id).pipe(
+            Effect.map((snapshot): UnfinishedRun | null =>
+              snapshot.activeRunId === null
+                ? null
+                : { sessionId: session.id, runId: snapshot.activeRunId }
+            ),
+            // A Conversation that cannot be read has nothing to say about
+            // whether a Run is open, and this is not the place to decide.
+            Effect.catchAll(() => Effect.succeed<UnfinishedRun | null>(null))
+          ),
+        { concurrency: 8 }
+      )
+      return open.filter((entry): entry is UnfinishedRun => entry !== null)
+    })
+
   const queryMailbox = (query: MailboxCoreQuery): Effect.Effect<MailboxSnapshot, CoreError> =>
     Effect.gen(function* () {
       const all = yield* sessions.list()
@@ -505,6 +534,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     interruptHarness: (runId) => conversation.interrupt(runId),
     ingestHarnessOutput: (input) => conversation.ingest(input),
     recordCheckoutChanges: (input) => conversation.recordCheckoutChanges(input),
+    listUnfinishedRuns,
     finalizeConversationRun: (input) => conversation.finalize(input)
   }
 }
@@ -624,6 +654,7 @@ export function createCore(deps: CoreDeps = {}): Core {
     interruptHarness: (runId) => run(core.interruptHarness(runId)),
     ingestHarnessOutput: (input) => run(core.ingestHarnessOutput(input)),
     recordCheckoutChanges: (input) => run(core.recordCheckoutChanges(input)),
+    listUnfinishedRuns: () => run(core.listUnfinishedRuns()),
     finalizeConversationRun: (input) => run(core.finalizeConversationRun(input))
   }
 }

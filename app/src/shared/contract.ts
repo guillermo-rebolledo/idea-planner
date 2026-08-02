@@ -263,6 +263,7 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('conversation/checkout-changes'),
     input: recordCheckoutChangesInputSchema
   }),
+  z.object({ type: z.literal('conversation/unfinished') }),
   z.object({ type: z.literal('conversation/finalize'), input: finalizeConversationRunInputSchema })
 ])
 export type CoreCommand = z.infer<typeof coreCommandSchema>

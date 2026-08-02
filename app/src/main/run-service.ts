@@ -22,6 +22,7 @@ import {
   type HarnessFailureCategory
 } from '@shared/conversation'
 import { proposeStandingApproval, ruleText, type ProposedRule } from '@shared/approval'
+import { unfinishedRunSchema, type UnfinishedRun } from '@shared/conversation'
 import {
   APPROVAL_TOOL,
   APP_TOOLS,
@@ -167,7 +168,7 @@ export class RunService {
    * the Checkout as it is *now*, so anything the person changed between the
    * crash and reopening the app lands in that Run.
    */
-  async recoverAbandonedSnapshots(): Promise<void> {
+  async recoverUnfinishedWork(): Promise<void> {
     this.recovering ??= this.recoverAll()
     await this.recovering
   }
@@ -175,6 +176,40 @@ export class RunService {
   private recovering?: Promise<void>
 
   private async recoverAll(): Promise<void> {
+    await this.compareAbandonedSnapshots()
+    await this.closeUnfinishedRuns()
+  }
+
+  /**
+   * Closes a Run its Conversation still has open. Nothing finalizes a Run the
+   * app never got to finish, so its Session goes on saying the agent is
+   * working when no agent is working — and the inbox is only worth having if
+   * that signal is true.
+   *
+   * A Run this process is genuinely running is never touched: the broker is
+   * asked, because it is the one that knows.
+   */
+  private async closeUnfinishedRuns(): Promise<void> {
+    const open = await this.unfinishedRuns().catch(() => [])
+    const running = new Set(this.deps.broker.activeRunIds())
+    for (const run of open) {
+      if (running.has(run.runId)) continue
+      await this.conclude(
+        { id: run.runId, sessionId: run.sessionId },
+        'failed',
+        'error',
+        'The app closed while this Run was working'
+      ).catch(() => undefined)
+    }
+  }
+
+  private async unfinishedRuns(): Promise<UnfinishedRun[]> {
+    return unfinishedRunSchema
+      .array()
+      .parse(await this.deps.core.send({ type: 'conversation/unfinished' }))
+  }
+
+  private async compareAbandonedSnapshots(): Promise<void> {
     const root = join(this.deps.privateRoot, SNAPSHOTS)
     const abandoned = await readdir(root, { withFileTypes: true }).catch(() => [])
     for (const entry of abandoned) {
@@ -202,7 +237,7 @@ export class RunService {
     // Before this Run takes a snapshot of its own. The sweep happens once per
     // launch and removes whatever it finds, so a Run that starts while it is
     // still running could have its own baseline deleted underneath it.
-    await this.recoverAbandonedSnapshots().catch(() => undefined)
+    await this.recoverUnfinishedWork().catch(() => undefined)
     const input = developSessionInputSchema.parse(rawInput)
     if (!HARNESS_SPECS[input.harness].conversation) {
       throw new Error(

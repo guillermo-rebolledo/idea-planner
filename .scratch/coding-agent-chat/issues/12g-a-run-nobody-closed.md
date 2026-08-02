@@ -10,10 +10,20 @@ The Run's own record is the evidence: it was accepted, it started, and no bounda
 
 **Blocked by:** 12e
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A Run left open by a quit or a crash is closed on the next start, saying so
-- [ ] The Session stops reading as `running` once it is closed
-- [ ] The message that started it is still resendable
-- [ ] A Run that is genuinely still going is never closed by this
-- [ ] `pnpm verify` passes
+- [x] A Run left open by a quit or a crash is closed on the next start, saying so
+- [x] The Session stops reading as `running` once it is closed
+- [x] The message that started it is still resendable
+- [x] A Run that is genuinely still going is never closed by this
+- [x] `pnpm verify` passes
+
+## Answer — asked of the Conversations, not of the snapshots
+
+The startup pass reads which Runs their own Conversations still have open, rather than only those that happened to take a Checkout snapshot. Every Run has a Conversation; only some have a snapshot.
+
+Each one is closed as `failed` with the summary `The app closed while this Run was working`. The category comes out as `process-crash` or `uncertain-submission` depending on whether the Harness ever said anything, and both of those are resendable — so the person's message is still theirs to send again, which is what an abandoned Run owes them.
+
+## Answer — the broker decides what is still going
+
+A Run this process is actually running is skipped, because the broker is the one that knows. It matters because the recovery pass is also awaited by `develop`: without that check, sending a message in one Session could close a Run still working in another.

@@ -119,6 +119,8 @@ interface FakeCore {
   conversation: ConversationSnapshot
   /** What the Project has already permanently allowed. */
   standingRules: string[]
+  /** Runs whose Conversation still has them open, as a restart would find. */
+  unfinished: { sessionId: string; runId: string }[]
 }
 
 let nextRunId = 0
@@ -152,7 +154,8 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       activeRunId: null,
       pendingApprovalId: null
     },
-    standingRules: []
+    standingRules: [],
+    unfinished: []
   }
   const run: RunSnapshot = {
     id: runId,
@@ -189,6 +192,7 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     if (command.type === 'conversation/ingest') {
       return Promise.resolve({ events: state.events, outgoing: [] })
     }
+    if (command.type === 'conversation/unfinished') return Promise.resolve(state.unfinished)
     if (command.type.startsWith('conversation/')) return Promise.resolve(state.conversation)
     if (command.type === 'run/accept') return Promise.resolve(run)
     return Promise.resolve({ ...run, status: 'running' })
@@ -1527,7 +1531,7 @@ describe('a Run the app never got to finish', () => {
     await writeFile(join(checkout, 'tracked.ts'), 'changed by the agent\n')
 
     const service = new RunService(deps)
-    await service.recoverAbandonedSnapshots()
+    await service.recoverUnfinishedWork()
 
     expect(deps.core.commands).toContain('conversation/checkout-changes')
     const recorded = deps.core.send.mock.calls
@@ -1549,9 +1553,38 @@ describe('a Run the app never got to finish', () => {
     await writeFile(join(rubbish, 'baseline.json'), 'not json at all')
 
     const service = new RunService(deps)
-    await service.recoverAbandonedSnapshots()
+    await service.recoverUnfinishedWork()
 
     expect(deps.core.commands).not.toContain('conversation/checkout-changes')
     await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([])
+  })
+})
+
+describe('a Run nobody closed', () => {
+  it('closes a Run left open by a quit, and says the message can be sent again', async () => {
+    const root = await readyClaudeRoot('run-service-open-')
+    const deps = claudeDeps(root, fakeBroker())
+    deps.core.unfinished = [{ sessionId: 'session', runId: 'run-open' }]
+
+    const service = new RunService(deps)
+    await service.recoverUnfinishedWork()
+
+    const finalized = deps.core.send.mock.calls
+      .map(([command]) => command as { type: string; input?: { runId?: string; outcome?: string } })
+      .find((command) => command.type === 'conversation/finalize')
+    expect(finalized?.input).toMatchObject({ runId: 'run-open', outcome: 'failed' })
+  })
+
+  it('leaves a Run the broker is still running alone', async () => {
+    const root = await readyClaudeRoot('run-service-still-going-')
+    const broker = fakeBroker()
+    broker.activeRunIds.mockReturnValue(['run-going'])
+    const deps = claudeDeps(root, broker)
+    deps.core.unfinished = [{ sessionId: 'session', runId: 'run-going' }]
+
+    const service = new RunService(deps)
+    await service.recoverUnfinishedWork()
+
+    expect(deps.core.commands).not.toContain('conversation/finalize')
   })
 })

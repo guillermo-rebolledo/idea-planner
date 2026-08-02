@@ -506,10 +506,11 @@ void app.whenReady().then(() => {
     }
   })
 
-  // A Run the app never got to finish still has a record of what it changed,
-  // waiting to be compared (ticket 12e). Not awaited: nothing on screen
-  // depends on it, and a Run started before it lands waits for it itself.
-  void runService.recoverAbandonedSnapshots().catch(() => undefined)
+  // A Run the app never got to finish still has a record of what it changed
+  // waiting to be compared (12e), and a Conversation that still has it open
+  // (12g). Not awaited: nothing on screen depends on it, and a Run started
+  // before it lands waits for it itself.
+  void runService.recoverUnfinishedWork().catch(() => undefined)
 
   // Resolve appearance before any window exists so the first paint already
   // matches System, Light, or Dark.
