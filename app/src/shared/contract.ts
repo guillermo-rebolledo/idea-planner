@@ -9,6 +9,7 @@ import {
 } from './conversation'
 import { harnessIdSchema } from './readiness'
 import type { ChooseExecutableResult, HarnessId, ReadinessSnapshot } from './readiness'
+import type { ChooseProjectResult, ProjectView } from './project'
 import { sessionRelativePathSchema, type SessionRelativePath } from './portable-path'
 import {
   acceptRunInputSchema,
@@ -209,6 +210,11 @@ export class CoreError extends Error {
 /** Commands Main may send to the Core utility process. */
 export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('library/open'), path: z.string().min(1) }),
+  // Main probes with git and hands over the resolved root; Core decides
+  // identity, duplication, and persistence (ADR 0005).
+  z.object({ type: z.literal('project/add'), root: z.string().min(1) }),
+  z.object({ type: z.literal('project/list') }),
+  z.object({ type: z.literal('project/remove'), root: z.string().min(1) }),
   z.object({ type: z.literal('session/capture'), input: captureSessionInputSchema }),
   z.object({ type: z.literal('session/open'), relativePath: sessionRelativePathSchema }),
   z.object({ type: z.literal('session/list') }),
@@ -283,6 +289,20 @@ export interface ShellApi {
   chooseLibraryLocation(): Promise<ChooseLibraryResult>
   /** Opens (and remembers) the confirmed library location. */
   openLibrary(path: string): Promise<LibrarySnapshot>
+  /**
+   * Opens the native picker and offers the chosen folder as a Project. Git
+   * decides whether it qualifies and what its root is.
+   */
+  chooseProject(): Promise<ChooseProjectResult>
+  listProjects(): Promise<ProjectView[]>
+  /** Forgets the Project. The directory on disk is never touched. */
+  removeProject(root: string): Promise<void>
+  /**
+   * Runs `git init` in a folder the user has just been offered it for, then
+   * adds it. The only Git mutation the app performs.
+   */
+  initializeProject(path: string): Promise<ChooseProjectResult>
+  confirmProject(root: string): Promise<ChooseProjectResult>
   captureSession(input: CaptureSessionInput): Promise<SessionSummary>
   openSession(relativePath: SessionRelativePath): Promise<OpenedSession>
   listSessions(): Promise<SessionSummary[]>
@@ -323,5 +343,6 @@ export interface ShellApi {
 
 export { IPC_CHANNELS } from './channels'
 export * from './conversation'
+export * from './project'
 export * from './readiness'
 export * from './run'

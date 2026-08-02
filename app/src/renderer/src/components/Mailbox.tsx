@@ -32,6 +32,7 @@ import type {
 import { Button } from '@renderer/components/ui/button'
 import { CaptureForm } from '@renderer/components/CaptureForm'
 import { Conversation } from '@renderer/components/Conversation'
+import { Projects } from '@renderer/components/Projects'
 import { ReadinessDialog } from '@renderer/components/Readiness'
 import { cn } from '@renderer/lib/utils'
 
@@ -276,60 +277,60 @@ export function Mailbox({
             onCapture={startCapture}
           />
         ) : (
-          <nav
-            aria-label="Session inbox"
-            className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/40"
-          >
-            <div className="flex flex-col gap-2 border-b border-border p-2">
-              <label className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2 focus-within:ring-2 focus-within:ring-ring">
-                <Search aria-hidden="true" className="size-3.5 text-muted-foreground" />
-                <input
-                  ref={searchRef}
-                  type="search"
-                  aria-label="Search Sessions"
-                  placeholder="Search Sessions"
-                  value={query.search}
-                  onChange={(event) =>
-                    setQuery((current) => ({ ...current, search: event.target.value }))
-                  }
-                  className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground"
-                />
-              </label>
-              <div className="flex items-center gap-1">
-                <div
-                  role="group"
-                  aria-label="Inbox view"
-                  className="flex rounded-md border border-border p-0.5"
-                >
-                  <ViewToggle
-                    label="Inbox"
-                    active={query.view === 'active'}
-                    onClick={() => setQuery((current) => ({ ...current, view: 'active' }))}
+          <div className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/40">
+            <Projects />
+            <nav aria-label="Session inbox" className="flex min-h-0 flex-1 flex-col">
+              <div className="flex flex-col gap-2 border-b border-border p-2">
+                <label className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2 focus-within:ring-2 focus-within:ring-ring">
+                  <Search aria-hidden="true" className="size-3.5 text-muted-foreground" />
+                  <input
+                    ref={searchRef}
+                    type="search"
+                    aria-label="Search Sessions"
+                    placeholder="Search Sessions"
+                    value={query.search}
+                    onChange={(event) =>
+                      setQuery((current) => ({ ...current, search: event.target.value }))
+                    }
+                    className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground"
                   />
-                  <ViewToggle
-                    label="Archive"
-                    active={query.view === 'archived'}
-                    onClick={() => setQuery((current) => ({ ...current, view: 'archived' }))}
-                  />
+                </label>
+                <div className="flex items-center gap-1">
+                  <div
+                    role="group"
+                    aria-label="Inbox view"
+                    className="flex rounded-md border border-border p-0.5"
+                  >
+                    <ViewToggle
+                      label="Inbox"
+                      active={query.view === 'active'}
+                      onClick={() => setQuery((current) => ({ ...current, view: 'active' }))}
+                    />
+                    <ViewToggle
+                      label="Archive"
+                      active={query.view === 'archived'}
+                      onClick={() => setQuery((current) => ({ ...current, view: 'archived' }))}
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto py-2">
-              <InboxContent
-                mailbox={mailbox}
-                query={query}
-                selectedId={selectedSession?.id}
-                onOpen={(session) => void openSession(session)}
-                onCapture={startCapture}
-                onClearSearch={() => setQuery((current) => ({ ...current, search: '' }))}
-                onRetry={() => void refreshMailbox(query)}
-                onTogglePinned={(session) => void togglePinned(session)}
-                onSetArchived={(session, archived) => void setArchived(session, archived)}
-                onDelete={(session) => void startDelete(session)}
-              />
-            </div>
-          </nav>
+              <div className="min-h-0 flex-1 overflow-y-auto py-2">
+                <InboxContent
+                  mailbox={mailbox}
+                  query={query}
+                  selectedId={selectedSession?.id}
+                  onOpen={(session) => void openSession(session)}
+                  onCapture={startCapture}
+                  onClearSearch={() => setQuery((current) => ({ ...current, search: '' }))}
+                  onRetry={() => void refreshMailbox(query)}
+                  onTogglePinned={(session) => void togglePinned(session)}
+                  onSetArchived={(session, archived) => void setArchived(session, archived)}
+                  onDelete={(session) => void startDelete(session)}
+                />
+              </div>
+            </nav>
+          </div>
         )}
 
         <main className="flex min-w-0 flex-1 flex-col overflow-y-auto">

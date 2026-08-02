@@ -31,7 +31,9 @@ import type {
   HarnessEvent,
   SubmitConversationMessageInput
 } from '@shared/conversation'
+import type { ProjectView } from '@shared/project'
 import { suggestSessionTitle } from '@shared/title'
+import { ProjectStore } from './projects'
 import {
   emptyMailbox,
   indexExists,
@@ -50,6 +52,8 @@ import {
 export interface CoreDeps {
   now?: () => Date
   randomId?: () => string
+  /** App-owned state directory in userData. Never inside a library or a Project. */
+  stateDirectory?: string
 }
 
 /**
@@ -61,6 +65,9 @@ export interface CoreDeps {
  * Main and tests never see Effect types.
  */
 export interface Core {
+  addProject(root: string): Promise<ProjectView>
+  listProjects(): Promise<ProjectView[]>
+  removeProject(root: string): Promise<void>
   openLibrary(path: string): Promise<LibrarySnapshot>
   captureSession(input: CaptureSessionInput): Promise<SessionSummary>
   openSession(relativePath: string): Promise<OpenedSession>
@@ -85,6 +92,9 @@ export interface Core {
  * (the utility-process dispatcher). Dependencies are already provided.
  */
 export interface CoreEffects {
+  addProject(root: string): Effect.Effect<ProjectView, CoreError>
+  listProjects(): Effect.Effect<ProjectView[], CoreError>
+  removeProject(root: string): Effect.Effect<void, CoreError>
   openLibrary(path: string): Effect.Effect<LibrarySnapshot, CoreError>
   captureSession(input: CaptureSessionInput): Effect.Effect<SessionSummary, CoreError>
   openSession(relativePath: string): Effect.Effect<OpenedSession, CoreError>
@@ -131,6 +141,10 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     Layer.succeed(SessionClock, { now: deps.now ?? (() => new Date()) }),
     Layer.succeed(IdGenerator, { nextId: deps.randomId ?? (() => `session-${randomUUID()}`) })
   )
+
+  // Projects are app-owned state, kept beside the app rather than in any
+  // library or repository (ADR 0002, ADR 0005).
+  const projects = new ProjectStore(deps.stateDirectory, deps.now ?? (() => new Date()))
 
   const libraryPath = Effect.runSync(Ref.make(Option.none<string>()))
   const conversation = createConversationEffects({
@@ -583,6 +597,9 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     )
 
   return {
+    addProject: (root) => projects.add(root),
+    listProjects: () => projects.list(),
+    removeProject: (root) => projects.remove(root),
     openLibrary,
     captureSession: (input) => provide(captureSession(input)),
     openSession,
@@ -625,6 +642,9 @@ export function createCore(deps: CoreDeps = {}): Core {
     })
 
   return {
+    addProject: (root) => run(core.addProject(root)),
+    listProjects: () => run(core.listProjects()),
+    removeProject: (root) => run(core.removeProject(root)),
     openLibrary: (path) => run(core.openLibrary(path)),
     captureSession: (input) => run(core.captureSession(input)),
     openSession: (relativePath) => run(core.openSession(relativePath)),

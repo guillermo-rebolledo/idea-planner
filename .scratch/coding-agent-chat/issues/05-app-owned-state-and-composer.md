@@ -15,6 +15,8 @@ Ticket 04 added Projects but did not bind Sessions to them, so two things moved 
 
 Ticket 04 also created the app-owned store in userData for Projects. Extend that same store to Sessions, Conversations, and Runs rather than adding a second one.
 
+Onboarding still gates on a library: ticket 04 put Projects in the sidebar, but `App.tsx` shows onboarding until a library exists, so on a fresh install a person must still choose a library folder before they can add a Project. This ticket retires the library, and onboarding asks for the first Project instead.
+
 ## A regression this ticket must close
 
 Ticket 01 removed transactional staging, so multi-document writes became several sequential file writes with no atomicity. It removed the safety net in the same change: a partially written Idea no longer parses, and the summary reader returns nothing for it, so **the Idea disappears from the inbox without a word**.

@@ -1,5 +1,5 @@
-import { mkdir, rename, stat } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { mkdir, realpath, rename, stat } from 'node:fs/promises'
+import { basename, delimiter, join } from 'node:path'
 import {
   BrowserWindow,
   app,
@@ -33,8 +33,10 @@ import {
   conversationSnapshotSchema,
   developSessionInputSchema,
   SKILL_ATTRIBUTION,
+  projectViewSchema,
   type BootState,
   type ChooseLibraryResult,
+  type ChooseProjectResult,
   type DeleteSessionResult,
   type LibrarySnapshot,
   type ThemeState
@@ -46,6 +48,7 @@ import {
   refreshReadinessInputSchema
 } from '@shared/readiness'
 import { CoreClient } from './core-client'
+import { initRepository, resolveProjectRoot } from './git'
 import { HARNESS_SPECS, readinessLinkHosts } from './readiness'
 import { ReadinessService } from './readiness-service'
 import { SettingsStore } from './settings'
@@ -62,6 +65,11 @@ import { RunService } from './run-service'
 // are hermetic, and answer the native folder picker without a real dialog.
 const testUserData = process.env['APP_TEST_USER_DATA']
 const testChooseDir = process.env['APP_TEST_CHOOSE_DIR']
+// Folders the Project picker answers with, in order; the last one repeats.
+const testChooseProjectDirs = (process.env['APP_TEST_CHOOSE_PROJECT_DIRS'] ?? '')
+  .split(delimiter)
+  .filter((entry) => entry !== '')
+let chosenProjectCount = 0
 const testTrashDir = process.env['APP_TEST_TRASH_DIR']
 const testReadinessPath = process.env['APP_TEST_READINESS_PATH']
 const testReadinessHome = process.env['APP_TEST_READINESS_HOME']
@@ -80,15 +88,18 @@ let runService: RunService
 let libraryState: LibrarySnapshot | null = null
 let bootReady: Promise<void> = Promise.resolve()
 
-const coreClient = new CoreClient(() => {
-  // Core respawned after a crash: restore its only piece of state from the
-  // persisted settings so the renderer keeps working.
-  const libraryPath = settings.get().libraryPath
-  if (libraryPath) {
-    void coreClient.send({ type: 'library/open', path: libraryPath }).catch(() => undefined)
+const coreClient = new CoreClient(
+  () => app.getPath('userData'),
+  () => {
+    // Core respawned after a crash: restore its only piece of state from the
+    // persisted settings so the renderer keeps working.
+    const libraryPath = settings.get().libraryPath
+    if (libraryPath) {
+      void coreClient.send({ type: 'library/open', path: libraryPath }).catch(() => undefined)
+    }
+    void runService.stopAll('core-crash').catch(() => undefined)
   }
-  void runService.stopAll('core-crash').catch(() => undefined)
-})
+)
 
 function themeState(): ThemeState {
   return {
@@ -140,6 +151,46 @@ async function openLibrary(path: string): Promise<LibrarySnapshot> {
   return snapshot
 }
 
+async function chooseProjectDirectory(): Promise<string | undefined> {
+  if (testChooseProjectDirs.length > 0 && !app.isPackaged) {
+    // Successive picks within one test run; the last entry repeats.
+    const index = Math.min(chosenProjectCount++, testChooseProjectDirs.length - 1)
+    return testChooseProjectDirs[index]
+  }
+  if (!mainWindow) return undefined
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Add a Project',
+    message: 'The folder must be under git. Nothing inside it is read or changed by adding it.',
+    buttonLabel: 'Add this Project',
+    properties: ['openDirectory']
+  })
+  return result.canceled ? undefined : result.filePaths[0]
+}
+
+/**
+ * Main probes with git and hands Core the root git resolved; Core decides
+ * identity, duplication, and persistence (ADR 0005). Picking any folder
+ * inside a Project therefore adds that Project, once.
+ */
+async function addProject(path: string): Promise<ChooseProjectResult> {
+  const resolution = await resolveProjectRoot(path)
+  if (resolution.status !== 'resolved') {
+    return { status: 'refused', reason: resolution.status, path }
+  }
+  // Compared against the real path, because the chooser and git can name the
+  // same directory differently through a symlink.
+  const chosen = await realpath(path).catch(() => path)
+  if (resolution.root !== chosen) {
+    return { status: 'confirm-root', chosen: path, root: resolution.root }
+  }
+  return acceptProject(resolution.root)
+}
+
+async function acceptProject(root: string): Promise<ChooseProjectResult> {
+  const project = projectViewSchema.parse(await coreClient.send({ type: 'project/add', root }))
+  return { status: 'added', project }
+}
+
 function registerIpc(): void {
   handleInvoke(IPC_CHANNELS.bootState, z.undefined(), async (): Promise<BootState> => {
     await bootReady
@@ -172,6 +223,46 @@ function registerIpc(): void {
   )
 
   handleInvoke(IPC_CHANNELS.openLibrary, z.string().min(1), openLibrary)
+
+  handleInvoke(
+    IPC_CHANNELS.chooseProject,
+    z.undefined(),
+    async (): Promise<ChooseProjectResult> => {
+      const path = await chooseProjectDirectory()
+      if (!path) return { status: 'cancelled' }
+      return addProject(path)
+    }
+  )
+
+  handleInvoke(IPC_CHANNELS.listProjects, z.undefined(), async () =>
+    projectViewSchema.array().parse(await coreClient.send({ type: 'project/list' }))
+  )
+
+  // Forgetting a Project is app state only: nothing on disk is touched.
+  handleInvoke(IPC_CHANNELS.removeProject, z.string().min(1), async (root) => {
+    await coreClient.send({ type: 'project/remove', root })
+  })
+
+  // Reached only from the offer the person accepted for this exact folder.
+  // `git init` is the one Git mutation the app performs.
+  handleInvoke(
+    IPC_CHANNELS.initializeProject,
+    z.string().min(1),
+    async (path): Promise<ChooseProjectResult> => {
+      const initialized = await initRepository(path)
+      if (initialized.status === 'git-unavailable') {
+        return { status: 'refused', reason: 'git-unavailable', path }
+      }
+      return addProject(path)
+    }
+  )
+
+  // The person has seen the root git resolved and asked for it by name.
+  handleInvoke(
+    IPC_CHANNELS.confirmProject,
+    z.string().min(1),
+    async (root): Promise<ChooseProjectResult> => acceptProject(root)
+  )
 
   handleInvoke(IPC_CHANNELS.captureSession, captureSessionInputSchema, async (input) => {
     const session = sessionSummarySchema.parse(

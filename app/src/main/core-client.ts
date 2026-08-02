@@ -18,6 +18,17 @@ interface PendingRequest {
 }
 
 /**
+ * Passing `env` to a utility process replaces its environment rather than
+ * extending it, so the parent's is copied across first. Unset variables are
+ * dropped rather than passed as the string "undefined".
+ */
+function inheritedEnvironment(): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+  )
+}
+
+/**
  * Main-side client for the Core utility process: spawn, correlated
  * request/response, and respawn supervision. Main never interprets product
  * behavior itself.
@@ -27,7 +38,15 @@ export class CoreClient {
   private readonly pending = new Map<string, PendingRequest>()
   private stopped = false
 
-  constructor(private readonly onRespawn: () => void) {}
+  /**
+   * `stateDirectory` is read at spawn time rather than at construction, so it
+   * can come from Electron's `app.getPath('userData')` once the app is ready
+   * and still be correct for every respawn.
+   */
+  constructor(
+    private readonly stateDirectory: () => string,
+    private readonly onRespawn: () => void
+  ) {}
 
   start(): void {
     this.stopped = false
@@ -59,7 +78,8 @@ export class CoreClient {
 
   private spawn(): void {
     const child = utilityProcess.fork(join(__dirname, 'core.js'), [], {
-      serviceName: 'app-core'
+      serviceName: 'app-core',
+      env: { ...inheritedEnvironment(), APP_STATE_DIRECTORY: this.stateDirectory() }
     })
     this.child = child
 

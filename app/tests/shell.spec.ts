@@ -1,6 +1,8 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, delimiter, join } from 'node:path'
+import { promisify } from 'node:util'
 import { _electron as electron, expect, test, type ElectronApplication } from '@playwright/test'
 
 /**
@@ -23,6 +25,10 @@ interface Sandbox {
   readinessBinDir: string
   /** HOME used for readiness skill discovery. */
   readinessHomeDir: string
+  /** A folder under git, offered to the Project picker first. */
+  projectDir: string
+  /** A folder that is not under git, offered to the Project picker next. */
+  plainDir: string
 }
 
 let sandbox: Sandbox
@@ -37,7 +43,13 @@ async function launchShell(): Promise<ElectronApplication> {
       APP_TEST_CHOOSE_DIR: sandbox.libraryDir,
       APP_TEST_TRASH_DIR: sandbox.trashDir,
       APP_TEST_READINESS_PATH: sandbox.readinessBinDir,
-      APP_TEST_READINESS_HOME: sandbox.readinessHomeDir
+      APP_TEST_READINESS_HOME: sandbox.readinessHomeDir,
+      // Successive answers from the Project picker, in order.
+      APP_TEST_CHOOSE_PROJECT_DIRS: [
+        sandbox.projectDir,
+        sandbox.plainDir,
+        join(sandbox.projectDir, 'src', 'deep')
+      ].join(delimiter)
     }
   })
 }
@@ -48,7 +60,9 @@ test.beforeEach(async () => {
     libraryDir: await mkdtemp(join(tmpdir(), 'app-shell-library-')),
     trashDir: await mkdtemp(join(tmpdir(), 'app-shell-trash-')),
     readinessBinDir: await mkdtemp(join(tmpdir(), 'app-shell-readiness-bin-')),
-    readinessHomeDir: await mkdtemp(join(tmpdir(), 'app-shell-readiness-home-'))
+    readinessHomeDir: await mkdtemp(join(tmpdir(), 'app-shell-readiness-home-')),
+    projectDir: await mkdtemp(join(tmpdir(), 'app-shell-project-')),
+    plainDir: await mkdtemp(join(tmpdir(), 'app-shell-plain-'))
   }
 })
 
@@ -58,6 +72,8 @@ test.afterEach(async () => {
   await rm(sandbox.trashDir, { recursive: true, force: true })
   await rm(sandbox.readinessBinDir, { recursive: true, force: true })
   await rm(sandbox.readinessHomeDir, { recursive: true, force: true })
+  await rm(sandbox.projectDir, { recursive: true, force: true })
+  await rm(sandbox.plainDir, { recursive: true, force: true })
 })
 
 async function installFakeHarness(name: string, script: string): Promise<void> {
@@ -96,12 +112,16 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'captureSession',
       'chooseHarnessExecutable',
       'chooseLibraryLocation',
+      'chooseProject',
       'clearHarnessExecutable',
+      'confirmProject',
       'deleteSessionPermanently',
       'developSession',
       'getBootState',
       'getConversation',
       'getReadiness',
+      'initializeProject',
+      'listProjects',
       'listRuns',
       'listSessions',
       'onConversationEvent',
@@ -112,6 +132,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'previewDeleteSession',
       'queryMailbox',
       'refreshReadiness',
+      'removeProject',
       'setLoginShellDiscovery',
       'setSessionArchived',
       'setSessionPinned',
@@ -292,10 +313,68 @@ test('permanent delete previews exact app-owned targets and moves them to the Tr
     await expect(page.getByText('No Sessions yet', { exact: false })).toBeVisible()
 
     // The folder moved to the (test) Trash instead of being destroyed.
-    const { readdir } = await import('node:fs/promises')
     expect(await readdir(sandbox.libraryDir)).not.toContain('doomed-session')
     const trashed = await readdir(sandbox.trashDir)
     expect(trashed.some((entry) => entry.endsWith('doomed-session'))).toBe(true)
+  } finally {
+    await app.close()
+  }
+})
+
+test('a person adds a Project and a plain folder is refused with an offer to set up git', async () => {
+  await promisify(execFile)('git', ['init', '--quiet'], { cwd: sandbox.projectDir })
+  await writeFile(join(sandbox.plainDir, 'notes.md'), 'not under git yet')
+
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await chooseLibrary(page)
+
+    const projects = page.getByRole('region', { name: 'Projects' })
+    await expect(projects.getByText('No Projects yet', { exact: false })).toBeVisible()
+
+    // A folder under git becomes a Project, listed by the root git resolved.
+    await projects.getByRole('button', { name: 'Add Project' }).click()
+    await expect(projects.getByText(basename(sandbox.projectDir), { exact: true })).toBeVisible()
+
+    // A folder that is not under git is refused, naming the exact path, and
+    // nothing is written until the offer is accepted.
+    await projects.getByRole('button', { name: 'Add Project' }).click()
+    const refusal = projects.getByRole('alert')
+    await expect(refusal.getByText(sandbox.plainDir)).toBeVisible()
+    await expect(refusal.getByText('git init')).toBeVisible()
+    expect(await readdir(sandbox.plainDir)).not.toContain('.git')
+
+    // Accepting it runs the one Git mutation the app performs, and the folder
+    // becomes a Project.
+    await refusal.getByRole('button', { name: 'Set up git here' }).click()
+    await expect(projects.getByText(basename(sandbox.plainDir), { exact: true })).toBeVisible()
+    expect(await readdir(sandbox.plainDir)).toContain('.git')
+
+    // Pointing inside a Project adds the Project, but says so first: git
+    // resolves a root the person did not pick, and adding it silently would
+    // surprise them.
+    await mkdir(join(sandbox.projectDir, 'src', 'deep'), { recursive: true })
+    await projects.getByRole('button', { name: 'Add Project' }).click()
+    const confirmation = projects.getByRole('alert')
+    await expect(
+      confirmation.getByText(join(sandbox.projectDir, 'src', 'deep'), { exact: true })
+    ).toBeVisible()
+    // Named exactly, because the root git resolves is the identity being added.
+    await expect(
+      confirmation.getByText(await realpath(sandbox.projectDir), { exact: true })
+    ).toBeVisible()
+    await expect(projects.getByText(basename(sandbox.projectDir), { exact: true })).toHaveCount(1)
+    await confirmation.getByRole('button', { name: 'Add this Project' }).click()
+    // The same Project, so it is still listed once.
+    await expect(projects.getByText(basename(sandbox.projectDir), { exact: true })).toHaveCount(1)
+
+    // Removing a Project forgets it and leaves the directory alone.
+    await projects
+      .getByRole('button', { name: `Remove “${basename(sandbox.plainDir)}” from the app` })
+      .click()
+    await expect(projects.getByText(basename(sandbox.plainDir), { exact: true })).toHaveCount(0)
+    expect(await readdir(sandbox.plainDir)).toContain('notes.md')
   } finally {
     await app.close()
   }

@@ -17,7 +17,11 @@ import { createCoreEffects } from './core'
  * cancellation envelope interrupts the matching fiber, which composes with
  * whatever cleanup the running work acquired.
  */
-const core = createCoreEffects()
+const core = createCoreEffects({
+  // Only Main knows where application support lives, so it passes the path in
+  // when it forks this process. Core refuses to guess one (ADR 0002).
+  stateDirectory: process.env['APP_STATE_DIRECTORY']
+})
 const parentPort = process.parentPort
 const inFlight = new Map<string, Fiber.RuntimeFiber<void>>()
 
@@ -64,6 +68,12 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
   switch (command.type) {
     case 'library/open':
       return core.openLibrary(command.path)
+    case 'project/add':
+      return core.addProject(command.root)
+    case 'project/list':
+      return core.listProjects()
+    case 'project/remove':
+      return core.removeProject(command.root)
     case 'session/capture':
       return core.captureSession(command.input)
     case 'session/open':
