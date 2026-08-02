@@ -1,10 +1,5 @@
-import { constants } from 'node:fs'
-import { createHash } from 'node:crypto'
-import { lstat, mkdir, open, readdir, realpath, stat } from 'node:fs/promises'
 import { createServer, type Server, type Socket } from 'node:net'
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { z } from 'zod'
-import { PlanningPolicy, type PolicyResult } from './planning-policy'
 
 interface PlanningToolHostCallbacks {
   onActivity(
@@ -14,7 +9,15 @@ interface PlanningToolHostCallbacks {
   onStop(summary: string): void
   /** Structured answers the provider offered for the current question. */
   onChoices?(question: string, options: { label: string; value: string }[]): void
-  onWorkflowCompletion?(): void
+}
+
+/**
+ * What one tool call decided, and how the Run's activity records it. There is
+ * exactly one tool, so this is a description of its outcome, not a policy.
+ */
+interface ToolOutcome {
+  decision: 'allow' | 'block' | 'stop'
+  activity: { kind: 'allowed' | 'blocked'; summary: string }
 }
 
 interface RpcRequest {
@@ -25,16 +28,7 @@ interface RpcRequest {
 }
 
 const callSchema = z.object({
-  name: z.enum([
-    'read_file',
-    'list_directory',
-    'search_text',
-    'write_planning_file',
-    'rename_planning_file',
-    'delete_planning_file',
-    'offer_response_options',
-    'suggest_workflow_completion'
-  ]),
+  name: z.enum(['offer_response_options']),
   arguments: z.record(z.unknown()).default({})
 })
 
@@ -47,47 +41,6 @@ const choiceArgumentsSchema = z.object({
 })
 
 const TOOL_DEFINITIONS = [
-  tool(
-    'read_file',
-    'Read one UTF-8 file inside the Idea',
-    {
-      path: { type: 'string' }
-    },
-    ['path']
-  ),
-  tool('list_directory', 'List one directory inside the Idea', {
-    path: { type: 'string', default: '.' }
-  }),
-  tool(
-    'search_text',
-    'Search UTF-8 files inside the Idea for literal text',
-    {
-      path: { type: 'string', default: '.' },
-      query: { type: 'string' }
-    },
-    ['query']
-  ),
-  tool(
-    'write_planning_file',
-    'Write one UTF-8 file in the managed planning directory',
-    {
-      path: { type: 'string' },
-      content: { type: 'string' }
-    },
-    ['path', 'content']
-  ),
-  tool(
-    'rename_planning_file',
-    'Rename one file within the managed planning directory',
-    { from: { type: 'string' }, to: { type: 'string' } },
-    ['from', 'to']
-  ),
-  tool(
-    'delete_planning_file',
-    'Remove one planning file while retaining a reversible tombstone',
-    { path: { type: 'string' } },
-    ['path']
-  ),
   tool(
     'offer_response_options',
     'Offer the person structured answers to the current question. They may always write their own instead.',
@@ -103,41 +56,33 @@ const TOOL_DEFINITIONS = [
       }
     },
     ['question', 'options']
-  ),
-  tool(
-    'suggest_workflow_completion',
-    'Signal that Wayfinder has no unresolved planning decisions and the person may create the MVP Spec',
-    {}
   )
 ]
 
-/** Main-owned, capability-socket MCP host: the only model-visible operation boundary. */
+/**
+ * Main-owned, capability-socket MCP host. It adds the one tool no Harness
+ * offers natively — structured response options — alongside the Harness's own
+ * tools. It mediates nothing else.
+ */
 export class PlanningToolHost {
   private server: Server | undefined
   private stopping = false
   private outputBytes = 0
+  private unreadableChoices = 0
   private operationQueue: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly options: {
       socketPath: string
-      workingDirectory: string
-      planningDirectory: string
       capabilityToken: string
       callbacks: PlanningToolHostCallbacks
       operationLimitMs?: number
       beforeOperation?: () => Promise<void>
-      beforeMutation?: () => Promise<void>
-      beforeIdentityCheck?: () => Promise<void>
     }
   ) {}
 
   async start(): Promise<void> {
-    const policy = new PlanningPolicy({
-      workingDirectory: this.options.workingDirectory,
-      planningDirectory: this.options.planningDirectory
-    })
-    this.server = createServer((socket) => this.accept(socket, policy))
+    this.server = createServer((socket) => this.accept(socket))
     await new Promise<void>((resolve, reject) => {
       this.server?.once('error', reject)
       this.server?.listen(this.options.socketPath, () => resolve())
@@ -152,7 +97,7 @@ export class PlanningToolHost {
     this.server = undefined
   }
 
-  private accept(socket: Socket, policy: PlanningPolicy): void {
+  private accept(socket: Socket): void {
     socket.setEncoding('utf8')
     let pending = ''
     let authenticated = false
@@ -170,7 +115,7 @@ export class PlanningToolHost {
           continue
         }
         this.operationQueue = this.operationQueue
-          .then(() => this.handleLine(socket, policy, line))
+          .then(() => this.handleLine(socket, line))
           .catch(() => undefined)
       }
     })
@@ -187,7 +132,7 @@ export class PlanningToolHost {
     }
   }
 
-  private async handleLine(socket: Socket, policy: PlanningPolicy, line: string): Promise<void> {
+  private async handleLine(socket: Socket, line: string): Promise<void> {
     let request: RpcRequest
     try {
       request = z
@@ -235,25 +180,23 @@ export class PlanningToolHost {
       `Planning operation started: ${parsed.data.name}`
     )
     try {
-      const result = await this.withDeadline((signal) =>
-        this.call(policy, parsed.data.name, parsed.data.arguments, signal)
-      )
+      const result = await this.withDeadline((signal) => this.call(parsed.data.arguments, signal))
       this.outputBytes += Buffer.byteLength(result.text)
       if (this.outputBytes > 10 * 1024 * 1024) throw new OutputLimitError()
       await this.options.callbacks.onActivity(
-        result.policy.activity.kind,
-        result.policy.activity.summary
+        result.outcome.activity.kind,
+        result.outcome.activity.summary
       )
-      if (result.policy.decision === 'stop' && !this.stopping) {
+      if (result.outcome.decision === 'stop' && !this.stopping) {
         this.stopping = true
-        this.options.callbacks.onStop(result.policy.activity.summary)
+        this.options.callbacks.onStop(result.outcome.activity.summary)
       }
       this.respond(
         socket,
         request.id,
-        result.policy.decision === 'allow'
+        result.outcome.decision === 'allow'
           ? toolText(result.text)
-          : toolError(result.policy.activity.summary)
+          : toolError(result.outcome.activity.summary)
       )
     } catch (error) {
       const summary =
@@ -272,290 +215,35 @@ export class PlanningToolHost {
   }
 
   private async call(
-    policy: PlanningPolicy,
-    name: z.infer<typeof callSchema>['name'],
     args: Record<string, unknown>,
     signal: AbortSignal
-  ): Promise<{ policy: PolicyResult; text: string }> {
+  ): Promise<{ outcome: ToolOutcome; text: string }> {
     await this.options.beforeOperation?.()
     signal.throwIfAborted()
-    if (name === 'offer_response_options') {
-      // Offering answers touches nothing: no path, no process, no new
-      // authority. This host is the only place that sees the arguments, so it
-      // is what tells the Conversation about them.
-      const offered = choiceArgumentsSchema.safeParse(args)
-      if (!offered.success) {
-        // Options the app cannot read are not a menu it can trust; the person
-        // keeps answering by typing.
-        return {
-          policy: policy.deny(
-            'offer_response_options',
-            'unreadable-choices',
-            'Blocked unreadable Suggested Responses'
-          ),
-          text: ''
-        }
-      }
-      this.options.callbacks.onChoices?.(offered.data.question, offered.data.options)
+    // Offering answers touches nothing: no path, no process, no new authority.
+    // This host is the only place that sees the arguments, so it is what tells
+    // the Conversation about them.
+    const offered = choiceArgumentsSchema.safeParse(args)
+    if (!offered.success) {
+      // Options the app cannot read are not a menu it can trust; the person
+      // keeps answering by typing. A provider that keeps offering unreadable
+      // menus is not going to start making sense, so the third one ends the Run.
+      this.unreadableChoices += 1
       return {
-        policy: {
-          decision: 'allow',
-          code: 'allowed',
-          overridable: false,
-          activity: { kind: 'allowed', summary: 'Offered Suggested Responses' }
+        outcome: {
+          decision: this.unreadableChoices >= 3 ? 'stop' : 'block',
+          activity: { kind: 'blocked', summary: 'Blocked unreadable Suggested Responses' }
         },
-        text: 'offered'
+        text: ''
       }
     }
-    if (name === 'suggest_workflow_completion') {
-      this.options.callbacks.onWorkflowCompletion?.()
-      return {
-        policy: {
-          decision: 'allow',
-          code: 'allowed',
-          overridable: false,
-          activity: { kind: 'allowed', summary: 'Suggested workflow completion' }
-        },
-        text: 'suggested'
-      }
-    }
-    if (name === 'read_file') {
-      const path = requiredString(args['path'])
-      const decision = await policy.authorize({ kind: 'read', path })
-      if (decision.decision !== 'allow') return { policy: decision, text: '' }
-      if (await this.isTombstoned(path)) {
-        return {
-          policy: policy.deny(
-            `tombstoned:${path}`,
-            'tombstoned',
-            `Blocked deleted planning file: ${path}`
-          ),
-          text: ''
-        }
-      }
-      const content = await this.readVerified(path, async () => {
-        const verified = await policy.authorize({ kind: 'read', path })
-        if (verified.decision !== 'allow') {
-          throw new Error('Readable path identity changed during the authorized operation')
-        }
-      })
-      return { policy: decision, text: content }
-    }
-    if (name === 'list_directory') {
-      const path = optionalString(args['path']) ?? '.'
-      const decision = await policy.authorize({ kind: 'read', path })
-      if (decision.decision !== 'allow') return { policy: decision, text: '' }
-      const entries = await readdir(join(this.options.workingDirectory, path), {
-        withFileTypes: true
-      })
-      const visible: typeof entries = []
-      for (const entry of entries) {
-        const childPath = join(path, entry.name)
-        if (await this.isTombstoned(childPath)) continue
-        const childDecision = await policy.authorize({
-          kind: 'read',
-          path: childPath
-        })
-        if (childDecision.decision === 'allow') visible.push(entry)
-      }
-      return {
-        policy: decision,
-        text: visible
-          .map((entry) => `${entry.isDirectory() ? 'directory' : 'file'}\t${entry.name}`)
-          .join('\n')
-      }
-    }
-    if (name === 'search_text') {
-      const path = optionalString(args['path']) ?? '.'
-      const query = requiredString(args['query'])
-      const decision = await policy.authorize({ kind: 'read', path })
-      if (decision.decision !== 'allow') return { policy: decision, text: '' }
-      return {
-        policy: decision,
-        text: await searchText(
-          join(this.options.workingDirectory, path),
-          query,
-          this.options.workingDirectory,
-          policy,
-          signal,
-          (candidate) => this.isTombstoned(candidate)
-        )
-      }
-    }
-    if (name === 'rename_planning_file') {
-      const from = requiredString(args['from'])
-      const to = requiredString(args['to'])
-      const sourceDecision = await policy.authorize({ kind: 'write', path: from, bytes: 0 })
-      if (sourceDecision.decision !== 'allow') return { policy: sourceDecision, text: '' }
-      const destinationDecision = await policy.authorize({ kind: 'write', path: to, bytes: 0 })
-      if (destinationDecision.decision !== 'allow') {
-        return { policy: destinationDecision, text: '' }
-      }
-      await this.options.beforeMutation?.()
-      signal.throwIfAborted()
-      const content = await this.readVerified(from)
-      const contentDecision = await policy.authorize({
-        kind: 'write',
-        path: to,
-        bytes: Buffer.byteLength(content)
-      })
-      if (contentDecision.decision !== 'allow') {
-        return { policy: contentDecision, text: '' }
-      }
-      const destination = join(this.options.workingDirectory, to)
-      await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
-      let destinationHandle
-      try {
-        destinationHandle = await open(
-          destination,
-          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-          0o600
-        )
-      } catch (error) {
-        if (!isAlreadyExists(error)) throw error
-        return {
-          policy: policy.deny(
-            `rename-collision:${to}`,
-            'rename-collision',
-            `Blocked rename over an existing planning file: ${to}`
-          ),
-          text: ''
-        }
-      }
-      try {
-        await this.verifyPlanningHandle(destinationHandle, destination)
-        await destinationHandle.writeFile(content, 'utf8')
-      } finally {
-        await destinationHandle.close()
-      }
-      await this.createTombstone(from)
-      return { policy: contentDecision, text: 'Planning file renamed' }
-    }
-    if (name === 'delete_planning_file') {
-      const path = requiredString(args['path'])
-      const decision = await policy.authorize({ kind: 'write', path, bytes: 0 })
-      if (decision.decision !== 'allow') return { policy: decision, text: '' }
-      await this.options.beforeMutation?.()
-      signal.throwIfAborted()
-      await this.readVerified(path)
-      const retained = await this.createTombstone(path)
-      return {
-        policy: decision,
-        text: `Planning file retained behind tombstone: ${relative(this.options.workingDirectory, retained)}`
-      }
-    }
-    const path = requiredString(args['path'])
-    const content = requiredString(args['content'])
-    const decision = await policy.authorize({
-      kind: 'write',
-      path,
-      bytes: Buffer.byteLength(content)
-    })
-    if (decision.decision !== 'allow') return { policy: decision, text: '' }
-    await this.options.beforeMutation?.()
-    signal.throwIfAborted()
-    const absolute = join(this.options.workingDirectory, path)
-    await mkdir(dirname(absolute), { recursive: true, mode: 0o700 })
-    const handle = await open(
-      absolute,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW,
-      0o600
-    )
-    try {
-      await this.verifyPlanningHandle(handle, absolute)
-      await handle.truncate(0)
-      await handle.writeFile(content, 'utf8')
-    } finally {
-      await handle.close()
-    }
-    return { policy: decision, text: 'Planning file updated' }
-  }
-
-  private async readVerified(path: string, verify?: () => Promise<void>): Promise<string> {
-    const absolute = join(this.options.workingDirectory, path)
-    const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW)
-    try {
-      await (verify ? verify() : this.verifyPlanningPath(absolute))
-      await this.verifyHandleIdentity(handle, absolute)
-      return await handle.readFile('utf8')
-    } finally {
-      await handle.close()
-    }
-  }
-
-  private async createTombstone(path: string): Promise<string> {
-    const tombstones = join(this.options.planningDirectory, '.tombstones')
-    await mkdir(tombstones, { recursive: true, mode: 0o700 })
-    const marker = this.tombstonePath(path)
-    let handle
-    try {
-      handle = await open(
-        marker,
-        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-        0o600
-      )
-    } catch (error) {
-      if (isAlreadyExists(error)) return marker
-      throw error
-    }
-    try {
-      await this.verifyPlanningHandle(handle, marker)
-      await handle.writeFile(JSON.stringify({ path, retainedAt: new Date().toISOString() }), 'utf8')
-    } finally {
-      await handle.close()
-    }
-    return marker
-  }
-
-  private async isTombstoned(path: string): Promise<boolean> {
-    return await open(this.tombstonePath(path), constants.O_RDONLY | constants.O_NOFOLLOW)
-      .then(async (handle) => {
-        try {
-          await this.verifyPlanningPath(this.tombstonePath(path))
-          return true
-        } finally {
-          await handle.close()
-        }
-      })
-      .catch(() => false)
-  }
-
-  private tombstonePath(path: string): string {
-    const key = createHash('sha256').update(path.replaceAll('\\', '/')).digest('hex')
-    return join(this.options.planningDirectory, '.tombstones', `${key}-${basename(path)}.json`)
-  }
-
-  private async verifyPlanningPath(path: string): Promise<void> {
-    const [planningRoot, candidate] = await Promise.all([
-      realpath(this.options.planningDirectory),
-      realpath(path)
-    ])
-    const portable = relative(planningRoot, candidate)
-    if (
-      portable === '' ||
-      (!portable.startsWith(`..${sep}`) && portable !== '..' && !isAbsolute(portable))
-    ) {
-      return
-    }
-    throw new Error('Planning path identity changed during the authorized operation')
-  }
-
-  private async verifyPlanningHandle(
-    handle: Awaited<ReturnType<typeof open>>,
-    path: string
-  ): Promise<void> {
-    await this.options.beforeIdentityCheck?.()
-    await this.verifyPlanningPath(path)
-    await this.verifyHandleIdentity(handle, path)
-  }
-
-  private async verifyHandleIdentity(
-    handle: Awaited<ReturnType<typeof open>>,
-    path: string
-  ): Promise<void> {
-    const [opened, named] = await Promise.all([handle.stat(), stat(path)])
-    if (opened.dev !== named.dev || opened.ino !== named.ino) {
-      throw new Error('Opened file identity changed during the authorized operation')
+    this.options.callbacks.onChoices?.(offered.data.question, offered.data.options)
+    return {
+      outcome: {
+        decision: 'allow',
+        activity: { kind: 'allowed', summary: 'Offered Suggested Responses' }
+      },
+      text: 'offered'
     }
   }
 
@@ -607,62 +295,4 @@ function toolText(text: string): Record<string, unknown> {
 
 function toolError(text: string): Record<string, unknown> {
   return { content: [{ type: 'text', text }], isError: true }
-}
-
-function requiredString(value: unknown): string {
-  if (typeof value !== 'string' || value.length === 0) throw new Error('Invalid string')
-  return value
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined
-}
-
-async function searchText(
-  root: string,
-  query: string,
-  workingDirectory: string,
-  policy: PlanningPolicy,
-  signal: AbortSignal,
-  isTombstoned: (path: string) => Promise<boolean>
-): Promise<string> {
-  const results: string[] = []
-  const visit = async (path: string): Promise<void> => {
-    signal.throwIfAborted()
-    const metadata = await lstat(path)
-    if (metadata.isSymbolicLink()) return
-    if (metadata.isDirectory()) {
-      for (const entry of await readdir(path)) await visit(join(path, entry))
-      return
-    }
-    if (!metadata.isFile() || metadata.size > 5 * 1024 * 1024) return
-    const portable = relative(workingDirectory, path)
-    if (await isTombstoned(portable)) return
-    const decision = await policy.authorize({ kind: 'read', path: portable })
-    if (decision.decision !== 'allow') return
-    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null)
-    if (!handle) return
-    let content: string
-    try {
-      const verified = await policy.authorize({ kind: 'read', path: portable })
-      if (verified.decision !== 'allow') return
-      const [opened, named] = await Promise.all([handle.stat(), stat(path)])
-      if (opened.dev !== named.dev || opened.ino !== named.ino) return
-      content = await handle.readFile('utf8')
-    } finally {
-      await handle.close()
-    }
-    for (const [index, line] of content.split('\n').entries()) {
-      if (line.includes(query)) {
-        results.push(`${portable}:${index + 1}:${line.slice(0, 500)}`)
-      }
-      if (Buffer.byteLength(results.join('\n')) > 10 * 1024 * 1024) return
-    }
-  }
-  await visit(root)
-  return results.join('\n')
-}
-
-function isAlreadyExists(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && error.code === 'EEXIST'
 }

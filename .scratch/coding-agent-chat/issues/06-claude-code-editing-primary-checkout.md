@@ -8,6 +8,16 @@ Edits land in the user's own checkout, in place, alongside their open editor, pe
 
 Inline diffs come from the `Edit` tool result's sibling payload, which carries old content, new content, and ready-made unified-diff hunks. This is undocumented, so pin a contract test to the installed version. See `docs/harness-permission-mapping.md`.
 
+## Muzzles left by ticket 02
+
+Ticket 02 removed the app's own containment but left the flags that restrict the Harness, because rewriting them is this ticket's job:
+
+- Claude is launched with `--allowedTools mcp__planning__*`, so it currently has the app's single MCP tool and **no native tools at all**.
+- Codex is launched with its shell and exec tools disabled and `--sandbox workspace-write`.
+- The Claude prompt still instructs the model to "use only the app-owned planning tools" and names a managed planning location that no longer exists.
+
+Between tickets 02 and 06 the app can therefore converse and nothing else. This ticket is where the Harness gets its native tools back, under the mapping in `docs/harness-permission-mapping.md`. The stale prompt text must go with them — a false instruction to the model is worse than a stale comment, because the model acts on it.
+
 **Blocked by:** 05
 
 **Status:** ready-for-agent

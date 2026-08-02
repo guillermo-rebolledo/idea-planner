@@ -86,22 +86,18 @@ Conventions inside Core:
 > Harness's native tools and permission system replace the app-owned planning
 > sandbox.
 
-`RunService`, `PlanningPolicy`, `PlanningToolHost`, and `RunProcessBroker` remain
-promise- and event-driven in **Main**. They form one native authority boundary:
-resolve the already-probed executable, freeze the launch configuration through
-Core, compile the provider containment profile, then launch, terminate, reap,
-verify, and remove the private Run directory.
+`RunService`, `PlanningToolHost`, and `RunProcessBroker` remain promise- and
+event-driven in **Main**. They form one native authority boundary: resolve the
+already-probed executable, freeze the launch configuration through Core, then
+launch, terminate, reap, verify, and remove the private Run directory.
 
-The provider has no general shell, file-write, browser, plugin, or ambient MCP
-surface. Its only model-visible operations are the typed tools advertised by a
-Main-owned MCP host through a per-Run capability socket and a tiny sandboxed
-stdio proxy. The provider sandbox cannot write the planning tree; Main performs
-an approved planning write only after `PlanningPolicy` validates the exact
-request. These `.scratch/` artifacts are serialized by `PlanningToolHost`,
-bounded per file and Run, and intentionally do not enter Core's managed-document
-version history. This separation also lets the provider read its private
-bootstrap authentication without exposing an operation capable of reading that
-path to the model.
+The provider runs with its own native tools and its own permission system; the
+app does not contain it. Main adds exactly one tool no Harness offers natively —
+structured response options, which back Suggested Responses — through a per-Run
+capability socket and a tiny stdio proxy. `PlanningToolHost` serializes those
+calls, bounds them per Run, and reports them as activity. A Run's private
+directory still holds the staged provider home, so the provider can read its own
+bootstrap authentication without that path becoming a model-visible operation.
 
 Main may report observed native lifecycle and policy events, but it does not
 own canonical state transitions: each one is validated and persisted by Core

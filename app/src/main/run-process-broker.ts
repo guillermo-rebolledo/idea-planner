@@ -16,7 +16,6 @@ export interface RunLaunch {
   workingDirectory: string
   runDirectory: string
   environment: Record<string, string>
-  sandboxProfile: string
   onBeforeCleanup?: () => Promise<void>
   /** Raw provider bytes, by stream. Main never interprets them itself. */
   onOutput?: (stream: 'stdout' | 'stderr', text: string) => void
@@ -83,15 +82,7 @@ export class RunProcessBroker {
       )
     }
     if (this.active.has(launch.id)) return Promise.resolve()
-    const args = [
-      '-n',
-      '10',
-      '/usr/bin/sandbox-exec',
-      '-f',
-      launch.sandboxProfile,
-      launch.executable,
-      ...launch.args
-    ]
+    const args = ['-n', '10', launch.executable, ...launch.args]
     const child = this.deps.spawn('/usr/bin/nice', args, {
       cwd: launch.workingDirectory,
       env: { ...launch.environment, TMPDIR: launch.runDirectory },

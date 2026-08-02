@@ -28,18 +28,11 @@ describe('Run process broker', () => {
       args: ['run'],
       workingDirectory: '/work',
       runDirectory: '/private/run-1',
-      environment: { LANG: 'en_US.UTF-8' },
-      sandboxProfile: '/private/run-1/profile.sb'
+      environment: { LANG: 'en_US.UTF-8' }
     })
     expect(spawn).toHaveBeenCalledWith(
       '/usr/bin/nice',
-      expect.arrayContaining([
-        '-n',
-        '10',
-        '/usr/bin/sandbox-exec',
-        '-f',
-        '/private/run-1/profile.sb'
-      ]),
+      ['-n', '10', '/opt/codex', 'run'],
       expect.objectContaining({
         shell: false,
         detached: true,
@@ -66,8 +59,7 @@ describe('Run process broker', () => {
       args: [],
       workingDirectory: '/work',
       runDirectory: '/private/run-1',
-      environment: {},
-      sandboxProfile: '/private/run-1/profile.sb'
+      environment: {}
     })
     await broker.stop('run-1', 'user')
     expect(killProcessGroup).toHaveBeenCalledWith(4242, 'SIGTERM')
@@ -89,8 +81,7 @@ describe('Run process broker', () => {
       args: [],
       workingDirectory: '/work',
       runDirectory: '/private/run-1',
-      environment: {},
-      sandboxProfile: '/private/run-1/profile.sb'
+      environment: {}
     })
     await expect(broker.stop('run-1', 'core-crash')).rejects.toThrow('could not verify')
     await expect(
@@ -100,8 +91,7 @@ describe('Run process broker', () => {
         args: [],
         workingDirectory: '/work',
         runDirectory: '/private/run-2',
-        environment: {},
-        sandboxProfile: '/private/run-2/profile.sb'
+        environment: {}
       })
     ).rejects.toThrow('Supervision recovery is required')
   })
@@ -128,7 +118,6 @@ describe('Run process broker', () => {
       workingDirectory: '/work',
       runDirectory: '/private/run-1',
       environment: {},
-      sandboxProfile: '/private/run-1/profile.sb',
       onSupervisionFailure
     })
     await expect(broker.inspectLimits('run-1')).resolves.toBeUndefined()
@@ -152,7 +141,6 @@ describe('Run process broker', () => {
       workingDirectory: '/work',
       runDirectory: '/private/run-1',
       environment: {},
-      sandboxProfile: '/private/run-1/profile.sb',
       onExit
     })
     child.emit('close', 0, null)
@@ -178,7 +166,6 @@ describe('Run process broker', () => {
       workingDirectory: '/work',
       runDirectory: '/private/run-1',
       environment: {},
-      sandboxProfile: '/private/run-1/profile.sb',
       onExit,
       onSupervisionFailure
     })
@@ -206,7 +193,6 @@ describe('Run process broker', () => {
       workingDirectory: '/work',
       runDirectory: '/private/run-1',
       environment: {},
-      sandboxProfile: '/private/run-1/profile.sb',
       onLimitViolation
     })
     child.stdout.emit('data', Buffer.from('12345'))
@@ -232,7 +218,6 @@ describe('Run process broker', () => {
       workingDirectory: '/work',
       runDirectory: '/private/run-1',
       environment: {},
-      sandboxProfile: '/private/run-1/profile.sb',
       onLimitViolation
     })
     await broker.inspectLimits('run-1')

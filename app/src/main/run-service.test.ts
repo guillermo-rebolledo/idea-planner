@@ -1,10 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { execFile } from 'node:child_process'
-import { createServer } from 'node:net'
-import { promisify } from 'node:util'
-import electron from 'electron'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   emptyUsage,
@@ -13,8 +9,6 @@ import {
   type HarnessEvent
 } from '@shared/conversation'
 import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
-import { PlanningPolicy } from './planning-policy'
-import { mergeProviderLaunches, resolveProviderLaunch } from './provider-launch'
 import type { RunLaunch } from './run-process-broker'
 import { RunService } from './run-service'
 
@@ -154,111 +148,6 @@ afterEach(async () => {
 })
 
 describe('Run service', () => {
-  it.skipIf(process.platform !== 'darwin' || !process.env['HOME'])(
-    'starts the installed Claude CLI with its MCP config inside the native sandbox',
-    async () => {
-      const home = process.env['HOME'] ?? ''
-      const claude = join(home, '.local', 'bin', 'claude')
-      const electronExecutable = electron as unknown as string
-      const root = await mkdtemp(join(tmpdir(), 'claude-sandbox-repro-'))
-      temporaryDirectories.push(root)
-      const runDirectory = join(root, 'run')
-      const planningDirectory = join(root, '.scratch', 'idea')
-      const proxyScript = join(__dirname, 'planning-mcp-proxy.ts')
-      const claudeConfig = join(runDirectory, 'claude-config')
-      await Promise.all([mkdir(runDirectory), mkdir(planningDirectory, { recursive: true })])
-      await mkdir(join(claudeConfig, 'skills', 'grilling'), { recursive: true })
-      await writeFile(
-        join(claudeConfig, 'skills', 'grilling', 'SKILL.md'),
-        '---\nname: grilling\ndescription: Ask one question at a time.\n---\nAsk one question.'
-      )
-      const mcpConfig = join(runDirectory, 'mcp.json')
-      await writeFile(
-        mcpConfig,
-        JSON.stringify({
-          mcpServers: {
-            planning: {
-              command: electronExecutable,
-              env: {
-                ELECTRON_RUN_AS_NODE: '1',
-                NODE_OPTIONS: `--require=${proxyScript}`,
-                PLANNING_MCP_SOCKET: join(runDirectory, 'missing.sock'),
-                PLANNING_MCP_CAPABILITY: 'test'
-              }
-            }
-          }
-        })
-      )
-      const profile = join(runDirectory, 'planning.sb')
-      await writeFile(
-        profile,
-        new PlanningPolicy({ workingDirectory: root, planningDirectory }).renderSandboxProfile({
-          runDirectory,
-          launch: mergeProviderLaunches(
-            await resolveProviderLaunch(claude, [join(home, '.claude', 'skills')]),
-            await resolveProviderLaunch(electronExecutable),
-            await resolveProviderLaunch('/usr/bin/security')
-          ),
-          proxyScript,
-          socketPath: join(runDirectory, 'missing.sock')
-        })
-      )
-      const credentials = JSON.parse(
-        (
-          await promisify(execFile)('/usr/bin/security', [
-            'find-generic-password',
-            '-s',
-            'Claude Code-credentials',
-            '-w'
-          ])
-        ).stdout
-      ) as { claudeAiOauth: { accessToken: string } }
-      const result = await promisify(execFile)(
-        '/usr/bin/sandbox-exec',
-        [
-          '-f',
-          profile,
-          claude,
-          '--print',
-          '--setting-sources',
-          'user',
-          '--strict-mcp-config',
-          '--mcp-config',
-          mcpConfig,
-          '--tools',
-          'ToolSearch',
-          '--allowedTools',
-          'mcp__planning__*',
-          '--permission-mode',
-          'dontAsk',
-          '--no-chrome',
-          '--output-format',
-          'stream-json',
-          '--verbose',
-          '/grilling hello'
-        ],
-        {
-          cwd: root,
-          env: {
-            PATH: `${dirname(claude)}:/usr/bin:/bin`,
-            HOME: home,
-            LANG: 'en_US.UTF-8',
-            LC_ALL: 'en_US.UTF-8',
-            TMPDIR: runDirectory,
-            CLAUDE_CODE_OAUTH_TOKEN: credentials.claudeAiOauth.accessToken,
-            CLAUDE_CONFIG_DIR: claudeConfig
-          },
-          timeout: 20_000
-        }
-      ).catch((error: unknown) => error as { stdout?: string; stderr?: string })
-      expect(result.stdout).toContain('"subtype":"init"')
-      expect(result.stdout).toContain('"grilling"')
-      expect(result.stdout).toContain('"tools":["ToolSearch"]')
-      expect(result.stderr).not.toContain("posix_spawn 'security'")
-      expect(result.stdout).not.toContain('Not logged in')
-    },
-    30_000
-  )
   it('starts Claude Wayfinder with the documented stream protocol and native skill invocation', async () => {
     const root = await readyClaudeRoot('run-claude-')
     const core = fakeCore()
@@ -796,10 +685,7 @@ describe('Run service', () => {
       workflow: 'grilling',
       permissionMode: 'ask'
     })
-    broker.launch?.onOutput?.(
-      'stderr',
-      "sandbox-exec: execvp() of 'codex' failed: Operation not permitted\n"
-    )
+    broker.launch?.onOutput?.('stderr', 'codex: cannot open .git/HEAD: Operation not permitted\n')
     broker.launch?.onExit?.(1, null)
     await new Promise((resolve) => setTimeout(resolve, 20))
     await broker.launch?.onBeforeCleanup?.()
@@ -843,106 +729,4 @@ describe('Run service', () => {
       })
     ).rejects.toThrow('not ready for planning')
   })
-
-  it.skipIf(process.platform !== 'darwin')(
-    'generates a profile accepted by the native sandbox',
-    async () => {
-      const root = await mkdtemp(join(tmpdir(), 'sandbox-profile-'))
-      temporaryDirectories.push(root)
-      const planningDirectory = join(root, '.scratch', 'idea')
-      const runDirectory = join(root, 'run')
-      await Promise.all([
-        mkdir(planningDirectory, { recursive: true }),
-        mkdir(runDirectory, { recursive: true })
-      ])
-      const profile = join(runDirectory, 'planning.sb')
-      await writeFile(
-        profile,
-        new PlanningPolicy({ workingDirectory: root, planningDirectory }).renderSandboxProfile({
-          runDirectory,
-          launch: { executables: ['/usr/bin/true'], executableTrees: [], readRoots: [] },
-          proxyScript: join(root, 'proxy.js'),
-          socketPath: join(runDirectory, 'planning.sock')
-        })
-      )
-      await expect(
-        promisify(execFile)('/usr/bin/sandbox-exec', ['-f', profile, '/usr/bin/true'])
-      ).resolves.toBeDefined()
-    }
-  )
-
-  it.skipIf(process.platform !== 'darwin')(
-    'denies direct provider writes and secret-path reads in the native sandbox',
-    async () => {
-      const root = await mkdtemp(join(tmpdir(), 'sandbox-enforcement-'))
-      temporaryDirectories.push(root)
-      const planningDirectory = join(root, '.scratch', 'idea')
-      const runDirectory = join(root, 'run')
-      await Promise.all([
-        mkdir(planningDirectory, { recursive: true }),
-        mkdir(runDirectory, { recursive: true }),
-        writeFile(join(root, '.env'), 'SECRET=value'),
-        writeFile(join(root, 'README.md'), 'safe')
-      ])
-      const profile = join(runDirectory, 'planning.sb')
-      const policy = new PlanningPolicy({ workingDirectory: root, planningDirectory })
-      await writeFile(
-        profile,
-        policy.renderSandboxProfile({
-          runDirectory,
-          launch: { executables: ['/usr/bin/touch'], executableTrees: [], readRoots: [] },
-          proxyScript: join(root, 'proxy.js'),
-          socketPath: join(runDirectory, 'planning.sock')
-        })
-      )
-      const sandbox = (executable: string, ...args: string[]) =>
-        promisify(execFile)('/usr/bin/sandbox-exec', ['-f', profile, executable, ...args])
-      await expect(
-        sandbox('/usr/bin/touch', join(planningDirectory, 'draft.md'))
-      ).rejects.toBeDefined()
-      await expect(sandbox('/usr/bin/touch', join(root, 'source.ts'))).rejects.toBeDefined()
-      await expect(sandbox('/usr/bin/head', join(root, '.env'))).rejects.toBeDefined()
-    }
-  )
-
-  it.skipIf(process.platform !== 'darwin')(
-    'allows only the capability socket through the native sandbox',
-    async () => {
-      const root = await mkdtemp(join(tmpdir(), 'sandbox-socket-'))
-      temporaryDirectories.push(root)
-      const runDirectory = join(root, 'run')
-      const planningDirectory = join(root, '.scratch', 'idea')
-      await Promise.all([
-        mkdir(runDirectory, { recursive: true }),
-        mkdir(planningDirectory, { recursive: true })
-      ])
-      const allowedSocket = join(root, 'allowed.sock')
-      const deniedSocket = join(root, 'denied.sock')
-      const allowedServer = createServer((connection) => connection.end('ok'))
-      const deniedServer = createServer((connection) => connection.end('unexpected'))
-      await Promise.all([
-        new Promise<void>((resolve) => allowedServer.listen(allowedSocket, resolve)),
-        new Promise<void>((resolve) => deniedServer.listen(deniedSocket, resolve))
-      ])
-      const profile = join(runDirectory, 'planning.sb')
-      await writeFile(
-        profile,
-        new PlanningPolicy({ workingDirectory: root, planningDirectory }).renderSandboxProfile({
-          runDirectory,
-          launch: { executables: ['/usr/bin/nc'], executableTrees: [], readRoots: [] },
-          proxyScript: join(root, 'proxy.js'),
-          socketPath: allowedSocket
-        })
-      )
-      const connect = (path: string) =>
-        promisify(execFile)('/usr/bin/sandbox-exec', ['-f', profile, '/usr/bin/nc', '-U', path])
-      try {
-        await expect(connect(allowedSocket)).resolves.toMatchObject({ stdout: 'ok' })
-        await expect(connect(deniedSocket)).rejects.toBeDefined()
-      } finally {
-        allowedServer.close()
-        deniedServer.close()
-      }
-    }
-  )
 })

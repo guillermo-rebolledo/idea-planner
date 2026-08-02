@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { chmod, copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -27,9 +27,7 @@ import {
   type StartRunInput
 } from '@shared/run'
 import { PROVIDER_SPECS, VERIFIED_WORKFLOW_SKILLS } from './readiness'
-import { PlanningPolicy } from './planning-policy'
 import { PlanningToolHost } from './planning-tool-host'
-import { mergeProviderLaunches, resolveProviderLaunch } from './provider-launch'
 import type { RunProcessBroker } from './run-process-broker'
 
 interface CorePort {
@@ -278,8 +276,6 @@ export class RunService {
     }
 
     const planningRelativePath = planningRelativePathFor(input)
-    const planningDirectory = join(workingDirectory, planningRelativePath)
-    const policy = new PlanningPolicy({ workingDirectory, planningDirectory })
     const socketDirectory = join(
       tmpdir(),
       `idea-planning-${createHash('sha256').update(accepted.id).digest('hex').slice(0, 16)}`
@@ -287,11 +283,9 @@ export class RunService {
     const socketPath = join(socketDirectory, 'p.sock')
     const capabilityToken = randomUUID()
     let toolHost: PlanningToolHost | undefined
-    const sandboxProfile = join(runDirectory, 'planning.sb')
     try {
       await mkdir(runDirectory, { recursive: true, mode: 0o700 })
       await chmod(runDirectory, 0o700)
-      await mkdir(planningDirectory, { recursive: true, mode: 0o700 })
       await mkdir(socketDirectory, { recursive: true, mode: 0o700 })
       await chmod(socketDirectory, 0o700)
       // A socket file left behind by a crash would otherwise make this Run's
@@ -308,8 +302,6 @@ export class RunService {
       toolHost = new PlanningToolHost({
         socketPath,
         capabilityToken,
-        workingDirectory,
-        planningDirectory,
         callbacks: {
           onActivity: (kind, summary) =>
             this.record(accepted, undefined, kind, sanitize(summary, workingDirectory)).then(
@@ -320,56 +312,20 @@ export class RunService {
           },
           onChoices: (question, options) => {
             void this.offerChoices(accepted, question, options)
-          },
-          onWorkflowCompletion: () => {
-            if (input.workflow !== 'wayfinder') return
-            void hasCompletedWayfinderMap(planningDirectory).then((complete) => {
-              if (complete) {
-                void this.applyConversationEvent(accepted, {
-                  type: 'workflow-completion-suggested'
-                })
-              }
-            })
           }
         }
       })
       await toolHost.start()
       this.toolHosts.set(accepted.id, toolHost)
-      await writeFile(
-        sandboxProfile,
-        policy.renderSandboxProfile({
-          runDirectory,
-          // The provider and the planning proxy both have to start inside
-          // this profile. The verified skills location is readable because
-          // providers scan the root, and this Run's workflow lives in it.
-          launch: mergeProviderLaunches(
-            await resolveProviderLaunch(provider.executablePath, [
-              join(this.deps.homeDirectory, spec.skillsRoot)
-            ]),
-            await resolveProviderLaunch(this.deps.proxyExecutable),
-            ...(input.provider === 'claude'
-              ? [await resolveProviderLaunch('/usr/bin/security')]
-              : [])
-          ),
-          proxyScript: this.deps.proxyScript,
-          socketPath
-        }),
-        { mode: 0o600 }
-      )
 
-      await this.record(
-        accepted,
-        'starting',
-        'lifecycle',
-        'Verified planning sandbox; starting provider'
-      )
+      await this.record(accepted, 'starting', 'lifecycle', 'Prepared the Run; starting provider')
     } catch (error) {
       await toolHost?.close().catch(() => undefined)
       await Promise.all([
         rm(socketDirectory, { recursive: true, force: true }),
         rm(runDirectory, { recursive: true, force: true })
       ])
-      await this.conclude(accepted, 'failed', 'error', 'Planning sandbox could not be prepared')
+      await this.conclude(accepted, 'failed', 'error', 'The Run could not be prepared')
       throw error
     }
     try {
@@ -409,7 +365,6 @@ export class RunService {
         workingDirectory,
         runDirectory,
         environment: providerEnvironment,
-        sandboxProfile,
         onBeforeCleanup: async () => {
           await toolHost.close()
           await rm(socketDirectory, { recursive: true, force: true })
@@ -569,19 +524,6 @@ export class RunService {
       runId: run.id,
       event
     })
-  }
-
-  private async applyConversationEvent(
-    run: Pick<RunSnapshot, 'id' | 'relativePath'>,
-    event: HarnessEvent
-  ): Promise<void> {
-    await this.deps.core.send({
-      type: 'conversation/apply',
-      relativePath: run.relativePath,
-      runId: run.id,
-      event
-    })
-    this.deps.onConversationEvent?.({ relativePath: run.relativePath, runId: run.id, event })
   }
 
   /** Records a Run's terminal state and closes its Conversation boundary. */
@@ -802,22 +744,6 @@ async function deterministicHandoff(
   ].join('\n')
 }
 
-async function hasCompletedWayfinderMap(planningDirectory: string): Promise<boolean> {
-  const map = await readFile(join(planningDirectory, 'map.md'), 'utf8').catch(() => '')
-  if (!map.trim()) return false
-  if (/(?:^|\n)Status:\s*(?:open|claimed)\s*(?:\n|$)|(?:^|\n)- \[ \]/i.test(map)) return false
-  const issueDirectory = join(planningDirectory, 'issues')
-  const issueNames = await readdir(issueDirectory).catch((): string[] => [])
-  const linkedIssues = [...map.matchAll(/\]\(issues\/([^)]+\.md)\)/g)].flatMap((match) =>
-    match[1] ? [match[1]] : []
-  )
-  if (linkedIssues.some((name) => !issueNames.includes(name))) return false
-  const issues = await Promise.all(
-    linkedIssues.map((name) => readFile(join(issueDirectory, name), 'utf8').catch(() => ''))
-  )
-  return issues.every((issue) => /(?:^|\n)Status:\s*resolved\s*(?:\n|$)/i.test(issue))
-}
-
 async function claudeSessionExists(
   homeDirectory: string,
   workingDirectory: string,
@@ -870,8 +796,8 @@ function describeActivity(
     case 'reasoning':
       return { kind: 'reasoning', summary: event.summary }
     case 'tool':
-      // What the provider asked for, not a verdict: the authoritative allow
-      // or deny row comes from the planning tool host.
+      // What the Harness reported doing. The app no longer adjudicates it, so
+      // this is an observation, not a verdict.
       return { kind: 'output', summary: `${event.name}: ${event.summary}` }
     case 'failed':
       return { kind: 'error', summary: event.summary }

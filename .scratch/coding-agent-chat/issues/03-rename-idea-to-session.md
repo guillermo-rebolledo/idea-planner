@@ -8,6 +8,14 @@ Deleted outright, with no replacement: `IdeaKind` and the Software/General split
 
 This is a wide refactor rather than a vertical slice: it is one mechanical change whose blast radius fans across the whole codebase. It is deliberately sequenced *after* tickets 01 and 02, which remove most of the call sites it would otherwise have to touch. It is scoped as a single ticket — not expand–contract — because the product has no users, no external consumers of the contract, and one repository. If the rename cannot be landed green in one pass, stop and re-plan it as expand–contract rather than merging it broken.
 
+## Orphans left by ticket 02
+
+Ticket 02 removed the `suggest_workflow_completion` tool and the callback that produced it, so nothing can now emit a `workflow-completion-suggested` event. The rest of that plumbing was deliberately left standing — the event, the `workflow-completion` conversation entry, the `workflowCompletionSuggested` snapshot flag, and the disabled "Create MVP Spec" button — because the entry kind is **persisted in conversation journals**, and changing an on-disk shape belongs with the contract bump this ticket owns.
+
+Remove it here, as part of retiring the planning vocabulary, and let the migrate-or-discard decision below cover any journal that already contains one.
+
+Every Run also freezes `permissionProfile: 'planning-v1'` into its durable configuration, naming a profile that no longer exists. Like the entry kind above, it is a persisted shape, so it belongs with the contract bump here rather than with the deletion that orphaned it.
+
 **Blocked by:** 01, 02
 
 **Status:** ready-for-agent
