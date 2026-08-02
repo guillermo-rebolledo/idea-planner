@@ -72,6 +72,16 @@ describe('Projects', () => {
     await expect(core.addProject('a-project')).rejects.toMatchObject({ code: 'INVALID_INPUT' })
   })
 
+  it('fails loudly when the store cannot be read, rather than reporting no Projects', async () => {
+    await core.addProject(projectRoot)
+    // Unreadable is not the same as absent. Answering "no Projects" here would
+    // let the next add overwrite a store we could not read.
+    await rm(join(stateDir, 'projects.json'))
+    await mkdir(join(stateDir, 'projects.json'))
+
+    await expect(core.listProjects()).rejects.toMatchObject({ code: 'IO_ERROR' })
+  })
+
   it('refuses to guess a state directory when none is configured', async () => {
     // Writing the Project list somewhere nobody chose is worse than not
     // writing it, because the user is never told.

@@ -333,8 +333,15 @@ test('a person adds a Project and a plain folder is refused with an offer to set
     const projects = page.getByRole('region', { name: 'Projects' })
     await expect(projects.getByText('No Projects yet', { exact: false })).toBeVisible()
 
-    // A folder under git becomes a Project, listed by the root git resolved.
+    // A folder under git becomes a Project. The sandbox reaches it through a
+    // symlink, so git names a root the person did not pick, and the app says so
+    // before storing anything.
     await projects.getByRole('button', { name: 'Add Project' }).click()
+    const symlinked = projects.getByRole('alert')
+    await expect(
+      symlinked.getByText(await realpath(sandbox.projectDir), { exact: true })
+    ).toBeVisible()
+    await symlinked.getByRole('button', { name: 'Add this Project' }).click()
     await expect(projects.getByText(basename(sandbox.projectDir), { exact: true })).toBeVisible()
 
     // A folder that is not under git is refused, naming the exact path, and

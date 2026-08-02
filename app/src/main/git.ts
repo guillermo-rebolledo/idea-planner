@@ -73,7 +73,8 @@ function environment(options: GitOptions): NodeJS.ProcessEnv {
 
 /**
  * Distinguishes "this machine has no git" from "this folder is not a
- * repository", which the two are kept apart for deliberately (ADR 0005).
+ * repository". ADR 0005 keeps those apart deliberately: reporting the first as
+ * the second sends the person to fix the wrong thing.
  *
  * The failing call cannot tell us: spawning into a directory that has gone
  * fails with ENOENT exactly as a missing binary does. So we ask git about

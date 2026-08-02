@@ -1,4 +1,4 @@
-import { mkdir, realpath, rename, stat } from 'node:fs/promises'
+import { mkdir, rename, stat } from 'node:fs/promises'
 import { basename, delimiter, join } from 'node:path'
 import {
   BrowserWindow,
@@ -177,16 +177,29 @@ async function addProject(path: string): Promise<ChooseProjectResult> {
   if (resolution.status !== 'resolved') {
     return { status: 'refused', reason: resolution.status, path }
   }
-  // Compared against the real path, because the chooser and git can name the
-  // same directory differently through a symlink.
-  const chosen = await realpath(path).catch(() => path)
-  if (resolution.root !== chosen) {
+  // Compared against the path the person actually chose, not its real path: if
+  // git names the Project somewhere they did not point — through a symlink or
+  // from a subdirectory — that is precisely what they have not seen yet.
+  if (resolution.root !== path) {
     return { status: 'confirm-root', chosen: path, root: resolution.root }
   }
   return acceptProject(resolution.root)
 }
 
+/**
+ * Persists a root the person has seen and asked for. It is probed again rather
+ * than trusted: this is reachable from the Renderer, and ADR 0005 says a folder
+ * becomes a Project only if git says so.
+ */
 async function acceptProject(root: string): Promise<ChooseProjectResult> {
+  const resolution = await resolveProjectRoot(root)
+  if (resolution.status !== 'resolved' || resolution.root !== root) {
+    return {
+      status: 'refused',
+      reason: resolution.status === 'git-unavailable' ? 'git-unavailable' : 'not-a-repository',
+      path: root
+    }
+  }
   const project = projectViewSchema.parse(await coreClient.send({ type: 'project/add', root }))
   return { status: 'added', project }
 }
@@ -253,7 +266,13 @@ function registerIpc(): void {
       if (initialized.status === 'git-unavailable') {
         return { status: 'refused', reason: 'git-unavailable', path }
       }
-      return addProject(path)
+      // No root to confirm: git was just told to start a Project at the exact
+      // folder the person named, so the root can only be that folder.
+      const resolution = await resolveProjectRoot(path)
+      if (resolution.status !== 'resolved') {
+        return { status: 'refused', reason: resolution.status, path }
+      }
+      return acceptProject(resolution.root)
     }
   )
 

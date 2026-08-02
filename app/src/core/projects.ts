@@ -88,10 +88,19 @@ export class ProjectStore {
   private read(): Effect.Effect<Project[], CoreError> {
     return this.directory().pipe(
       Effect.flatMap((directory) =>
-        Effect.promise(() => readFile(join(directory, STORE_FILE), 'utf8').catch(() => '[]'))
+        Effect.tryPromise({
+          try: () =>
+            readFile(join(directory, STORE_FILE), 'utf8').catch((error: unknown) => {
+              // No file yet is not a failure: it is an app that has never been
+              // given a Project. Every other read failure is one, because
+              // answering "no Projects" would let the next add overwrite a
+              // store we could not read.
+              if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return '[]'
+              throw error
+            }),
+          catch: () => new CoreError('IO_ERROR', 'The Project list could not be read')
+        })
       ),
-      // No file yet is not a failure: it is an app that has never been given a
-      // Project. A missing state directory is a failure, and stays one.
       Effect.flatMap((raw) =>
         Effect.try({
           try: () => projectSchema.array().parse(JSON.parse(raw)),
@@ -109,13 +118,18 @@ export class ProjectStore {
             await mkdir(directory, { recursive: true })
             const path = join(directory, STORE_FILE)
             const staged = `${path}.staged`
-            // Staged then renamed, so an interrupted write leaves the previous
-            // list rather than half of the new one.
-            await writeFile(staged, `${JSON.stringify(projects, null, 2)}\n`, 'utf8')
-            await rename(staged, path).catch(async (error: unknown) => {
-              await rm(staged, { force: true })
-              throw error
-            })
+            let renamed = false
+            try {
+              // Staged then renamed, so an interrupted write leaves the
+              // previous list rather than half of the new one.
+              await writeFile(staged, `${JSON.stringify(projects, null, 2)}\n`, 'utf8')
+              await rename(staged, path)
+              renamed = true
+            } finally {
+              // A staged file that never became the store is litter, whether
+              // the write or the rename was what failed.
+              if (!renamed) await rm(staged, { force: true })
+            }
           },
           catch: () => new CoreError('IO_ERROR', 'The Project list could not be saved')
         })

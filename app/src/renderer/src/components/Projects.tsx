@@ -24,6 +24,10 @@ export function Projects(): React.JSX.Element {
   const [confirmation, setConfirmation] = useState<RootConfirmation | null>(null)
   const [busy, setBusy] = useState(false)
   const [announcement, setAnnouncement] = useState('')
+  // Failures are shown, not only announced: a live region is invisible to
+  // everyone who can see, and a button that appears to do nothing is worse
+  // than one that says why.
+  const [failure, setFailure] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -52,18 +56,25 @@ export function Projects(): React.JSX.Element {
       }
       setRefusal(null)
       setConfirmation(null)
+      setFailure(null)
       setAnnouncement(`Added “${result.project.name}”.`)
       await refresh()
     },
     [refresh]
   )
 
+  /** Says what went wrong in both channels, so nobody is left guessing. */
+  function report(problem: string): void {
+    setFailure(problem)
+    setAnnouncement(problem)
+  }
+
   async function confirmProject(root: string): Promise<void> {
     setBusy(true)
     try {
       await adopt(await window.shell.confirmProject(root))
     } catch {
-      setAnnouncement('That Project could not be added.')
+      report('That Project could not be added.')
     } finally {
       setBusy(false)
     }
@@ -74,7 +85,7 @@ export function Projects(): React.JSX.Element {
     try {
       await adopt(await window.shell.chooseProject())
     } catch {
-      setAnnouncement('That folder could not be added.')
+      report('That folder could not be added.')
     } finally {
       setBusy(false)
     }
@@ -86,7 +97,7 @@ export function Projects(): React.JSX.Element {
     try {
       await adopt(await window.shell.initializeProject(path))
     } catch {
-      setAnnouncement('git could not set that folder up.')
+      report('git could not set it up.')
     } finally {
       setBusy(false)
     }
@@ -97,7 +108,7 @@ export function Projects(): React.JSX.Element {
       await window.shell.removeProject(project.root)
       setAnnouncement(`Removed “${project.name}”. Nothing on disk was touched.`)
     } catch {
-      setAnnouncement(`Could not remove “${project.name}”.`)
+      report(`Could not remove “${project.name}”.`)
     }
     await refresh()
   }
@@ -142,6 +153,12 @@ export function Projects(): React.JSX.Element {
         />
       )}
 
+      {failure && (
+        <p className="mt-1 text-[11px] text-destructive" role="status">
+          {failure}
+        </p>
+      )}
+
       <div aria-live="polite" role="status" className="sr-only">
         {announcement}
       </div>
@@ -176,7 +193,7 @@ function ProjectListContent({
   if (list.projects.length === 0) {
     return (
       <p className="px-1 py-1 text-[11px] text-muted-foreground">
-        No Projects yet. Add the folder you work in.
+        No Projects yet. Add a Project to work in.
       </p>
     )
   }
