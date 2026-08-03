@@ -13,6 +13,7 @@ const api: ShellApi = {
   listProjects: () => ipcRenderer.invoke(IPC_CHANNELS.listProjects),
   removeProject: (root) => ipcRenderer.invoke(IPC_CHANNELS.removeProject, root),
   listSkills: (input) => ipcRenderer.invoke(IPC_CHANNELS.listSkills, input),
+  listModels: () => ipcRenderer.invoke(IPC_CHANNELS.listModels),
   trustProjectSkills: (input) => ipcRenderer.invoke(IPC_CHANNELS.trustProjectSkills, input),
   listStandingApprovals: (projectRoot) =>
     ipcRenderer.invoke(IPC_CHANNELS.listStandingApprovals, projectRoot),

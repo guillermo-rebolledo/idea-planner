@@ -19,7 +19,7 @@ import {
   type ConversationRecovery,
   type DiffHunk,
   type ConversationSnapshot,
-  type HarnessId,
+  type ModelCatalog,
   type HarnessUsage,
   type PermissionMode,
   type ReadinessSnapshot,
@@ -30,6 +30,7 @@ import {
   type SuggestedResponse
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
+import { effectiveChoice, ModelPicker, type ModelChoice } from '@renderer/components/ModelPicker'
 import { ChangedFiles } from '@renderer/components/ChangedFiles'
 import { DiffView } from '@renderer/components/Diff'
 import { cn } from '@renderer/lib/utils'
@@ -55,8 +56,6 @@ interface LiveRun {
   commands: { id: string; command: string; output: string; failed: boolean; running: boolean }[]
   suggestedResponses: SuggestedResponse[]
 }
-
-const EFFORT_OPTIONS = ['low', 'medium', 'high']
 
 const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
   authentication:
@@ -84,13 +83,13 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
   const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
   const [live, setLive] = useState<LiveRun | null>(null)
   const [draft, setDraft] = useState('')
-  const [harness, setHarness] = useState<HarnessId | null>(null)
   // No Skill by default. Most messages are not asking for a methodology, and
   // one applied because it happened to be selected is one nobody chose.
   const [skill, setSkill] = useState<string | null>(null)
   const [catalog, setCatalog] = useState<SkillCatalog | null>(null)
-  const [model, setModel] = useState(HARNESS_DEFAULT_MODEL)
-  const [effort, setEffort] = useState('medium')
+  // One choice, not three: the model carries the Harness that reaches it.
+  const [models, setModels] = useState<ModelCatalog | null>(null)
+  const [chosen, setChosen] = useState<ModelChoice | null>(null)
   // Ask by default: a Run edits the Project in place, and being asked first is
   // the posture somebody would choose if they were choosing deliberately.
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
@@ -103,15 +102,14 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
   const snapshot = phase.state === 'ready' ? phase.snapshot : null
   const activeRunId = snapshot?.activeRunId ?? null
 
-  const harnesses = readiness?.harnesses ?? []
-  // Defaults to a Harness that can actually run a Session rather than to a
-  // fixed name: offering one the app has just said it cannot use is how a
-  // person ends up watching nothing happen.
-  const selected =
-    harnesses.find((entry) => entry.harness === harness) ??
-    harnesses.find((entry) => entry.capabilities.developSession.available) ??
-    harnesses[0]
-  const chosenHarness = selected?.harness ?? null
+  // The Harness comes from the model, and the first group is one that can
+  // actually run a Session: offering one the app has just said it cannot use
+  // is how a person ends up watching nothing happen.
+  // A Harness that stops being usable stops being a group, and the choice
+  // falls back to one that can still run a message. A Run already sent keeps
+  // what it recorded.
+  const choice = effectiveChoice(models, chosen)
+  const chosenHarness = choice?.harness ?? null
 
   const refresh = useCallback(async () => {
     try {
@@ -127,6 +125,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
   useEffect(() => {
     void refresh()
     void window.shell.getReadiness().then(setReadiness, () => undefined)
+    void window.shell.listModels().then(setModels, () => undefined)
   }, [refresh])
 
   // Skills are installed and removed by the person, in their own directories,
@@ -254,8 +253,8 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           source,
           ...(chosenSkill ? { skill: chosenSkill } : {}),
           harness: chosenHarness,
-          model,
-          effort,
+          model: choice?.model ?? HARNESS_DEFAULT_MODEL,
+          effort: choice?.effort ?? 'medium',
           permissionMode: permissionMode
         })
         setPhase({ state: 'ready', snapshot: next })
@@ -278,7 +277,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
         setBusy(false)
       }
     },
-    [sessionId, chosenHarness, chosenSkill, model, effort, permissionMode, refresh]
+    [sessionId, chosenHarness, chosenSkill, choice, permissionMode, refresh]
   )
 
   /**
@@ -355,7 +354,9 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
       entry.kind === 'approval' && entry.id === phase.snapshot.pendingApprovalId
   )
   const activeRun = runs.find((run) => run.id === activeRunId) ?? runs[0]
-  const canDevelop = selected?.capabilities.developSession
+  // Whether the Harness behind the chosen model can run a Session at all.
+  const canDevelop = readiness?.harnesses.find((entry) => entry.harness === chosenHarness)
+    ?.capabilities.developSession
   const blocked = readiness !== null && canDevelop?.available !== true
   const resumable = phase.snapshot.recovery?.resumableSubmissionId ?? null
   const resumableText = entries.find(
@@ -761,45 +762,13 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
                 ))}
               </select>
             </Field>
-            <Field label="Harness">
-              <select
-                aria-label="Harness"
-                value={selected?.harness ?? ''}
-                onChange={(event) => setHarness(event.target.value as HarnessId)}
-                className="h-8 rounded-md border border-border bg-background px-2 text-xs"
-              >
-                {harnesses.length === 0 && <option value="">No Harness available</option>}
-                {harnesses.map((entry) => (
-                  <option key={entry.harness} value={entry.harness}>
-                    {entry.displayName}
-                    {entry.capabilities.developSession.available ? '' : ' — unavailable'}
-                  </option>
-                ))}
-              </select>
-            </Field>
             <Field label="Model">
-              <input
-                aria-label="Model"
-                value={model}
-                onChange={(event) => setModel(event.target.value)}
-                placeholder={HARNESS_DEFAULT_MODEL}
-                title={`Leave as “${HARNESS_DEFAULT_MODEL}” to use the Harness’s configured model.`}
-                className="h-8 w-36 rounded-md border border-border bg-background px-2 text-xs"
+              <ModelPicker
+                catalog={models}
+                choice={choice}
+                onChange={setChosen}
+                disabled={activeRunId !== null}
               />
-            </Field>
-            <Field label="Effort">
-              <select
-                aria-label="Effort"
-                value={effort}
-                onChange={(event) => setEffort(event.target.value)}
-                className="h-8 rounded-md border border-border bg-background px-2 text-xs capitalize"
-              >
-                {EFFORT_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
             </Field>
             <Field label="Permission">
               <select

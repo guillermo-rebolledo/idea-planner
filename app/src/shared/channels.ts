@@ -8,6 +8,7 @@ export const IPC_CHANNELS = {
   listProjects: 'project:list',
   removeProject: 'project:remove',
   listSkills: 'skill:list',
+  listModels: 'model:list',
   trustProjectSkills: 'skill:trust-project',
   listStandingApprovals: 'approval:list',
   revokeStandingApproval: 'approval:revoke',

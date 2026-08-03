@@ -148,6 +148,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'getReadiness',
       'initializeProject',
       'listDamagedSessions',
+      'listModels',
       'listProjects',
       'listRuns',
       'listSessions',
@@ -469,6 +470,57 @@ test('a change nobody reported is still listed, and says nobody reported it', as
     // A file it removed says so, rather than reading as one it edited.
     await expect(panel.getByText('doomed.ts')).toBeVisible()
     await expect(panel.getByText('deleted, not reported')).toBeVisible()
+  } finally {
+    await app.close()
+  }
+})
+
+/** A Codex that answers `model/list`, as the installed one does. */
+const MODEL_LISTING_CODEX = `case "$1" in
+  --version) echo "codex-cli 0.146.0"; exit 0;;
+  login) exit 0;;
+  app-server)
+    while IFS= read -r line; do
+      case "$line" in
+        *'"initialize"'*) printf '{"jsonrpc":"2.0","id":1,"result":{}}\n';;
+        *'"model/list"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"data":[{"id":"gpt-5.6-sol","displayName":"GPT-5.6-Sol","description":"The default","hidden":false,"isDefault":true,"supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}],"defaultReasoningEffort":"low"}],"nextCursor":null}}'
+          ;;
+      esac
+    done
+    exit 0;;
+esac
+exit 1`
+
+test('one picker chooses the model, and with it the Harness that runs it', async () => {
+  await installFakeHarness('codex', MODEL_LISTING_CODEX)
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Choose the thinking')
+
+    // Both Harnesses are usable, so both are groups — and the Harness is not
+    // a control of its own any more. The one control is a combobox, which is
+    // the contract the vendored component carries.
+    await expect(page.getByRole('combobox', { name: 'Harness' })).toHaveCount(0)
+    const picker = page.getByRole('combobox', { name: 'Model', exact: true })
+    await picker.click()
+    await expect(page.getByText('Claude Code', { exact: true })).toBeVisible()
+    await expect(page.getByText('Codex', { exact: true })).toBeVisible()
+
+    // Codex's models are the ones Codex itself listed.
+    await page.getByRole('option', { name: /GPT-5.6-Sol/ }).click()
+    await expect(picker).toContainText('GPT-5.6-Sol')
+    // And choosing it says what came with it, because the Harness changed.
+    await expect(page.getByText('runs Skills as instruction text', { exact: false })).toBeVisible()
+
+    // The thinking levels are that model's own, as Codex reported them.
+    await picker.click()
+    const thinking = page.getByRole('radiogroup', { name: 'Thinking' })
+    await expect(thinking.getByRole('radio', { name: 'Low' })).toBeVisible()
+    await expect(thinking.getByRole('radio', { name: 'High' })).toBeVisible()
+    await expect(thinking.getByRole('radio', { name: 'Med' })).toHaveCount(0)
   } finally {
     await app.close()
   }

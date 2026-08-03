@@ -16,15 +16,39 @@ This is the first substantial UI dependency the repo takes on: `command` (cmdk) 
 
 **Blocked by:** 06, 09
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A single picker in the composer selects model and reasoning effort, grouped by Harness
-- [ ] Selecting a model selects the Harness that serves it
-- [ ] Only usable Harnesses appear as groups; a Harness that becomes unusable disappears without breaking the current Session
-- [ ] Group headings name the Harness, and the permission and Skill differences are surfaced when switching across a group boundary
-- [ ] Effort applies where supported and is omitted where not, without discarding the user's choice
-- [ ] Model and effort are pinned into the Run configuration and visible in its record
-- [ ] `ModelSelector.Root` is used; no `ModelContext` or transport wiring is introduced
-- [ ] Component source is vendored in the repo's existing source-owned style
-- [ ] Keyboard operation and the combobox accessibility contract survive vendoring
-- [ ] `pnpm verify` passes
+- [x] A single picker in the composer selects model and reasoning effort, grouped by Harness
+- [x] Selecting a model selects the Harness that serves it
+- [x] Only usable Harnesses appear as groups; a Harness that becomes unusable disappears without breaking the current Session
+- [x] Group headings name the Harness, and the permission and Skill differences are surfaced when switching across a group boundary
+- [x] Effort applies where supported and is omitted where not, without discarding the user's choice
+- [x] Model and effort are pinned into the Run configuration and visible in its record
+- [x] `ModelSelector.Root` is used; no `ModelContext` or transport wiring is introduced
+- [x] Component source is vendored in the repo's existing source-owned style
+- [x] Keyboard operation and the combobox accessibility contract survive vendoring
+- [x] `pnpm verify` passes
+
+## Answer — where the model list comes from
+
+The open decision, settled by asking both installed binaries rather than by choosing in the abstract.
+
+**Codex enumerates its own.** Its app-server answers `model/list` — no thread, no turn, so no request against the person's account — with an id, a display name, a description, whether it is hidden from Codex's own picker, and *the reasoning efforts each model supports*. Those differ per model: the installed 0.146.0 offered six levels for its default and four for others. A hardcoded list would have been wrong about that within a release, so Codex is asked, and models it hides are not shown.
+
+**Claude Code enumerates nothing.** There is no listing command — `claude models` is not a subcommand, it is a prompt, which is what running it proved. What its `--model` help documents is aliases that follow the latest of each family, so those are what the app offers, alongside `default`, which leaves the choice to the Harness's own configuration. Aliases age far more slowly than versions. Claude takes `--effort` alongside any model, so its levels belong to the Harness rather than to a model.
+
+The catalog says which of the two it was, and a Harness that cannot answer contributes no group at all — an empty group would say the Harness has no models, which is a different thing from this app not having been able to ask.
+
+## Answer — what was vendored, and what was left behind
+
+`ModelSelectorRoot` and its presentational parts, from `https://r.assistant-ui.com/base/model-selector.json`. The registry's default export renders a `ModelSelectorModelContext` that registers the selection into assistant-ui's `ModelContext` for its transport to send as an HTTP request body — exactly what this app has nowhere to send. That export, its registration, and the `@assistant-ui/react` import that only it needed are gone; the dependency is not taken at all.
+
+The rest is kept close to its source so a newer registry copy can be diffed against it, which is why it is exempt from formatting and lint the same way the generated Codex bindings are.
+
+Two primitives it imports are written here rather than pulled in: `ui/command` over cmdk and `ui/popover` over Base UI, in the same source-owned style as `ui/button`. The new runtime dependencies are `cmdk` and `@base-ui/react` — the primitives themselves, not a component library.
+
+The trigger is a `combobox` with `aria-haspopup="listbox"`, arrows open it, and the vendored effort row hands vertical arrows back to the list so one keyboard contract owns the popup. The packaged-shell test drives it by role.
+
+## Answer — effort is kept, not discarded
+
+`resolveModelEffort` decides what applies rather than what is stored: a level the newly chosen model does not offer stays in the Session's choice and simply is not asked for, so switching to a model with fewer levels and back does not lose it. A model with no configurable reasoning hides the Thinking row entirely.

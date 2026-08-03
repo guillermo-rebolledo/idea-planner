@@ -16,6 +16,7 @@ import {
   type StandingApproval
 } from './approval'
 import type { ListSkillsInput, SkillCatalog, TrustProjectSkillsInput } from './skill'
+import type { ModelCatalog } from './model'
 import { harnessIdSchema } from './readiness'
 import type { ChooseExecutableResult, HarnessId, ReadinessSnapshot } from './readiness'
 import type { ChooseProjectResult, ProjectView } from './project'
@@ -307,6 +308,12 @@ export interface ShellApi {
    * own that are waiting to be trusted.
    */
   listSkills(input: ListSkillsInput): Promise<SkillCatalog>
+  /**
+   * The models each usable Harness can be asked for, grouped by the Harness
+   * that reaches them. Choosing a model chooses a Harness, so the groups are
+   * the only Harness selector there is (ticket 13).
+   */
+  listModels(): Promise<ModelCatalog>
   /** Offers this Project's own Skills, or stops offering them. */
   trustProjectSkills(input: TrustProjectSkillsInput): Promise<SkillCatalog>
   /** What this Project has permanently allowed, newest grant last. */
@@ -366,6 +373,7 @@ export { IPC_CHANNELS } from './channels'
 export * from './approval'
 export * from './skill'
 export * from './conversation'
+export * from './model'
 export * from './project'
 export * from './readiness'
 export * from './run'

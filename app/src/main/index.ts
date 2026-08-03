@@ -22,6 +22,7 @@ import {
   setSessionPinnedInputSchema,
   themePreferenceSchema,
   listSkillsInputSchema,
+  modelCatalogSchema,
   skillCatalogSchema,
   trustProjectSkillsInputSchema,
   type SkillCatalog,
@@ -49,6 +50,7 @@ import {
 import { discoverSkills } from './skills'
 import { CoreClient } from './core-client'
 import { initRepository, resolveProjectRoot } from './git'
+import { discoverModels } from './models'
 import { HARNESS_SPECS, readinessLinkHosts } from './readiness'
 import { ReadinessService } from './readiness-service'
 import { SettingsStore } from './settings'
@@ -331,6 +333,24 @@ function registerIpc(): void {
   handleInvoke(IPC_CHANNELS.getReadiness, z.undefined(), async () =>
     readinessSnapshotSchema.parse(await readiness.get())
   )
+
+  // Asked of the Harnesses that can actually run a Session, so a model that
+  // cannot be reached is never offered (ticket 13). Codex answers for itself;
+  // Claude Code enumerates nothing and offers what its help documents.
+  handleInvoke(IPC_CHANNELS.listModels, z.undefined(), async () => {
+    const snapshot = await readiness.get()
+    return modelCatalogSchema.parse(
+      await discoverModels(
+        snapshot.harnesses
+          .filter((entry) => entry.capabilities.developSession.available && entry.executablePath)
+          .map((entry) => ({
+            harness: entry.harness,
+            displayName: HARNESS_SPECS[entry.harness].displayName,
+            executablePath: entry.executablePath ?? ''
+          }))
+      )
+    )
+  })
 
   handleInvoke(IPC_CHANNELS.refreshReadiness, refreshReadinessInputSchema, async ({ harness }) =>
     readinessSnapshotSchema.parse(await readiness.refresh(harness))
