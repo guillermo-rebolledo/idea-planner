@@ -993,9 +993,6 @@ function StepRow({
       <li className="flex items-center gap-2 px-3 py-1 font-mono text-xs text-muted-foreground">
         <FileText aria-hidden="true" className="size-3 shrink-0" />
         <span className="min-w-0 flex-1 truncate select-text">Read {step.path}</span>
-        {step.durationMs !== null && (
-          <span className="shrink-0 text-2xs">{formatDuration(step.durationMs)}</span>
-        )}
       </li>
     )
   }

@@ -370,6 +370,10 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
    * A file the Run read. A step of the Run's record rather than Conversation
    * prose: together with commands and file changes it is what the Run
    * actually did, re-readable after the Run is gone.
+   *
+   * No duration: no Harness reports how long a read took, and a field that is
+   * null everywhere is a promise the record cannot keep. It returns when a
+   * Harness supplies one.
    */
   z.object({
     kind: z.literal('read'),
@@ -377,9 +381,7 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     at: z.string().datetime(),
     runId: z.string().min(1),
     /** Relative to the Checkout, as every durable path is. */
-    path: z.string().min(1),
-    /** Null when the Harness does not say how long a read took — most do not. */
-    durationMs: z.number().int().nonnegative().nullable().default(null)
+    path: z.string().min(1)
   }),
   /**
    * Something the agent asked permission for, and what the person answered.
