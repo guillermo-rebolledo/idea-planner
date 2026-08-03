@@ -16,7 +16,10 @@ needs recording.
 ## Decision
 
 Sessions edit the **primary checkout in place**. Isolated checkouts are modelled
-in the domain from the start and deferred in implementation.
+in the domain from the start and deferred in implementation. (Since MEM-72 the
+contract carries a Session's Checkout and Runs execute in it; the app still
+creates no isolated checkout itself — that arrives with the New Session
+Checkout choice, overhaul slice 4.)
 
 A Project must be a **git repository**. A plain folder cannot become one; the
 app offers `git init` instead.

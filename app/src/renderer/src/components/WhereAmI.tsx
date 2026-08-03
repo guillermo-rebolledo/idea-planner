@@ -18,7 +18,9 @@ import type {
   EditorId,
   SessionSummary
 } from '@shared/contract'
+import { DiffCounts } from '@renderer/components/Diff'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import type { DiffTotals } from '@renderer/lib/useSessionChanges'
 import {
   Menu,
   MenuContent,
@@ -41,7 +43,7 @@ import { cn } from '@renderer/lib/utils'
 
 interface WhereAmIProps {
   session: SessionSummary
-  totals: { added: number; removed: number }
+  totals: DiffTotals
   filesOpen: boolean
   onToggleFiles: () => void
   /** Opens the panel without toggling, as the card's Changes row does. */
@@ -165,8 +167,7 @@ export function WhereAmI({
           filesOpen && 'bg-accent'
         )}
       >
-        <span className="text-diff-added-foreground">+{totals.added}</span>
-        <span className="text-diff-removed-foreground">−{totals.removed}</span>
+        <DiffCounts added={totals.added} removed={totals.removed} />
       </button>
 
       <Menu>
@@ -251,7 +252,7 @@ function ProjectCard({
   session: SessionSummary
   facts: CheckoutFacts | null
   editors: EditorCatalog | null
-  totals: { added: number; removed: number }
+  totals: DiffTotals
   onShowFiles: () => void
   onOpen: (editor: EditorId) => void
 }): React.JSX.Element {
@@ -275,8 +276,7 @@ function ProjectCard({
           <FileDiff aria-hidden="true" className="size-3.5 text-muted-foreground" />
           Changes
           <span className="ml-auto font-mono">
-            <span className="text-diff-added-foreground">+{totals.added}</span>{' '}
-            <span className="text-diff-removed-foreground">−{totals.removed}</span>
+            <DiffCounts added={totals.added} removed={totals.removed} />
           </span>
         </button>
         {checkout.kind === 'local' ? (

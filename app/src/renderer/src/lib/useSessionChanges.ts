@@ -4,13 +4,19 @@ import type { ChangedFile, ConversationEntry } from '@shared/contract'
 /** The Conversation entries that carry a diff: one file, one write. */
 export type FileChangeEntry = Extract<ConversationEntry, { kind: 'file-change' }>
 
+/** What a set of changes added and removed, wherever it is stated. */
+export interface DiffTotals {
+  added: number
+  removed: number
+}
+
 export interface SessionChanges {
   /** One row per file this Session changed, cumulative across every Run. */
   files: ChangedFile[]
   /** Every recorded change, so a file's diffs can be read back in order. */
   entries: FileChangeEntry[]
   /** What the whole Session did, the number the title bar wears. */
-  totals: { added: number; removed: number }
+  totals: DiffTotals
 }
 
 const NO_CHANGES: SessionChanges = { files: [], entries: [], totals: { added: 0, removed: 0 } }

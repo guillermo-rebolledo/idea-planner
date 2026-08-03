@@ -15,8 +15,8 @@ One unit of work with the agent against a Project. Owns a Checkout, a Conversati
 _Avoid_: Idea, task, thread, chat
 
 **Checkout**:
-The directory a Session operates on — either the **primary checkout**, the Project's own working directory edited in place, or an **isolated checkout**, a linked git worktree created for the Session from a chosen base branch.
-_Avoid_: Working Directory, workspace, worktree, sandbox
+The directory a Session operates on — either the **primary checkout**, the Project's own working directory edited in place, or an **isolated checkout**, a linked git worktree created for the Session from a chosen base branch. On screen the two variants read **Local** and **Worktree** (title-bar cluster and Project card, design spec 2a/2b), and the contract spells them `local` / `worktree`; "worktree" stays out of prose that means a Checkout in general.
+_Avoid_: Working Directory, workspace, sandbox
 
 **Archive**:
 Setting a Session aside while keeping everything it owns. An archived Session leaves the inbox but is restorable at any time; archiving says "not now", never "gone".

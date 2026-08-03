@@ -36,6 +36,7 @@ import {
   ModelPicker,
   type ModelChoice
 } from '@renderer/components/ModelPicker'
+import { DiffCounts } from '@renderer/components/Diff'
 import { cn } from '@renderer/lib/utils'
 
 /**
@@ -957,9 +958,8 @@ function FileChangeRow({
       <FileDiff aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
       <p className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 text-xs">
         <span className="font-mono break-all select-text">{path}</span>
-        <span className="text-xs text-muted-foreground">
-          <span className="text-diff-added-foreground">+{added}</span>{' '}
-          <span className="text-diff-removed-foreground">−{removed}</span>
+        <span className="text-xs">
+          <DiffCounts added={added} removed={removed} />
         </span>
       </p>
     </li>

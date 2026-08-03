@@ -1,6 +1,26 @@
 import type { DiffHunk } from '@shared/contract'
 
 /**
+ * `+N −M`, the product's one use of green and red. Colour is rationed to
+ * exactly these numbers, so every surface renders them through this pair of
+ * spans rather than colouring anything of its own.
+ */
+export function DiffCounts({
+  added,
+  removed
+}: {
+  added: number
+  removed: number
+}): React.JSX.Element {
+  return (
+    <>
+      <span className="text-diff-added-foreground">+{added}</span>{' '}
+      <span className="text-diff-removed-foreground">−{removed}</span>
+    </>
+  )
+}
+
+/**
  * A diff, exactly as the Harness computed it. It is read-only everywhere it
  * appears: the change is already on disk (ADR 0004) and git is the only undo,
  * so there is nothing here to accept or reject.

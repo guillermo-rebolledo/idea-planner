@@ -1,6 +1,6 @@
 import { FileDiff, FilePlus2, FileX2, X, type LucideIcon } from 'lucide-react'
 import type { ChangeKind, ChangedFile } from '@shared/contract'
-import { DiffView } from '@renderer/components/Diff'
+import { DiffCounts, DiffView } from '@renderer/components/Diff'
 import type { FileChangeEntry, SessionChanges } from '@renderer/lib/useSessionChanges'
 import { cn } from '@renderer/lib/utils'
 
@@ -17,10 +17,11 @@ import { cn } from '@renderer/lib/utils'
  * keep.
  */
 
-const CHANGE_LOOK: Record<ChangeKind, { icon: LucideIcon; tone: string }> = {
-  added: { icon: FilePlus2, tone: 'text-diff-added-foreground' },
-  changed: { icon: FileDiff, tone: 'text-muted-foreground' },
-  deleted: { icon: FileX2, tone: 'text-diff-removed-foreground' }
+// The icon says what happened; colour stays rationed to the diff numbers.
+const CHANGE_ICON: Record<ChangeKind, LucideIcon> = {
+  added: FilePlus2,
+  changed: FileDiff,
+  deleted: FileX2
 }
 
 /** What happened to a file, in the row's own words. */
@@ -55,8 +56,7 @@ export function FilesPanel({
       <header className="flex items-baseline gap-2 px-4 pt-3.5 pb-1">
         <h2 className="text-xs font-medium">Files this Session changed</h2>
         <span className="ml-auto font-mono text-xs">
-          <span className="text-diff-added-foreground">+{totals.added}</span>{' '}
-          <span className="text-diff-removed-foreground">−{totals.removed}</span>
+          <DiffCounts added={totals.added} removed={totals.removed} />
         </span>
         <button
           type="button"
@@ -109,7 +109,7 @@ function FileRow({
   focused: boolean
   onClick: () => void
 }): React.JSX.Element {
-  const { icon: Icon, tone } = CHANGE_LOOK[file.changeKind]
+  const Icon = CHANGE_ICON[file.changeKind]
   // A change with no lines at all is a binary file or a mode change — never a
   // change that did nothing — unless its diff was simply too big to keep.
   const textless = file.added === 0 && file.removed === 0
@@ -125,7 +125,7 @@ function FileRow({
           focused && 'bg-accent'
         )}
       >
-        <Icon aria-hidden="true" className={cn('size-3 shrink-0', tone)} />
+        <Icon aria-hidden="true" className="size-3 shrink-0 text-muted-foreground" />
         <span
           className={cn(
             'min-w-0 flex-1 truncate',
@@ -168,8 +168,7 @@ function FocusedDiff({
       <p className="flex items-baseline gap-2 border-b border-border px-2.5 py-1.5 font-mono text-2xs text-muted-foreground">
         <span className="min-w-0 flex-1 truncate">{file.path}</span>
         <span className="shrink-0">
-          <span className="text-diff-added-foreground">+{file.added}</span>{' '}
-          <span className="text-diff-removed-foreground">−{file.removed}</span>
+          <DiffCounts added={file.added} removed={file.removed} />
         </span>
       </p>
       <div className="min-h-0 flex-1 overflow-auto p-1.5">
