@@ -45,6 +45,8 @@
    step *up* towards white. */
 :root,
 [data-theme='light'] {
+  color-scheme: light;
+
   --green: oklch(0.48 0.13 152);
   --green-surface: oklch(0.945 0.035 152);
   --red: oklch(0.51 0.19 25);
@@ -74,6 +76,8 @@
 /* Dark. Near-black with a trace of blue, and depth from stacked near-equal
    surfaces rather than shadows. */
 [data-theme='dark'] {
+  color-scheme: dark;
+
   --green: oklch(0.78 0.14 152);
   --green-surface: oklch(0.255 0.04 152);
   --red: oklch(0.72 0.16 25);
@@ -209,6 +213,34 @@ body,
 body {
   @apply bg-background font-sans text-base text-foreground antialiased;
   user-select: none;
+}
+
+/* Scrollbars are structure, not chrome: the track is the surface it sits on,
+   and the thumb is the same line weight as a border until it is reached for.
+   `color-scheme` above already stops the native track painting white; this
+   makes it match the app rather than the operating system. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  /* Inset by a transparent border so the thumb reads as a thin line rather
+     than a bar filling the gutter. */
+  background: var(--border);
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+  background-clip: content-box;
 }
 
 /* The floor for keyboard focus: anything focused shows the ring unless it
