@@ -706,7 +706,11 @@ test('the title bar states where a Session works — Local, or an isolated Workt
     await composer.getByRole('button', { name: 'Checkout' }).click()
     await page.getByRole('button', { name: 'Isolated' }).click()
     // The base settles onto the branch the working copy is on.
-    await expect(page.getByRole('combobox', { name: 'Base branch' })).toHaveValue('trunk')
+    await expect(
+      page
+        .getByRole('list', { name: 'Base branch' })
+        .getByRole('button', { name: 'trunk', exact: true })
+    ).toHaveAttribute('aria-pressed', 'true')
     await page.keyboard.press('Escape')
     await expect(composer.getByRole('button', { name: 'Checkout' })).toContainText('Worktree')
     await composer.getByRole('button', { name: 'Send' }).click()
