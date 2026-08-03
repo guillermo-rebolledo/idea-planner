@@ -11,7 +11,6 @@ import {
   TriangleAlert
 } from 'lucide-react'
 import {
-  countDiffLines,
   HARNESS_DEFAULT_MODEL,
   projectDisplayName,
   ruleText,
@@ -33,7 +32,8 @@ import {
   useModelCatalog,
   type ModelChoice
 } from '@renderer/components/ModelPicker'
-import { DiffCounts, DiffView, ExitCode } from '@renderer/components/Diff'
+import { DiffCounts, ExitCode } from '@renderer/components/Diff'
+import { DotMatrix } from '@renderer/components/ui/dot-matrix'
 import { PermissionModePicker } from '@renderer/components/PermissionModePicker'
 import {
   MessageScroller,
@@ -483,16 +483,6 @@ export function Conversation({
                   />
                 )
               })}
-              {activeRunId &&
-                !pendingApproval &&
-                !liveForActiveRun?.messages.some((message) => message.text) &&
-                row(
-                  'waiting',
-                  <p className="text-xs text-muted-foreground">
-                    Waiting for the Harness to answer…
-                  </p>
-                )}
-
               {catalog?.projectTrusted &&
                 catalog.available.some((entry) => entry.source === 'project') &&
                 row(
@@ -795,9 +785,6 @@ export function Conversation({
   )
 }
 
-/** How many diff lines the live preview shows of the file being written. */
-const PREVIEW_LINES = 6
-
 /**
  * The running indicator — the product's one use of its brand colour, so every
  * step in flight spins the same way.
@@ -812,57 +799,71 @@ function Spinner(): React.JSX.Element {
 }
 
 /**
- * One activity block per Run (mock 2d). While the Run works it streams the
- * current step and a live preview of the last file written; the moment it
- * finishes it collapses to one line, so the Conversation is quiet at rest.
- * The chevron re-expands it any time to the chronological step list — steps
- * only, no captured output. Clicking an edited file opens the Files panel on
- * it, the app's one diff surface.
+ * What a Run in flight shows: the dot-matrix pulse, the current step
+ * shimmering as it streams, and how long the Run has been at it. One quiet
+ * row rather than a panel — the step-by-step record arrives once the Run has
+ * finished, when there is a record to read.
+ */
+function RunWorkingIndicator({
+  steps,
+  live,
+  elapsed
+}: {
+  steps: StepEntry[]
+  live: LiveRun | null
+  elapsed: number | null
+}): React.JSX.Element {
+  const runningCommand =
+    (live?.commands ?? []).find((command) => command.running) ??
+    steps.flatMap((step) => (step.kind === 'command' && step.running ? [step] : [])).at(-1)
+  const lastWrite =
+    (live?.changes ?? []).at(-1) ??
+    steps.flatMap((step) => (step.kind === 'file-change' ? [step] : [])).at(-1)
+  const current = runningCommand
+    ? runningCommand.command
+    : lastWrite
+      ? `Wrote ${lastWrite.path}`
+      : 'Working…'
+  return (
+    <div role="status" className="flex items-center gap-2.5 font-mono text-xs">
+      <DotMatrix label="Run in progress" className="shrink-0 text-status-running" />
+      <span className="min-w-0 flex-1 shimmer truncate">{current}</span>
+      {elapsed !== null && (
+        <span className="shrink-0 text-2xs text-muted-foreground">{formatDuration(elapsed)}</span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * One activity block per finished Run (mock 2d): one line saying what the Run
+ * did, and a chevron that expands it to the chronological step list — reads,
+ * edits, commands, MCP calls; steps only, no captured output. It appears once
+ * the Run is over, so the Conversation is quiet at rest and nothing shuffles
+ * while the agent works. Clicking an edited file opens the Files panel on it,
+ * the app's one diff surface.
  */
 function RunActivityBlock({
   steps,
-  active,
-  elapsed,
-  live,
   onOpenFile
 }: {
   steps: StepEntry[]
-  active: boolean
-  elapsed: number | null
-  live: LiveRun | null
   onOpenFile: (path: string) => void
 }): React.JSX.Element | null {
-  const [choice, setChoice] = useState<boolean | null>(null)
-  // Open while it works, collapsed once it finishes — unless the person chose.
-  const expanded = choice ?? active
-
-  // What streamed but is not durable yet. A command or change becomes durable
-  // within the refresh interval; until then the live copy stands in for it.
-  const liveCommands = (live?.commands ?? []).filter(
-    (command) =>
-      !steps.some(
-        (step) => step.kind === 'command' && step.id === `command:${live?.runId}:${command.id}`
-      )
-  )
-  const liveChanges = (live?.changes ?? []).slice(
-    steps.filter((step) => step.kind === 'file-change').length
-  )
+  const [expanded, setExpanded] = useState(false)
 
   const changes = steps.flatMap((step) => (step.kind === 'file-change' ? [step] : []))
   const reads = steps.filter((step) => step.kind === 'read').length
-  const edited = new Set([
-    ...changes.map((step) => step.path),
-    ...liveChanges.map((change) => change.path)
-  ])
-  const commandCount = steps.filter((step) => step.kind === 'command').length + liveCommands.length
-  const totals = [...changes, ...liveChanges.map((change) => countDiffLines(change.hunks))].reduce(
+  const edited = new Set(changes.map((step) => step.path))
+  const commandCount = steps.filter((step) => step.kind === 'command').length
+  const totals = changes.reduce(
     (sum, change) => ({
       added: sum.added + change.added,
       removed: sum.removed + change.removed
     }),
     { added: 0, removed: 0 }
   )
-  if (!active && steps.length === 0) return null
+  if (steps.length === 0) return null
 
   const summary =
     [
@@ -873,81 +874,36 @@ function RunActivityBlock({
       .filter(Boolean)
       .join(' · ') || 'Worked'
 
-  // The step in flight, for the collapsed running line.
-  const runningCommand =
-    liveCommands.find((command) => command.running) ??
-    steps.flatMap((step) => (step.kind === 'command' && step.running ? [step] : [])).at(-1)
-  const lastWrite = liveChanges.at(-1) ?? changes.at(-1)
-  const current = runningCommand
-    ? runningCommand.command
-    : lastWrite
-      ? `Wrote ${lastWrite.path}`
-      : 'Working…'
-
-  // The live preview: the tail of the last diff the Harness reported.
-  const previewHunk = active ? (lastWrite?.hunks.at(-1) ?? null) : null
-
   return (
-    <li>
-      <div className="overflow-hidden rounded-lg border border-border" aria-label="Run activity">
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setChoice(!expanded)}
-          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-muted/40"
-        >
-          <ChevronRight
-            aria-hidden="true"
-            className={cn(
-              'size-3 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none',
-              expanded && 'rotate-90'
-            )}
-          />
-          {active && !expanded && <Spinner />}
-          <span className="min-w-0 flex-1 truncate">
-            {active ? (expanded ? 'Working…' : current) : summary}
-          </span>
-          {active && elapsed !== null ? (
-            <span className="shrink-0 font-mono text-2xs text-muted-foreground">
-              {formatDuration(elapsed)}
-            </span>
-          ) : (
-            (totals.added > 0 || totals.removed > 0) && (
-              <span className="shrink-0 font-mono text-2xs">
-                <DiffCounts added={totals.added} removed={totals.removed} />
-              </span>
-            )
+    <div className="overflow-hidden rounded-lg border border-border" aria-label="Run activity">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-muted/40"
+      >
+        <ChevronRight
+          aria-hidden="true"
+          className={cn(
+            'size-3 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none',
+            expanded && 'rotate-90'
           )}
-        </button>
-        {expanded && (steps.length > 0 || liveCommands.length > 0 || liveChanges.length > 0) && (
-          <ol className="border-t border-border py-1" aria-label="Run steps">
-            {/* Durable steps first, then what streamed and is not durable
-                yet — one row shape for both, because they are the same step
-                at two moments of its life. */}
-            {[
-              ...steps,
-              ...liveCommands.map(liveCommandStep),
-              ...liveChanges.map(liveChangeStep)
-            ].map((step) => (
-              <StepRow key={step.id} step={step} onOpenFile={onOpenFile} />
-            ))}
-          </ol>
+        />
+        <span className="min-w-0 flex-1 truncate">{summary}</span>
+        {(totals.added > 0 || totals.removed > 0) && (
+          <span className="shrink-0 font-mono text-2xs">
+            <DiffCounts added={totals.added} removed={totals.removed} />
+          </span>
         )}
-        {expanded && previewHunk && (
-          <div className="border-t border-border">
-            <DiffView
-              hunks={[{ ...previewHunk, lines: previewHunk.lines.slice(-PREVIEW_LINES) }]}
-            />
-          </div>
-        )}
-        {expanded && active && (
-          <p className="flex items-center gap-2 border-t border-border px-3 py-1.5 text-2xs text-muted-foreground">
-            Streaming as the agent works — collapses when the Run finishes.
-            <span className="ml-auto shrink-0 font-mono">⌘. stop</span>
-          </p>
-        )}
-      </div>
-    </li>
+      </button>
+      {expanded && (
+        <ol className="border-t border-border py-1" aria-label="Run steps">
+          {steps.map((step) => (
+            <StepRow key={step.id} step={step} onOpenFile={onOpenFile} />
+          ))}
+        </ol>
+      )}
+    </div>
   )
 }
 
@@ -969,16 +925,6 @@ type StepView =
       durationMs: number | null
     }
   | { kind: 'file-change'; id: string; path: string; added: number; removed: number }
-
-/** A command that streamed but is not durable yet, as the row draws it. */
-function liveCommandStep(command: LiveRun['commands'][number]): StepView {
-  return { ...command, kind: 'command', interrupted: false, exitCode: null, durationMs: null }
-}
-
-/** A change that streamed but is not durable yet, as the row draws it. */
-function liveChangeStep(change: LiveRun['changes'][number]): StepView {
-  return { kind: 'file-change', id: change.id, path: change.path, ...countDiffLines(change.hunks) }
-}
 
 /** One chronological step of a Run: a read, an edit, or a command. */
 function StepRow({
@@ -1243,13 +1189,17 @@ function RunSection({
         .map((message) => (
           <AgentText key={message.id} text={message.text} partial={false} />
         ))}
-      <RunActivityBlock
-        steps={group.steps}
-        active={active}
-        elapsed={active && startedAt !== null ? clock - Date.parse(startedAt) : null}
-        live={live}
-        onOpenFile={onOpenFile}
-      />
+      {/* In flight: one pulsing line about the current step. At rest: the
+          collapsed record of what the Run did. Never both — and never a
+          panel that shuffles while the agent works. */}
+      {active && !waiting && (
+        <RunWorkingIndicator
+          steps={group.steps}
+          live={live}
+          elapsed={startedAt !== null ? clock - Date.parse(startedAt) : null}
+        />
+      )}
+      {!active && <RunActivityBlock steps={group.steps} onOpenFile={onOpenFile} />}
       {resolved.map((entry) => (
         <ApprovalRow key={entry.id} entry={entry} />
       ))}
