@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Check, FolderTree, Monitor } from 'lucide-react'
+import { FolderTree, Monitor } from 'lucide-react'
 import type { BranchList, CheckoutRequest } from '@shared/contract'
+import { ChoiceRow } from '@renderer/components/ui/choice'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { cn } from '@renderer/lib/utils'
 
 /**
  * The Checkout chip for a Session that does not exist yet. A Checkout is
@@ -68,47 +68,27 @@ export function CheckoutPicker({
           Checkout
         </p>
         <div className="flex flex-col gap-0.5 px-1.5 pb-2">
-          <button
-            type="button"
-            className={cn(
-              'rounded-md px-2 py-1.5 text-left hover:bg-muted/60',
-              !isolated && 'bg-accent'
-            )}
+          <ChoiceRow
+            icon={<Monitor aria-hidden="true" className="size-3.5 text-muted-foreground" />}
+            name="Local"
+            description="Your working copy, edited in place. git is the undo."
+            chosen={!isolated}
             onClick={() => {
               onChange({ kind: 'local' })
               setOpen(false)
             }}
-          >
-            <span className="flex items-center gap-1.5 text-xs font-medium">
-              <Monitor aria-hidden="true" className="size-3 shrink-0" />
-              Local
-              {!isolated && <Check aria-hidden="true" className="ml-auto size-3" />}
-            </span>
-            <span className="mt-0.5 block text-2xs leading-relaxed text-muted-foreground">
-              Your working copy, edited in place. git is the undo.
-            </span>
-          </button>
-          <button
-            type="button"
-            className={cn(
-              'rounded-md px-2 py-1.5 text-left hover:bg-muted/60',
-              isolated && 'bg-accent'
-            )}
+          />
+          <ChoiceRow
+            icon={<FolderTree aria-hidden="true" className="size-3.5 text-muted-foreground" />}
+            name="Isolated"
+            description="A linked worktree of its own, cut from the base branch below. Your copy never moves."
+            chosen={isolated}
             onClick={() => {
               const kept = value.kind === 'isolated' ? value.baseBranch : ''
               const fallback = branches?.current ?? branches?.branches[0] ?? ''
               onChange({ kind: 'isolated', baseBranch: kept === '' ? fallback : kept })
             }}
-          >
-            <span className="flex items-center gap-1.5 text-xs font-medium">
-              <FolderTree aria-hidden="true" className="size-3 shrink-0" />
-              Isolated
-              {isolated && <Check aria-hidden="true" className="ml-auto size-3" />}
-            </span>
-            <span className="mt-0.5 block text-2xs leading-relaxed text-muted-foreground">
-              A linked worktree of its own, cut from the base branch below. Your copy never moves.
-            </span>
-          </button>
+          />
           {value.kind === 'isolated' && (
             <label className="flex items-center gap-2 px-2 py-1.5 text-2xs text-muted-foreground">
               Base branch

@@ -228,6 +228,45 @@ test('no rule is drawn in the text colour, which is how a menu grows a white lin
   }
 })
 
+test('the mark of a chosen option sits in the middle of its row, in every menu', async () => {
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    const composer = await openTheApp(page)
+
+    for (const [role, name] of [
+      ['button', 'Checkout'],
+      ['button', 'Permission Mode'],
+      ['combobox', 'Model']
+    ] as const) {
+      await composer.getByRole(role, { name }).click()
+      const marks = page.locator('[data-slot="chosen-mark"]')
+      await marks.first().waitFor()
+
+      // Two lines of copy per option, so a mark hung off the first line reads
+      // as floating above its own row — and differently in each menu, which is
+      // how three popovers stop looking like one product.
+      const offsets = await marks.evaluateAll((elements) =>
+        elements.map((element) => {
+          const row = element.closest('button, [cmdk-item]')
+          if (!row) return null
+          const markBox = element.getBoundingClientRect()
+          const rowBox = row.getBoundingClientRect()
+          return Math.round(markBox.top + markBox.height / 2 - (rowBox.top + rowBox.height / 2))
+        })
+      )
+
+      expect(offsets.length, `${name} marks nothing as chosen`).toBeGreaterThan(0)
+      for (const offset of offsets) {
+        expect(offset, `the mark in ${name} is ${String(offset)}px off its row`).toBe(0)
+      }
+      await page.keyboard.press('Escape')
+    }
+  } finally {
+    await app.close()
+  }
+})
+
 test('a filled control answers the pointer, in the same currency as a quiet one', async () => {
   const app = await launchShell()
   try {

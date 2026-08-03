@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Check, Lock, TriangleAlert } from 'lucide-react'
+import { Lock, TriangleAlert } from 'lucide-react'
 import type { PermissionMode } from '@shared/contract'
+import { ChoiceRow } from '@renderer/components/ui/choice'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import {
   listApprovalsByProject,
@@ -93,39 +94,30 @@ export function PermissionModePicker({
           </p>
           <div className="flex flex-col gap-0.5 px-1.5 pb-2">
             {(['ask', 'auto'] as const).map((mode) => (
-              <button
+              <ChoiceRow
                 key={mode}
-                type="button"
-                className={cn(
-                  'rounded-md px-2 py-1.5 text-left hover:bg-muted/60',
-                  mode === value && 'bg-accent'
-                )}
+                icon={
+                  mode === 'auto' ? (
+                    <TriangleAlert aria-hidden="true" className="size-3.5 text-status-blocked" />
+                  ) : undefined
+                }
+                name={
+                  <span className={cn(mode === 'auto' && 'text-status-blocked')}>
+                    {MODE_COPY[mode].title}
+                  </span>
+                }
+                description={MODE_COPY[mode].description}
+                chosen={mode === value}
                 onClick={() => {
                   onChange(mode)
                   setOpen(false)
                 }}
-              >
-                <span
-                  className={cn(
-                    'flex items-center gap-1.5 text-xs font-medium',
-                    mode === 'auto' && 'text-status-blocked'
-                  )}
-                >
-                  {mode === 'auto' && (
-                    <TriangleAlert aria-hidden="true" className="size-3 shrink-0" />
-                  )}
-                  {MODE_COPY[mode].title}
-                  {mode === value && <Check aria-hidden="true" className="ml-auto size-3" />}
-                </span>
-                <span className="mt-0.5 block text-2xs leading-relaxed text-muted-foreground">
-                  {MODE_COPY[mode].description}
-                </span>
-              </button>
+              />
             ))}
           </div>
           <button
             type="button"
-            className="flex w-full items-center gap-1.5 border-t border-border px-3 py-2 text-left text-2xs text-muted-foreground hover:bg-muted/60"
+            className="flex w-full items-center gap-1.5 border-t border-border px-3 py-2 text-left text-2xs text-muted-foreground hover:bg-accent"
             onClick={manage}
           >
             <Lock aria-hidden="true" className="size-3 shrink-0" />

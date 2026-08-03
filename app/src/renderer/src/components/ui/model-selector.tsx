@@ -560,7 +560,13 @@ function ModelSelectorItem({
         </>
       )}
       {isSelected && (
-        <span className="absolute end-3 top-2.5 flex size-4 items-center justify-center">
+        // Centred against the whole row, so the mark sits in the same place
+        // whether the model carries a description or not — and in the same
+        // place as the mark in every other popover of choices.
+        <span
+          data-slot="chosen-mark"
+          className="absolute end-3 top-1/2 flex size-4 -translate-y-1/2 items-center justify-center"
+        >
           <CheckIcon className="size-4" />
         </span>
       )}
