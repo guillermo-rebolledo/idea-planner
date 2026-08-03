@@ -16,6 +16,7 @@ import {
   IPC_CHANNELS,
   sessionSummarySchema,
   startSessionInputSchema,
+  startSessionResultSchema,
   mailboxQuerySchema,
   mailboxSnapshotSchema,
   renameSessionInputSchema,
@@ -328,10 +329,13 @@ function registerIpc(): void {
       }
       checkout = { kind: 'worktree', path: created.path }
     }
-    return sessionSummarySchema.parse(
-      await coreClient.send({
-        type: 'session/start',
-        input: startSessionInputSchema.parse({ ...request, checkout })
+    // Creating the Session and answering its message is one act, and the Run
+    // service owns it: sending on the launch screen is a Session and its
+    // first Run, not a Session that sits there unanswered.
+    return startSessionResultSchema.parse(
+      await runService.startSession({
+        input: startSessionInputSchema.parse({ ...request, checkout }),
+        run: request.run
       })
     )
   })

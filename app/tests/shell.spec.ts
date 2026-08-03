@@ -258,12 +258,13 @@ test('home is a new chat, and a Project row opens one already bound to it', asyn
     const page = await app.firstWindow()
     await completeOnboarding(page)
 
-    // Home is the composer, naming the Project that would be edited.
+    // Home is the composer, and the Project it would edit is named in the
+    // question itself — with the exact root on the control that changes it.
     const composer = page.getByRole('form', { name: 'New chat' })
     await expect(composer).toBeVisible()
-    await expect(
-      composer.getByText(await realpath(sandbox.projectDir), { exact: true })
-    ).toBeVisible()
+    const project = composer.getByRole('button', { name: 'Project' })
+    await expect(project).toContainText(basename(await realpath(sandbox.projectDir)))
+    await expect(project).toHaveAttribute('title', await realpath(sandbox.projectDir))
 
     // A Session exists only once the message is sent.
     await composer.getByLabel('Message').fill('Tidy the imports')
@@ -272,14 +273,32 @@ test('home is a new chat, and a Project row opens one already bound to it', asyn
     await composer.getByRole('button', { name: 'Send' }).click()
     await expect(inbox.getByText('Tidy the imports')).toBeVisible()
 
-    // New Session always returns to the launch surface.
+    // And sending starts the work, not just the record: the message that
+    // created the Session is answered by its first Run.
+    await expect(
+      page.getByRole('list', { name: 'Conversation history' }).getByText(/^Run · /)
+    ).toBeVisible()
+
+    // New Session always returns to the launch surface, where the starters
+    // fill the field rather than sending anything on the person's behalf.
     await page.getByRole('button', { name: 'New Session', exact: true }).click()
-    await expect(page.getByRole('form', { name: 'New chat' })).toBeVisible()
+    const fresh = page.getByRole('form', { name: 'New chat' })
+    await expect(fresh).toBeVisible()
+    await fresh.getByRole('button', { name: 'Fix a failing test' }).click()
+    await expect(fresh.getByLabel('Message')).toHaveValue('Fix a failing test')
+
+    // The work already under way is offered by name, so continuing it is as
+    // easy as starting a second Session about the same thing.
+    await fresh.getByRole('button', { name: 'Continue “Tidy the imports”' }).click()
+    await expect(page.getByRole('heading', { name: 'Tidy the imports' })).toBeVisible()
 
     // So does the button on a Project header, already bound to that Project.
     await page.getByRole('button', { name: 'New Session in', exact: false }).first().click()
     const bound = page.getByRole('form', { name: 'New chat' })
-    await expect(bound.getByText(await realpath(sandbox.projectDir), { exact: true })).toBeVisible()
+    await expect(bound.getByRole('button', { name: 'Project' })).toHaveAttribute(
+      'title',
+      await realpath(sandbox.projectDir)
+    )
   } finally {
     await app.close()
   }
@@ -409,18 +428,15 @@ test('the sidebar groups by Project, and status is a dot that never moves a row'
     })
     const otherGroup = inbox.getByRole('region', { name: basename(sandbox.plainDir) })
 
-    // Each Session sits under its own Project, and a quiet Session carries no
-    // dot: at rest a row is only its title.
+    // Each Session sits under its own Project, with its Sessions nested.
     await expect(homeGroup.getByText('Offline recipe planner')).toBeVisible()
     await expect(otherGroup.getByText('Elsewhere entirely')).toBeVisible()
-    await expect(homeGroup.getByRole('img', { name: 'Running' })).toHaveCount(0)
 
-    // Developing one puts a running dot on its row — read from its
-    // Conversation rather than from anything stored beside it — and the row
-    // stays exactly where it was.
-    await page.getByLabel('Your message').fill('Change the greeting')
-    await page.getByRole('button', { name: 'Send', exact: true }).click()
+    // Sending starts the first Run, so a Session carries a running dot from
+    // the moment it exists — read from its Conversation rather than from
+    // anything stored beside it — and the row stays exactly where it was.
     await expect(otherGroup.getByRole('img', { name: 'Running' })).toBeVisible()
+    await expect(homeGroup.getByRole('img', { name: 'Running' })).toBeVisible()
     await expect(otherGroup.getByText('Elsewhere entirely')).toBeVisible()
     await expect(homeGroup.getByText('Offline recipe planner')).toBeVisible()
 
@@ -461,17 +477,11 @@ test('a Session says which files it changed, and offers nothing to accept', asyn
     await completeOnboarding(page)
     await startSession(page, 'Change the greeting')
 
-    // The panel is toggled from the title-bar diff numbers, and until they
-    // are asked for they stay a quiet +0 −0.
+    // Sending started the Run, and the title bar adds up what it changed
+    // live. The panel itself stays away until the numbers are clicked.
     const chip = page.getByRole('button', { name: /Files this Session changed/ })
     const panel = page.getByRole('complementary', { name: 'Files this Session changed' })
-    await expect(chip).toContainText('+0')
     await expect(panel).toHaveCount(0)
-
-    await page.getByLabel('Your message').fill('Go on then')
-    await page.getByRole('button', { name: 'Send', exact: true }).click()
-
-    // The title bar adds the Run's change up live, without the panel open.
     await expect(chip).toContainText('+1')
     await expect(chip).toContainText('−1')
 
@@ -513,6 +523,12 @@ test('a Session says which files it changed, and offers nothing to accept', asyn
     await expect(step).toBeVisible()
     await step.click()
     await expect(panel.getByText('+export const greeting = "goodbye"')).toBeVisible()
+
+    // And with that Run finished, the Session is quiet again: at rest a row
+    // in the inbox is only its title.
+    await expect(
+      page.getByRole('navigation', { name: 'Session inbox' }).getByRole('img', { name: 'Running' })
+    ).toHaveCount(0)
   } finally {
     await app.close()
   }
@@ -671,7 +687,11 @@ test('one picker chooses the model, and with it the Harness that runs it', async
   try {
     const page = await app.firstWindow()
     await completeOnboarding(page)
-    await startSession(page, 'Choose the thinking')
+
+    // On the launch screen, before anything is sent: sending starts the first
+    // Run, so this is where a Run is configured. The Conversation carries the
+    // same chips for every message after it.
+    await expect(page.getByRole('form', { name: 'New chat' })).toBeVisible()
 
     // Both Harnesses are usable, so both are groups — and the Harness is not
     // a control of its own any more. The one control is a combobox, which is
@@ -717,6 +737,20 @@ test('one picker chooses the model, and with it the Harness that runs it', async
       manager.getByText('Nothing is permanently allowed', { exact: false })
     ).toBeVisible()
     await manager.getByRole('button', { name: 'Close' }).click()
+
+    // And what was chosen here is what the Run is asked for: sending starts
+    // it, and the Run boundary states the model and the mode it ran under.
+    await page
+      .getByRole('form', { name: 'New chat' })
+      .getByLabel('Message')
+      .fill('Choose the thinking')
+    await page.getByRole('button', { name: 'Send' }).click()
+    const boundary = page
+      .getByRole('list', { name: 'Conversation history' })
+      .getByText(/^Run · /)
+      .last()
+    await expect(boundary).toContainText('gpt-5.6-sol')
+    await expect(boundary).toContainText('Full access')
   } finally {
     await app.close()
   }

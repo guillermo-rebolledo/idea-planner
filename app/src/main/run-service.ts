@@ -5,7 +5,14 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
-import { checkoutDirectory, sessionSummarySchema, type CoreCommand } from '@shared/contract'
+import {
+  checkoutDirectory,
+  sessionSummarySchema,
+  startSessionInputSchema,
+  type CoreCommand,
+  type StartSessionInput,
+  type StartSessionResult
+} from '@shared/contract'
 import {
   HARNESS_DEFAULT_MODEL,
   MAX_APPROVAL_DETAIL,
@@ -13,6 +20,7 @@ import {
   developSessionInputSchema,
   harnessEventSchema,
   redactCredentials,
+  startingSubmissionId,
   unfinishedRunSchema,
   type ConversationSnapshot,
   type ConversationStreamEvent,
@@ -21,6 +29,7 @@ import {
   type FinalizeConversationRunInput,
   type HarnessEvent,
   type HarnessFailureCategory,
+  type RunRequest,
   type UnfinishedRun
 } from '@shared/conversation'
 import { proposeStandingApproval, ruleText, type ProposedRule } from '@shared/approval'
@@ -234,6 +243,46 @@ export class RunService {
       }
       await rm(directory, { recursive: true, force: true })
     }
+  }
+
+  /**
+   * Starts a Session: the Project gets one, and the message that asked for it
+   * is answered by its first Run. Sending from the launch screen is one act,
+   * so it reads as one here too.
+   *
+   * The Run answers that same message rather than adding another — Core wrote
+   * it under `startingSubmissionId` and deduplicates by that identity, so the
+   * Conversation holds exactly what the person typed, once.
+   *
+   * A Run that cannot start does not undo the Session. The message is durable
+   * the moment the Session exists, and throwing it away because a Harness was
+   * not ready would lose what the person wrote. It is reported instead of
+   * thrown, because the Session is real either way and the caller has one
+   * thing to do with each half: open the Session, and say if it is not
+   * working yet.
+   */
+  async startSession(request: {
+    input: StartSessionInput
+    run: RunRequest | undefined
+  }): Promise<StartSessionResult> {
+    const input = startSessionInputSchema.parse(request.input)
+    const session = sessionSummarySchema.parse(
+      await this.deps.core.send({ type: 'session/start', input })
+    )
+    const run = request.run
+    if (!run) return { session, runStarted: false }
+    const snapshot = await this.develop({
+      sessionId: session.id,
+      submissionId: startingSubmissionId(session.id),
+      text: input.message,
+      source: 'composer',
+      ...run
+    }).catch(() => null)
+    // `develop` answers with the Conversation when the failure is one the
+    // Conversation itself explains — which it does by offering recovery — and
+    // throws when it is not. Either way the question here is the same: is this
+    // Session working on the message it was created with.
+    return { session, runStarted: snapshot !== null && snapshot.recovery === null }
   }
 
   /**
@@ -1027,6 +1076,20 @@ export class RunService {
       summary: explained
     }
     await this.deps.core.send({ type: 'conversation/finalize', input: finalize })
+    // Said out loud, after Core has written it: a Run ending is the one
+    // lifecycle event nothing else reports. The Conversation re-reads itself
+    // while a Run is in flight and would find out anyway, but every other
+    // surface — the inbox and its status dots above all — only ever learns
+    // what it is told, and a Session that stopped working while nobody was
+    // looking would go on claiming it is running.
+    this.deps.onConversationEvent?.({
+      sessionId: run.sessionId,
+      runId: run.id,
+      event:
+        status === 'completed'
+          ? { type: 'completed' }
+          : { type: 'failed', category: category ?? 'unknown', summary: explained }
+    })
     return snapshot
   }
 

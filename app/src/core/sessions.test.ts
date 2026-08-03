@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { startingSubmissionId } from '@shared/contract'
 import { createCore, type Core } from './core'
 
 let stateDir: string
@@ -42,6 +43,18 @@ describe('Sessions', () => {
     })
     expect(JSON.stringify(session)).not.toContain('relativePath')
     await expect(core.listSessions()).resolves.toEqual([session])
+  })
+
+  it('records the starting message under the identity the first Run answers', async () => {
+    // Main answers this exact submission with the Session's first Run, and
+    // Core deduplicates by submission identity — so the name of that identity
+    // is shared, not spelled out twice.
+    const session = await core.startSession({ projectRoot, message: 'Fix the failing build' })
+
+    const snapshot = await core.getConversation(session.id)
+    expect(snapshot.entries).toMatchObject([
+      { kind: 'message', submissionId: startingSubmissionId(session.id) }
+    ])
   })
 
   it('starts with the message already in the Conversation', async () => {

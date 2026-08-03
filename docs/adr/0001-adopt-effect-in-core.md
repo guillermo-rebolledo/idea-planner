@@ -104,3 +104,20 @@ own canonical state transitions: each one is validated and persisted by Core
 before presentation. Dependencies are injected and the boundary contract is
 tested directly. Revisit if orchestration expands beyond this fixed
 request/persist/launch/report sequence.
+
+### Amendment: starting a Session is one act, sequenced in Main
+
+Sending on the launch screen creates a Session and answers the message that
+created it, in one Run. That sequence — `session/start` through Core, then the
+existing develop path — lives on `RunService` as `startSession`, which expands
+Main's orchestration past the fixed request/persist/launch/report sequence the
+follow-up decision drew a line at.
+
+It stays in Main rather than moving into Core because the second half of it is
+already there: developing a Session is Main's, since it launches and supervises
+the Harness process. Splitting the act so Core sequenced the half it can see
+would put the launch screen's one gesture behind two owners.
+
+Canonical state is unaffected: both halves are still validated and persisted by
+Core before anything is presented, and Main invents no state of its own. Revisit
+if Main starts sequencing acts whose steps are all Core's.

@@ -6,6 +6,7 @@ import { z } from 'zod'
 import {
   checkoutDirectory,
   CoreError,
+  startingSubmissionId,
   startSessionInputSchema,
   type MailboxCoreQuery,
   type MailboxProject,
@@ -220,7 +221,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       yield* conversation
         .submit({
           sessionId: session.id,
-          submissionId: `start-${session.id}`,
+          submissionId: startingSubmissionId(session.id),
           text: input.message,
           source: 'composer'
         })

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { firstProblem, harnessIdSchema, DEFAULT_EFFORT } from '@shared/contract'
 import type {
   HarnessId,
@@ -20,6 +20,30 @@ import {
   resolveModelEffort,
   type ModelOption as SelectorModel
 } from '@renderer/components/ui/model-selector'
+
+/**
+ * What there is to choose from, and what stands in the way of the rest. Read
+ * rather than remembered, and read again on every return to the window: a
+ * Harness is installed, updated and signed out by the person, in their own
+ * terminal, and none of that is announced to this app.
+ */
+export function useModelCatalog(): {
+  models: ModelCatalog | null
+  readiness: ReadinessSnapshot | null
+} {
+  const [models, setModels] = useState<ModelCatalog | null>(null)
+  const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
+  const read = useCallback(() => {
+    void window.shell.listModels().then(setModels, () => undefined)
+    void window.shell.getReadiness().then(setReadiness, () => undefined)
+  }, [])
+  useEffect(() => {
+    read()
+    window.addEventListener('focus', read)
+    return () => window.removeEventListener('focus', read)
+  }, [read])
+  return { models, readiness }
+}
 
 /**
  * What a Run is asked for: a model, the Harness that reaches it, and a level.

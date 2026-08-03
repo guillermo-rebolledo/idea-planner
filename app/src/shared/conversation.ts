@@ -519,8 +519,12 @@ export const submitConversationMessageInputSchema = z.object({
 })
 export type SubmitConversationMessageInput = z.infer<typeof submitConversationMessageInputSchema>
 
-/** The Renderer's one command for developing a Session through a Conversation. */
-export const developSessionInputSchema = submitConversationMessageInputSchema.extend({
+/**
+ * How a message is answered: everything chosen in a composer's chip row. The
+ * same shape wherever a message is sent from, so the launch screen and the
+ * Conversation cannot drift into configuring a Run differently.
+ */
+export const runRequestSchema = z.object({
   /** Absent when the message asks for no particular methodology. */
   skill: skillNameSchema.optional(),
   harness: harnessIdSchema,
@@ -528,7 +532,22 @@ export const developSessionInputSchema = submitConversationMessageInputSchema.ex
   effort: z.string().min(1).max(50).nullable(),
   permissionMode: permissionModeSchema
 })
+export type RunRequest = z.infer<typeof runRequestSchema>
+
+/** The Renderer's one command for developing a Session through a Conversation. */
+export const developSessionInputSchema =
+  submitConversationMessageInputSchema.merge(runRequestSchema)
 export type DevelopSessionInput = z.infer<typeof developSessionInputSchema>
+
+/**
+ * The submission identity of the message that created a Session. Named here
+ * rather than spelled out where it is used: Core writes the message under it
+ * and Main answers that same message with the first Run, and a submission
+ * resent under a different identity would be a second message.
+ */
+export function startingSubmissionId(sessionId: string): string {
+  return `start-${sessionId}`
+}
 
 export const finalizeConversationRunInputSchema = z.object({
   sessionId: z.string().min(1),

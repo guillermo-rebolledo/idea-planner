@@ -4,6 +4,7 @@ import {
   finalizeConversationRunInputSchema,
   harnessEventSchema,
   recordCheckoutChangesInputSchema,
+  runRequestSchema,
   submitConversationMessageInputSchema,
   type ConversationSnapshot,
   type ConversationStreamEvent,
@@ -174,9 +175,31 @@ export type StartSessionInput = z.input<typeof startSessionInputSchema>
  * ever stores directories that exist.
  */
 export const startSessionRequestSchema = startSessionInputSchema.extend({
-  checkout: checkoutRequestSchema.default(LOCAL_CHECKOUT)
+  checkout: checkoutRequestSchema.default(LOCAL_CHECKOUT),
+  /**
+   * How the starting message is answered. Present is the ordinary case: the
+   * launch screen chooses a model and a Permission Mode, and sending both
+   * creates the Session and starts its first Run. Absent creates the Session
+   * with its message unanswered, which is all a caller with no Harness to
+   * choose from can ask for.
+   */
+  run: runRequestSchema.optional()
 })
 export type StartSessionRequest = z.input<typeof startSessionRequestSchema>
+
+/**
+ * What sending on the launch screen produced. The Run is reported separately
+ * from the Session because the two can part ways: the message is durable the
+ * moment the Session exists, so a Run that never started leaves a real Session
+ * holding a real message — and saying so is the difference between a Session
+ * that is quietly doing nothing and one the person knows to send again.
+ */
+export const startSessionResultSchema = z.object({
+  session: sessionSummarySchema,
+  /** False when no Run was asked for, and when the one asked for failed. */
+  runStarted: z.boolean()
+})
+export type StartSessionResult = z.infer<typeof startSessionResultSchema>
 
 export const themePreferenceSchema = z.enum(['system', 'light', 'dark'])
 export type ThemePreference = z.infer<typeof themePreferenceSchema>
@@ -368,7 +391,7 @@ export interface ShellApi {
    * except when an isolated checkout is asked for, in which case its linked
    * worktree and branch are created before the Session is.
    */
-  startSession(input: StartSessionRequest): Promise<SessionSummary>
+  startSession(input: StartSessionRequest): Promise<StartSessionResult>
   listSessions(): Promise<SessionSummary[]>
   /** Ids whose record could not be read, so the loss can be shown rather than inferred. */
   listDamagedSessions(): Promise<string[]>

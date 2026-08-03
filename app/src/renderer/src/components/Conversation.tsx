@@ -20,13 +20,10 @@ import {
   type ConversationRecovery,
   type DiffHunk,
   type ConversationSnapshot,
-  type ModelCatalog,
   type HarnessUsage,
   type PermissionMode,
-  type ReadinessSnapshot,
   type RunSnapshot,
   type SessionSummary,
-  type SkillCatalog,
   type SuggestedResponse
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
@@ -34,10 +31,18 @@ import {
   applicableEffort,
   effectiveChoice,
   ModelPicker,
+  useModelCatalog,
   type ModelChoice
 } from '@renderer/components/ModelPicker'
 import { DiffCounts, DiffView, ExitCode } from '@renderer/components/Diff'
 import { PermissionModePicker } from '@renderer/components/PermissionModePicker'
+import {
+  ChosenSkillNote,
+  offeredSkill,
+  SkillSuggestions,
+  skillsMatching,
+  useSkillCatalog
+} from '@renderer/components/Skills'
 import { cn } from '@renderer/lib/utils'
 
 /**
@@ -92,15 +97,13 @@ export function Conversation({
   const sessionId = session.id
   const [phase, setPhase] = useState<Phase>({ state: 'loading' })
   const [runs, setRuns] = useState<RunSnapshot[]>([])
-  const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
   const [live, setLive] = useState<LiveRun | null>(null)
   const [draft, setDraft] = useState('')
   // No Skill by default. Most messages are not asking for a methodology, and
   // one applied because it happened to be selected is one nobody chose.
   const [skill, setSkill] = useState<string | null>(null)
-  const [catalog, setCatalog] = useState<SkillCatalog | null>(null)
   // One choice, not three: the model carries the Harness that reaches it.
-  const [models, setModels] = useState<ModelCatalog | null>(null)
+  const { models, readiness } = useModelCatalog()
   const [chosen, setChosen] = useState<ModelChoice | null>(null)
   // Ask by default: a Run edits the Project in place, and being asked first is
   // the posture somebody would choose if they were choosing deliberately.
@@ -132,6 +135,10 @@ export function Conversation({
   // what it recorded.
   const choice = effectiveChoice(models, chosen)
   const chosenHarness = choice?.harness ?? null
+  const [catalog, setCatalog] = useSkillCatalog({
+    projectRoot: session.projectRoot,
+    harness: chosenHarness
+  })
 
   const refresh = useCallback(async () => {
     try {
@@ -144,33 +151,9 @@ export function Conversation({
     await window.shell.listRuns(sessionId).then(setRuns, () => undefined)
   }, [sessionId])
 
-  const readHarnesses = useCallback(() => {
-    void window.shell.getReadiness().then(setReadiness, () => undefined)
-    void window.shell.listModels().then(setModels, () => undefined)
-  }, [])
-
   useEffect(() => {
     void refresh()
-    readHarnesses()
-  }, [refresh, readHarnesses])
-
-  // A Harness is repaired, or installed, or removed somewhere else entirely —
-  // in its own dialog, or in a terminal. Coming back to this window is when
-  // that becomes worth knowing, so the groups are read again then rather than
-  // staying as they were when the Session was opened.
-  useEffect(() => {
-    window.addEventListener('focus', readHarnesses)
-    return () => window.removeEventListener('focus', readHarnesses)
-  }, [readHarnesses])
-
-  // Skills are installed and removed by the person, in their own directories,
-  // so what is available is read rather than remembered.
-  useEffect(() => {
-    if (!chosenHarness) return
-    void window.shell
-      .listSkills({ projectRoot: session.projectRoot, harness: chosenHarness })
-      .then(setCatalog, () => undefined)
-  }, [chosenHarness, session.projectRoot])
+  }, [refresh])
 
   // While a Run is in flight the durable snapshot is what settles partial
   // messages, so it is re-read until the Run reaches a boundary.
@@ -262,18 +245,8 @@ export function Conversation({
     endRef.current?.scrollIntoView({ block: 'end' })
   }, [snapshot?.entries.length, live?.messages, live?.changes, live?.commands])
 
-  // Derived rather than corrected: a Skill the catalog stops offering — the
-  // Project's trust withdrawn, the directory deleted — is one this message no
-  // longer asks for, without a round of state chasing the catalog.
-  const chosenSkill =
-    skill && catalog?.available.some((entry) => entry.name === skill) ? skill : null
-
-  // `/` at the start of an empty message asks what methodologies there are.
-  // Anywhere else it is just a slash, because most messages contain paths.
-  const slashQuery = /^\/(\S*)$/.exec(draft)?.[1] ?? null
-  const matchingSkills = (catalog?.available ?? []).filter((entry) =>
-    entry.name.includes(slashQuery ?? '')
-  )
+  const chosenSkill = offeredSkill(catalog, skill)
+  const matchingSkills = skillsMatching(catalog, draft)
 
   /** Takes the Skill for this message, and the `/` back out of the message. */
   const chooseSkill = useCallback((name: string) => {
@@ -724,40 +697,8 @@ export function Conversation({
           <label className="sr-only" htmlFor="conversation-composer">
             Your message
           </label>
-          {slashQuery !== null && (
-            <div className="overflow-hidden rounded-md border border-border bg-popover shadow-sm">
-              <p className="px-2.5 pt-2 pb-1 font-mono text-2xs font-semibold tracking-wide text-muted-foreground uppercase">
-                Skills
-              </p>
-              <ul aria-label="Skills" className="max-h-40 overflow-y-auto px-1 pb-1">
-                {matchingSkills.length === 0 && (
-                  <li className="px-1.5 py-1.5 text-xs text-muted-foreground">
-                    No installed Skill matches. Keep typing your message — a Skill is optional.
-                  </li>
-                )}
-                {matchingSkills.map((entry) => (
-                  <li key={`${entry.source}:${entry.name}`}>
-                    <button
-                      type="button"
-                      className="flex w-full flex-col items-start rounded-md px-1.5 py-1.5 text-left hover:bg-muted/60"
-                      onClick={() => chooseSkill(entry.name)}
-                    >
-                      <span className="text-xs font-medium">
-                        {entry.name}
-                        {entry.source === 'project' && (
-                          <span className="ml-1 font-normal text-muted-foreground">
-                            this Project
-                          </span>
-                        )}
-                      </span>
-                      {entry.description && (
-                        <span className="text-xs text-muted-foreground">{entry.description}</span>
-                      )}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
+          {matchingSkills !== null && (
+            <SkillSuggestions matching={matchingSkills} onChoose={chooseSkill} />
           )}
           <textarea
             id="conversation-composer"
@@ -767,19 +708,7 @@ export function Conversation({
             placeholder={started ? 'Write your answer…' : 'What should we develop or decide?'}
             className="min-h-20 rounded-md border border-border bg-background p-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           />
-          {chosenSkill && (
-            <p className="text-xs text-muted-foreground">
-              This message asks for the{' '}
-              <span className="font-medium text-foreground">{chosenSkill}</span> Skill.{' '}
-              <button
-                type="button"
-                className="underline underline-offset-2"
-                onClick={() => setSkill(null)}
-              >
-                Send without it
-              </button>
-            </p>
-          )}
+          {chosenSkill && <ChosenSkillNote name={chosenSkill} onClear={() => setSkill(null)} />}
           {/* The mock 1a/1b composer row: quiet chips, no labels. The Skill
               is asked for with `/` in the message rather than a control. */}
           <div className="flex flex-wrap items-center gap-1">

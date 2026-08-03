@@ -20,7 +20,7 @@ import {
   type ConversationStreamEvent,
   type HarnessEvent
 } from '@shared/conversation'
-import type { SessionSummary } from '@shared/contract'
+import { LOCAL_CHECKOUT, startingSubmissionId, type SessionSummary } from '@shared/contract'
 import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
 import type { RunLaunch } from './run-process-broker'
 import { snapshotCheckout } from './git'
@@ -183,6 +183,7 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
   state.send.mockImplementation((command: { type: string }) => {
     state.commands.push(command.type)
     if (command.type === 'session/get') return Promise.resolve(fakeSession(projectRoot))
+    if (command.type === 'session/start') return Promise.resolve(fakeSession(projectRoot))
     if (command.type === 'approval/rules') return Promise.resolve(state.standingRules)
     if (command.type === 'approval/grant') return Promise.resolve(undefined)
     if (command.type === 'harness/open') return Promise.resolve({ events: [], outgoing: [] })
@@ -552,6 +553,116 @@ describe('Run service', () => {
     )
   })
 
+  it('starts a Session by answering the message that created it, in one Run', async () => {
+    const root = await readyHarnessRoot('run-start-session-')
+    const core = fakeCore(join(root, 'a-project'))
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
+    })
+
+    const started = await service.startSession({
+      input: {
+        projectRoot: join(root, 'a-project'),
+        message: 'Grill me',
+        checkout: LOCAL_CHECKOUT
+      },
+      run: {
+        harness: 'claude',
+        model: 'gpt-5-codex',
+        effort: 'medium',
+        permissionMode: 'ask'
+      }
+    })
+
+    expect(started).toMatchObject({ session: { id: 'session' }, runStarted: true })
+    expect(core.commands.indexOf('session/start')).toBeLessThan(
+      core.commands.indexOf('conversation/submit')
+    )
+    // The Run answers the starting message rather than adding a second one:
+    // Core deduplicates by submission identity, and this is that identity.
+    const sent = core.send.mock.calls.flat() as { type: string; input?: unknown }[]
+    const submit = sent.find((command) => command.type === 'conversation/submit')
+    expect(submit?.input).toMatchObject({
+      submissionId: startingSubmissionId('session'),
+      text: 'Grill me'
+    })
+    expect(broker.start).toHaveBeenCalled()
+  })
+
+  it('leaves the starting message unanswered when no Run was configured', async () => {
+    const root = await readyHarnessRoot('run-start-quiet-')
+    const core = fakeCore(join(root, 'a-project'))
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
+    })
+
+    const started = await service.startSession({
+      input: {
+        projectRoot: join(root, 'a-project'),
+        message: 'Grill me',
+        checkout: LOCAL_CHECKOUT
+      },
+      run: undefined
+    })
+
+    expect(started.runStarted).toBe(false)
+    expect(core.commands).toContain('session/start')
+    expect(broker.start).not.toHaveBeenCalled()
+  })
+
+  it('keeps a Session whose first Run could not start, message and all', async () => {
+    const root = await readyHarnessRoot('run-start-unready-')
+    const core = fakeCore(join(root, 'a-project'))
+    const service = new RunService({
+      core,
+      broker: fakeBroker(),
+      // No Harness this machine can run, which is what makes the Run fail.
+      readiness: { refresh: vi.fn(() => Promise.resolve({ harnesses: [] })) },
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
+    })
+
+    // The Session exists and holds the message: it was created before the Run
+    // was attempted, and losing it would lose what the person typed. That the
+    // Run never started is reported rather than swallowed, so the surface that
+    // opens the Session can say it is not working on anything yet.
+    const started = await service.startSession({
+      input: {
+        projectRoot: join(root, 'a-project'),
+        message: 'Grill me',
+        checkout: LOCAL_CHECKOUT
+      },
+      run: {
+        harness: 'claude',
+        model: 'gpt-5-codex',
+        effort: 'medium',
+        permissionMode: 'ask'
+      }
+    })
+
+    expect(started).toMatchObject({ session: { id: 'session' }, runStarted: false })
+    expect(core.commands).toContain('conversation/submit')
+  })
+
   it('refuses a Skill that is not installed for this Harness', async () => {
     const root = await readyHarnessRoot('run-unverified-')
     const service = new RunService({
@@ -629,6 +740,48 @@ describe('Run service', () => {
     expect(activity).toContainEqual(
       expect.objectContaining({ kind: 'output', summary: 'app.read_file: Read file session.md' })
     )
+  })
+
+  it('reports the end of a Run, so surfaces that only listen stop saying it runs', async () => {
+    // The Conversation re-reads itself while a Run is in flight and would find
+    // out anyway. The inbox never re-reads: it is told, and a status dot
+    // nobody updates goes on claiming a Session is working when it stopped.
+    const root = await readyHarnessRoot('run-end-')
+    const core = fakeCore(join(root, 'a-project'))
+    const broker = fakeBroker()
+    const streamed: ConversationStreamEvent[] = []
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root),
+      onConversationEvent: (event) => streamed.push(event)
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      sessionId: 'session',
+      prompt: 'Grill me',
+      harness: 'claude',
+      model: 'gpt-5-codex',
+      effort: 'medium',
+      skill: 'grilling',
+      permissionMode: 'auto'
+    })
+
+    // The process dies without the Harness ever saying why, which is the case
+    // the Conversation cannot report on its own.
+    broker.launch?.onExit?.(1, null)
+
+    await vi.waitFor(() => {
+      expect(streamed.at(-1)?.event).toMatchObject({ type: 'failed' })
+    })
+    // And it is said only once Core has written it, so a listener that reacts
+    // by re-reading finds the ending already durable.
+    expect(core.commands).toContain('conversation/finalize')
   })
 
   it('keeps a correctness-critical protocol failure failed even when Claude exits zero', async () => {

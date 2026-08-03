@@ -25,6 +25,7 @@ import type {
   MailboxSnapshot,
   SessionStatus,
   SessionSummary,
+  StartSessionResult,
   ThemePreference,
   ThemeState
 } from '@shared/contract'
@@ -316,10 +317,17 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     })
   }, [undoArchive])
 
-  function handleStarted(session: SessionSummary): void {
+  function handleStarted({ session, runStarted }: StartSessionResult): void {
     void refreshMailbox(effectiveQuery)
     openSession(session)
-    setAnnouncement(`Started “${session.title}”.`)
+    // Sending starts the work, so the announcement says whether it did. A
+    // Session whose first Run never started is a real Session holding a real
+    // message, and the one thing it needs is for somebody to know that.
+    setAnnouncement(
+      runStarted
+        ? `Started “${session.title}”.`
+        : `Created “${session.title}”, but its first Run did not start. Your message is kept — send it again from the Session.`
+    )
   }
 
   const snapshot = mailbox.state === 'ready' ? mailbox.snapshot : null
@@ -484,6 +492,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
               key={surface.projectRoot ?? 'any-project'}
               boundProjectRoot={surface.projectRoot}
               onStarted={handleStarted}
+              onOpenSession={openSession}
             />
           )}
         </main>
