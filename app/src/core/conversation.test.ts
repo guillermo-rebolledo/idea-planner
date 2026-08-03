@@ -1102,6 +1102,36 @@ describe('what a command step records', () => {
     expect(only.durationMs).toBeGreaterThan(0)
   })
 
+  it('measures no duration for an interrupted command, whose result never arrived', async () => {
+    const runId = await startRun('Run the tests', 'submission-interrupted')
+    const command = (patch: { running: boolean; interrupted?: boolean }) =>
+      core.applyHarnessEvent({
+        sessionId,
+        runId,
+        event: {
+          type: 'command',
+          id: 'toolu_1',
+          command: 'pnpm test',
+          output: '',
+          failed: false,
+          running: patch.running,
+          ...(patch.interrupted ? { interrupted: true } : {}),
+          exitCode: null,
+          durationMs: null
+        }
+      })
+
+    await command({ running: true })
+    // The Run stopped mid-command: the Adapter flushes it as interrupted.
+    await command({ running: false, interrupted: true })
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    // An interrupted command must not read back as a clean, measured finish.
+    expect(reloaded.entries.filter((entry) => entry.kind === 'command')).toMatchObject([
+      { running: false, interrupted: true, durationMs: null }
+    ])
+  })
+
   it('leaves the duration unknown for a command never seen starting', async () => {
     const runId = await startRun('Run the tests', 'submission-unseen')
     await core.applyHarnessEvent({

@@ -1004,7 +1004,9 @@ function StepRow({
       <li className="flex items-center gap-2 px-3 py-1 font-mono text-xs text-muted-foreground">
         {step.running ? <Spinner /> : <Terminal aria-hidden="true" className="size-3 shrink-0" />}
         <span className="min-w-0 flex-1 truncate select-text">{step.command}</span>
-        {!step.running && step.exitCode !== null ? (
+        {step.interrupted ? (
+          <span className="shrink-0">interrupted</span>
+        ) : !step.running && step.exitCode !== null ? (
           <span className="shrink-0">
             <ExitCode code={step.exitCode} />
           </span>

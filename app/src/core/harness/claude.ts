@@ -174,7 +174,9 @@ export function createClaudeAdapter(): HarnessAdapter {
       pending = ''
       const events = consumeLine(rest)
       // A Run stopped mid-command would otherwise say nothing about what it
-      // was running, which is exactly what the person wants to know.
+      // was running, which is exactly what the person wants to know. Marked
+      // interrupted rather than finished: the result never arrived, so a
+      // clean exit-less success is not something this can claim.
       for (const [id, command] of pendingCommands) {
         events.push({
           type: 'command',
@@ -183,6 +185,7 @@ export function createClaudeAdapter(): HarnessAdapter {
           output: '',
           failed: false,
           running: false,
+          interrupted: true,
           exitCode: null,
           durationMs: null
         })

@@ -578,6 +578,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
               const durationMs =
                 event.durationMs ??
                 (started ? Math.max(0, now.getTime() - Date.parse(started.at)) : null)
+              const interrupted = event.interrupted ?? false
               yield* append(
                 sessionDir,
                 conversationEntrySchema.parse({
@@ -589,8 +590,11 @@ export function createConversationEffects(options: ConversationOptions): Convers
                   output: describeOutput(event.output),
                   failed: event.failed,
                   running: event.running,
-                  exitCode: event.exitCode,
-                  durationMs: event.running ? null : durationMs
+                  interrupted,
+                  // An interrupted command's result never arrived, so there is
+                  // no finish to measure to.
+                  durationMs: event.running || interrupted ? null : durationMs,
+                  exitCode: event.exitCode
                 })
               )
               return

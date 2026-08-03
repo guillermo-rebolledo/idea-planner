@@ -140,6 +140,12 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
     output: z.string(),
     failed: z.boolean(),
     running: z.boolean().default(false),
+    /**
+     * The Run ended before this command's result ever arrived. Not a failure
+     * and not a clean finish: whatever it printed, and whether it worked, was
+     * never reported.
+     */
+    interrupted: z.boolean().optional(),
     /** As the Harness reported it. Null when it says only that it failed. */
     exitCode: z.number().int().nullable().default(null),
     /** Null when the Harness reported none and nothing saw the start. */
@@ -345,12 +351,18 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
      * starts and its output fills in when it lands.
      */
     running: z.boolean().default(false),
+    /**
+     * The Run ended before the command's result arrived. Distinct from failed:
+     * nothing was ever reported about how it went, so no duration is measured
+     * and no output is claimed.
+     */
+    interrupted: z.boolean().default(false),
     /** As the Harness reported it. Null when it says only that it failed. */
     exitCode: z.number().int().nullable().default(null),
     /**
      * How long it ran. The Harness's own figure when it gives one; otherwise
      * measured between the start the Conversation saw and the finish. Null
-     * for a command never seen starting.
+     * for a command never seen starting, or one whose result never arrived.
      */
     durationMs: z.number().int().nonnegative().nullable().default(null)
   }),

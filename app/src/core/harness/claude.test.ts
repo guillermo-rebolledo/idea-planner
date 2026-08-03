@@ -300,7 +300,8 @@ describe('a command that never finished', () => {
     )
 
     // The Run was stopped before the command returned. Saying nothing would
-    // leave the person guessing what it had been doing.
+    // leave the person guessing what it had been doing — and saying it
+    // finished cleanly would claim a result that never arrived.
     expect(adapter.flush()).toContainEqual({
       type: 'command',
       id: 'toolu_1',
@@ -308,6 +309,7 @@ describe('a command that never finished', () => {
       output: '',
       failed: false,
       running: false,
+      interrupted: true,
       exitCode: null,
       durationMs: null
     })
