@@ -95,6 +95,15 @@ interface RunServiceDeps {
   onConversationEvent?: (event: ConversationStreamEvent) => void
 }
 
+/** Statuses a Run never leaves. A resend that finds one starts a new attempt. */
+const TERMINAL_RUN_STATUSES = new Set<RunSnapshot['status']>([
+  'completed',
+  'failed',
+  'stopped',
+  'policy-violation',
+  'supervision-failed'
+])
+
 /** App-owned state holding what a Run's Checkout looked like before it ran. */
 const SNAPSHOTS = 'checkout-snapshots'
 
@@ -410,27 +419,38 @@ export class RunService {
       checkout,
       permissionMode: input.permissionMode
     }
-    const accepted = runSnapshotSchema.parse(
-      await this.deps.core.send({
+    const accept = (submissionId: string): Promise<unknown> =>
+      this.deps.core.send({
         type: 'run/accept',
         input: {
-          submissionId: input.submissionId,
+          submissionId,
           sessionId: input.sessionId,
           prompt: input.prompt,
           configuration
         }
       })
-    )
+    let accepted = runSnapshotSchema.parse(await accept(input.submissionId))
+    // A resent submission whose Run already ended is a new attempt at the
+    // same message. The message stays one message — the Conversation's
+    // submission identity is untouched — but a Run that already failed is
+    // not somewhere a retry can land, so each attempt takes its own durable
+    // acceptance under a derived identity. This is what makes the recovery
+    // card's "send that message again" actually contact a Harness.
+    for (let attempt = 2; TERMINAL_RUN_STATUSES.has(accepted.status) && attempt <= 20; attempt++) {
+      try {
+        accepted = runSnapshotSchema.parse(
+          await accept(`${input.submissionId}:attempt-${String(attempt)}`)
+        )
+      } catch {
+        // This attempt's identity was already used for different content —
+        // the person changed the configuration between retries, or the
+        // Harness updated underneath them. The next attempt number is free.
+      }
+    }
+    if (TERMINAL_RUN_STATUSES.has(accepted.status)) return accepted
     // From here on this Run is this process's, whatever the broker knows yet.
     this.mine.add(accepted.id)
     if (accepted.status !== 'accepted') {
-      if (
-        ['completed', 'failed', 'stopped', 'policy-violation', 'supervision-failed'].includes(
-          accepted.status
-        )
-      ) {
-        return accepted
-      }
       if (this.deps.broker.activeRunIds().includes(accepted.id)) return accepted
       return await this.record(
         accepted,

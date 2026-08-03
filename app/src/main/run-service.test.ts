@@ -1212,6 +1212,45 @@ describe('Codex on the app-server protocol', () => {
     expect(broker.stop).toHaveBeenCalledWith(expect.any(String), 'quit')
   })
 
+  it('starts a new attempt when a resent submission finds only a failed Run', async () => {
+    const root = await readyHarnessRoot('run-codex-retry-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    // Core's durable acceptance is idempotent per submission: the original
+    // identity answers with the Run that already failed. Only a derived
+    // attempt identity is free to be accepted.
+    const baseSend = core.send.getMockImplementation() as (command: {
+      type: string
+      input?: { submissionId?: string }
+    }) => Promise<unknown>
+    core.send.mockImplementation(async (command: { type: string; input?: unknown }) => {
+      const answer = await baseSend(command as { type: string })
+      if (command.type !== 'run/accept') return answer
+      const submissionId = (command.input as { submissionId: string }).submissionId
+      return submissionId === 'submission-1'
+        ? { ...(answer as object), status: 'failed' }
+        : { ...(answer as object), id: 'run-retry', submissionId }
+    })
+    const service = new RunService(codexDeps(root, broker, core))
+
+    await service.start(codexInput())
+
+    // The retry really contacts a Harness rather than returning the corpse.
+    expect(broker.start).toHaveBeenCalled()
+    const accepts = (
+      core.send.mock.calls as [{ type: string; input?: { submissionId?: string } }][]
+    )
+      .filter(([command]) => command.type === 'run/accept')
+      .map(([command]) => command.input?.submissionId)
+    expect(accepts).toEqual(['submission-1', 'submission-1:attempt-2'])
+    // The Conversation's submission identity stays the original, so the
+    // message is never duplicated and recovery keeps offering the same id.
+    const begin = (core.send.mock.calls as [{ type: string; submissionId?: string }][]).find(
+      ([command]) => command.type === 'conversation/begin'
+    )?.[0]
+    expect(begin?.submissionId).toBe('submission-1')
+  })
+
   it('ends the Run when Codex reports failure, instead of working forever', async () => {
     const root = await readyHarnessRoot('run-codex-failed-')
     const broker = fakeBroker()
