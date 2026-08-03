@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  bootStateSchema,
   harnessesReadyForASession,
   type BootState,
   type ProjectView,
@@ -12,7 +13,11 @@ import { Onboarding } from '@renderer/components/Onboarding'
 import { Mailbox } from '@renderer/components/Mailbox'
 
 type BootPhase =
-  { phase: 'loading' } | { phase: 'failed'; message: string } | { phase: 'ready'; boot: BootState }
+  | { phase: 'loading' }
+  | { phase: 'failed'; message: string }
+  /** The half of the app on the other side of the wire is a different build. */
+  | { phase: 'mismatched' }
+  | { phase: 'ready'; boot: BootState }
 
 export default function App(): React.JSX.Element {
   const [bootPhase, setBootPhase] = useState<BootPhase>({ phase: 'loading' })
@@ -32,7 +37,16 @@ export default function App(): React.JSX.Element {
   const loadBootState = useCallback(async () => {
     setBootPhase({ phase: 'loading' })
     try {
-      const boot = await window.shell.getBootState()
+      // Read against this build's own contract before anything is acted on.
+      // Two halves of different builds otherwise agree right up until one of
+      // them is handed a shape it was never written for, and the way that
+      // ends is a screen that goes black without a word.
+      const parsed = bootStateSchema.safeParse(await window.shell.getBootState())
+      if (!parsed.success) {
+        setBootPhase({ phase: 'mismatched' })
+        return
+      }
+      const boot = parsed.data
       adoptTheme(boot.theme)
       setProjects(await window.shell.listProjects())
       // Whether this machine can do the thing the app is for, asked on every
@@ -61,6 +75,18 @@ export default function App(): React.JSX.Element {
     return (
       <div className="flex h-full items-center justify-center" role="status" aria-live="polite">
         <p className="text-muted-foreground">Starting up…</p>
+      </div>
+    )
+  }
+
+  if (bootPhase.phase === 'mismatched') {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-8" role="alert">
+        <p className="text-foreground">This window and the app behind it are different builds.</p>
+        <p className="max-w-md text-center text-xs text-muted-foreground">
+          Nothing is wrong with your Projects or Sessions. It happens while developing: the window
+          reloads on save and the app behind it does not. Quit and start it again.
+        </p>
       </div>
     )
   }

@@ -43,8 +43,16 @@ import {
  * The versioned contract shared by Core, Main, Preload, and Renderer.
  * Every payload crossing a process boundary is validated against these
  * schemas before it is acted on or presented.
+ *
+ * Bump this whenever a payload changes shape. The halves of the app are built
+ * together but do not have to be running together — `electron-vite dev`
+ * reloads the Renderer and leaves Main as it was — and this number is what
+ * lets the Renderer notice before it acts on an answer it cannot read.
+ *
+ * 7: starting a Session answers with the Session *and* whether its first Run
+ *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 6
+export const CONTRACT_VERSION = 7
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
