@@ -298,6 +298,27 @@ export function createConversationEffects(options: ConversationOptions): Convers
       Effect.flatMap((bytes) => stateAsOf(sessionDir, bytes))
     )
 
+  /**
+   * How many durable steps of one kind a Run has taken: from the projection
+   * for the active Run — the case every step of a live Run asks — and from
+   * the journal for any other, which only a late event for an already-ended
+   * Run ever is.
+   */
+  const stepCount = (
+    sessionDir: string,
+    runId: string,
+    kind: 'read' | 'file-change'
+  ): Effect.Effect<number, CoreError> =>
+    Effect.gen(function* () {
+      const state = yield* readState(sessionDir)
+      if (state.activeRunId === runId) {
+        return kind === 'read' ? state.runReads : state.runFileChanges
+      }
+      return (yield* readEntries(sessionDir)).filter(
+        (entry) => entry.kind === kind && entry.runId === runId
+      ).length
+    })
+
   const snapshot = (
     sessionId: string,
     sessionDir: string
@@ -568,16 +589,18 @@ export function createConversationEffects(options: ConversationOptions): Convers
               // write for an id, which is the finished one.
               const id = `command:${input.runId}:${event.id}`
               // The Harness's own figure when it gives one; otherwise measured
-              // between the start this Conversation saw and the finish. A
-              // command never seen starting keeps an honest null.
-              const started = event.running
+              // between the start this Conversation saw — kept in the
+              // projection, so a long Run does not re-read its whole journal
+              // per step — and the finish. A command never seen starting
+              // keeps an honest null.
+              const startedAt = event.running
                 ? undefined
-                : (yield* readEntries(sessionDir)).find(
-                    (entry) => entry.kind === 'command' && entry.id === id && entry.running
-                  )
+                : (yield* readState(sessionDir)).runningCommands[id]
               const durationMs =
                 event.durationMs ??
-                (started ? Math.max(0, now.getTime() - Date.parse(started.at)) : null)
+                (startedAt !== undefined
+                  ? Math.max(0, now.getTime() - Date.parse(startedAt))
+                  : null)
               const interrupted = event.interrupted ?? false
               yield* append(
                 sessionDir,
@@ -650,15 +673,13 @@ export function createConversationEffects(options: ConversationOptions): Convers
               // What the Run did to the Checkout is part of what happened in
               // the Conversation, so it is durable rather than only streamed.
               //
-              // The ordinal is counted from the journal rather than from
+              // The ordinal comes from the durable projection rather than from
               // memory: a restart part-way through a Run would otherwise start
               // again at one, and an id that repeats is an entry that
-              // overwrites the change before it.
-              const written = yield* readEntries(sessionDir)
-              const ordinal =
-                written.filter(
-                  (entry) => entry.kind === 'file-change' && entry.runId === input.runId
-                ).length + 1
+              // overwrites the change before it. The projection is checked
+              // against the journal on every read, so this is the journal's
+              // own count, answered without re-reading it per step.
+              const ordinal = (yield* stepCount(sessionDir, input.runId, 'file-change')) + 1
               yield* append(
                 sessionDir,
                 conversationEntrySchema.parse({
@@ -683,10 +704,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
               // that names no file stays in the sanitized activity stream only.
               if (event.path === undefined) return
               const checkout = yield* options.checkoutFor(input.sessionId)
-              const ordinal =
-                (yield* readEntries(sessionDir)).filter(
-                  (entry) => entry.kind === 'read' && entry.runId === input.runId
-                ).length + 1
+              const ordinal = (yield* stepCount(sessionDir, input.runId, 'read')) + 1
               yield* append(
                 sessionDir,
                 conversationEntrySchema.parse({

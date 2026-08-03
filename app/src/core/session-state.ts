@@ -38,6 +38,19 @@ export const sessionStateSchema = z.object({
   recentMessageIds: z.array(z.string()),
   /** How the last Run ended badly, when it did. */
   recovery: conversationRecoverySchema.nullable(),
+  /**
+   * The active Run's commands still running, entry id → when each started, so
+   * a finish can be timed against its start without reading the journal back.
+   * Reset when a Run starts; an id written again finished has left.
+   */
+  runningCommands: z.record(z.string(), z.string()),
+  /**
+   * How many durable steps the active Run has taken so far, for the ordinal
+   * ids the next step gets. Counted here so a long Run does not pay a full
+   * journal read per step.
+   */
+  runReads: z.number().int().nonnegative(),
+  runFileChanges: z.number().int().nonnegative(),
   /** Bytes of the journal this was derived from. */
   journalBytes: z.number().int().nonnegative()
 })
@@ -68,6 +81,9 @@ export const EMPTY_STATE: SessionState = {
   lastMessage: null,
   recentMessageIds: [],
   recovery: null,
+  runningCommands: {},
+  runReads: 0,
+  runFileChanges: 0,
   journalBytes: 0
 }
 
@@ -75,10 +91,41 @@ export const EMPTY_STATE: SessionState = {
 export function advance(state: SessionState, entry: ConversationEntry): SessionState {
   if (entry.kind === 'boundary') {
     if (entry.boundary === 'run-started') {
-      return { ...state, activeRunId: entry.runId, recovery: null }
+      // A new Run starts its own count of steps and running commands.
+      return {
+        ...state,
+        activeRunId: entry.runId,
+        recovery: null,
+        runningCommands: {},
+        runReads: 0,
+        runFileChanges: 0
+      }
     }
     if (entry.runId !== state.activeRunId) return state
     return { ...state, activeRunId: null, recovery: entry.recovery }
+  }
+  // Steps are counted only for the Run the Session is on: a late entry from
+  // an earlier Run must not inflate the active one's ordinals.
+  if (entry.kind === 'command') {
+    if (entry.runId !== state.activeRunId) return state
+    if (entry.running) {
+      return { ...state, runningCommands: { ...state.runningCommands, [entry.id]: entry.at } }
+    }
+    if (!(entry.id in state.runningCommands)) return state
+    return {
+      ...state,
+      runningCommands: Object.fromEntries(
+        Object.entries(state.runningCommands).filter(([id]) => id !== entry.id)
+      )
+    }
+  }
+  if (entry.kind === 'read') {
+    return entry.runId === state.activeRunId ? { ...state, runReads: state.runReads + 1 } : state
+  }
+  if (entry.kind === 'file-change') {
+    return entry.runId === state.activeRunId
+      ? { ...state, runFileChanges: state.runFileChanges + 1 }
+      : state
   }
   if (entry.kind === 'approval') {
     // The order is the order they were asked in, because that is the order
