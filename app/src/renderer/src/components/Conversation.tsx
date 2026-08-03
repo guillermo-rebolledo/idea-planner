@@ -929,37 +929,16 @@ function RunActivityBlock({
         </button>
         {expanded && (steps.length > 0 || liveCommands.length > 0 || liveChanges.length > 0) && (
           <ol className="border-t border-border py-1" aria-label="Run steps">
-            {steps.map((step) => (
+            {/* Durable steps first, then what streamed and is not durable
+                yet — one row shape for both, because they are the same step
+                at two moments of its life. */}
+            {[
+              ...steps,
+              ...liveCommands.map(liveCommandStep),
+              ...liveChanges.map(liveChangeStep)
+            ].map((step) => (
               <StepRow key={step.id} step={step} onOpenFile={onOpenFile} />
             ))}
-            {liveCommands.map((command) => (
-              <li
-                key={command.id}
-                className="flex items-center gap-2 px-3 py-1 font-mono text-xs text-muted-foreground"
-              >
-                {command.running ? (
-                  <Spinner />
-                ) : (
-                  <Terminal aria-hidden="true" className="size-3 shrink-0" />
-                )}
-                <span className="min-w-0 flex-1 truncate select-text">{command.command}</span>
-              </li>
-            ))}
-            {liveChanges.map((change) => {
-              const counted = countDiffLines(change.hunks)
-              return (
-                <li
-                  key={change.id}
-                  className="flex items-center gap-2 px-3 py-1 font-mono text-xs text-muted-foreground"
-                >
-                  <FileDiff aria-hidden="true" className="size-3 shrink-0" />
-                  <span className="min-w-0 flex-1 truncate select-text">{change.path}</span>
-                  <span className="shrink-0">
-                    <DiffCounts added={counted.added} removed={counted.removed} />
-                  </span>
-                </li>
-              )
-            })}
           </ol>
         )}
         {expanded && previewHunk && (
@@ -980,12 +959,41 @@ function RunActivityBlock({
   )
 }
 
+/**
+ * One step as a row draws it: the fields the row needs and nothing else, so a
+ * durable journal entry and a step still streaming render through the same
+ * component instead of two parallel renderings of "a step".
+ */
+type StepView =
+  | { kind: 'read'; id: string; path: string }
+  | {
+      kind: 'command'
+      id: string
+      command: string
+      running: boolean
+      failed: boolean
+      interrupted: boolean
+      exitCode: number | null
+      durationMs: number | null
+    }
+  | { kind: 'file-change'; id: string; path: string; added: number; removed: number }
+
+/** A command that streamed but is not durable yet, as the row draws it. */
+function liveCommandStep(command: LiveRun['commands'][number]): StepView {
+  return { ...command, kind: 'command', interrupted: false, exitCode: null, durationMs: null }
+}
+
+/** A change that streamed but is not durable yet, as the row draws it. */
+function liveChangeStep(change: LiveRun['changes'][number]): StepView {
+  return { kind: 'file-change', id: change.id, path: change.path, ...countDiffLines(change.hunks) }
+}
+
 /** One chronological step of a Run: a read, an edit, or a command. */
 function StepRow({
   step,
   onOpenFile
 }: {
-  step: StepEntry
+  step: StepView
   onOpenFile: (path: string) => void
 }): React.JSX.Element {
   if (step.kind === 'read') {
@@ -1235,14 +1243,7 @@ function RunSection({
   const resolved = group.approvals.filter((entry) => entry.decision !== null)
   return (
     <div className="flex flex-col gap-4">
-      <RunDivider
-        group={group}
-        run={run}
-        active={active}
-        waiting={waiting}
-        clock={clock}
-        startedAt={startedAt}
-      />
+      <RunDivider view={{ group, run, active, waiting, clock, startedAt }} />
       {group.messages.map((message) => (
         <AgentText
           key={message.id}
@@ -1274,25 +1275,27 @@ function RunSection({
 }
 
 /**
- * The Run boundary as a rule of the page: `Run · model · mode`, a hairline,
- * and on the right what became of it — running, waited on, or how long it
- * worked. Mono and muted, so history reads as history.
+ * One Run as its divider presents it: the durable group, the Run record when
+ * there is one, and the moments the outcome is phrased from. One value rather
+ * than a clump of loose props, because the pieces only mean anything
+ * together.
  */
-function RunDivider({
-  group,
-  run,
-  active,
-  waiting,
-  clock,
-  startedAt
-}: {
+interface RunDividerView {
   group: RunGroup
   run: RunSnapshot | null
   active: boolean
   waiting: boolean
   clock: number
   startedAt: string | null
-}): React.JSX.Element {
+}
+
+/**
+ * The Run boundary as a rule of the page: `Run · model · mode`, a hairline,
+ * and on the right what became of it — running, waited on, or how long it
+ * worked. Mono and muted, so history reads as history.
+ */
+function RunDivider({ view }: { view: RunDividerView }): React.JSX.Element {
+  const { group, run, active, waiting, clock, startedAt } = view
   const model = run?.configuration.model ?? group.started?.model ?? null
   const mode = run ? MODE_LABEL[run.configuration.permissionMode] : null
   const label = ['Run', model, mode].filter(Boolean).join(' · ')
