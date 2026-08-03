@@ -49,6 +49,20 @@ Two primitives it imports are written here rather than pulled in: `ui/command` o
 
 The trigger is a `combobox` with `aria-haspopup="listbox"`, arrows open it, and the vendored effort row hands vertical arrows back to the list so one keyboard contract owns the popup. The packaged-shell test drives it by role.
 
-## Answer — effort is kept, not discarded
+## Answer — effort is kept, and only asked for where it applies
 
-`resolveModelEffort` decides what applies rather than what is stored: a level the newly chosen model does not offer stays in the Session's choice and simply is not asked for, so switching to a model with fewer levels and back does not lose it. A model with no configurable reasoning hides the Thinking row entirely.
+The choice is the person's and is never rewritten: switching to a model with fewer levels and back finds the level still there. What a Run is *asked for* is `applicableEffort`, which is null when the chosen model does not offer that level or offers none at all — and a Run with no level passes no `--effort` to Claude Code and no `model_reasoning_effort` to Codex, rather than asking for something the Harness would refuse.
+
+Claude Code's levels are the five its own `--effort` help documents, not three.
+
+## Answer — what a Run was asked for is on the Run
+
+The Run's own panel names the Harness, the model, the level and the Skill it was accepted with. A Run keeps what it was given whatever is chosen after it, and that is the record the ticket asked to be visible.
+
+## Answer — the groups follow the Harnesses
+
+The catalog is read when the Session opens and again whenever the window regains focus, because a Harness is repaired, installed or removed somewhere else entirely — in its own dialog, or in a terminal. A Harness that stops being usable stops being a group, and the choice falls back to one that can still run a message; a Run already sent keeps what it recorded.
+
+## Answer — provider logos
+
+The registry's optional `logos` item is plain inline SVG with no dependencies, which is what makes it usable here: a remote image would not survive the sandbox's content policy. Two marks are vendored — the two providers this app's Harnesses actually reach — and the Gemini mark the registry also ships is left behind rather than carried for a Harness this app cannot drive.

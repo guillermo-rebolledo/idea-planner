@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process'
-import { z } from 'zod'
+// Protocol lives with the Adapter, and this is the one module that speaks
+// Codex's model listing. Main owns the process; nothing here reads a frame.
+// The module is pure — no Effect crosses this import (ADR 0001).
+import { openModelList, readModelListLine } from '../core/harness/codex-models'
 import type { HarnessId } from '@shared/readiness'
 import {
   CLAUDE_DEFAULT_EFFORT,
@@ -55,101 +58,57 @@ async function describe(harness: HarnessToAsk): Promise<ModelGroup | null> {
   return { harness: harness.harness, displayName: harness.displayName, source: 'probed', models }
 }
 
-/** Only what the picker needs; the rest of Codex's model record is its own. */
-const codexModelSchema = z.object({
-  id: z.string().min(1),
-  displayName: z.string().min(1).optional(),
-  description: z.string().optional(),
-  hidden: z.boolean().default(false),
-  supportedReasoningEfforts: z.array(z.object({ reasoningEffort: z.string().min(1) })).default([]),
-  defaultReasoningEffort: z.string().optional()
-})
-
-const codexAnswerSchema = z.object({
-  id: z.number(),
-  result: z.object({ data: z.array(codexModelSchema) })
-})
-
 /**
- * Asks the installed Codex what it can run. This starts an app-server, asks
- * one question and stops it: no thread, no turn, and so no request against the
- * person's account.
+ * Asks the installed Codex what it can run: this owns the process and the
+ * bytes, and the Adapter beside it owns what they mean. One app-server, one
+ * question, no thread and no turn — so nothing is spent against the person's
+ * account.
  */
 async function askCodex(executable: string): Promise<ModelOption[] | null> {
   return new Promise((resolve) => {
+    const child = spawn(executable, ['app-server'], { stdio: ['pipe', 'pipe', 'ignore'] })
     let settled = false
     const finish = (answer: ModelOption[] | null): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      child.kill('SIGTERM')
+      // The same signal readiness uses: a Harness that will not stop is not
+      // going to be asked politely twice.
+      child.kill('SIGKILL')
       resolve(answer)
     }
     const timer = setTimeout(() => finish(null), PROBE_TIMEOUT_MS)
-    const child = spawn(executable, ['app-server'], { stdio: ['pipe', 'pipe', 'ignore'] })
     child.once('error', () => finish(null))
     child.once('exit', () => finish(null))
 
-    const send = (message: unknown): void => {
-      if (child.stdin.writable) child.stdin.write(`${JSON.stringify(message)}\n`)
+    const write = (frames: string[]): void => {
+      if (child.stdin.writable) for (const line of frames) child.stdin.write(line)
     }
     let buffered = ''
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
       buffered += chunk
+      // A Harness writing without newlines is not answering this question, and
+      // is not allowed to grow this without end.
+      if (buffered.length > MAX_ANSWER_BYTES) {
+        finish(null)
+        return
+      }
       for (;;) {
         const boundary = buffered.indexOf('\n')
         if (boundary < 0) break
         const line = buffered.slice(0, boundary)
         buffered = buffered.slice(boundary + 1)
         if (!line.trim()) continue
-        let frame: unknown
-        try {
-          frame = JSON.parse(line)
-        } catch {
-          continue
-        }
-        if ((frame as { id?: number }).id === INITIALIZE) {
-          send({ jsonrpc: '2.0', method: 'initialized', params: {} })
-          send({ jsonrpc: '2.0', id: LIST, method: 'model/list', params: {} })
-          continue
-        }
-        const answer = codexAnswerSchema.safeParse(frame)
-        if (answer.success && answer.data.id === LIST) {
-          finish(
-            answer.data.result.data
-              // Hidden is Codex's own word for what it keeps out of its
-              // picker, and this app is not the place to overrule it.
-              .filter((model) => !model.hidden)
-              .map((model) => ({
-                id: model.id,
-                name: model.displayName ?? model.id,
-                description: model.description ?? '',
-                efforts: model.supportedReasoningEfforts.map((effort) => ({
-                  id: effort.reasoningEffort,
-                  name: name(effort.reasoningEffort)
-                })),
-                defaultEffort: model.defaultReasoningEffort ?? null
-              }))
-          )
-        }
+        const step = readModelListLine(line)
+        write(step.outgoing)
+        if (step.models) finish(step.models)
       }
     })
 
-    send({
-      jsonrpc: '2.0',
-      id: INITIALIZE,
-      method: 'initialize',
-      params: { clientInfo: { name: 'argos', title: 'Argos', version: '0.1.0' } }
-    })
+    write([openModelList()])
   })
 }
 
-const INITIALIZE = 1
-const LIST = 2
-
-/** Codex names its levels in one word; this is the same word, for a button. */
-function name(effort: string): string {
-  if (effort === 'medium') return 'Med'
-  return effort.charAt(0).toUpperCase() + effort.slice(1)
-}
+/** An answer larger than this is not one to the question that was asked. */
+const MAX_ANSWER_BYTES = 4 * 1024 * 1024

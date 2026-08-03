@@ -13,9 +13,9 @@ import { harnessIdSchema } from './readiness'
  *   supports — which are not the same for every model. Asking the installed
  *   binary is the only list that cannot go stale.
  * - Claude Code has no enumeration. Its `--model` documents aliases that
- *   follow the latest of each family, and those are what this app offers; a
- *   full name can still be typed, and `default` leaves the choice to the
- *   Harness's own configuration.
+ *   follow the latest of each family, and those are what this app offers.
+ *   `default` leaves the choice to the Harness's own configuration, which is
+ *   also where a model this app does not list is chosen.
  */
 
 /** One thinking level, named as the Harness names it. */
@@ -84,7 +84,15 @@ export const CLAUDE_MODEL_ALIASES: { id: string; name: string; description: stri
 export const CLAUDE_EFFORTS: EffortOption[] = [
   { id: 'low', name: 'Low' },
   { id: 'medium', name: 'Med' },
-  { id: 'high', name: 'High' }
+  { id: 'high', name: 'High' },
+  { id: 'xhigh', name: 'Xhigh' },
+  { id: 'max', name: 'Max' }
 ]
 
-export const CLAUDE_DEFAULT_EFFORT = 'medium'
+/**
+ * The level asked for when nothing else says. Named once: three places used to
+ * spell it, and a fallback that disagrees with itself is a fallback nobody can
+ * reason about.
+ */
+export const DEFAULT_EFFORT = 'medium'
+export const CLAUDE_DEFAULT_EFFORT = DEFAULT_EFFORT

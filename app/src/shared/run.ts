@@ -70,7 +70,8 @@ export const runConfigurationSchema = z.object({
   executableHash: z.string().length(64),
   harnessVersion: z.string().min(1),
   model: z.string().min(1),
-  effort: z.string().min(1),
+  /** Null when the chosen model has no reasoning level to ask for. */
+  effort: z.string().min(1).nullable(),
   /**
    * The methodology this Run was asked to work to, pinned to the exact text on
    * disk when it started. Null is ordinary: Skills are optional, and most
@@ -134,7 +135,7 @@ export const startRunInputSchema = acceptRunInputSchema
   .extend({
     harness: harnessIdSchema,
     model: z.string().min(1),
-    effort: z.string().min(1),
+    effort: z.string().min(1).nullable(),
     skill: skillNameSchema.optional(),
     permissionMode: permissionModeSchema
   })

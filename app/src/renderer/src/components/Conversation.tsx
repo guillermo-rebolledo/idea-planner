@@ -30,7 +30,12 @@ import {
   type SuggestedResponse
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
-import { effectiveChoice, ModelPicker, type ModelChoice } from '@renderer/components/ModelPicker'
+import {
+  applicableEffort,
+  effectiveChoice,
+  ModelPicker,
+  type ModelChoice
+} from '@renderer/components/ModelPicker'
 import { ChangedFiles } from '@renderer/components/ChangedFiles'
 import { DiffView } from '@renderer/components/Diff'
 import { cn } from '@renderer/lib/utils'
@@ -122,11 +127,24 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
     await window.shell.listRuns(sessionId).then(setRuns, () => undefined)
   }, [sessionId])
 
-  useEffect(() => {
-    void refresh()
+  const readHarnesses = useCallback(() => {
     void window.shell.getReadiness().then(setReadiness, () => undefined)
     void window.shell.listModels().then(setModels, () => undefined)
-  }, [refresh])
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+    readHarnesses()
+  }, [refresh, readHarnesses])
+
+  // A Harness is repaired, or installed, or removed somewhere else entirely —
+  // in its own dialog, or in a terminal. Coming back to this window is when
+  // that becomes worth knowing, so the groups are read again then rather than
+  // staying as they were when the Session was opened.
+  useEffect(() => {
+    window.addEventListener('focus', readHarnesses)
+    return () => window.removeEventListener('focus', readHarnesses)
+  }, [readHarnesses])
 
   // Skills are installed and removed by the person, in their own directories,
   // so what is available is read rather than remembered.
@@ -254,7 +272,8 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           ...(chosenSkill ? { skill: chosenSkill } : {}),
           harness: chosenHarness,
           model: choice?.model ?? HARNESS_DEFAULT_MODEL,
-          effort: choice?.effort ?? 'medium',
+          // Only what the chosen model can be asked for.
+          effort: applicableEffort(models, choice),
           permissionMode: permissionMode
         })
         setPhase({ state: 'ready', snapshot: next })
@@ -277,7 +296,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
         setBusy(false)
       }
     },
-    [sessionId, chosenHarness, chosenSkill, choice, permissionMode, refresh]
+    [sessionId, chosenHarness, chosenSkill, choice, models, permissionMode, refresh]
   )
 
   /**
@@ -1103,6 +1122,14 @@ function ActivityPanel({
         />
         Activity — {run.status.replace('-', ' ')}
       </summary>
+      {/* What this Run was actually asked for, pinned when it was accepted.
+          A Run keeps what it was given, whatever is chosen after it. */}
+      <p className="mt-2 text-[11px] text-muted-foreground">
+        {run.configuration.harness === 'claude' ? 'Claude Code' : 'Codex'} ·{' '}
+        <span className="font-mono">{run.configuration.model}</span>
+        {run.configuration.effort !== null && ` · thinking ${run.configuration.effort}`}
+        {run.configuration.skill && ` · ${run.configuration.skill.name} Skill`}
+      </p>
       <ol className="mt-2 flex max-h-40 flex-col gap-1 overflow-y-auto text-[11px]">
         {run.activity.slice(-40).map((activity) => (
           <li

@@ -223,7 +223,9 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
       // The Skill for this Run, and nothing written into the person's own
       // instruction files.
       developerInstructions: launch.developerInstructions,
-      config: { model_reasoning_effort: launch.effort },
+      // Only when the chosen model has a level to ask for: naming one it does
+      // not support asks Codex for something it would refuse (ticket 13).
+      config: launch.effort === null ? {} : { model_reasoning_effort: launch.effort },
       threadSource: 'argos',
       ...(launch.model ? { model: launch.model } : {})
     }

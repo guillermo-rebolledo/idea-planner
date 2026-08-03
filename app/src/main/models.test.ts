@@ -123,8 +123,14 @@ describe('what a Harness can be asked for', () => {
       'haiku'
     ])
     // Claude takes an effort alongside any model, so every one of them offers
-    // the same levels.
-    expect(group?.models.every((model) => model.efforts.length === 3)).toBe(true)
+    // the same levels — the five its own help documents.
+    expect(group?.models[0]?.efforts.map((effort) => effort.id)).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max'
+    ])
   })
 
   it('offers no group for a Harness that cannot answer, rather than an empty one', async () => {

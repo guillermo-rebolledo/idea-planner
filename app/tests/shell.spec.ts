@@ -515,6 +515,9 @@ test('one picker chooses the model, and with it the Harness that runs it', async
     // And choosing it says what came with it, because the Harness changed.
     await expect(page.getByText('runs Skills as instruction text', { exact: false })).toBeVisible()
 
+    // Whose model it is, without reading the group heading again.
+    await expect(picker.locator('svg[viewBox="0 0 256 260"]')).toBeVisible()
+
     // The thinking levels are that model's own, as Codex reported them.
     await picker.click()
     const thinking = page.getByRole('radiogroup', { name: 'Thinking' })

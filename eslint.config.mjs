@@ -46,7 +46,8 @@ export default tseslint.config(
       '**/coverage/**',
       // Generated from the installed Codex binary; regenerated, never edited.
       'app/src/core/harness/codex-protocol/**',
-      // Vendored from assistant-ui's shadcn registry, kept diffable (ticket 13).
+      // Vendored from assistant-ui's shadcn registry and trimmed by hand;
+      // kept close to its source so it stays diffable (ticket 13).
       'app/src/renderer/src/components/ui/model-selector.tsx'
     ]
   },

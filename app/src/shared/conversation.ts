@@ -210,7 +210,8 @@ export const codexLaunchSchema = z.object({
   approvalPolicy: z.enum(['untrusted', 'on-request', 'never']),
   sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']),
   model: z.string().min(1).optional(),
-  effort: z.string().min(1),
+  /** Null when the chosen model has no reasoning level to ask for. */
+  effort: z.string().min(1).nullable(),
   developerInstructions: z.string(),
   prompt: z.string().min(1).max(100_000),
   resumeThreadId: z.string().min(1).max(200).optional()
@@ -488,7 +489,7 @@ export const developSessionInputSchema = submitConversationMessageInputSchema.ex
   skill: skillNameSchema.optional(),
   harness: harnessIdSchema,
   model: z.string().min(1).max(200),
-  effort: z.string().min(1).max(50),
+  effort: z.string().min(1).max(50).nullable(),
   permissionMode: permissionModeSchema
 })
 export type DevelopSessionInput = z.infer<typeof developSessionInputSchema>

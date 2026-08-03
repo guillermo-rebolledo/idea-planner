@@ -17,6 +17,7 @@ pnpm-lock.yaml
 # `pnpm codex:protocol` rather than edited (`docs/agents/codex-protocol.md`).
 app/src/core/harness/codex-protocol
 
-# Vendored from assistant-ui's shadcn registry and kept close to its source so
-# a newer copy can be diffed against it (ticket 13).
+# Vendored from assistant-ui's shadcn registry, then trimmed by hand to its
+# presentational parts. Kept close to its source so a newer copy can be diffed
+# against it rather than reconciled by eye (ticket 13).
 app/src/renderer/src/components/ui/model-selector.tsx

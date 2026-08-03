@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
+import { harnessIdSchema, DEFAULT_EFFORT } from '@shared/contract'
 import type { HarnessId, ModelCatalog, ModelGroup } from '@shared/contract'
+import { ClaudeLogo, OpenAILogo } from '@renderer/components/ui/logos'
 import {
   ModelSelectorRoot,
   ModelSelectorContent,
@@ -13,11 +15,32 @@ import {
   type ModelOption as SelectorModel
 } from '@renderer/components/ui/model-selector'
 
-/** What a Run is asked for: a model, the Harness that reaches it, and a level. */
+/**
+ * What a Run is asked for: a model, the Harness that reaches it, and a level.
+ * The level is the person's, kept whether or not the model in front of them
+ * can use it — `applicableEffort` is what a Run is actually asked for.
+ */
 export interface ModelChoice {
   harness: HarnessId
   model: string
   effort: string
+}
+
+/**
+ * The level to ask this model for, and null when it has none to ask for. The
+ * choice itself is untouched: switching to a model with fewer levels and back
+ * finds the level still there.
+ */
+export function applicableEffort(
+  catalog: ModelCatalog | null,
+  choice: ModelChoice | null
+): string | null {
+  if (!choice) return null
+  const model = (catalog?.groups ?? [])
+    .find((group) => group.harness === choice.harness)
+    ?.models.find((entry) => entry.id === choice.model)
+  if (!model || model.efforts.length === 0) return null
+  return model.efforts.some((effort) => effort.id === choice.effort) ? choice.effort : null
 }
 
 /**
@@ -48,9 +71,10 @@ export function ModelPicker({
     () =>
       groups.flatMap((group) =>
         group.models.map((model) => ({
-          id: key(group.harness, model.id),
+          id: modelKey(group.harness, model.id),
           name: model.name,
           description: model.description,
+          icon: HARNESS_LOGO[group.harness],
           keywords: [group.displayName, model.id],
           ...(model.efforts.length > 0
             ? { efforts: model.efforts.map((effort) => ({ id: effort.id, name: effort.name })) }
@@ -60,6 +84,8 @@ export function ModelPicker({
     [groups]
   )
 
+  const byKey = useMemo(() => new Map(models.map((model) => [model.id, model])), [models])
+
   if (groups.length === 0) {
     return (
       <p className="text-[11px] text-muted-foreground">
@@ -68,7 +94,7 @@ export function ModelPicker({
     )
   }
 
-  const value = choice ? key(choice.harness, choice.model) : undefined
+  const value = choice ? modelKey(choice.harness, choice.model) : undefined
   // Sticky across a switch: a level the new model does not have is kept rather
   // than discarded, and simply does not apply while that model is chosen.
   const effort = resolveModelEffort(models, value, choice?.effort)
@@ -80,14 +106,14 @@ export function ModelPicker({
         {...(value !== undefined ? { value } : {})}
         {...(effort !== undefined ? { effort } : {})}
         onValueChange={(next) => {
-          const chosen = read(next)
+          const chosen = parseModelKey(next)
           if (!chosen) return
           onChange({
             harness: chosen.harness,
             model: chosen.model,
             // Kept as the person left it; what the new model cannot do is
             // simply not asked for.
-            effort: choice?.effort ?? defaultEffort(groups, chosen.harness, chosen.model)
+            effort: choice?.effort ?? startingEffortFor(groups, chosen.harness, chosen.model)
           })
         }}
         onEffortChange={(next) => {
@@ -109,8 +135,8 @@ export function ModelPicker({
                   <ModelSelectorItem
                     key={model.id}
                     model={
-                      models.find((entry) => entry.id === key(group.harness, model.id)) ?? {
-                        id: key(group.harness, model.id),
+                      byKey.get(modelKey(group.harness, model.id)) ?? {
+                        id: modelKey(group.harness, model.id),
                         name: model.name
                       }
                     }
@@ -128,6 +154,23 @@ export function ModelPicker({
 }
 
 /**
+ * What comes with each Harness, beyond the model. Stated per Harness rather
+ * than as a test against one, so a Harness added later says its own thing
+ * instead of inheriting somebody else's.
+ */
+/** The mark of whoever makes the models a Harness reaches. */
+const HARNESS_LOGO: Record<HarnessId, React.JSX.Element> = {
+  claude: <ClaudeLogo />,
+  codex: <OpenAILogo />
+}
+
+const HARNESS_DIFFERENCE: Record<HarnessId, string> = {
+  claude: 'runs Skills natively.',
+  codex:
+    'runs Skills as instruction text rather than natively, and reads Ask and Full access in its own terms.'
+}
+
+/**
  * What comes with the Harness this model belongs to. Said at the picker rather
  * than in documentation, because switching model is where it changes.
  */
@@ -142,10 +185,7 @@ function HarnessNote({
   if (!group) return null
   return (
     <p className="text-[10px] text-muted-foreground">
-      {group.displayName}
-      {harness === 'codex'
-        ? ' runs Skills as instruction text rather than natively, and reads Ask and Full access in its own terms.'
-        : ' runs Skills natively.'}
+      {group.displayName} {HARNESS_DIFFERENCE[harness]}
       {group.source === 'documented' && ' It lists no models, so these are the ones it documents.'}
     </p>
   )
@@ -171,29 +211,33 @@ export function effectiveChoice(
   const first = groups[0]
   const model = first?.models[0]
   if (!first || !model) return null
-  return {
-    harness: first.harness,
-    model: model.id,
-    effort: model.defaultEffort ?? model.efforts[0]?.id ?? 'medium'
-  }
+  return { harness: first.harness, model: model.id, effort: startingEffort(model) }
 }
 
-/** The picker's ids carry the Harness, because a model name alone is ambiguous. */
-function key(harness: HarnessId, model: string): string {
-  return `${harness}:${model}`
-}
-
-function read(value: string): { harness: HarnessId; model: string } | null {
-  const boundary = value.indexOf(':')
-  if (boundary < 0) return null
-  const harness = value.slice(0, boundary)
-  if (harness !== 'claude' && harness !== 'codex') return null
-  return { harness, model: value.slice(boundary + 1) }
-}
-
-function defaultEffort(groups: ModelGroup[], harness: HarnessId, model: string): string {
+function startingEffortFor(groups: ModelGroup[], harness: HarnessId, model: string): string {
   const found = groups
     .find((group) => group.harness === harness)
     ?.models.find((entry) => entry.id === model)
-  return found?.defaultEffort ?? found?.efforts[0]?.id ?? 'medium'
+  return found ? startingEffort(found) : DEFAULT_EFFORT
+}
+
+/** The picker's ids carry the Harness, because a model name alone is ambiguous. */
+function modelKey(harness: HarnessId, model: string): string {
+  return `${harness}:${model}`
+}
+
+function parseModelKey(value: string): { harness: HarnessId; model: string } | null {
+  const boundary = value.indexOf(':')
+  if (boundary < 0) return null
+  // The contract's own list, rather than a second copy of it here.
+  const harness = harnessIdSchema.safeParse(value.slice(0, boundary))
+  return harness.success ? { harness: harness.data, model: value.slice(boundary + 1) } : null
+}
+
+/** What to ask a model for when nothing has been chosen for it yet. */
+function startingEffort(model: {
+  defaultEffort: string | null
+  efforts: { id: string }[]
+}): string {
+  return model.defaultEffort ?? model.efforts[0]?.id ?? DEFAULT_EFFORT
 }

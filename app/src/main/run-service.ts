@@ -1325,8 +1325,9 @@ function harnessArguments(
     '--include-hook-events',
     ...(threadId ? ['--resume', threadId] : []),
     ...(input.model === HARNESS_DEFAULT_MODEL ? [] : ['--model', input.model]),
-    '--effort',
-    input.effort,
+    // Only when the chosen model has one. Asking for a level a model does not
+    // offer is asking the Harness for something it would refuse (ticket 13).
+    ...(input.effort === null ? [] : ['--effort', input.effort]),
     // Claude reads a Skill natively when the message names one; without one
     // the message is just the message.
     `${input.skill ? `/${input.skill} ` : ''}${input.prompt}${handoff ? `\n\nDeterministic handoff from the Conversation so far:\n${handoff}` : ''}`
