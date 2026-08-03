@@ -14,6 +14,7 @@ import { Label } from '@renderer/components/ui/label'
 import {
   applicableEffort,
   effectiveChoice,
+  HarnessNote,
   ModelPicker,
   useModelCatalog,
   type ModelChoice
@@ -220,7 +221,7 @@ export function Composer({
             rows={4}
             value={message}
             placeholder="Describe the work, or / for a Skill…"
-            className="w-full resize-none bg-transparent p-3.5 text-sm outline-none placeholder:text-muted-foreground"
+            className="w-full resize-none bg-transparent px-3 pt-3 pb-1 text-sm outline-none placeholder:text-muted-foreground"
             onChange={(event) => {
               setMessage(event.target.value)
               setError(null)
@@ -237,7 +238,7 @@ export function Composer({
           />
           {/* The mock's chip row: quiet chips, no labels. Everything the Run
               is configured with is chosen here, because sending starts it. */}
-          <div className="flex flex-wrap items-center gap-1 px-1.5 pb-1.5">
+          <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
             {/* The Checkout is fixed at creation, so this chip exists only here:
                 once the Session is started it freezes into the title bar. */}
             <CheckoutPicker
@@ -263,18 +264,22 @@ export function Composer({
                 disabled={sending}
               />
             </span>
+            {/* Send is the one filled thing on the screen. With nothing to
+                send it goes muted rather than half-transparent: an empty
+                composer is not a disabled control, it is an unasked question. */}
             <Button
               type="submit"
               size="icon"
               aria-label="Send"
-              className="size-8 rounded-full"
+              className="rounded-full disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
               disabled={!canSend}
             >
-              <ArrowUp aria-hidden="true" className="size-4" />
+              <ArrowUp aria-hidden="true" className="size-3.5" />
             </Button>
           </div>
         </div>
         {chosenSkill && <ChosenSkillNote name={chosenSkill} onClear={() => setSkill(null)} />}
+        <HarnessNote catalog={models} choice={choice} />
       </div>
 
       {/* Starters, not suggestions the app pretends to have thought of: two

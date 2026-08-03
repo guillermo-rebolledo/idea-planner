@@ -30,6 +30,7 @@ import { Button } from '@renderer/components/ui/button'
 import {
   applicableEffort,
   effectiveChoice,
+  HarnessNote,
   ModelPicker,
   useModelCatalog,
   type ModelChoice
@@ -393,7 +394,6 @@ export function Conversation({
   }
 
   const entries = phase.snapshot.entries
-  const started = entries.length > 0
   const liveForActiveRun = live?.runId === activeRunId ? live : null
   const latestAssistant = [...entries]
     .reverse()
@@ -445,12 +445,6 @@ export function Conversation({
           aria-live="polite"
           aria-busy={activeRunId !== null}
         >
-          {!started && (
-            <li className="text-xs text-muted-foreground">
-              Nothing has been developed yet. Send your first message — and if you have Skills
-              installed, type / to work to one.
-            </li>
-          )}
           {items.map((item) => {
             if (item.type === 'user') return <UserBubble key={item.entry.id} entry={item.entry} />
             if (item.type === 'assistant')
@@ -705,7 +699,7 @@ export function Conversation({
             value={draft}
             disabled={activeRunId !== null}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder={started ? 'Write your answer…' : 'What should we develop or decide?'}
+            placeholder="Write your answer…"
             className="min-h-20 rounded-md border border-border bg-background p-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           />
           {chosenSkill && <ChosenSkillNote name={chosenSkill} onClear={() => setSkill(null)} />}
@@ -733,9 +727,10 @@ export function Conversation({
               disabled={busy || blocked || activeRunId !== null || !draft.trim()}
             >
               <Send aria-hidden="true" className="size-3.5" />
-              {busy ? 'Sending…' : started ? 'Send' : 'Start developing'}
+              {busy ? 'Sending…' : 'Send'}
             </Button>
           </div>
+          <HarnessNote catalog={models} choice={choice} />
           {blocked && canDevelop && (
             <div role="status" className="rounded-md border border-border bg-muted/50 p-2">
               <p className="text-xs text-foreground">{canDevelop.summary}</p>

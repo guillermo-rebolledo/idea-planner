@@ -47,22 +47,20 @@ export function CheckoutPicker({
   const isolated = value.kind === 'isolated'
   return (
     <Popover open={open} onOpenChange={setOpen}>
+      {/* A chip in the composer's row: quiet text, no outline, no glyph —
+          the row is read as a sentence about this message, not as a toolbar. */}
       <PopoverTrigger
         aria-label="Checkout"
         disabled={(disabled ?? false) || !projectRoot}
-        className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-muted-foreground hover:bg-muted/60"
+        className="flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
       >
         {value.kind === 'isolated' ? (
           <>
-            <FolderTree aria-hidden="true" className="size-3 shrink-0" />
             Worktree
             {value.baseBranch && <span className="font-mono">· {value.baseBranch}</span>}
           </>
         ) : (
-          <>
-            <Monitor aria-hidden="true" className="size-3 shrink-0" />
-            Local
-          </>
+          'Local'
         )}
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72">

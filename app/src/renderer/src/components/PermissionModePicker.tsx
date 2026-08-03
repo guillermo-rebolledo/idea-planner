@@ -78,10 +78,10 @@ export function PermissionModePicker({
           aria-label="Permission Mode"
           disabled={disabled ?? false}
           className={cn(
-            'flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs',
+            'flex h-7 items-center gap-1.5 rounded-md px-2 text-xs',
             fullAccess
               ? 'bg-status-blocked-surface text-status-blocked'
-              : 'text-muted-foreground hover:bg-muted/60'
+              : 'text-muted-foreground hover:bg-accent hover:text-foreground'
           )}
         >
           {fullAccess && <TriangleAlert aria-hidden="true" className="size-3 shrink-0" />}

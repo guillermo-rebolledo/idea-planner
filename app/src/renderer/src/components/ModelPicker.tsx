@@ -142,63 +142,64 @@ export function ModelPicker({
   const effort = resolveModelEffort(models, value, choice?.effort)
 
   return (
-    <div className="flex flex-col gap-1">
-      <ModelSelectorRoot
-        models={models}
-        {...(value !== undefined ? { value } : {})}
-        {...(effort !== undefined ? { effort } : {})}
-        onValueChange={(next) => {
-          const chosen = parseModelKey(next)
-          if (!chosen) return
-          onChange({
-            harness: chosen.harness,
-            model: chosen.model,
-            // Kept as the person left it; what the new model cannot do is
-            // simply not asked for.
-            effort: choice?.effort ?? startingEffortFor(groups, chosen.harness, chosen.model)
-          })
-        }}
-        onEffortChange={(next) => {
-          if (!choice) return
-          onChange({ ...choice, effort: next })
-        }}
-      >
-        <ModelSelectorTrigger
-          aria-label="Model"
-          disabled={disabled ?? false}
-          className="h-8 border border-border px-2"
-        />
-        <ModelSelectorContent align="start" searchable>
-          <ModelSelectorSearch placeholder="Search models…" />
-          <ModelSelectorList>
-            {groups.map((group) => (
-              <ModelSelectorGroup key={group.harness} heading={group.displayName}>
-                {group.models.map((model) => (
-                  <ModelSelectorItem
-                    key={model.id}
-                    model={
-                      byKey.get(modelKey(group.harness, model.id)) ?? {
-                        id: modelKey(group.harness, model.id),
-                        name: model.name
-                      }
+    <ModelSelectorRoot
+      models={models}
+      {...(value !== undefined ? { value } : {})}
+      {...(effort !== undefined ? { effort } : {})}
+      onValueChange={(next) => {
+        const chosen = parseModelKey(next)
+        if (!chosen) return
+        onChange({
+          harness: chosen.harness,
+          model: chosen.model,
+          // Kept as the person left it; what the new model cannot do is
+          // simply not asked for.
+          effort: choice?.effort ?? startingEffortFor(groups, chosen.harness, chosen.model)
+        })
+      }}
+      onEffortChange={(next) => {
+        if (!choice) return
+        onChange({ ...choice, effort: next })
+      }}
+    >
+      <ModelSelectorTrigger
+        aria-label="Model"
+        variant="ghost"
+        size="sm"
+        disabled={disabled ?? false}
+        // The chip row is the mock's: quiet text, no outline, and a chevron
+        // small enough to read as punctuation rather than as a control.
+        className="h-7 gap-1.5 px-2 text-muted-foreground hover:text-foreground [&>svg:last-child]:size-3"
+      />
+      <ModelSelectorContent align="start" searchable>
+        <ModelSelectorSearch placeholder="Search models…" />
+        <ModelSelectorList>
+          {groups.map((group) => (
+            <ModelSelectorGroup key={group.harness} heading={group.displayName}>
+              {group.models.map((model) => (
+                <ModelSelectorItem
+                  key={model.id}
+                  model={
+                    byKey.get(modelKey(group.harness, model.id)) ?? {
+                      id: modelKey(group.harness, model.id),
+                      name: model.name
                     }
-                  />
-                ))}
-              </ModelSelectorGroup>
-            ))}
-          </ModelSelectorList>
-          {unusable.length > 0 && (
-            <div aria-label="Unavailable Harnesses" className="border-t border-border px-1 py-1">
-              {unusable.map((entry) => (
-                <UnusableHarnessRow key={entry.harness} entry={entry} />
+                  }
+                />
               ))}
-            </div>
-          )}
-          <ModelSelectorEffort />
-        </ModelSelectorContent>
-      </ModelSelectorRoot>
-      {choice && <HarnessNote groups={groups} harness={choice.harness} />}
-    </div>
+            </ModelSelectorGroup>
+          ))}
+        </ModelSelectorList>
+        {unusable.length > 0 && (
+          <div aria-label="Unavailable Harnesses" className="border-t border-border px-1 py-1">
+            {unusable.map((entry) => (
+              <UnusableHarnessRow key={entry.harness} entry={entry} />
+            ))}
+          </div>
+        )}
+        <ModelSelectorEffort />
+      </ModelSelectorContent>
+    </ModelSelectorRoot>
   )
 }
 
@@ -239,18 +240,22 @@ function UnusableHarnessRow({ entry }: { entry: HarnessReadiness }): React.JSX.E
 }
 
 /**
- * What comes with the Harness this model belongs to. Said at the picker rather
- * than in documentation, because switching model is where it changes.
+ * What comes with the Harness this model belongs to. Said near the picker
+ * rather than in documentation, because switching model is where it changes —
+ * and placed by whoever draws the composer, because it is a sentence and the
+ * chip row it would otherwise sit in has no room for one.
  */
-function HarnessNote({
-  groups,
-  harness
+export function HarnessNote({
+  catalog,
+  choice
 }: {
-  groups: ModelGroup[]
-  harness: HarnessId
+  catalog: ModelCatalog | null
+  choice: ModelChoice | null
 }): React.JSX.Element | null {
-  const group = groups.find((entry) => entry.harness === harness)
-  if (!group) return null
+  const groups = catalog?.groups ?? []
+  const group = groups.find((entry) => entry.harness === choice?.harness)
+  if (!group || !choice) return null
+  const harness = choice.harness
   return (
     <p className="text-2xs text-muted-foreground">
       {group.displayName} {HARNESS_DIFFERENCE[harness]}
