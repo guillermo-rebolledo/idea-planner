@@ -104,7 +104,12 @@ export function Composer({
           // Where the last Session went is where the next one probably goes.
           // Sessions are newest first, so the most recent one is the answer.
           const lastUsed = listedSessions.map((session) => session.projectRoot).find(available)
-          return lastUsed ?? listed.find((project) => project.available)?.root ?? ''
+          if (lastUsed) return lastUsed
+          // A lone Project is not a guess. Beyond that, nothing here can say
+          // which repository is about to be edited, so nothing is chosen: the
+          // headline renders a required picker instead (mockup 1c).
+          const usable = listed.filter((project) => project.available)
+          return usable.length === 1 ? (usable[0]?.root ?? '') : ''
         })
       })
       .catch(() => undefined)
@@ -145,10 +150,15 @@ export function Composer({
     messageRef.current?.focus()
   }, [])
 
-  // The most recent Session in the Project being sent to. Continuing one is
-  // usually better than starting a second Session about the same work.
+  // The most recent Sessions in the Project being sent to. Continuing one is
+  // usually better than starting a second Session about the same work — and
+  // they are the only suggestions offered, because they are the only ones the
+  // app actually knows anything about (mockup 1c).
   const continuable = useMemo(
-    () => sessions.find((session) => session.projectRoot === projectRoot && !session.archivedAt),
+    () =>
+      sessions
+        .filter((session) => session.projectRoot === projectRoot && !session.archivedAt)
+        .slice(0, RECENTS_OFFERED),
     [sessions, projectRoot]
   )
 
@@ -282,29 +292,17 @@ export function Composer({
         <HarnessNote catalog={models} choice={choice} />
       </div>
 
-      {/* Starters, not suggestions the app pretends to have thought of: two
-          openings that fit any Project, and the work already under way. */}
-      <ul className="flex flex-wrap justify-center gap-2">
-        {STARTERS.map((starter) => (
-          <li key={starter}>
-            <Starter
-              onClick={() => {
-                setMessage(starter)
-                messageRef.current?.focus()
-              }}
-            >
-              {starter}
-            </Starter>
-          </li>
-        ))}
-        {continuable && (
-          <li>
-            <Starter onClick={() => onOpenSession(continuable)}>
-              Continue “{continuable.title}”
-            </Starter>
-          </li>
-        )}
-      </ul>
+      {/* Only the work already under way — no filler the app pretends to
+          have thought of. Nothing to continue means no chips at all. */}
+      {continuable.length > 0 && (
+        <ul aria-label="Recent Sessions" className="flex flex-wrap justify-center gap-2">
+          {continuable.map((session) => (
+            <li key={session.id}>
+              <Starter onClick={() => onOpenSession(session)}>Continue “{session.title}”</Starter>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {projects.length === 0 && (
         <p role="status" className="text-center text-xs text-muted-foreground">
@@ -321,8 +319,8 @@ export function Composer({
   )
 }
 
-/** Openings that are true of any Project, so neither one is a guess. */
-const STARTERS = ['Fix a failing test', 'Explain this codebase']
+/** How many recent Sessions are worth a chip before they are just a list. */
+const RECENTS_OFFERED = 3
 
 function Starter({
   onClick,
@@ -347,6 +345,10 @@ function Starter({
  * word in the sentence that can be changed; the exact root travels with it,
  * on the control itself and again on every option, because "weather-app" is
  * a folder name and a Mac can hold several.
+ *
+ * When nothing could be inferred from context, the same control is a
+ * required picker: the sentence asks for a choice rather than presuming one,
+ * because presuming means real edits in a repository nobody named.
  */
 function ProjectChoice({
   projects,
@@ -362,11 +364,14 @@ function ProjectChoice({
   return (
     <Menu>
       <MenuTrigger
-        title={selected?.root ?? 'No Projects yet'}
+        title={selected?.root ?? (projects.length > 0 ? 'Choose a Project' : 'No Projects yet')}
         disabled={disabled || projects.length === 0}
-        className="rounded-sm font-medium underline decoration-muted-foreground decoration-dashed underline-offset-[6px] hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        className={cn(
+          'rounded-sm font-medium underline decoration-muted-foreground decoration-dashed underline-offset-[6px] hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
+          selected === undefined && 'text-muted-foreground'
+        )}
       >
-        {selected?.name ?? 'no Project yet'}
+        {selected ? selected.name : projects.length > 0 ? 'one of your Projects' : 'no Project yet'}
         {/* Spoken, not shown: the folder name is what a person recognises,
             and the root is what tells two folders of that name apart — so a
             screen reader hears both without the sentence carrying a path. */}

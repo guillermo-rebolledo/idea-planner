@@ -235,6 +235,14 @@ function registerIpc(): void {
     }
   )
 
+  // A folder the person dropped onto the window: already named by them, so
+  // no picker — but probed exactly like a picked one.
+  handleInvoke(
+    IPC_CHANNELS.offerProject,
+    z.string().min(1),
+    async (path): Promise<ChooseProjectResult> => addProject(path)
+  )
+
   handleInvoke(IPC_CHANNELS.listProjects, z.undefined(), async () =>
     projectViewSchema.array().parse(await coreClient.send({ type: 'project/list' }))
   )

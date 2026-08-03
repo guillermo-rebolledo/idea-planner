@@ -5,6 +5,7 @@
 export const IPC_CHANNELS = {
   bootState: 'shell:boot-state',
   chooseProject: 'project:choose',
+  offerProject: 'project:offer',
   listProjects: 'project:list',
   removeProject: 'project:remove',
   listSkills: 'skill:list',

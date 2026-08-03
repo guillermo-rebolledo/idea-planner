@@ -1,7 +1,14 @@
-import { useState } from 'react'
-import { firstProblem, harnessesReadyForASession, type ReadinessSnapshot } from '@shared/contract'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
+import {
+  gateProblem,
+  harnessesReadyForASession,
+  type HarnessReadiness,
+  type ReadinessSnapshot
+} from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
-import { ReadinessPanel } from '@renderer/components/Readiness'
+import { CopyableCommand, LoginShellConsent } from '@renderer/components/Readiness'
+import { cn } from '@renderer/lib/utils'
 
 interface LaunchGateProps {
   /** The snapshot the app already has, so the gate opens saying something. */
@@ -10,63 +17,162 @@ interface LaunchGateProps {
   onContinue: (snapshot: ReadinessSnapshot) => void
 }
 
+/** How often the gate re-probes on its own while it is on screen. */
+const AUTO_RECHECK_MS = 4000
+
 /**
- * What the app shows when it cannot do the one thing it is for. Every Run is
- * work done by a Harness this app drives; without one there is nothing here
- * but a window. That is the accepted deal, so it is said plainly and with the
- * repair in reach, rather than behind a surface that takes a message and then
- * does nothing with it.
+ * What the app shows when it cannot do the one thing it is for (mockup 1e).
+ * Every Run is work done by a Harness this app drives; without one there is
+ * nothing here but a window. Each Harness gets one row: a dot for how bad it
+ * is, the problem in a sentence, and the one command that repairs it — in the
+ * person's own terminal, never run by the app.
  *
- * Repairs happen in the person's own terminal. The way back in is a check, not
- * a restart: the panel re-probes on demand, and continuing stays their move
- * rather than the screen changing under them.
+ * The way back in is a check, not a restart: the gate re-probes on its own
+ * every few seconds, "Check again" exists for the person who just pressed
+ * enter in their terminal, and continuing stays their move rather than the
+ * screen changing under them.
  */
 export function LaunchGate({ snapshot, onContinue }: LaunchGateProps): React.JSX.Element {
   const [checked, setChecked] = useState(snapshot)
+  const [checking, setChecking] = useState(false)
+  // One probe at a time: the interval skips while any check is in flight, so
+  // a slow probe is never stacked under three more of itself.
+  const inFlightRef = useRef(false)
   const ready = harnessesReadyForASession(checked)
+
+  const check = useCallback((showBusy: boolean): void => {
+    if (inFlightRef.current) return
+    inFlightRef.current = true
+    if (showBusy) setChecking(true)
+    window.shell.refreshReadiness().then(
+      (fresh) => {
+        inFlightRef.current = false
+        setChecking(false)
+        setChecked(fresh)
+      },
+      () => {
+        // A failed probe leaves the last honest answer on screen; the next
+        // tick asks again.
+        inFlightRef.current = false
+        setChecking(false)
+      }
+    )
+  }, [])
+
+  useEffect(() => {
+    const id = setInterval(() => check(false), AUTO_RECHECK_MS)
+    return () => clearInterval(id)
+  }, [check])
 
   return (
     <div className="flex h-full flex-col">
       <header className="app-drag-region h-11 shrink-0" aria-hidden="true" />
-      <main className="flex min-h-0 flex-1 justify-center overflow-y-auto p-8">
-        <section className="w-full max-w-xl" aria-labelledby="launch-gate-title">
-          <h1 id="launch-gate-title" className="text-lg font-medium">
-            This app needs a coding agent to work
-          </h1>
-          <p className="mt-2 leading-relaxed text-muted-foreground">
-            Every Run is work done by a coding agent on your Mac — this app never does the thinking
-            itself. Nothing here can run a Session yet, and until something can there is nothing for
-            this app to do. Which Harnesses it can drive is below: not every one it checks for is
-            one it can work with today.
-          </p>
-          {/* Named rather than counted: "nothing is usable" is true of a
-              machine with nothing installed and of one signed out of both,
-              and those are different afternoons. */}
-          <ul className="mt-4 flex flex-col gap-1" aria-label="What is missing">
+      <main className="flex min-h-0 flex-1 justify-center overflow-y-auto p-8 pt-4">
+        <section
+          className="flex w-full max-w-xl flex-col gap-5"
+          aria-labelledby="launch-gate-title"
+        >
+          <div>
+            <h1 id="launch-gate-title" className="text-lg font-semibold tracking-tight">
+              No Harness can run a Session yet
+            </h1>
+            <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
+              This app drives coding agents already installed on your Mac. Fix either one below and
+              you&rsquo;re in.
+            </p>
+          </div>
+
+          <ul
+            className="flex flex-col divide-y divide-border rounded-lg border border-border"
+            aria-label="Harnesses"
+          >
             {checked.harnesses.map((harness) => (
-              <li key={harness.harness} className="text-sm">
-                <span className="font-medium">{harness.displayName}</span>{' '}
-                <span className="text-muted-foreground">— {firstProblem(harness)}</span>
-              </li>
+              <HarnessRow key={harness.harness} harness={harness} />
             ))}
           </ul>
-          <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
-            Repair it in your own terminal with the guidance below, then check again. Nothing is
-            installed, updated, or signed in for you, and you never have to restart the app.
-          </p>
-          <div className="mt-6">
-            <ReadinessPanel onSnapshot={setChecked} />
+
+          <div className="flex items-center gap-3">
+            <Button variant="secondary" disabled={checking} onClick={() => check(true)}>
+              <RefreshCw
+                aria-hidden="true"
+                className={cn('size-3.5', checking && 'animate-spin')}
+              />
+              Check again
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Also re-checks on its own every few seconds — no restart needed.
+            </p>
           </div>
+
           {ready.length > 0 && (
-            <div className="mt-6 flex items-center gap-3" role="status">
+            <div className="flex items-center gap-3" role="status">
               <Button onClick={() => onContinue(checked)}>Continue</Button>
               <p className="text-sm">
                 {ready.map((harness) => harness.displayName).join(' and ')} can run a Session now.
               </p>
             </div>
           )}
+
+          <LoginShellConsent
+            consent={checked.loginShellConsent}
+            disabled={checking}
+            onSet={(consent) => {
+              void window.shell.setLoginShellDiscovery(consent).then(setChecked, () => undefined)
+            }}
+          />
         </section>
       </main>
     </div>
+  )
+}
+
+/**
+ * One Harness, one verdict, one repair. The dot is red only when the tool
+ * itself is absent; everything short of that — wrong version, signed out — is
+ * amber, because the machine has the tool and the person is one command away.
+ */
+function HarnessRow({ harness }: { harness: HarnessReadiness }): React.JSX.Element {
+  const problem = gateProblem(harness)
+
+  return (
+    <li className="flex flex-col gap-2 px-4 py-3">
+      <div className="flex items-baseline gap-2.5">
+        <span
+          aria-hidden="true"
+          className={cn(
+            'size-1.75 shrink-0 self-center rounded-full',
+            problem === null
+              ? 'bg-positive'
+              : problem.severity === 'missing'
+                ? 'bg-status-failed'
+                : 'bg-status-blocked'
+          )}
+        />
+        <h2 className="text-sm font-semibold">{harness.displayName}</h2>
+        <span
+          className={cn(
+            'text-xs',
+            problem === null
+              ? 'text-positive'
+              : problem.severity === 'missing'
+                ? 'text-destructive'
+                : 'text-notice-foreground'
+          )}
+        >
+          {problem?.label ?? 'Ready'}
+        </span>
+        {harness.version && (
+          <span className="ml-auto font-mono text-2xs text-muted-foreground">
+            v{harness.version}
+          </span>
+        )}
+      </div>
+      {problem && (
+        <>
+          <p className="text-xs leading-relaxed text-muted-foreground">{problem.summary}</p>
+          {problem.command && <CopyableCommand command={problem.command} />}
+        </>
+      )}
+    </li>
   )
 }

@@ -140,6 +140,54 @@ export function firstProblem(harness: HarnessReadiness): string {
   return failing?.summary ?? harness.capabilities.developSession.summary
 }
 
+/**
+ * What the launch gate says about a Harness that cannot run a Session: how
+ * bad it is, in two words, and the one repair worth copying. `missing` means
+ * the executable itself is absent — the machine does not have the tool — and
+ * everything else is `blocked`: installed, but standing behind a version or a
+ * sign-in. The distinction is the dot's colour, so it is decided here where
+ * it can be tested, not in a class name.
+ */
+export interface GateProblem {
+  severity: 'missing' | 'blocked'
+  /** Two or three words beside the name, e.g. "Not installed". */
+  label: string
+  /** The full sentence from the check or capability that failed. */
+  summary: string
+  /** Copyable terminal remediation. The app never runs it. */
+  command: string | null
+}
+
+const GATE_LABELS: Record<Exclude<ReadinessDimension, 'skills'>, string> = {
+  executable: 'Not installed',
+  compatibility: 'Installed, version not supported',
+  authentication: 'Installed, not signed in'
+}
+
+export function gateProblem(harness: HarnessReadiness): GateProblem | null {
+  if (harness.capabilities.developSession.available) return null
+  const failing = harness.checks.find(
+    (check) =>
+      isGating(check.dimension) && (check.status === 'failed' || check.status === 'not-probed')
+  )
+  if (failing) {
+    return {
+      severity: failing.dimension === 'executable' ? 'missing' : 'blocked',
+      label: GATE_LABELS[failing.dimension as keyof typeof GATE_LABELS],
+      summary: failing.summary,
+      command: failing.command
+    }
+  }
+  // Every check passes and a Session still cannot run: the capability is the
+  // problem, and it carries its own explanation and repair.
+  return {
+    severity: 'blocked',
+    label: 'Installed, cannot run a Session yet',
+    summary: harness.capabilities.developSession.summary,
+    command: harness.capabilities.developSession.command
+  }
+}
+
 export const pathSourceSchema = z.enum(['login-shell', 'launchctl', 'inherited'])
 export type PathSource = z.infer<typeof pathSourceSchema>
 

@@ -61,6 +61,8 @@ export interface HarnessSpec {
   authProbe: AuthProbe
   /** Copyable sign-in command shown when authentication fails. Never run. */
   authRemediationCommand: string
+  /** Copyable install command shown when the executable is missing. Never run. */
+  installCommand: string
   /** Home-relative root of the harness's documented skill location. */
   skillsRoot: string
   installLink: RemediationLink
@@ -82,6 +84,7 @@ export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
     untestedFrom: '0.147.0',
     authProbe: { kind: 'exit-code', args: ['login', 'status'] },
     authRemediationCommand: 'codex login',
+    installCommand: 'npm install -g @openai/codex',
     skillsRoot: '.agents/skills',
     installLink: { label: 'Install Codex CLI', url: 'https://developers.openai.com/codex/cli' },
     authLink: { label: 'Codex sign-in guidance', url: 'https://developers.openai.com/codex/cli' }
@@ -104,6 +107,7 @@ export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
       args: ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose']
     },
     authRemediationCommand: 'claude /login',
+    installCommand: 'npm install -g @anthropic-ai/claude-code',
     skillsRoot: '.claude/skills',
     installLink: { label: 'Install Claude Code', url: 'https://code.claude.com/docs/en/overview' },
     authLink: { label: 'Claude Code sign-in guidance', url: 'https://code.claude.com/docs/en/iam' }
@@ -444,6 +448,7 @@ export async function probeHarness(
           status: 'failed',
           code: 'executable-missing',
           summary: `The ${spec.command} command was not found on this app’s PATH. Install it, or choose the executable yourself.`,
+          command: spec.installCommand,
           links: [spec.installLink]
         })
   }

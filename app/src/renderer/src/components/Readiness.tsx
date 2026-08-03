@@ -146,7 +146,13 @@ export function ReadinessPanel({ className, onSnapshot }: ReadinessPanelProps): 
         <HarnessCard key={harness.harness} harness={harness} busy={busy} run={run} />
       ))}
 
-      <LoginShellConsent snapshot={snapshot} busy={busy} run={run} />
+      <LoginShellConsent
+        consent={snapshot.loginShellConsent}
+        disabled={busy !== null}
+        onSet={(consent) =>
+          run({ kind: 'login-shell' }, () => window.shell.setLoginShellDiscovery(consent))
+        }
+      />
     </div>
   )
 }
@@ -308,7 +314,9 @@ function CheckRow({ check }: { check: ReadinessCheck }): React.JSX.Element {
         <span className="ml-auto text-xs text-muted-foreground">{statusLabel}</span>
       </div>
       <p className="pl-5.5 text-xs leading-relaxed text-muted-foreground">{check.summary}</p>
-      {check.command && check.status !== 'ready' && <CopyableCommand command={check.command} />}
+      {check.command && check.status !== 'ready' && (
+        <CopyableCommand command={check.command} className="ml-5.5" />
+      )}
       {check.links.length > 0 && check.status !== 'ready' && (
         <p className="pl-5.5 text-xs text-muted-foreground">
           {check.links.map((link, index) => (
@@ -329,7 +337,13 @@ function CheckRow({ check }: { check: ReadinessCheck }): React.JSX.Element {
   )
 }
 
-function CopyableCommand({ command }: { command: string }): React.JSX.Element {
+export function CopyableCommand({
+  command,
+  className
+}: {
+  command: string
+  className?: string
+}): React.JSX.Element {
   const [copied, setCopied] = useState(false)
 
   async function copy(): Promise<void> {
@@ -343,7 +357,12 @@ function CopyableCommand({ command }: { command: string }): React.JSX.Element {
   }
 
   return (
-    <div className="ml-5.5 flex items-center gap-1.5 rounded-md border border-border bg-muted/60 px-2 py-1">
+    <div
+      className={cn(
+        'flex items-center gap-1.5 rounded-md border border-border bg-muted/60 px-2 py-1',
+        className
+      )}
+    >
       <code className="flex-1 font-mono text-xs break-all select-text">{command}</code>
       <Button
         variant="ghost"
@@ -361,14 +380,14 @@ function CopyableCommand({ command }: { command: string }): React.JSX.Element {
   )
 }
 
-function LoginShellConsent({
-  snapshot,
-  busy,
-  run
+export function LoginShellConsent({
+  consent,
+  disabled,
+  onSet
 }: {
-  snapshot: ReadinessSnapshot
-  busy: BusyAction | null
-  run: (action: BusyAction, work: () => Promise<ReadinessSnapshot | null>) => void
+  consent: boolean
+  disabled: boolean
+  onSet: (consent: boolean) => void
 }): React.JSX.Element {
   return (
     <section
@@ -382,29 +401,9 @@ function LoginShellConsent({
         five seconds. Nothing else is read or changed, and you can turn it off at any time.
       </p>
       <div className="mt-2">
-        {snapshot.loginShellConsent ? (
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={busy !== null}
-            onClick={() =>
-              run({ kind: 'login-shell' }, () => window.shell.setLoginShellDiscovery(false))
-            }
-          >
-            Revoke login-shell discovery
-          </Button>
-        ) : (
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={busy !== null}
-            onClick={() =>
-              run({ kind: 'login-shell' }, () => window.shell.setLoginShellDiscovery(true))
-            }
-          >
-            Allow login-shell discovery
-          </Button>
-        )}
+        <Button variant="secondary" size="sm" disabled={disabled} onClick={() => onSet(!consent)}>
+          {consent ? 'Revoke login-shell discovery' : 'Allow login-shell discovery'}
+        </Button>
       </div>
     </section>
   )

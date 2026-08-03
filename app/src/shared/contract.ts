@@ -365,6 +365,17 @@ export interface ShellApi {
    * decides whether it qualifies and what its root is.
    */
   chooseProject(): Promise<ChooseProjectResult>
+  /**
+   * Offers a folder the person already named — dropped onto the window — as
+   * a Project. The same probing as `chooseProject`, without the picker.
+   */
+  offerProject(path: string): Promise<ChooseProjectResult>
+  /**
+   * The absolute path of a file the person dragged in. Synchronous and local
+   * to Preload: the path never exists in the Renderer until the person hands
+   * the app the file that carries it.
+   */
+  pathForFile(file: File): string
   listProjects(): Promise<ProjectView[]>
   /**
    * Forgets the Project, and with it the Standing Approvals it owned. The

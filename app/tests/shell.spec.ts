@@ -95,11 +95,10 @@ async function installFakeSkills(root: string): Promise<void> {
  * a root the person did not pick and the app confirms it first.
  */
 async function completeOnboarding(page: Page): Promise<void> {
-  const projects = page.getByRole('region', { name: 'Projects' })
-  await projects.getByRole('button', { name: 'Add Project' }).click()
-  await projects.getByRole('alert').getByRole('button', { name: 'Add this Project' }).click()
-  await expect(projects.getByText(basename(sandbox.projectDir), { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'Continue', exact: true }).click()
+  await page.getByRole('button', { name: 'Choose a folder…' }).click()
+  await page.getByRole('alert').getByRole('button', { name: 'Add this Project' }).click()
+  const addedCard = page.getByRole('status').filter({ hasText: basename(sandbox.projectDir) })
+  await addedCard.getByRole('button', { name: 'Continue', exact: true }).click()
 }
 
 /** Typing `/` offers what is installed; picking one is for that message only. */
@@ -184,11 +183,13 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'listSessions',
       'listSkills',
       'listStandingApprovals',
+      'offerProject',
       'onConversationEvent',
       'onThemeChanged',
       'onUndoShortcut',
       'openExternalLink',
       'openInEditor',
+      'pathForFile',
       'queryMailbox',
       'refreshReadiness',
       'removeProject',
@@ -279,17 +280,18 @@ test('home is a new chat, and a Project row opens one already bound to it', asyn
       page.getByRole('log', { name: 'Conversation history' }).getByText(/^Run · /)
     ).toBeVisible()
 
-    // New Session always returns to the launch surface, where the starters
-    // fill the field rather than sending anything on the person's behalf.
+    // New Session always returns to the launch surface. The only suggestion
+    // chips are the Project's own recent Sessions — no generic filler the
+    // app pretends to have thought of.
     await page.getByRole('button', { name: 'New Session', exact: true }).click()
     const fresh = page.getByRole('form', { name: 'New chat' })
     await expect(fresh).toBeVisible()
-    await fresh.getByRole('button', { name: 'Fix a failing test' }).click()
-    await expect(fresh.getByLabel('Message')).toHaveValue('Fix a failing test')
+    const recents = fresh.getByRole('list', { name: 'Recent Sessions' })
+    await expect(recents.getByRole('button')).toHaveCount(1)
 
     // The work already under way is offered by name, so continuing it is as
     // easy as starting a second Session about the same thing.
-    await fresh.getByRole('button', { name: 'Continue “Tidy the imports”' }).click()
+    await recents.getByRole('button', { name: 'Continue “Tidy the imports”' }).click()
     await expect(page.getByRole('heading', { name: 'Tidy the imports' })).toBeVisible()
 
     // So does the button on a Project header, already bound to that Project.
@@ -855,29 +857,32 @@ test('deleting a Session forgets it and leaves the Project alone', async () => {
 
 test('a person adds a Project and a plain folder is refused with an offer to set up git', async () => {
   await writeFile(join(sandbox.plainDir, 'notes.md'), 'not under git yet')
+  await mkdir(join(sandbox.projectDir, 'src', 'deep'), { recursive: true })
 
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
 
-    const projects = page.getByRole('region', { name: 'Projects' })
-    await expect(projects.getByText('No Projects yet', { exact: false })).toBeVisible()
+    // The git requirement is said before any folder is chosen, not discovered
+    // on refusal: git is the only undo for the agent's edits.
+    await page.getByRole('heading', { name: 'Add your first Project' }).waitFor()
+    await expect(page.getByText('Must be a git repository', { exact: false })).toBeVisible()
 
     // A folder under git becomes a Project. The sandbox reaches it through a
     // symlink, so git names a root the person did not pick, and the app says so
     // before storing anything.
-    await projects.getByRole('button', { name: 'Add Project' }).click()
-    const symlinked = projects.getByRole('alert')
+    await page.getByRole('button', { name: 'Choose a folder…' }).click()
+    const symlinked = page.getByRole('alert')
     await expect(
       symlinked.getByText(await realpath(sandbox.projectDir), { exact: true })
     ).toBeVisible()
     await symlinked.getByRole('button', { name: 'Add this Project' }).click()
-    await expect(projects.getByText(basename(sandbox.projectDir), { exact: true })).toBeVisible()
+    await expect(page.getByText(basename(sandbox.projectDir), { exact: true })).toBeVisible()
 
     // A folder that is not under git is refused, naming the exact path, and
     // nothing is written until the offer is accepted.
-    await projects.getByRole('button', { name: 'Add Project' }).click()
-    const refusal = projects.getByRole('alert')
+    await page.getByRole('button', { name: 'Choose a folder…' }).click()
+    const refusal = page.getByRole('alert')
     await expect(refusal.getByText(sandbox.plainDir)).toBeVisible()
     await expect(refusal.getByText('git init')).toBeVisible()
     expect(await readdir(sandbox.plainDir)).not.toContain('.git')
@@ -885,15 +890,14 @@ test('a person adds a Project and a plain folder is refused with an offer to set
     // Accepting it runs the one Git mutation the app performs, and the folder
     // becomes a Project.
     await refusal.getByRole('button', { name: 'Set up git here' }).click()
-    await expect(projects.getByText(basename(sandbox.plainDir), { exact: true })).toBeVisible()
+    await expect(page.getByText(basename(sandbox.plainDir), { exact: true })).toBeVisible()
     expect(await readdir(sandbox.plainDir)).toContain('.git')
 
     // Pointing inside a Project adds the Project, but says so first: git
     // resolves a root the person did not pick, and adding it silently would
     // surprise them.
-    await mkdir(join(sandbox.projectDir, 'src', 'deep'), { recursive: true })
-    await projects.getByRole('button', { name: 'Add Project' }).click()
-    const confirmation = projects.getByRole('alert')
+    await page.getByRole('button', { name: 'Choose a folder…' }).click()
+    const confirmation = page.getByRole('alert')
     await expect(
       confirmation.getByText(join(sandbox.projectDir, 'src', 'deep'), { exact: true })
     ).toBeVisible()
@@ -901,16 +905,33 @@ test('a person adds a Project and a plain folder is refused with an offer to set
     await expect(
       confirmation.getByText(await realpath(sandbox.projectDir), { exact: true })
     ).toBeVisible()
-    await expect(projects.getByText(basename(sandbox.projectDir), { exact: true })).toHaveCount(1)
     await confirmation.getByRole('button', { name: 'Add this Project' }).click()
-    // The same Project, so it is still listed once.
-    await expect(projects.getByText(basename(sandbox.projectDir), { exact: true })).toHaveCount(1)
+
+    // Onboarding ends with the latest addition; both Projects made it in, and
+    // the same root twice is still one Project.
+    await page.getByRole('status').getByRole('button', { name: 'Continue', exact: true }).click()
+    const inbox = page.getByRole('navigation', { name: 'Session inbox' })
+    await expect(inbox.getByText(basename(sandbox.projectDir), { exact: true })).toHaveCount(1)
+    await expect(inbox.getByText(basename(sandbox.plainDir), { exact: true })).toHaveCount(1)
+
+    // Two Projects and no history: nothing can say which repository is about
+    // to be edited, so the headline is a required picker and nothing can be
+    // sent until it is answered.
+    const composer = page.getByRole('form', { name: 'New chat' })
+    await expect(composer.getByRole('button', { name: 'Project' })).toContainText(
+      'one of your Projects'
+    )
+    await composer.getByLabel('Message').fill('Anything at all')
+    await expect(composer.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
+    await composer.getByRole('button', { name: 'Project' }).click()
+    await page.getByRole('menuitem', { name: basename(sandbox.plainDir) }).click()
+    await expect(composer.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
 
     // Removing a Project forgets it and leaves the directory alone.
-    await projects
-      .getByRole('button', { name: `Remove “${basename(sandbox.plainDir)}” from the app` })
-      .click()
-    await expect(projects.getByText(basename(sandbox.plainDir), { exact: true })).toHaveCount(0)
+    const plainGroup = inbox.getByRole('region', { name: basename(sandbox.plainDir) })
+    await plainGroup.getByRole('button', { name: /^More for/ }).click()
+    await page.getByRole('menuitem', { name: 'Remove Project' }).click()
+    await expect(inbox.getByText(basename(sandbox.plainDir), { exact: true })).toHaveCount(0)
     expect(await readdir(sandbox.plainDir)).toContain('notes.md')
   } finally {
     await app.close()
@@ -1038,20 +1059,24 @@ test('with no usable Harness the app says so and opens as soon as one is repaire
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
-    await page.getByRole('heading', { name: 'This app needs a coding agent to work' }).waitFor()
+    await page.getByRole('heading', { name: 'No Harness can run a Session yet' }).waitFor()
 
-    // Not a bare refusal: it says which Harness is missing what.
-    const missing = page.getByRole('list', { name: 'What is missing' })
-    await expect(missing.getByRole('listitem')).toHaveCount(2)
-    // Each names its own first problem rather than a shared refusal.
-    await expect(missing.getByText('claude command was not found', { exact: false })).toBeVisible()
-    await expect(missing.getByText('codex command was not found', { exact: false })).toBeVisible()
+    // Not a bare refusal: one row per Harness, each with its own problem and
+    // the one command that repairs it, copyable rather than run.
+    const harnesses = page.getByRole('list', { name: 'Harnesses' })
+    await expect(harnesses.getByRole('listitem')).toHaveCount(2)
+    await expect(harnesses.getByText('Not installed', { exact: true })).toHaveCount(2)
+    await expect(
+      harnesses.getByText('claude command was not found', { exact: false })
+    ).toBeVisible()
+    await expect(harnesses.getByText('codex command was not found', { exact: false })).toBeVisible()
+    await expect(harnesses.getByRole('button', { name: /^Copy command:/ })).toHaveCount(2)
     // And onboarding is not reachable behind it.
     await expect(page.getByRole('heading', { name: 'Add your first Project' })).toHaveCount(0)
 
-    // Repaired in the person's own terminal, then re-checked — no restart.
+    // Repaired in the person's own terminal, and the gate notices by itself:
+    // no click, no restart — the re-check runs every few seconds.
     await installFakeHarness('claude', READY_CLAUDE_FAKE)
-    await page.getByRole('button', { name: 'Check again', exact: true }).click()
     await page.getByRole('button', { name: 'Continue', exact: true }).click()
 
     await page.getByRole('heading', { name: 'Add your first Project' }).waitFor()

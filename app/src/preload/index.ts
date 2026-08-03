@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC_CHANNELS } from '@shared/channels'
 import type { ConversationStreamEvent, ShellApi, ThemeState } from '@shared/contract'
 
@@ -10,6 +10,8 @@ import type { ConversationStreamEvent, ShellApi, ThemeState } from '@shared/cont
 const api: ShellApi = {
   getBootState: () => ipcRenderer.invoke(IPC_CHANNELS.bootState),
   chooseProject: () => ipcRenderer.invoke(IPC_CHANNELS.chooseProject),
+  offerProject: (path) => ipcRenderer.invoke(IPC_CHANNELS.offerProject, path),
+  pathForFile: (file) => webUtils.getPathForFile(file),
   listProjects: () => ipcRenderer.invoke(IPC_CHANNELS.listProjects),
   removeProject: (root) => ipcRenderer.invoke(IPC_CHANNELS.removeProject, root),
   listSkills: (input) => ipcRenderer.invoke(IPC_CHANNELS.listSkills, input),
