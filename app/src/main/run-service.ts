@@ -460,7 +460,8 @@ export class RunService {
       latestHarnessBoundary.skill === input.skill &&
       latestHarnessBoundary.model === input.model &&
       (input.harness !== 'claude' ||
-        (await claudeThreadExists(this.deps.homeDirectory, checkout, savedThread)))
+        (await claudeThreadExists(this.deps.homeDirectory, checkout, savedThread))) &&
+      (input.harness !== 'codex' || (await codexThreadExists(this.deps.homeDirectory, savedThread)))
     const restoreFromHistory =
       switchedHarness || (latestHarness === input.harness && !threadCompatible)
     const handoff = deterministicHandoff(conversation, input.skill ?? null)
@@ -1409,6 +1410,36 @@ function deterministicHandoff(conversation: ConversationSnapshot, skill: string 
     .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.text}`)
     .join('\n')
   return [...(skill ? [`Skill: ${skill}`] : []), 'Recent turns:', recent || '(none)'].join('\n')
+}
+
+/**
+ * Whether Codex still holds the rollout behind a saved Harness Thread. Codex
+ * refuses to resume a thread whose rollout file is gone — "no rollout found
+ * for thread id …" — and retrying the same id can never succeed, so a thread
+ * that is not on disk takes the restore-from-history path instead of failing
+ * the Run. Rollouts live under `sessions/YYYY/MM/DD/rollout-…-<threadId>.jsonl`;
+ * checked on disk like Claude's, because the app-server is not running yet.
+ */
+async function codexThreadExists(homeDirectory: string, threadId: string): Promise<boolean> {
+  const sessions = join(homeDirectory, '.codex', 'sessions')
+  const suffix = `-${threadId}.jsonl`
+  const list = (directory: string): Promise<{ name: string; isDirectory(): boolean }[]> =>
+    readdir(directory, { withFileTypes: true }).then(
+      (entries) => entries,
+      () => []
+    )
+  for (const year of await list(sessions)) {
+    if (!year.isDirectory()) continue
+    for (const month of await list(join(sessions, year.name))) {
+      if (!month.isDirectory()) continue
+      for (const day of await list(join(sessions, year.name, month.name))) {
+        if (!day.isDirectory()) continue
+        const files = await list(join(sessions, year.name, month.name, day.name))
+        if (files.some((file) => !file.isDirectory() && file.name.endsWith(suffix))) return true
+      }
+    }
+  }
+  return false
 }
 
 async function claudeThreadExists(

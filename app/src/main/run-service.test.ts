@@ -1051,6 +1051,66 @@ describe('Codex on the app-server protocol', () => {
     return { ...startInput(), harness: 'codex' as const, skill: 'grilling', model: 'gpt-5-codex' }
   }
 
+  /** A Conversation whose last Codex Run matches what codexInput() asks for. */
+  function codexContinuity(core: FakeCore): void {
+    core.conversation = {
+      ...core.conversation,
+      harnessThreads: { codex: 'saved-thread' },
+      entries: [
+        {
+          kind: 'boundary',
+          id: 'boundary:old:started',
+          at: '2026-07-31T12:00:00.000Z',
+          runId: 'old',
+          boundary: 'run-started',
+          summary: 'Grilling via Codex',
+          submissionId: 'old-submission',
+          recovery: null,
+          harness: 'codex',
+          skill: 'grilling',
+          model: 'gpt-5-codex'
+        }
+      ]
+    }
+  }
+
+  it('resumes a Codex Harness Thread whose rollout is still on disk', async () => {
+    const root = await readyHarnessRoot('run-codex-resume-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    codexContinuity(core)
+    const day = join(root, '.codex', 'sessions', '2026', '08', '03')
+    await mkdir(day, { recursive: true })
+    await writeFile(join(day, 'rollout-2026-08-03T10-00-00-saved-thread.jsonl'), '{}\n')
+    const service = new RunService(codexDeps(root, broker, core))
+
+    await service.start(codexInput())
+
+    const open = (core.send.mock.calls as [{ type: string; launch?: unknown }][]).find(
+      ([command]) => command.type === 'harness/open'
+    )?.[0]
+    expect(open?.launch).toMatchObject({ resumeThreadId: 'saved-thread' })
+  })
+
+  it('hands off local history instead of resuming a Codex thread whose rollout is gone', async () => {
+    const root = await readyHarnessRoot('run-codex-no-rollout-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    codexContinuity(core)
+    const service = new RunService(codexDeps(root, broker, core))
+
+    await service.start(codexInput())
+
+    // Codex answers a resume for a thread it no longer holds with "no rollout
+    // found for thread id …", and resending can never succeed — so a thread
+    // that is not on disk is not resumed at all.
+    const open = (core.send.mock.calls as [{ type: string; launch?: { prompt?: string } }][]).find(
+      ([command]) => command.type === 'harness/open'
+    )?.[0]
+    expect(open?.launch).not.toHaveProperty('resumeThreadId')
+    expect(open?.launch?.prompt).toContain('Deterministic handoff')
+  })
+
   it('launches the app-server and carries the Run over the protocol, not argv', async () => {
     const root = await readyHarnessRoot('run-codex-appserver-')
     const broker = fakeBroker()
