@@ -475,13 +475,11 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
           </div>
         )}
 
-        <main className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {surface.kind === 'session' ? (
-            <SessionDetail
+            <Conversation
+              key={surface.session.id}
               session={surface.session}
-              onTogglePinned={(session) => void togglePinned(session)}
-              onSetArchived={(session, archived) => void setArchived(session, archived)}
-              onDelete={setDeleting}
               onOpenFile={(path) => {
                 setFilesOpen(true)
                 setFocusedFile(path)
@@ -1075,79 +1073,5 @@ function CompactRail({
         ))}
       </ul>
     </nav>
-  )
-}
-
-function SessionDetail({
-  session,
-  onTogglePinned,
-  onSetArchived,
-  onDelete,
-  onOpenFile
-}: {
-  session: SessionSummary
-  onTogglePinned: (session: SessionSummary) => void
-  onSetArchived: (session: SessionSummary, archived: boolean) => void
-  onDelete: (session: SessionSummary) => void
-  onOpenFile: (path: string) => void
-}): React.JSX.Element {
-  const savedAt = new Date(session.updatedAt)
-  const archived = session.archivedAt !== null
-  return (
-    <article className="mx-auto w-full max-w-xl p-6" aria-label={session.title}>
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span>
-          Started on{' '}
-          {savedAt.toLocaleDateString(undefined, {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric'
-          })}
-        </span>
-        {session.pinned && (
-          <span className="flex items-center gap-1 text-primary">
-            <Pin aria-hidden="true" className="size-3" /> Pinned
-          </span>
-        )}
-        {archived && (
-          <span className="flex items-center gap-1">
-            <Archive aria-hidden="true" className="size-3" /> Archived
-          </span>
-        )}
-      </div>
-      {/* The title itself lives in the title bar, stated once. */}
-      {/* The Project this Session works in, named exactly. */}
-      <p className="mt-4 rounded-md border border-border bg-surface p-3 font-mono text-xs break-all text-muted-foreground select-text">
-        {session.projectRoot}
-      </p>
-      <Conversation key={session.id} session={session} onOpenFile={onOpenFile} />
-      <div className="mt-4 flex items-center gap-2">
-        <Button variant="secondary" size="sm" onClick={() => onTogglePinned(session)}>
-          {session.pinned ? (
-            <>
-              <PinOff aria-hidden="true" className="size-3.5" /> Unpin
-            </>
-          ) : (
-            <>
-              <Pin aria-hidden="true" className="size-3.5" /> Pin
-            </>
-          )}
-        </Button>
-        <Button variant="secondary" size="sm" onClick={() => onSetArchived(session, !archived)}>
-          {archived ? (
-            <>
-              <Archive aria-hidden="true" className="size-3.5" /> Restore
-            </>
-          ) : (
-            <>
-              <Archive aria-hidden="true" className="size-3.5" /> Archive
-            </>
-          )}
-        </Button>
-        <Button variant="secondary" size="sm" onClick={() => onDelete(session)}>
-          <Trash2 aria-hidden="true" className="size-3.5" /> Delete…
-        </Button>
-      </div>
-    </article>
   )
 }

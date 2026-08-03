@@ -276,7 +276,7 @@ test('home is a new chat, and a Project row opens one already bound to it', asyn
     // And sending starts the work, not just the record: the message that
     // created the Session is answered by its first Run.
     await expect(
-      page.getByRole('list', { name: 'Conversation history' }).getByText(/^Run · /)
+      page.getByRole('log', { name: 'Conversation history' }).getByText(/^Run · /)
     ).toBeVisible()
 
     // New Session always returns to the launch surface, where the starters
@@ -390,6 +390,69 @@ const BUSY_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
   -p|--print) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
 esac`
+
+/**
+ * A Harness that keeps talking: enough prose to overflow the transcript, sent
+ * a line at a time, so a reader can be somewhere else while it arrives.
+ */
+const CHATTY_CLAUDE_FAKE = `case "$1" in
+  --version) echo "2.1.220 (Claude Code)"; exit 0;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  --print)
+    echo '{"type":"system","subtype":"init","session_id":"thread-1"}'
+    i=0
+    while [ $i -lt 24 ]; do
+      echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_'$i'","type":"message","role":"assistant","content":[{"type":"text","text":"Paragraph '$i' of the answer, long enough to take a line of its own in the transcript."}]},"session_id":"thread-1"}'
+      i=$((i+1))
+      /bin/sleep 0.2
+    done
+    /bin/sleep 2
+    exit 0;;
+esac`
+
+test('a streamed reply never moves a reader who scrolled away, and offers the way back', async () => {
+  await installFakeHarness('claude', CHATTY_CLAUDE_FAKE)
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Say a lot')
+
+    const transcript = page.getByRole('log', { name: 'Conversation history' })
+    await expect(transcript.getByText(/Paragraph 0 of the answer/)).toBeVisible()
+
+    // Only once the reply has outgrown the viewport is there anywhere to
+    // scroll away to. Until then the reader is at the live edge by definition.
+    const viewport = page.getByRole('region', { name: 'Conversation' })
+    await expect
+      .poll(() => viewport.evaluate((element) => element.scrollHeight - element.clientHeight))
+      .toBeGreaterThan(200)
+
+    // The reader goes back to read something, while the reply keeps arriving.
+    // A wheel, not a scripted scrollTop: releasing the live edge is something
+    // the reader does, and the scroller is right to ignore anything else.
+    const top = (): Promise<number> => viewport.evaluate((element) => element.scrollTop)
+    const height = (): Promise<number> => viewport.evaluate((element) => element.scrollHeight)
+    await viewport.hover()
+    await page.mouse.wheel(0, -400)
+    await expect.poll(top).toBeLessThan(200)
+    const held = await top()
+    const heightThen = await height()
+
+    // Waiting on the reply, not on the clock: the transcript grows by a
+    // screenful and the reader stays exactly where they were.
+    await expect.poll(height).toBeGreaterThan(heightThen + 200)
+    expect(await top(), 'the transcript moved while the reader was reading').toBe(held)
+
+    // And there is a way back to the live edge, which resumes following.
+    const jump = page.getByRole('button', { name: 'Jump to the latest message' })
+    await expect(jump).toBeVisible()
+    await jump.click()
+    await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(held)
+  } finally {
+    await app.close()
+  }
+})
 
 test('the sidebar groups by Project, and status is a dot that never moves a row', async () => {
   await installFakeHarness('claude', BUSY_CLAUDE_FAKE)
@@ -505,7 +568,7 @@ test('a Session says which files it changed, and offers nothing to accept', asyn
 
     // The Conversation marks the Run with a quiet divider, and the Run's
     // activity collapses to one line when it finishes (mock 2d).
-    const history = page.getByRole('list', { name: 'Conversation history' })
+    const history = page.getByRole('log', { name: 'Conversation history' })
     await expect(history.getByText(/^Run · /).last()).toBeVisible()
     const block = history.getByLabel('Run activity').last()
     await expect(block).toContainText('Edited 1 file')
@@ -746,7 +809,7 @@ test('one picker chooses the model, and with it the Harness that runs it', async
       .fill('Choose the thinking')
     await page.getByRole('button', { name: 'Send' }).click()
     const boundary = page
-      .getByRole('list', { name: 'Conversation history' })
+      .getByRole('log', { name: 'Conversation history' })
       .getByText(/^Run · /)
       .last()
     await expect(boundary).toContainText('gpt-5.6-sol')
