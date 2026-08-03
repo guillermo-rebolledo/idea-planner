@@ -60,6 +60,27 @@ describe('Sessions', () => {
     expect(session.title).toBe('Rename the thing')
   })
 
+  it('works on the Project’s own working copy unless told otherwise', async () => {
+    const session = await core.startSession({ projectRoot, message: 'Fix the failing build' })
+
+    expect(session.checkout).toEqual({ kind: 'local' })
+  })
+
+  it('keeps the isolated Checkout it was created with', async () => {
+    const worktree = join(projectRoot, '.worktrees', 'fix-location-crash')
+    const session = await core.startSession({
+      projectRoot,
+      message: 'Fix the location crash',
+      checkout: { kind: 'worktree', path: worktree }
+    })
+
+    expect(session.checkout).toEqual({ kind: 'worktree', path: worktree })
+    // Fixed at creation, and durable: the next read still says so.
+    await expect(core.listSessions()).resolves.toMatchObject([
+      { checkout: { kind: 'worktree', path: worktree } }
+    ])
+  })
+
   it('leaves no Session behind when the message cannot be accepted', async () => {
     await expect(core.startSession({ projectRoot, message: '' })).rejects.toMatchObject({
       code: 'INVALID_INPUT'

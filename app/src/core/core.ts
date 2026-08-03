@@ -4,6 +4,7 @@ import { basename, join } from 'node:path'
 import { Cause, Context, Effect, Exit, Layer } from 'effect'
 import { z } from 'zod'
 import {
+  checkoutDirectory,
   CoreError,
   startSessionInputSchema,
   type MailboxCoreQuery,
@@ -179,7 +180,8 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     directoryFor: (sessionId) => sessions.directoryFor(sessionId),
     // A Session's Checkout, so durable content can be kept relative to it
     // rather than carrying an absolute path out of the person's machine.
-    checkoutFor: (sessionId) => sessions.get(sessionId).pipe(Effect.map((s) => s.projectRoot)),
+    checkoutFor: (sessionId) =>
+      sessions.get(sessionId).pipe(Effect.map((s) => checkoutDirectory(s.projectRoot, s.checkout))),
     clock: Effect.sync(now)
   })
   // Serializes durable Run writes, so a read-modify-write cannot interleave.
@@ -205,6 +207,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       }
       const session = yield* sessions.start({
         projectRoot: input.projectRoot,
+        checkout: input.checkout,
         title: suggestSessionTitle(input.message)
       })
       // The message is what created the Session, so a Session that exists

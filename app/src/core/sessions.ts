@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { Effect } from 'effect'
 import { z } from 'zod'
 import { CoreError } from '@shared/contract'
-import { sessionSummarySchema, type SessionSummary } from '@shared/contract'
+import { sessionSummarySchema, type Checkout, type SessionSummary } from '@shared/contract'
 import { writeJsonAtomic } from './atomic'
 
 const SESSIONS_DIR = 'sessions'
@@ -34,13 +34,18 @@ export class SessionStore {
     return this.root().pipe(Effect.map((root) => join(root, id)))
   }
 
-  start(input: { projectRoot: string; title: string }): Effect.Effect<SessionSummary, CoreError> {
+  start(input: {
+    projectRoot: string
+    checkout: Checkout
+    title: string
+  }): Effect.Effect<SessionSummary, CoreError> {
     return this.writeLock.withPermits(1)(
       Effect.gen(this, function* () {
         const created = this.now().toISOString()
         const session: SessionSummary = {
           id: this.nextId(),
           projectRoot: input.projectRoot,
+          checkout: input.checkout,
           title: input.title,
           createdAt: created,
           updatedAt: created,

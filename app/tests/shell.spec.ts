@@ -171,10 +171,12 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'deleteSession',
       'developSession',
       'getBootState',
+      'getCheckoutFacts',
       'getConversation',
       'getReadiness',
       'initializeProject',
       'listDamagedSessions',
+      'listEditors',
       'listModels',
       'listProjects',
       'listRuns',
@@ -185,6 +187,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'onThemeChanged',
       'onUndoShortcut',
       'openExternalLink',
+      'openInEditor',
       'queryMailbox',
       'refreshReadiness',
       'removeProject',
@@ -454,24 +457,37 @@ test('a Session says which files it changed, and offers nothing to accept', asyn
     await completeOnboarding(page)
     await startSession(page, 'Change the greeting')
 
-    const panel = page.getByRole('region', { name: 'Files this Session changed' })
-    // Nothing has been developed yet, so there is nothing to summarise.
+    // The panel is toggled from the title-bar diff numbers, and until they
+    // are asked for they stay a quiet +0 −0.
+    const chip = page.getByRole('button', { name: /Files this Session changed/ })
+    const panel = page.getByRole('complementary', { name: 'Files this Session changed' })
+    await expect(chip).toContainText('+0')
     await expect(panel).toHaveCount(0)
 
     await page.getByLabel('Your message').fill('Go on then')
     await page.getByRole('button', { name: 'Send', exact: true }).click()
 
-    await expect(panel.getByText('greeting.ts')).toBeVisible()
-    await expect(panel.getByText('+1')).toBeVisible()
-    await expect(panel.getByText('−1')).toBeVisible()
+    // The title bar adds the Run's change up live, without the panel open.
+    await expect(chip).toContainText('+1')
+    await expect(chip).toContainText('−1')
+
+    await chip.click()
+    const row = panel.getByRole('button', { name: /greeting\.ts/ })
+    await expect(row).toBeVisible()
+    await expect(row).toContainText('+1')
+    await expect(row).toContainText('−1')
     // The person's own dirty file is not the agent's work.
     await expect(panel.getByText('mine.ts')).toHaveCount(0)
 
     // Opening it shows the diff, and there is nothing to accept or reject:
     // the change is already on disk and git is the only undo.
-    await panel.getByRole('button', { name: 'greeting.ts', exact: false }).click()
+    await row.click()
     await expect(panel.getByText('+export const greeting = "goodbye"')).toBeVisible()
     await expect(panel.getByRole('button', { name: /accept|reject|revert|undo/i })).toHaveCount(0)
+
+    // The diff numbers toggle: the same chip puts the panel away.
+    await chip.click()
+    await expect(panel).toHaveCount(0)
   } finally {
     await app.close()
   }
@@ -508,17 +524,105 @@ test('a change nobody reported is still listed, and says nobody reported it', as
     await page.getByLabel('Your message').fill('Go on then')
     await page.getByRole('button', { name: 'Send', exact: true }).click()
 
-    const panel = page.getByRole('region', { name: 'Files this Session changed' })
-    await expect(panel.getByText('quiet.ts')).toBeVisible()
-    await expect(panel.getByText('changed, not reported')).toBeVisible()
+    const chip = page.getByRole('button', { name: /Files this Session changed/ })
+    await expect(chip).toContainText('+1')
+    await chip.click()
+
+    const panel = page.getByRole('complementary', { name: 'Files this Session changed' })
+    const quietRow = panel.getByRole('button', { name: /quiet\.ts/ })
+    await expect(quietRow).toBeVisible()
     await expect(panel.getByText('mine.ts')).toHaveCount(0)
 
-    await panel.getByRole('button', { name: 'quiet.ts', exact: false }).click()
+    // Opening it shows the change, and says nothing accounted for it.
+    await quietRow.click()
     await expect(panel.getByText('+quietly changed')).toBeVisible()
+    await expect(
+      panel.getByText('a command the agent ran changed this', { exact: false })
+    ).toBeVisible()
 
     // A file it removed says so, rather than reading as one it edited.
-    await expect(panel.getByText('doomed.ts')).toBeVisible()
-    await expect(panel.getByText('deleted, not reported')).toBeVisible()
+    const doomedRow = panel.getByRole('button', { name: /doomed\.ts/ })
+    await expect(doomedRow).toHaveAttribute('title', /deleted, not reported/)
+  } finally {
+    await app.close()
+  }
+})
+
+test('the title bar states where a Session works — Local, or an isolated Worktree', async () => {
+  const git = promisify(execFile)
+  const gitc = (args: string[]): Promise<unknown> =>
+    git('git', ['-c', 'user.email=a@b', '-c', 'user.name=t', ...args], {
+      cwd: sandbox.projectDir
+    })
+  // A commit and a named branch, so the branch chip has something
+  // deterministic to state, and a real worktree beside the working copy.
+  await writeFile(join(sandbox.projectDir, 'app.ts'), 'export const app = true\n')
+  await gitc(['add', '-A'])
+  await gitc(['commit', '--quiet', '-m', 'init'])
+  await gitc(['checkout', '--quiet', '-b', 'trunk'])
+  const worktree = join(sandbox.plainDir, 'fix-location-crash')
+  await gitc(['worktree', 'add', '--quiet', '-b', 'fix-location-crash', worktree])
+
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Local facts')
+
+    // The cluster (2a): branch and checkout kind, stated quietly.
+    const chips = page.getByRole('button', { name: /Project card for/ })
+    await expect(chips).toContainText('trunk')
+    await expect(chips).toContainText('Local')
+
+    // Clicking them opens the Project card (2b) with every fact on it.
+    await chips.click()
+    const card = page.getByRole('group', { name: 'Project card' })
+    await expect(card.getByText('working copy')).toBeVisible()
+    await expect(card.getByText('trunk')).toBeVisible()
+    // Its Changes row is a way into the Files panel.
+    await card.getByRole('button', { name: 'Changes' }).click()
+    await expect(
+      page.getByRole('complementary', { name: 'Files this Session changed' })
+    ).toBeVisible()
+
+    // "Open in" offers what every Mac has, and says what opening means. It is
+    // not clicked: the suite must not launch a real application.
+    await page.getByRole('button', { name: 'Open the Checkout in an editor' }).click()
+    const menu = page.getByRole('menu')
+    await expect(menu.getByRole('menuitem', { name: 'Terminal' })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: 'Finder' })).toBeVisible()
+    await expect(menu.getByText('edits are already there', { exact: false })).toBeVisible()
+    await page.keyboard.press('Escape')
+
+    // A Session fixed to an isolated Checkout at creation (the composer grows
+    // this control in a later slice; the contract carries it today).
+    const projectRoot = await realpath(sandbox.projectDir)
+    await page.evaluate(
+      async (input) => {
+        const shell = (
+          window as unknown as { shell: { startSession(input: unknown): Promise<unknown> } }
+        ).shell
+        await shell.startSession({
+          projectRoot: input.projectRoot,
+          message: 'Fix the location crash',
+          checkout: { kind: 'worktree', path: input.path }
+        })
+      },
+      { projectRoot, path: worktree }
+    )
+    // Searching re-reads the inbox, which is how the new row appears.
+    await page.getByRole('searchbox', { name: 'Search Sessions' }).fill('location')
+    await page
+      .getByRole('navigation', { name: 'Session inbox' })
+      .getByText('Fix the location crash')
+      .click()
+
+    // The same cluster now states the worktree's own facts.
+    await expect(chips).toContainText('Worktree')
+    await expect(chips).toContainText('fix-location-crash')
+    await chips.click()
+    await expect(card.getByText(worktree)).toBeVisible()
+    await expect(card.getByText('working copy')).toHaveCount(0)
   } finally {
     await app.close()
   }

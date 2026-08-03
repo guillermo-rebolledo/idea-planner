@@ -45,6 +45,9 @@ import {
   MenuTrigger
 } from '@renderer/components/ui/menu'
 import { ReadinessDialog } from '@renderer/components/Readiness'
+import { FilesPanel } from '@renderer/components/FilesPanel'
+import { WhereAmI } from '@renderer/components/WhereAmI'
+import { useSessionChanges } from '@renderer/lib/useSessionChanges'
 import { cn } from '@renderer/lib/utils'
 
 interface MailboxProps {
@@ -98,6 +101,10 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   const [mailbox, setMailbox] = useState<MailboxData>({ state: 'reading' })
   const [renaming, setRenaming] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<SessionSummary | null>(null)
+  // The Files panel: toggled from the title-bar diff numbers, and the app's
+  // only diff surface. Which file is open inside it is per visit, not stored.
+  const [filesOpen, setFilesOpen] = useState(false)
+  const [focusedFile, setFocusedFile] = useState<string | null>(null)
   // Sessions whose record could not be read. Shown rather than left out: a
   // Session that disappears without a word is the failure the store exists to
   // prevent, and not listing one is only half of not being silent.
@@ -163,6 +170,8 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   )
 
   function openSession(session: SessionSummary): void {
+    // A fresh visit starts at the list, not wherever the last one left off.
+    setFocusedFile(null)
     setSurface({ kind: 'session', session })
   }
 
@@ -251,6 +260,9 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   }
 
   const selectedSession = surface.kind === 'session' ? surface.session : undefined
+  // Session-cumulative and live: the same numbers the title bar wears and the
+  // Files panel breaks down, from one read so they cannot disagree.
+  const changes = useSessionChanges(selectedSession?.id ?? null)
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
@@ -342,7 +354,22 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
         >
           <PanelLeft aria-hidden="true" className="size-4" />
         </Button>
-        <h1 className="text-base font-medium">Sessions</h1>
+        <h1 className="min-w-0 truncate text-base font-medium">
+          {selectedSession?.title ?? 'Sessions'}
+        </h1>
+        {selectedSession && (
+          <div className="ml-auto">
+            <WhereAmI
+              key={selectedSession.id}
+              session={selectedSession}
+              totals={changes.totals}
+              filesOpen={filesOpen}
+              onToggleFiles={() => setFilesOpen((open) => !open)}
+              onShowFiles={() => setFilesOpen(true)}
+              onAnnounce={setAnnouncement}
+            />
+          </div>
+        )}
       </header>
 
       <div className="flex min-h-0 flex-1">
@@ -456,6 +483,15 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
             />
           )}
         </main>
+
+        {selectedSession && filesOpen && (
+          <FilesPanel
+            changes={changes}
+            focusedPath={focusedFile}
+            onFocus={setFocusedFile}
+            onClose={() => setFilesOpen(false)}
+          />
+        )}
       </div>
 
       <div aria-live="polite" role="status" className="sr-only">
@@ -1064,7 +1100,7 @@ function SessionDetail({
           </span>
         )}
       </div>
-      <h2 className="mt-2 text-lg font-medium select-text">{session.title}</h2>
+      {/* The title itself lives in the title bar, stated once. */}
       {/* The Project this Session works in, named exactly. */}
       <p className="mt-4 rounded-md border border-border bg-surface p-3 font-mono text-xs break-all text-muted-foreground select-text">
         {session.projectRoot}

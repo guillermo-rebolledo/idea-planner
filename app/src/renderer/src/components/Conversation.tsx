@@ -36,8 +36,6 @@ import {
   ModelPicker,
   type ModelChoice
 } from '@renderer/components/ModelPicker'
-import { ChangedFiles } from '@renderer/components/ChangedFiles'
-import { DiffView } from '@renderer/components/Diff'
 import { cn } from '@renderer/lib/utils'
 
 /**
@@ -384,12 +382,6 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
 
   return (
     <>
-      {/* Above the log on purpose: the state of the work is what a person
-          coming back to this Session is looking for. */}
-      <ChangedFiles
-        files={phase.snapshot.changedFiles}
-        entries={entries.filter((entry) => entry.kind === 'file-change')}
-      />
       <section
         className="mt-4 flex flex-col rounded-md border border-border bg-surface"
         aria-labelledby="conversation-heading"
@@ -940,9 +932,10 @@ function CommandRow({
 }
 
 /**
- * A file the Run changed, shown as it happened. The change is already on disk
+ * A file the Run changed, named as it happened. The change is already on disk
  * — edits land in the Checkout in place (ADR 0004) — so this is a record, not
- * an offer: there is nothing here to accept or reject, and git is the undo.
+ * an offer. The diff itself lives in the Files panel, the app's one
+ * diff-viewing surface; this row is the Conversation remembering the change.
  */
 function FileChangeRow({
   path,
@@ -962,16 +955,13 @@ function FileChangeRow({
   return (
     <li className="flex gap-2">
       <FileDiff aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <p className="flex flex-wrap items-baseline gap-x-2 text-xs">
-          <span className="font-mono break-all select-text">{path}</span>
-          <span className="text-xs text-muted-foreground">
-            <span className="text-diff-added-foreground">+{added}</span>{' '}
-            <span className="text-diff-removed-foreground">−{removed}</span>
-          </span>
-        </p>
-        <DiffView hunks={hunks} />
-      </div>
+      <p className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 text-xs">
+        <span className="font-mono break-all select-text">{path}</span>
+        <span className="text-xs text-muted-foreground">
+          <span className="text-diff-added-foreground">+{added}</span>{' '}
+          <span className="text-diff-removed-foreground">−{removed}</span>
+        </span>
+      </p>
     </li>
   )
 }

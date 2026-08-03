@@ -71,6 +71,32 @@ export async function initRepository(
 }
 
 /**
+ * The branch a Checkout is on right now, or null when there is no branch to
+ * name: a detached HEAD, a folder that is not a repository, or a machine with
+ * no git. Null is an honest answer for all three — the title bar says less
+ * rather than guessing.
+ *
+ * `symbolic-ref` rather than `rev-parse --abbrev-ref`: a repository before
+ * its first commit is still on a branch, and only the former says which.
+ */
+export async function currentBranch(
+  checkout: string,
+  options: GitOptions = {}
+): Promise<string | null> {
+  try {
+    const { stdout } = await run('git', ['symbolic-ref', '--short', '--quiet', 'HEAD'], {
+      cwd: checkout,
+      env: environment(options),
+      timeout: TIMEOUT_MS
+    })
+    const branch = stdout.trim()
+    return branch === '' ? null : branch
+  } catch {
+    return null
+  }
+}
+
+/**
  * A snapshot of a Checkout: the tree git would write if everything in the
  * working directory were staged. `unavailable` is not a failure — a Checkout
  * that is not a repository, or a machine with no git, simply has no snapshot,

@@ -130,6 +130,7 @@ function fakeSession(projectRoot: string): SessionSummary {
   return {
     id: 'session',
     projectRoot,
+    checkout: { kind: 'local' },
     title: 'Grill me',
     createdAt: '2026-07-31T12:00:00.000Z',
     updatedAt: '2026-07-31T12:00:00.000Z',

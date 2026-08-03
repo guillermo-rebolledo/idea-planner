@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
-import { sessionSummarySchema, type CoreCommand } from '@shared/contract'
+import { checkoutDirectory, sessionSummarySchema, type CoreCommand } from '@shared/contract'
 import {
   HARNESS_DEFAULT_MODEL,
   MAX_APPROVAL_DETAIL,
@@ -314,14 +314,15 @@ export class RunService {
   }
 
   /**
-   * The Session's Checkout. A Session belongs to a Project (ADR 0002), and
-   * that Project's root is the directory the Harness is allowed to work in.
+   * The Session's Checkout: the directory the Harness is allowed to work in.
+   * A Session belongs to a Project (ADR 0002); its Checkout is that Project's
+   * working copy, or the isolated worktree fixed when it was created.
    */
   private async checkoutFor(sessionId: string): Promise<string> {
     const session = sessionSummarySchema.parse(
       await this.deps.core.send({ type: 'session/get', sessionId })
     )
-    return session.projectRoot
+    return checkoutDirectory(session.projectRoot, session.checkout)
   }
 
   async start(rawInput: StartRunInput): Promise<RunSnapshot> {

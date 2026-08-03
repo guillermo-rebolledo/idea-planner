@@ -1,7 +1,12 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
-import { themePreferenceSchema, type ThemePreference } from '@shared/contract'
+import {
+  editorIdSchema,
+  themePreferenceSchema,
+  type EditorId,
+  type ThemePreference
+} from '@shared/contract'
 
 const settingsSchema = z.object({
   themePreference: themePreferenceSchema.default('system'),
@@ -10,7 +15,9 @@ const settingsSchema = z.object({
   /** Explicitly selected Harness executables; absence means PATH resolution. */
   harnessExecutables: z.record(z.string().min(1)).default({}),
   /** One-time informed consent for bounded login-shell PATH discovery. */
-  loginShellDiscovery: z.object({ grantedAt: z.string() }).nullable().default(null)
+  loginShellDiscovery: z.object({ grantedAt: z.string() }).nullable().default(null),
+  /** What "Open in" opened last, which is what the chip opens next. */
+  lastEditor: editorIdSchema.nullable().default(null)
 })
 
 export interface Settings {
@@ -18,6 +25,7 @@ export interface Settings {
   dormantAfterDays: number
   harnessExecutables: Record<string, string>
   loginShellDiscovery: { grantedAt: string } | null
+  lastEditor: EditorId | null
 }
 
 /**
@@ -57,7 +65,8 @@ export class SettingsStore {
       themePreference: 'system',
       dormantAfterDays: 14,
       harnessExecutables: {},
-      loginShellDiscovery: null
+      loginShellDiscovery: null,
+      lastEditor: null
     }
   }
 }

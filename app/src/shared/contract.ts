@@ -20,6 +20,8 @@ import type { ModelCatalog } from './model'
 import { harnessIdSchema } from './readiness'
 import type { ChooseExecutableResult, HarnessId, ReadinessSnapshot } from './readiness'
 import type { ChooseProjectResult, ProjectView } from './project'
+import { checkoutSchema, LOCAL_CHECKOUT, type CheckoutFacts } from './checkout'
+import type { EditorCatalog, OpenInEditorInput } from './editor'
 import {
   acceptRunInputSchema,
   recordRunEventInputSchema,
@@ -35,13 +37,19 @@ import {
  * Every payload crossing a process boundary is validated against these
  * schemas before it is acted on or presented.
  */
-export const CONTRACT_VERSION = 3
+export const CONTRACT_VERSION = 4
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
   id: z.string().min(1),
   /** The Project this Session works against, by the root git resolved. */
   projectRoot: z.string().min(1),
+  /**
+   * Where the work happens: the Project's working copy, or an isolated
+   * worktree. Fixed at creation; Sessions from before the field existed were
+   * all working copies, which is exactly what the default says.
+   */
+  checkout: checkoutSchema.default(LOCAL_CHECKOUT),
   title: z.string().min(1),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -147,9 +155,12 @@ export const startSessionInputSchema = z.object({
    * there is no moment where one exists without the message that asked for it,
    * and the title is derived from it locally.
    */
-  message: z.string().min(1).max(100_000)
+  message: z.string().min(1).max(100_000),
+  /** Where the Session works. Absent means the Project's working copy. */
+  checkout: checkoutSchema.default(LOCAL_CHECKOUT)
 })
-export type StartSessionInput = z.infer<typeof startSessionInputSchema>
+/** The caller's side of the schema, so an omitted checkout stays omittable. */
+export type StartSessionInput = z.input<typeof startSessionInputSchema>
 
 export const themePreferenceSchema = z.enum(['system', 'light', 'dark'])
 export type ThemePreference = z.infer<typeof themePreferenceSchema>
@@ -385,10 +396,25 @@ export interface ShellApi {
   resolveApproval(input: ResolveApprovalInput): Promise<ConversationSnapshot>
   /** Assistant text and control events, delivered ahead of durable projection. */
   onConversationEvent(listener: (event: ConversationStreamEvent) => void): () => void
+  /**
+   * The "where am I?" facts for one Session: its Checkout, the directory that
+   * names, and the branch it is on right now. Observed on each ask — the
+   * branch can be moved by the agent or by the person in a terminal.
+   */
+  getCheckoutFacts(sessionId: string): Promise<CheckoutFacts>
+  /** What "Open in" can offer on this Mac, and what was chosen last. */
+  listEditors(): Promise<EditorCatalog>
+  /**
+   * Opens the Session's Checkout in the named editor and remembers the
+   * choice, so the chip itself opens the right thing next time.
+   */
+  openInEditor(input: OpenInEditorInput): Promise<EditorCatalog>
 }
 
 export { IPC_CHANNELS } from './channels'
 export * from './approval'
+export * from './checkout'
+export * from './editor'
 export * from './skill'
 export * from './conversation'
 export * from './model'

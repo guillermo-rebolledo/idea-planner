@@ -33,6 +33,10 @@ import {
   standingApprovalSchema,
   startRunInputSchema,
   stopRunInputSchema,
+  checkoutDirectory,
+  checkoutFactsSchema,
+  editorCatalogSchema,
+  openInEditorInputSchema,
   conversationSnapshotSchema,
   developSessionInputSchema,
   SKILL_ATTRIBUTION,
@@ -52,7 +56,8 @@ import {
 import { PRODUCT_NAME, stateDirectory } from './identity'
 import { discoverSkills } from './skills'
 import { CoreClient } from './core-client'
-import { initRepository, resolveProjectRoot } from './git'
+import { currentBranch, initRepository, resolveProjectRoot } from './git'
+import { detectEditors, openInEditor } from './editors'
 import { discoverModels } from './models'
 import { HARNESS_SPECS, readinessLinkHosts } from './readiness'
 import { ReadinessService } from './readiness-service'
@@ -291,7 +296,11 @@ function registerIpc(): void {
   )
 
   handleInvoke(IPC_CHANNELS.startSession, startSessionInputSchema, async (input) =>
-    sessionSummarySchema.parse(await coreClient.send({ type: 'session/start', input }))
+    sessionSummarySchema.parse(
+      // Parsed once more so the omitted-checkout default is applied here and
+      // the command Core receives is the settled shape, not the caller's.
+      await coreClient.send({ type: 'session/start', input: startSessionInputSchema.parse(input) })
+    )
   )
 
   handleInvoke(IPC_CHANNELS.listSessions, z.undefined(), async () =>
@@ -426,6 +435,41 @@ function registerIpc(): void {
   handleInvoke(IPC_CHANNELS.stopRun, stopRunInputSchema, ({ runId, sessionId }) =>
     runService.stop(runId, sessionId)
   )
+
+  // The "where am I?" facts the title bar states. Observed on each ask: the
+  // branch belongs to git, and the agent or a terminal can move it any time.
+  handleInvoke(IPC_CHANNELS.getCheckoutFacts, z.string().min(1), async (sessionId) => {
+    const session = sessionSummarySchema.parse(
+      await coreClient.send({ type: 'session/get', sessionId })
+    )
+    const path = checkoutDirectory(session.projectRoot, session.checkout)
+    return checkoutFactsSchema.parse({
+      checkout: session.checkout,
+      path,
+      branch: await currentBranch(path)
+    })
+  })
+
+  handleInvoke(IPC_CHANNELS.listEditors, z.undefined(), async () =>
+    editorCatalogSchema.parse({
+      editors: await detectEditors(),
+      lastChoice: settings.get().lastEditor
+    })
+  )
+
+  // Opens the Checkout — the agent's edits are already there — and remembers
+  // the choice so the chip itself opens the right thing next time.
+  handleInvoke(IPC_CHANNELS.openInEditor, openInEditorInputSchema, async (input) => {
+    const session = sessionSummarySchema.parse(
+      await coreClient.send({ type: 'session/get', sessionId: input.sessionId })
+    )
+    await openInEditor(input.editor, checkoutDirectory(session.projectRoot, session.checkout))
+    settings.update({ lastEditor: input.editor })
+    return editorCatalogSchema.parse({
+      editors: await detectEditors(),
+      lastChoice: input.editor
+    })
+  })
 
   handleInvoke(IPC_CHANNELS.getConversation, z.string().min(1), async (sessionId) =>
     conversationSnapshotSchema.parse(await runService.conversation(sessionId))

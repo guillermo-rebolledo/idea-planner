@@ -4,7 +4,13 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { execFile } from 'node:child_process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { diffSnapshots, initRepository, resolveProjectRoot, snapshotCheckout } from './git'
+import {
+  currentBranch,
+  diffSnapshots,
+  initRepository,
+  resolveProjectRoot,
+  snapshotCheckout
+} from './git'
 
 let root: string
 
@@ -22,6 +28,16 @@ const git = promisify(execFile)
 async function toplevel(cwd: string): Promise<string> {
   const { stdout } = await git('git', ['rev-parse', '--show-toplevel'], { cwd })
   return stdout.trim()
+}
+
+/** One commit of everything, with the identity a bare test machine lacks. */
+async function commitAll(cwd: string, message: string): Promise<void> {
+  await git('git', ['add', '-A'], { cwd })
+  await git(
+    'git',
+    ['-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '--quiet', '-m', message],
+    { cwd }
+  )
 }
 
 describe('resolving a Project root', () => {
@@ -68,6 +84,38 @@ describe('resolving a Project root', () => {
     await expect(resolveProjectRoot(root, { pathEnv: '' })).resolves.toEqual({
       status: 'git-unavailable'
     })
+  })
+})
+
+describe('reading the current branch', () => {
+  it('names the branch a repository is on, even before its first commit', async () => {
+    await git('git', ['init', '--quiet', '--initial-branch=main'], { cwd: root })
+
+    // An unborn branch is still where the next commit goes, which is the
+    // answer the title bar is stating.
+    await expect(currentBranch(root)).resolves.toBe('main')
+  })
+
+  it('follows a checkout to the branch it lands on', async () => {
+    await git('git', ['init', '--quiet', '--initial-branch=main'], { cwd: root })
+    await writeFile(join(root, 'notes.md'), 'first')
+    await commitAll(root, 'first')
+    await git('git', ['checkout', '--quiet', '-b', 'fix-location-crash'], { cwd: root })
+
+    await expect(currentBranch(root)).resolves.toBe('fix-location-crash')
+  })
+
+  it('answers null for a detached HEAD rather than inventing a name', async () => {
+    await git('git', ['init', '--quiet', '--initial-branch=main'], { cwd: root })
+    await writeFile(join(root, 'notes.md'), 'first')
+    await commitAll(root, 'first')
+    await git('git', ['checkout', '--quiet', '--detach'], { cwd: root })
+
+    await expect(currentBranch(root)).resolves.toBeNull()
+  })
+
+  it('answers null when the folder is not a repository', async () => {
+    await expect(currentBranch(root)).resolves.toBeNull()
   })
 })
 
