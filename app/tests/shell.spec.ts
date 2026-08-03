@@ -932,10 +932,14 @@ test('a person adds a Project and a plain folder is refused with an offer to set
     await page.getByRole('menuitem', { name: basename(sandbox.plainDir) }).click()
     await expect(composer.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
 
-    // Removing a Project forgets it and leaves the directory alone.
+    // Removing a Project asks first — one menu click must not silently change
+    // what the inbox offers — then forgets it and leaves the directory alone.
     const plainGroup = inbox.getByRole('region', { name: basename(sandbox.plainDir) })
     await plainGroup.getByRole('button', { name: /^More for/ }).click()
-    await page.getByRole('menuitem', { name: 'Remove Project' }).click()
+    await page.getByRole('menuitem', { name: 'Remove Project…' }).click()
+    const removeDialog = page.getByRole('dialog', { name: /Remove “/ })
+    await expect(removeDialog).toContainText('Nothing on disk is touched')
+    await removeDialog.getByRole('button', { name: 'Remove Project' }).click()
     await expect(inbox.getByText(basename(sandbox.plainDir), { exact: true })).toHaveCount(0)
     expect(await readdir(sandbox.plainDir)).toContain('notes.md')
   } finally {

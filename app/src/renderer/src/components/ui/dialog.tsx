@@ -40,6 +40,35 @@ export function Modal({
       if (event.key === 'Escape') {
         event.stopPropagation()
         onDismiss()
+        return
+      }
+      // Tab stays inside: a modal that lets focus walk into the inert page
+      // behind it has only dimmed the page, not taken it over.
+      if (event.key !== 'Tab') return
+      const panel = panelRef.current
+      if (!panel) return
+      const focusable = [
+        ...panel.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
+        )
+      ]
+      if (focusable.length === 0) {
+        event.preventDefault()
+        panel.focus()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement
+      if (!panel.contains(active)) {
+        event.preventDefault()
+        first?.focus()
+      } else if (event.shiftKey && (active === first || active === panel)) {
+        event.preventDefault()
+        last?.focus()
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault()
+        first?.focus()
       }
     }
     window.addEventListener('keydown', onKeyDown, true)

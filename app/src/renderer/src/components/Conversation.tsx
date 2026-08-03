@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
   ChevronRight,
@@ -114,7 +114,12 @@ export function Conversation({
   const [chosen, setChosen] = useState<ModelChoice | null>(null)
   // Ask by default: a Run edits the Project in place, and being asked first is
   // the posture somebody would choose if they were choosing deliberately.
+  // Seeded from the Session's latest Run once its record loads, so the mode
+  // chosen at launch travels here instead of silently resetting — a person
+  // who sent in Full access must not find the chip claiming Ask.
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
+  // A mode the person picked on this surface outranks any seeding.
+  const modeTouchedRef = useRef(false)
   const [deciding, setDeciding] = useState(false)
   // Read once per second only while a Run works, so the divider and the
   // activity block can say how long it has been at it.
@@ -146,6 +151,17 @@ export function Conversation({
     harness: chosenHarness
   })
 
+  // Runs arrive newest first, and what the next Run is configured with starts
+  // as what the last Run really used: the mode chosen at launch travels here
+  // instead of silently resetting. A pick made on this surface stays made.
+  const takeRuns = useCallback((listed: RunSnapshot[]) => {
+    setRuns(listed)
+    const latest = listed[0]
+    if (!modeTouchedRef.current && latest) {
+      setPermissionMode(latest.configuration.permissionMode)
+    }
+  }, [])
+
   const refresh = useCallback(async () => {
     try {
       const next = await window.shell.getConversation(sessionId)
@@ -154,8 +170,8 @@ export function Conversation({
     } catch {
       setPhase((current) => (current.state === 'ready' ? current : { state: 'failed' }))
     }
-    await window.shell.listRuns(sessionId).then(setRuns, () => undefined)
-  }, [sessionId])
+    await window.shell.listRuns(sessionId).then(takeRuns, () => undefined)
+  }, [sessionId, takeRuns])
 
   useEffect(() => {
     void refresh()
@@ -282,7 +298,7 @@ export function Conversation({
           setDraft('')
           setSkill(null)
         }
-        await window.shell.listRuns(sessionId).then(setRuns, () => undefined)
+        await window.shell.listRuns(sessionId).then(takeRuns, () => undefined)
       } catch {
         setError(
           'The Run could not start. Check that the Harness is ready and that supervision has recovered.'
@@ -294,7 +310,7 @@ export function Conversation({
         setBusy(false)
       }
     },
-    [sessionId, chosenHarness, chosenSkill, choice, models, permissionMode, refresh]
+    [sessionId, chosenHarness, chosenSkill, choice, models, permissionMode, refresh, takeRuns]
   )
 
   /**
@@ -336,6 +352,16 @@ export function Conversation({
     )
   }, [activeRunId, sessionId, refresh])
 
+  // The card takes focus the moment a request arrives, so ⏎ is already
+  // speaking to it — and only to it. Allowing is the app's highest-stakes
+  // act, and a reflexive Enter with focus somewhere else must not grant a
+  // command nobody read. Escape stays global: refusing is always safe.
+  const approvalCardRef = useRef<HTMLDivElement>(null)
+  const pendingApprovalId = pendingApproval?.id ?? null
+  useEffect(() => {
+    if (pendingApprovalId !== null) approvalCardRef.current?.focus()
+  }, [pendingApprovalId])
+
   // The card's own shortcuts, exactly as it states them: ⏎ allow · esc deny.
   // ⌘. stops the Run whether or not anything is being asked. Typing surfaces
   // keep their keys — the composer is disabled while a Run works anyway.
@@ -360,6 +386,9 @@ export function Conversation({
         return
       }
       if (event.key === 'Enter' && !event.shiftKey) {
+        // Enter allows only while the person is on the card. Clicking away
+        // withdraws the key; the buttons and Escape remain.
+        if (!approvalCardRef.current?.contains(document.activeElement)) return
         event.preventDefault()
         void decide(pendingApproval, 'allow')
       } else if (event.key === 'Escape') {
@@ -562,9 +591,11 @@ export function Conversation({
                 row(
                   'approval',
                   <div
+                    ref={approvalCardRef}
                     role="alert"
                     aria-label="Approval request"
-                    className="rounded-lg border border-status-blocked-border bg-status-blocked-surface"
+                    tabIndex={-1}
+                    className="rounded-lg border border-status-blocked-border bg-status-blocked-surface outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <p className="flex items-center gap-2 px-3.5 pt-3 text-xs">
                       <TriangleAlert
@@ -734,7 +765,10 @@ export function Conversation({
               <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
                 <PermissionModePicker
                   value={permissionMode}
-                  onChange={setPermissionMode}
+                  onChange={(mode) => {
+                    modeTouchedRef.current = true
+                    setPermissionMode(mode)
+                  }}
                   projectRoot={session.projectRoot}
                   disabled={activeRunId !== null}
                 />

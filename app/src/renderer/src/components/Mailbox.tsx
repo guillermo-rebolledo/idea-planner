@@ -669,7 +669,14 @@ function ProjectGroup({
   onAnnounce,
   onProjectsChanged
 }: ProjectGroupProps): React.JSX.Element {
+  // One un-confirmed menu click used to remove a Project; a confirm brings it
+  // in line with every other act that changes what the inbox offers. Removal
+  // is gentle — Sessions keep an (unavailable) home and disk is untouched —
+  // but the person deserves to read that before it happens, not after.
+  const [confirmingRemove, setConfirmingRemove] = useState(false)
+
   async function removeProject(): Promise<void> {
+    setConfirmingRemove(false)
     try {
       await window.shell.removeProject(group.root)
       onAnnounce(`Removed “${group.name}”. Nothing on disk was touched.`)
@@ -713,15 +720,43 @@ function ProjectGroup({
                 <MoreHorizontal aria-hidden="true" className="size-3.5" />
               </MenuTrigger>
               <MenuContent>
-                <MenuItem onClick={() => void removeProject()}>
+                {/* Deferred past the closing menu's focus restoration, which
+                    would otherwise land focus behind the dialog it opens. */}
+                <MenuItem onClick={() => window.setTimeout(() => setConfirmingRemove(true), 0)}>
                   <X aria-hidden="true" className="size-3.5 text-muted-foreground" />
-                  Remove Project
+                  Remove Project…
                 </MenuItem>
               </MenuContent>
             </Menu>
           </span>
         )}
       </div>
+      {confirmingRemove && (
+        <Modal labelledBy="remove-project-title" onDismiss={() => setConfirmingRemove(false)}>
+          <h2 id="remove-project-title" className="text-sm font-semibold">
+            Remove “{group.name}” from the app?
+          </h2>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            It stops being offered for new Sessions; the ones it has stay in the inbox, marked
+            unavailable. Nothing on disk is touched —{' '}
+            <span className="font-mono break-all">{group.root}</span> stays exactly as it is, and
+            you can add it again at any time.
+          </p>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              data-autofocus=""
+              variant="secondary"
+              size="sm"
+              onClick={() => setConfirmingRemove(false)}
+            >
+              Cancel
+            </Button>
+            <Button size="sm" onClick={() => void removeProject()}>
+              Remove Project
+            </Button>
+          </div>
+        </Modal>
+      )}
       <ul className="flex flex-col gap-px">
         {group.sessions.map((session) => (
           <SessionRow key={session.id} session={session} archived={archived} handlers={handlers} />
