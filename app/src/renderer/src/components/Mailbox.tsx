@@ -265,6 +265,59 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   // Files panel breaks down, from one read so they cannot disagree.
   const changes = useSessionChanges(selectedSession?.id ?? null)
 
+  // What the announcement subscription below needs to know without
+  // resubscribing on every render: who is on screen, and what everything is
+  // called. Refs, because the subscription outlives both.
+  const selectedIdRef = useRef<string | undefined>(undefined)
+  const titlesRef = useRef(new Map<string, string>())
+  const announcedRunsRef = useRef(new Set<string>())
+  useEffect(() => {
+    selectedIdRef.current = selectedSession?.id
+  }, [selectedSession?.id])
+  useEffect(() => {
+    if (mailbox.state !== 'ready') return
+    const titles = new Map<string, string>()
+    for (const group of [...mailbox.snapshot.pinned, ...mailbox.snapshot.projects]) {
+      for (const session of group.sessions) titles.set(session.id, session.title)
+    }
+    titlesRef.current = titles
+  }, [mailbox])
+
+  // A Run ending in a Session that is not on screen changes only a sidebar
+  // dot; the ending is also said out loud, so a screen reader — and the
+  // announcement region — hears the mail arrive.
+  useEffect(
+    () =>
+      window.shell.onConversationEvent(({ sessionId, runId, event }) => {
+        if (event.type !== 'completed' && event.type !== 'failed') return
+        if (sessionId === selectedIdRef.current) return
+        if (announcedRunsRef.current.has(runId)) return
+        announcedRunsRef.current.add(runId)
+        const title = titlesRef.current.get(sessionId)
+        setAnnouncement(
+          event.type === 'completed'
+            ? `The Run in “${title ?? 'another Session'}” finished.`
+            : `The Run in “${title ?? 'another Session'}” failed.`
+        )
+      }),
+    []
+  )
+
+  // The click on a native notification: Main asks for one Session by id, and
+  // the freshest record of it is fetched rather than trusted from memory.
+  useEffect(
+    () =>
+      window.shell.onOpenSessionRequest((sessionId) => {
+        void window.shell.listSessions().then((listed) => {
+          const found = listed.find((session) => session.id === sessionId)
+          if (!found) return
+          setFocusedFile(null)
+          setSurface({ kind: 'session', session: found })
+        }, undefined)
+      }),
+    []
+  )
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       const target = event.target as HTMLElement
@@ -1038,7 +1091,9 @@ function CompactRail({
   onExpand,
   onNewChat
 }: CompactRailProps): React.JSX.Element {
-  const waiting = sessions.filter((session) => session.status === 'blocked').length
+  const blocked = sessions.filter((session) => session.status === 'blocked')
+  const waiting = blocked.length
+  const oneBlocked = blocked.length === 1 ? blocked[0] : undefined
   return (
     <nav
       aria-label="Session inbox (compact)"
@@ -1064,16 +1119,22 @@ function CompactRail({
       </button>
       {waiting > 0 && (
         // The one question the rail must still answer: is anything waiting for
-        // me. Collapsing the inbox hides the groups, never this.
+        // me. Collapsing the inbox hides the groups, never this — and when
+        // exactly one Session is waiting, the count is a door, not a sign:
+        // clicking it goes straight to the thing that wants an answer.
         <button
           type="button"
           aria-label={
-            waiting === 1
-              ? '1 Session needs attention. Expand inbox'
+            oneBlocked
+              ? `“${oneBlocked.title}” needs attention. Open it`
               : `${String(waiting)} Sessions need attention. Expand inbox`
           }
-          title={waiting === 1 ? '1 Session needs attention' : `${String(waiting)} need attention`}
-          onClick={onExpand}
+          title={
+            oneBlocked
+              ? `“${oneBlocked.title}” needs attention`
+              : `${String(waiting)} need attention`
+          }
+          onClick={() => (oneBlocked ? onOpen(oneBlocked) : onExpand())}
           className="flex size-7 items-center justify-center rounded-full bg-status-blocked-surface text-xs font-medium text-status-blocked focus-visible:ring-2 focus-visible:ring-ring"
         >
           {waiting}

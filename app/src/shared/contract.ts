@@ -459,6 +459,11 @@ export interface ShellApi {
   /** Assistant text and control events, delivered ahead of durable projection. */
   onConversationEvent(listener: (event: ConversationStreamEvent) => void): () => void
   /**
+   * Main asking the window to open one Session — the click on a native
+   * notification for a Run that finished while the person was elsewhere.
+   */
+  onOpenSessionRequest(listener: (sessionId: string) => void): () => void
+  /**
    * The "where am I?" facts for one Session: its Checkout, the directory that
    * names, and the branch it is on right now. Observed on each ask — the
    * branch can be moved by the agent or by the person in a terminal.

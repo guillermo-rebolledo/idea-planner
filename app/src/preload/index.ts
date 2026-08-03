@@ -66,6 +66,13 @@ const api: ShellApi = {
     const subscription = (): void => listener()
     ipcRenderer.on(IPC_CHANNELS.undoShortcut, subscription)
     return () => ipcRenderer.off(IPC_CHANNELS.undoShortcut, subscription)
+  },
+  onOpenSessionRequest: (listener) => {
+    const subscription = (_event: unknown, sessionId: string): void => {
+      if (typeof sessionId === 'string' && sessionId) listener(sessionId)
+    }
+    ipcRenderer.on(IPC_CHANNELS.openSessionRequest, subscription)
+    return () => ipcRenderer.off(IPC_CHANNELS.openSessionRequest, subscription)
   }
 }
 

@@ -185,6 +185,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'listStandingApprovals',
       'offerProject',
       'onConversationEvent',
+      'onOpenSessionRequest',
       'onThemeChanged',
       'onUndoShortcut',
       'openExternalLink',

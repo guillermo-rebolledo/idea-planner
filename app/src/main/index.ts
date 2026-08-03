@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import {
   BrowserWindow,
+  Notification,
   app,
   dialog,
   ipcMain,
@@ -50,6 +51,7 @@ import {
   type BootState,
   type Checkout,
   type ChooseProjectResult,
+  type ConversationStreamEvent,
   type ThemeState
 } from '@shared/contract'
 import { WINDOW_BACKGROUND } from '@shared/theme'
@@ -572,6 +574,52 @@ async function skillsFor(projectRoot: string, harness: HarnessId): Promise<Skill
   })
 }
 
+/**
+ * Runs already told out loud, so the adapter's own completed/failed event and
+ * the conclusion's do not become two notifications for one ending.
+ */
+const notifiedRuns = new Set<string>()
+
+/**
+ * Finished work arrives like mail. A Run ending while the window is elsewhere
+ * changes only a sidebar dot, so the ending is also said the way the desktop
+ * says things — a quiet native notification, silent by design, that opens the
+ * Session when clicked. A focused window needs none of this: the Conversation
+ * is already telling the story.
+ */
+async function notifyRunEnded(streamed: ConversationStreamEvent): Promise<void> {
+  const kind = streamed.event.type
+  if (kind !== 'completed' && kind !== 'failed') return
+  if (notifiedRuns.has(streamed.runId)) return
+  notifiedRuns.add(streamed.runId)
+  if (notifiedRuns.size > 500) notifiedRuns.clear()
+  // Test runs must not post to the real Notification Center.
+  if (testAppData && !app.isPackaged) return
+  if (!mainWindow || mainWindow.isFocused() || !Notification.isSupported()) return
+  const title = await coreClient
+    .send({ type: 'session/get', sessionId: streamed.sessionId })
+    .then((session) => sessionSummarySchema.parse(session).title)
+    .catch(() => null)
+  if (title === null) return
+  const notification = new Notification({
+    title,
+    body:
+      kind === 'completed'
+        ? 'The Run finished while you were away.'
+        : 'The Run failed. The Conversation says what is safe to do next.',
+    silent: true
+  })
+  notification.on('click', () => {
+    const window = mainWindow
+    if (!window) return
+    if (window.isMinimized()) window.restore()
+    window.show()
+    window.focus()
+    window.webContents.send(IPC_CHANNELS.openSessionRequest, streamed.sessionId)
+  })
+  notification.show()
+}
+
 /** Where a Harness's own directories live, redirected only by a test run. */
 function harnessHomeDirectory(): string {
   return !app.isPackaged && testReadinessHome !== undefined
@@ -668,9 +716,11 @@ void app.whenReady().then(() => {
     proxyScript: join(__dirname, 'mcp-proxy.js'),
     skills: skillsFor,
     // Assistant text and control events take the direct path to the window so
-    // streaming stays responsive; durable projection follows behind it.
+    // streaming stays responsive; durable projection follows behind it. A Run
+    // ending away from a focused window is also told the desktop's way.
     onConversationEvent: (event) => {
       mainWindow?.webContents.send(IPC_CHANNELS.conversationEvent, event)
+      void notifyRunEnded(event).catch(() => undefined)
     }
   })
 
