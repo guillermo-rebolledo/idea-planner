@@ -13,16 +13,17 @@ import {
   developSessionInputSchema,
   harnessEventSchema,
   redactCredentials,
+  unfinishedRunSchema,
   type ConversationSnapshot,
   type ConversationStreamEvent,
   type CodexLaunch,
   type DevelopSessionInput,
   type FinalizeConversationRunInput,
   type HarnessEvent,
-  type HarnessFailureCategory
+  type HarnessFailureCategory,
+  type UnfinishedRun
 } from '@shared/conversation'
 import { proposeStandingApproval, ruleText, type ProposedRule } from '@shared/approval'
-import { unfinishedRunSchema, type UnfinishedRun } from '@shared/conversation'
 import {
   APPROVAL_TOOL,
   APP_TOOLS,
@@ -148,6 +149,13 @@ export class RunService {
   /** Runs already being ended by their own turn completing, so it happens once. */
   private readonly finishing = new Set<string>()
   /**
+   * Runs this process has accepted and not yet ended. The broker only knows a
+   * Run once its process exists, and a Run is durably open from the moment its
+   * boundary is written — so between those two the broker's answer alone would
+   * let the recovery pass close a Run that is starting.
+   */
+  private readonly mine = new Set<string>()
+  /**
    * What each Run's Checkout looked like when it started. Comparing it with
    * the Checkout when the Run ends is the only way a change made by a shell
    * command is ever seen: the Harness reports the edits it makes with its own
@@ -191,7 +199,7 @@ export class RunService {
    */
   private async closeUnfinishedRuns(): Promise<void> {
     const open = await this.unfinishedRuns().catch(() => [])
-    const running = new Set(this.deps.broker.activeRunIds())
+    const running = new Set([...this.deps.broker.activeRunIds(), ...this.mine])
     for (const run of open) {
       if (running.has(run.runId)) continue
       await this.conclude(
@@ -363,6 +371,8 @@ export class RunService {
         }
       })
     )
+    // From here on this Run is this process's, whatever the broker knows yet.
+    this.mine.add(accepted.id)
     if (accepted.status !== 'accepted') {
       if (
         ['completed', 'failed', 'stopped', 'policy-violation', 'supervision-failed'].includes(
@@ -996,6 +1006,7 @@ export class RunService {
     kind: RunActivityKind,
     summary: string
   ): Promise<RunSnapshot> {
+    this.mine.delete(run.id)
     const category = this.failures.get(run.id) ?? null
     const diagnostic = this.diagnostics.get(run.id)
     this.failures.delete(run.id)

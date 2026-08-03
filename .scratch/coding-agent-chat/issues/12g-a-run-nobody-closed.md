@@ -24,6 +24,8 @@ The startup pass reads which Runs their own Conversations still have open, rathe
 
 Each one is closed as `failed` with the summary `The app closed while this Run was working`. The category comes out as `process-crash` or `uncertain-submission` depending on whether the Harness ever said anything, and both of those are resendable — so the person's message is still theirs to send again, which is what an abandoned Run owes them.
 
-## Answer — the broker decides what is still going
+## Answer — what counts as still going
 
-A Run this process is actually running is skipped, because the broker is the one that knows. It matters because the recovery pass is also awaited by `develop`: without that check, sending a message in one Session could close a Run still working in another.
+A Run this process is running is skipped. The broker knows the ones with a process, and that is not all of them: a Run is durably open from the moment its boundary is written, and its process does not exist until several steps later. In that window the broker would say nothing is running and the pass would close a Run that is starting. So the service also keeps what it has accepted and not yet ended, and a test drives the pass from inside that window.
+
+It matters because the pass is not only run at startup — `develop` awaits it too, so without this, starting one Session's Run could close another's.

@@ -1575,6 +1575,26 @@ describe('a Run nobody closed', () => {
     expect(finalized?.input).toMatchObject({ runId: 'run-open', outcome: 'failed' })
   })
 
+  it('leaves a Run this process just accepted alone, before the broker knows it', async () => {
+    // The window the broker cannot cover: a Run is durably open from the
+    // moment its boundary is written, and its process does not exist yet.
+    const root = await readyClaudeRoot('run-service-starting-')
+    const broker = fakeBroker({
+      // The Run is open in its Conversation and has no process yet, which is
+      // exactly where the recovery pass could take it for abandoned.
+      start: vi.fn(async (launch: RunLaunch) => {
+        deps.core.unfinished = [{ sessionId: 'session', runId: launch.id }]
+        await service.recoverUnfinishedWork()
+      })
+    })
+    const deps = claudeDeps(root, broker)
+    const service = new RunService(deps)
+
+    await service.start(startInput())
+
+    expect(deps.core.commands).not.toContain('conversation/finalize')
+  })
+
   it('leaves a Run the broker is still running alone', async () => {
     const root = await readyClaudeRoot('run-service-still-going-')
     const broker = fakeBroker()

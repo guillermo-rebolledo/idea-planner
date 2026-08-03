@@ -21,7 +21,15 @@ Doing it now would be building for a load nobody has. Doing it after somebody no
 
 Each Session keeps a `state.json` beside its Conversation: the active Run, the Approval Requests nobody has answered, the last thing anybody said and whether it offered choices, and how the last Run ended. That is everything the inbox's rule needs, and it is a few hundred bytes rather than a journal.
 
-It is written at the one place every Conversation entry goes through, folding the new entry into what was already known — never by reading the journal back. The journal is written first and the projection after it, so a crash between them leaves a projection that is *behind*, never one that is ahead of what the Conversation says.
+It is written at the one place every Conversation entry goes through, folding the new entry into what was already known — never by reading the journal back. The projection is read *before* the entry is appended, against the journal as it was then, so the usual path is a small read and one fold rather than a reading of everything that ever happened. The journal is written first and the projection after it, so a crash between them leaves a projection that is *behind*, never one that is ahead of what the Conversation says.
+
+## Answer — the journal keeps one entry per message, and the fold has to know
+
+The journal is read back with one entry per id, each kept where it *first* appeared, because a message is written again as it streams. A fold that did not know that would answer differently from the Conversation it describes — an agent asks a question, the person answers while its message is still streaming, the message is written once more when it finishes, and a naive fold calls the question the last thing said and the Session blocked forever. The byte count would agree, so nothing would ever notice.
+
+So the fold recognises a message it has seen: the same one again is the same one, an older one written again is not the last thing said, and only an unseen id moves the mark. A test drives exactly that sequence and fails without it.
+
+Approval Requests are treated the same way: one written again while it still stands keeps its place, so the oldest is still the one being asked.
 
 ## Answer — how it stays honest
 

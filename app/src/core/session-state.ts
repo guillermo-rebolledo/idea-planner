@@ -1,7 +1,8 @@
 import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Effect } from 'effect'
-import type { ConversationEntry, ConversationRecovery } from '@shared/conversation'
+import { z } from 'zod'
+import { conversationRecoverySchema, type ConversationEntry } from '@shared/conversation'
 import type { CoreError, MailboxSession } from '@shared/contract'
 import { writeJsonAtomic } from './atomic'
 
@@ -15,24 +16,57 @@ import { writeJsonAtomic } from './atomic'
  * divergence — a write that never landed, a crash between the two — is seen
  * and the projection is rebuilt from the journal, which stays the truth.
  */
-export interface SessionState {
-  activeRunId: string | null
+export const sessionStateSchema = z.object({
+  activeRunId: z.string().nullable(),
   /** Unanswered Approval Requests, oldest first: the oldest is the one asked. */
-  openApprovals: string[]
+  openApprovals: z.array(z.string()),
   /** The last thing anybody said, which is what an unanswered question is. */
-  lastMessage: { role: 'user' | 'assistant'; suggested: boolean } | null
+  lastMessage: z
+    .object({
+      id: z.string(),
+      role: z.enum(['user', 'assistant']),
+      suggested: z.boolean()
+    })
+    .nullable(),
+  /**
+   * Message ids lately seen, so a message re-appended while it streams is
+   * known for what it is rather than mistaken for a new one. The journal is
+   * read back with one entry per id, keeping each at the position it first
+   * appeared — and a fold that did not know that would say the person's reply
+   * came before the answer they were replying to.
+   */
+  recentMessageIds: z.array(z.string()),
   /** How the last Run ended badly, when it did. */
-  recovery: ConversationRecovery['category'] | null
+  recovery: conversationRecoverySchema.nullable(),
   /** Bytes of the journal this was derived from. */
-  journalBytes: number
+  journalBytes: z.number().int().nonnegative()
+})
+export type SessionState = z.infer<typeof sessionStateSchema>
+
+/** A projection as it was written, or nothing anybody should act on. */
+export function readSessionState(text: string): SessionState | null {
+  try {
+    const parsed = sessionStateSchema.safeParse(JSON.parse(text))
+    return parsed.success ? parsed.data : null
+  } catch {
+    return null
+  }
 }
 
 const STATE = 'state.json'
+
+/**
+ * How far back a message can be written again and still be recognised. Only a
+ * message still streaming is ever rewritten, and streaming only ever touches
+ * the newest, so this is far more room than the case needs.
+ */
+const RECENT_MESSAGES = 50
 
 export const EMPTY_STATE: SessionState = {
   activeRunId: null,
   openApprovals: [],
   lastMessage: null,
+  recentMessageIds: [],
   recovery: null,
   journalBytes: 0
 }
@@ -44,21 +78,30 @@ export function advance(state: SessionState, entry: ConversationEntry): SessionS
       return { ...state, activeRunId: entry.runId, recovery: null }
     }
     if (entry.runId !== state.activeRunId) return state
-    return { ...state, activeRunId: null, recovery: entry.recovery?.category ?? null }
+    return { ...state, activeRunId: null, recovery: entry.recovery }
   }
   if (entry.kind === 'approval') {
-    const others = state.openApprovals.filter((id) => id !== entry.id)
-    // Answered, or standing and waiting on somebody. The order is the order
-    // they were asked in, because that is the order they are answered in.
-    return {
-      ...state,
-      openApprovals: entry.decision === null ? [...others, entry.id] : others
+    // The order is the order they were asked in, because that is the order
+    // they are answered in — so a request written again while it still stands
+    // keeps its place rather than going to the back of the queue.
+    if (entry.decision !== null) {
+      return { ...state, openApprovals: state.openApprovals.filter((id) => id !== entry.id) }
     }
+    if (state.openApprovals.includes(entry.id)) return state
+    return { ...state, openApprovals: [...state.openApprovals, entry.id] }
   }
   if (entry.kind === 'message') {
+    const said = { id: entry.id, role: entry.role, suggested: entry.suggestedResponses.length > 0 }
+    // The same message again, still the last thing said: a streaming message
+    // is written repeatedly as it grows.
+    if (state.lastMessage?.id === entry.id) return { ...state, lastMessage: said }
+    // One written again after somebody else has since spoken. It is not the
+    // last thing said, and treating it as one would hide the reply.
+    if (state.recentMessageIds.includes(entry.id)) return state
     return {
       ...state,
-      lastMessage: { role: entry.role, suggested: entry.suggestedResponses.length > 0 }
+      lastMessage: said,
+      recentMessageIds: [...state.recentMessageIds, entry.id].slice(-RECENT_MESSAGES)
     }
   }
   return state
@@ -80,7 +123,7 @@ export function describeState(state: SessionState): Pick<MailboxSession, 'status
   }
   if (state.activeRunId !== null) return { status: 'running', waitingFor: null }
   // A Run the person stopped is not a failure: they got what they asked for.
-  if (state.recovery !== null && state.recovery !== 'stopped') {
+  if (state.recovery !== null && state.recovery.category !== 'stopped') {
     return { status: 'failed', waitingFor: null }
   }
   return { status: 'idle', waitingFor: null }

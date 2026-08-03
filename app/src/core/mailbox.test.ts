@@ -183,6 +183,114 @@ describe('search and filters', () => {
   })
 })
 
+/** Puts a Session mid-Run, as developing one does. */
+async function beginRun(sessionId: string): Promise<string> {
+  const run = await core.acceptRun({
+    submissionId: `submission-${sessionId}`,
+    sessionId,
+    prompt: 'Change the greeting',
+    configuration: {
+      harness: 'claude',
+      executable: '/usr/local/bin/claude',
+      executableHash: 'a'.repeat(64),
+      harnessVersion: '2.1.220 (Claude Code)',
+      model: 'default',
+      effort: 'medium',
+      skill: null,
+      environment: {},
+      checkout: projectRoot,
+      permissionMode: 'ask'
+    }
+  })
+  await core.beginConversationRun({
+    sessionId,
+    runId: run.id,
+    submissionId: `submission-${sessionId}`,
+    harness: 'claude'
+  })
+  return run.id
+}
+
+it('puts a Session blocked on an approval in needs-attention, and nothing else', async () => {
+  const waiting = await start('Waiting on me')
+  const working = await start('Still working')
+  const quiet = await start('Replied and stopped')
+
+  const waitingRun = await beginRun(waiting.id)
+  await core.applyHarnessEvent({
+    sessionId: waiting.id,
+    runId: waitingRun,
+    event: {
+      type: 'approval-request',
+      id: 'toolu_1',
+      tool: 'Bash',
+      summary: 'rm -rf build',
+      detail: '{}',
+      proposedRule: null
+    }
+  })
+  await beginRun(working.id)
+  // Replied and stopped is exactly the case that must not be in the group.
+  const quietRun = await beginRun(quiet.id)
+  await core.applyHarnessEvent({
+    sessionId: quiet.id,
+    runId: quietRun,
+    event: { type: 'assistant-message', id: 'msg_1', text: 'Done.', complete: true }
+  })
+  await core.finalizeConversationRun({
+    sessionId: quiet.id,
+    runId: quietRun,
+    outcome: 'completed',
+    category: null,
+    summary: 'Harness process completed'
+  })
+
+  const snapshot = await core.queryMailbox(query())
+  expect(group(snapshot, 'needs-attention')).toEqual(['Waiting on me'])
+  expect(group(snapshot, 'running')).toEqual(['Still working'])
+  expect(group(snapshot, 'recent')).toEqual(['Replied and stopped'])
+})
+
+it('counts an unanswered structured question as waiting, and prose as not', async () => {
+  const asked = await start('Asked me something')
+  const runId = await beginRun(asked.id)
+  await core.applyHarnessEvent({
+    sessionId: asked.id,
+    runId,
+    event: { type: 'assistant-message', id: 'msg_1', text: 'Which one?', complete: true }
+  })
+  await core.applyHarnessEvent({
+    sessionId: asked.id,
+    runId,
+    event: {
+      type: 'choices',
+      question: 'Which one?',
+      options: [{ id: 'option-1', label: 'The first', value: 'The first' }]
+    }
+  })
+  await core.finalizeConversationRun({
+    sessionId: asked.id,
+    runId,
+    outcome: 'completed',
+    category: null,
+    summary: 'Harness process completed'
+  })
+
+  const waiting = await core.queryMailbox(query())
+  expect(group(waiting, 'needs-attention')).toEqual(['Asked me something'])
+
+  // Answering it is what stops it waiting.
+  await core.submitConversationMessage({
+    sessionId: asked.id,
+    submissionId: 'submission-answer',
+    text: 'The first',
+    source: 'suggested-response'
+  })
+  const answered = await core.queryMailbox(query())
+  expect(group(answered, 'needs-attention')).toEqual([])
+  expect(group(answered, 'recent')).toEqual(['Asked me something'])
+})
+
 describe('what the inbox reads', () => {
   /** Where the projection for a Session lives, beside its Conversation. */
   function stateFile(sessionId: string): string {
@@ -203,6 +311,54 @@ describe('what the inbox reads', () => {
       JSON.stringify({ ...projected, activeRunId: 'run-invented' })
     )
     expect(group(await core.queryMailbox(query()), 'running')).toEqual(['Quietly idle'])
+  })
+
+  it('never says something the Conversation itself would not', async () => {
+    // The case that separates a projection from a copy: an agent asks a
+    // question, the person answers while its message is still streaming, and
+    // the message is written again afterwards. The journal keeps one entry per
+    // message, at the place it first appeared — so the reply is still the last
+    // thing said, and this Session is not waiting on anybody.
+    const session = await start('Answered while it streamed')
+    const runId = await beginRun(session.id)
+    const asking = {
+      sessionId: session.id,
+      runId,
+      event: {
+        type: 'assistant-message' as const,
+        id: 'msg_ask',
+        text: 'Which one?',
+        complete: false
+      }
+    }
+    await core.applyHarnessEvent(asking)
+    await core.applyHarnessEvent({
+      sessionId: session.id,
+      runId,
+      event: {
+        type: 'choices',
+        question: 'Which one?',
+        options: [{ id: 'option-1', label: 'The first', value: 'The first' }]
+      }
+    })
+    await core.submitConversationMessage({
+      sessionId: session.id,
+      submissionId: 'submission-answer',
+      text: 'The first',
+      source: 'suggested-response'
+    })
+    // The same message again, written when it finishes — after the reply.
+    await core.applyHarnessEvent({
+      ...asking,
+      event: { ...asking.event, text: 'Which one?', complete: true }
+    })
+
+    const projected = await core.queryMailbox(query())
+    expect(group(projected, 'needs-attention')).toEqual([])
+    // And the Conversation, read in full, says exactly the same thing.
+    const conversation = await core.getConversation(session.id)
+    const spoken = conversation.entries.filter((entry) => entry.kind === 'message').at(-1)
+    expect(spoken).toMatchObject({ role: 'user', text: 'The first' })
   })
 
   it('rebuilds a projection that has fallen behind its Conversation', async () => {
@@ -236,114 +392,6 @@ describe('what the inbox reads', () => {
 })
 
 describe('what is waiting for me', () => {
-  /** Puts a Session mid-Run, as developing one does. */
-  async function beginRun(sessionId: string): Promise<string> {
-    const run = await core.acceptRun({
-      submissionId: `submission-${sessionId}`,
-      sessionId,
-      prompt: 'Change the greeting',
-      configuration: {
-        harness: 'claude',
-        executable: '/usr/local/bin/claude',
-        executableHash: 'a'.repeat(64),
-        harnessVersion: '2.1.220 (Claude Code)',
-        model: 'default',
-        effort: 'medium',
-        skill: null,
-        environment: {},
-        checkout: projectRoot,
-        permissionMode: 'ask'
-      }
-    })
-    await core.beginConversationRun({
-      sessionId,
-      runId: run.id,
-      submissionId: `submission-${sessionId}`,
-      harness: 'claude'
-    })
-    return run.id
-  }
-
-  it('puts a Session blocked on an approval in needs-attention, and nothing else', async () => {
-    const waiting = await start('Waiting on me')
-    const working = await start('Still working')
-    const quiet = await start('Replied and stopped')
-
-    const waitingRun = await beginRun(waiting.id)
-    await core.applyHarnessEvent({
-      sessionId: waiting.id,
-      runId: waitingRun,
-      event: {
-        type: 'approval-request',
-        id: 'toolu_1',
-        tool: 'Bash',
-        summary: 'rm -rf build',
-        detail: '{}',
-        proposedRule: null
-      }
-    })
-    await beginRun(working.id)
-    // Replied and stopped is exactly the case that must not be in the group.
-    const quietRun = await beginRun(quiet.id)
-    await core.applyHarnessEvent({
-      sessionId: quiet.id,
-      runId: quietRun,
-      event: { type: 'assistant-message', id: 'msg_1', text: 'Done.', complete: true }
-    })
-    await core.finalizeConversationRun({
-      sessionId: quiet.id,
-      runId: quietRun,
-      outcome: 'completed',
-      category: null,
-      summary: 'Harness process completed'
-    })
-
-    const snapshot = await core.queryMailbox(query())
-    expect(group(snapshot, 'needs-attention')).toEqual(['Waiting on me'])
-    expect(group(snapshot, 'running')).toEqual(['Still working'])
-    expect(group(snapshot, 'recent')).toEqual(['Replied and stopped'])
-  })
-
-  it('counts an unanswered structured question as waiting, and prose as not', async () => {
-    const asked = await start('Asked me something')
-    const runId = await beginRun(asked.id)
-    await core.applyHarnessEvent({
-      sessionId: asked.id,
-      runId,
-      event: { type: 'assistant-message', id: 'msg_1', text: 'Which one?', complete: true }
-    })
-    await core.applyHarnessEvent({
-      sessionId: asked.id,
-      runId,
-      event: {
-        type: 'choices',
-        question: 'Which one?',
-        options: [{ id: 'option-1', label: 'The first', value: 'The first' }]
-      }
-    })
-    await core.finalizeConversationRun({
-      sessionId: asked.id,
-      runId,
-      outcome: 'completed',
-      category: null,
-      summary: 'Harness process completed'
-    })
-
-    const waiting = await core.queryMailbox(query())
-    expect(group(waiting, 'needs-attention')).toEqual(['Asked me something'])
-
-    // Answering it is what stops it waiting.
-    await core.submitConversationMessage({
-      sessionId: asked.id,
-      submissionId: 'submission-answer',
-      text: 'The first',
-      source: 'suggested-response'
-    })
-    const answered = await core.queryMailbox(query())
-    expect(group(answered, 'needs-attention')).toEqual([])
-    expect(group(answered, 'recent')).toEqual(['Asked me something'])
-  })
-
   it('lists a Run its Conversation still has open, and stops once it is closed', async () => {
     const abandoned = await start('Quit while it worked')
     const runId = await beginRun(abandoned.id)

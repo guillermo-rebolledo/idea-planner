@@ -34,6 +34,7 @@ import {
   advance,
   deriveState,
   journalSize,
+  readSessionState,
   stateFile,
   writeState,
   type SessionState
@@ -247,42 +248,42 @@ export function createConversationEffects(options: ConversationOptions): Convers
 
   const append = (sessionDir: string, entry: ConversationEntry): Effect.Effect<void, CoreError> =>
     Effect.gen(function* () {
+      const journal = join(sessionDir, JOURNAL)
+      const line = `${JSON.stringify(entry)}\n`
+      // What the projection has to agree with to be usable: the journal as it
+      // is *before* this entry. Read first, so what follows is one fold over
+      // one entry rather than a reading of everything that ever happened.
+      const before = yield* journalSize(journal)
+      const known = yield* stateAsOf(sessionDir, before)
       yield* Effect.tryPromise({
         try: async () => {
           await mkdir(sessionDir, { recursive: true, mode: 0o700 })
-          await appendFile(join(sessionDir, JOURNAL), `${JSON.stringify(entry)}\n`, 'utf8')
+          await appendFile(journal, line, 'utf8')
         },
         catch: () => new CoreError('IO_ERROR', 'The Conversation could not be saved')
       })
       // The journal is written first and the projection after it, so a crash
       // between them leaves a projection that is behind rather than ahead.
-      // Being behind is detectable; being ahead would be a status the
+      // Being behind is seen and repaired; being ahead would be a status the
       // Conversation never said (ticket 12f).
-      const known = yield* readState(sessionDir)
       yield* writeState(sessionDir, {
         ...advance(known, entry),
-        journalBytes: yield* journalSize(join(sessionDir, JOURNAL))
+        journalBytes: before + Buffer.byteLength(line, 'utf8')
       }).pipe(Effect.catchAll(() => Effect.void))
     })
 
   /**
-   * What this Session is doing, from the projection when it agrees with the
-   * journal and from the journal itself when it does not. A projection that
-   * has fallen behind is repaired rather than trusted: the Conversation is
-   * what happened, and this only says so faster.
+   * What this Session was doing when its journal was `bytes` long, from the
+   * projection if that is what the projection describes and from the journal
+   * itself if it is not. A projection that has fallen behind is repaired
+   * rather than trusted: the Conversation is what happened, and this only
+   * says so faster.
    */
-  const readState = (sessionDir: string): Effect.Effect<SessionState, CoreError> =>
+  const stateAsOf = (sessionDir: string, bytes: number): Effect.Effect<SessionState, CoreError> =>
     Effect.gen(function* () {
-      const bytes = yield* journalSize(join(sessionDir, JOURNAL))
       const written = yield* Effect.promise(() =>
         readFile(stateFile(sessionDir), 'utf8').then(
-          (text) => {
-            try {
-              return JSON.parse(text) as SessionState
-            } catch {
-              return null
-            }
-          },
+          (text) => readSessionState(text),
           () => null
         )
       )
@@ -291,6 +292,11 @@ export function createConversationEffects(options: ConversationOptions): Convers
       yield* writeState(sessionDir, rebuilt).pipe(Effect.catchAll(() => Effect.void))
       return rebuilt
     })
+
+  const readState = (sessionDir: string): Effect.Effect<SessionState, CoreError> =>
+    journalSize(join(sessionDir, JOURNAL)).pipe(
+      Effect.flatMap((bytes) => stateAsOf(sessionDir, bytes))
+    )
 
   const snapshot = (
     sessionId: string,
@@ -988,8 +994,10 @@ function tally(
 }
 
 function summarize(sessionId: string, entries: ConversationEntry[]): ConversationSnapshot {
-  let activeRunId: string | null = null
-  let recovery: ConversationRecovery | null = null
+  // What the Session is doing is one rule, and it lives with the projection
+  // the inbox reads (ticket 12f). Stating it twice would be two answers to
+  // one question, free to disagree.
+  const state = deriveState(entries, 0)
   let latestRunUsage: HarnessUsage | null = null
   let sessionUsage = emptyUsage()
   const harnessThreads: Partial<Record<HarnessId, string>> = {}
@@ -998,15 +1006,6 @@ function summarize(sessionId: string, entries: ConversationEntry[]): Conversatio
   // back off disk.
   const changed = new Map<string, ChangedFile>()
   for (const entry of entries) {
-    if (entry.kind === 'boundary') {
-      if (entry.boundary === 'run-started') {
-        activeRunId = entry.runId
-        recovery = null
-      } else if (entry.runId === activeRunId) {
-        activeRunId = null
-        recovery = entry.recovery
-      }
-    }
     if (entry.kind === 'usage') {
       sessionUsage = addUsage(sessionUsage, entry.usage)
       latestRunUsage = entry.usage
@@ -1018,15 +1017,14 @@ function summarize(sessionId: string, entries: ConversationEntry[]): Conversatio
     sessionId,
     entries: entries.filter((entry) => entry.kind !== 'usage' && entry.kind !== 'thread'),
     usage: { run: latestRunUsage, session: sessionUsage },
-    recovery,
+    recovery: state.recovery,
     harnessThreads,
     changedFiles: [...changed.values()],
-    activeRunId,
+    activeRunId: state.activeRunId,
     // The Run is blocked for exactly as long as a request stands unanswered.
     // The oldest is the one put to the person, so that answering it reveals
     // the next: a Harness may have several in flight, and picking the newest
     // would leave the ones behind it unanswerable.
-    pendingApprovalId:
-      entries.find((entry) => entry.kind === 'approval' && entry.decision === null)?.id ?? null
+    pendingApprovalId: state.openApprovals[0] ?? null
   }
 }

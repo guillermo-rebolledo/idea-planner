@@ -230,10 +230,6 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     })
 
   /**
-   * The mailbox over the Session store. Searching is over Session titles in
-   * memory: there is no corpus of documents left to index.
-   */
-  /**
    * The Runs whose Conversation still has them open. After a quit or a crash
    * nothing closed them, so they read as working when nothing is working —
    * and the Session goes on saying so until somebody develops it again.
@@ -259,6 +255,10 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       return open.filter((entry): entry is UnfinishedRun => entry !== null)
     })
 
+  /**
+   * The mailbox over the Session store. Searching is over Session titles in
+   * memory: there is no corpus of documents left to index.
+   */
   const queryMailbox = (query: MailboxCoreQuery): Effect.Effect<MailboxSnapshot, CoreError> =>
     Effect.gen(function* () {
       const all = yield* sessions.list()
