@@ -176,19 +176,65 @@ async function settled(read: () => Promise<string>): Promise<string> {
   return last
 }
 
+/** Past onboarding, on the launch screen, with a Project to work in. */
+async function openTheApp(page: Awaited<ReturnType<ElectronApplication['firstWindow']>>) {
+  const projects = page.getByRole('region', { name: 'Projects' })
+  await projects.getByRole('button', { name: 'Add Project' }).click()
+  // The sandbox reaches the folder through a symlink, so git names a root the
+  // person did not pick and the app confirms it first.
+  await projects.getByRole('alert').getByRole('button', { name: 'Add this Project' }).click()
+  await page.getByRole('button', { name: 'Continue', exact: true }).click()
+  const composer = page.getByRole('form', { name: 'New chat' })
+  await composer.waitFor()
+  return composer
+}
+
+test('no rule is drawn in the text colour, which is how a menu grows a white line', async () => {
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    const composer = await openTheApp(page)
+    // The deepest stack of rules in the app: a popup with sections.
+    await composer.getByRole('combobox', { name: 'Model' }).click()
+    await page.getByRole('listbox').waitFor()
+
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((name) => {
+        document.documentElement.dataset['theme'] = name
+      }, theme)
+
+      // A border with no colour of its own falls back to `currentcolor`, so it
+      // is drawn in the text colour — a hairline that shouts, and in the dark
+      // theme a white line across the bottom of a menu. Every rule states the
+      // role it is drawn in, or it is not a rule, it is an accident.
+      const shouting = await page.evaluate(() => {
+        const sides = ['Top', 'Right', 'Bottom', 'Left'] as const
+        return Array.from(document.querySelectorAll('[cmdk-root] *'))
+          .filter((element) => {
+            const style = getComputedStyle(element)
+            return sides.some(
+              (side) =>
+                Number.parseFloat(style.getPropertyValue(`border-${side.toLowerCase()}-width`)) >
+                  0 && style.getPropertyValue(`border-${side.toLowerCase()}-color`) === style.color
+            )
+          })
+          .map((element) => element.getAttribute('data-slot') ?? element.className)
+      })
+
+      expect(shouting, `a rule is drawn in the text colour in ${theme}`).toEqual([])
+    }
+  } finally {
+    await app.close()
+  }
+})
+
 test('a filled control answers the pointer, in the same currency as a quiet one', async () => {
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
-    const projects = page.getByRole('region', { name: 'Projects' })
-    await projects.getByRole('button', { name: 'Add Project' }).click()
-    // The sandbox reaches the folder through a symlink, so git names a root
-    // the person did not pick and the app confirms it first.
-    await projects.getByRole('alert').getByRole('button', { name: 'Add this Project' }).click()
-    await page.getByRole('button', { name: 'Continue', exact: true }).click()
+    const composer = await openTheApp(page)
 
     // The app's one filled control at rest: Send, on the launch screen.
-    const composer = page.getByRole('form', { name: 'New chat' })
     await composer.getByLabel('Message').fill('Something to send')
     const button = composer.getByRole('button', { name: 'Send' })
     await expect(button).toBeEnabled()
