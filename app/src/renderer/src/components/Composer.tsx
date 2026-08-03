@@ -87,7 +87,7 @@ export function Composer({ boundProjectRoot, onStarted }: ComposerProps): React.
       }}
     >
       <div>
-        <h2 className="text-lg font-semibold">What are we working on?</h2>
+        <h2 className="text-lg font-medium">What are we working on?</h2>
         <p className="mt-1 text-xs text-muted-foreground">
           Sending starts a Session in the Project below and edits it in place.
         </p>
@@ -117,7 +117,7 @@ export function Composer({ boundProjectRoot, onStarted }: ComposerProps): React.
         </div>
         {/* The exact directory that will be edited, never abbreviated. */}
         {selected && (
-          <p className="font-mono text-[11px] break-all text-muted-foreground select-text">
+          <p className="font-mono text-xs break-all text-muted-foreground select-text">
             {selected.root}
           </p>
         )}
@@ -156,13 +156,13 @@ export function Composer({ boundProjectRoot, onStarted }: ComposerProps): React.
       </div>
 
       {projects.length === 0 && (
-        <p role="status" className="text-[11px] text-muted-foreground">
+        <p role="status" className="text-xs text-muted-foreground">
           Add a Project first — a Session works inside one.
         </p>
       )}
 
       {error && (
-        <p role="alert" className="text-[11px] text-destructive">
+        <p role="alert" className="text-xs text-destructive">
           {error}
         </p>
       )}

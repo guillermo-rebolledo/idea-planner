@@ -15,9 +15,9 @@ const CHANGE_WORD: Record<ChangeKind, string> = {
 }
 
 const CHANGE_LOOK: Record<ChangeKind, { icon: LucideIcon; tone: string }> = {
-  added: { icon: FilePlus2, tone: 'text-positive' },
+  added: { icon: FilePlus2, tone: 'text-diff-added-foreground' },
   changed: { icon: FileDiff, tone: 'text-muted-foreground' },
-  deleted: { icon: FileX2, tone: 'text-destructive' }
+  deleted: { icon: FileX2, tone: 'text-diff-removed-foreground' }
 }
 
 /**
@@ -110,7 +110,7 @@ function ChangedFileRow({
         >
           {file.path}
         </span>
-        <span className="shrink-0 text-[11px]">
+        <span className="shrink-0 text-xs">
           {textless || unreadable ? (
             // No lines to show, and a reason: `+0 −0` on its own reads as a
             // bug rather than as a binary file or a diff nobody kept.
@@ -119,12 +119,12 @@ function ChangedFileRow({
             </span>
           ) : (
             <>
-              <span className="text-positive">+{file.added}</span>{' '}
-              <span className="text-destructive">−{file.removed}</span>
+              <span className="text-diff-added-foreground">+{file.added}</span>{' '}
+              <span className="text-diff-removed-foreground">−{file.removed}</span>
             </>
           )}
         </span>
-        <span className="shrink-0 text-[11px] text-muted-foreground">
+        <span className="shrink-0 text-xs text-muted-foreground">
           {CHANGE_WORD[file.changeKind]}
           {file.reported
             ? file.changes > 1
@@ -138,12 +138,12 @@ function ChangedFileRow({
       {open && (
         <div className="px-3 pb-3">
           {textless && (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Nothing to show: this file has no text to diff.
             </p>
           )}
           {unreadable && (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               This file changed, and its diff was too large to keep.
             </p>
           )}
@@ -152,7 +152,7 @@ function ChangedFileRow({
             <DiffView key={entry.id} hunks={entry.hunks} />
           ))}
           {file.shortened && !unreadable && (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               This diff is longer than what is kept; the counts above are the whole change.
             </p>
           )}

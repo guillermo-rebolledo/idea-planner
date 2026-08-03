@@ -22,7 +22,10 @@ export default function App(): React.JSX.Element {
   const [theme, setTheme] = useState<ThemeState | null>(null)
 
   const adoptTheme = useCallback((next: ThemeState) => {
-    document.documentElement.classList.toggle('dark', next.resolved === 'dark')
+    // The whole app is re-skinned by naming the theme; every value it needs
+    // is under that name in `styles.css`, and no component is told which one
+    // is in force.
+    document.documentElement.dataset['theme'] = next.resolved
     setTheme(next)
   }, [])
 

@@ -3,7 +3,9 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
+  Circle,
   CircleDashed,
+  CircleSlash,
   Clock3,
   Inbox,
   MessageSquare,
@@ -58,9 +60,9 @@ const GROUP_META: Record<MailboxGroupKey, GroupMeta> = {
   'needs-attention': {
     label: 'Needs attention',
     icon: AlertTriangle,
-    colorClass: 'text-amber-600 dark:text-amber-400'
+    colorClass: 'text-status-blocked'
   },
-  running: { label: 'Running', icon: CircleDashed, colorClass: 'text-sky-600 dark:text-sky-400' },
+  running: { label: 'Running', icon: CircleDashed, colorClass: 'text-status-running' },
   recent: { label: 'Recent', icon: Clock3, colorClass: 'text-muted-foreground' },
   archived: { label: 'Archived', icon: Archive, colorClass: 'text-muted-foreground' }
 }
@@ -244,7 +246,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
         >
           <PanelLeft aria-hidden="true" className="size-4" />
         </Button>
-        <h1 className="text-[13px] font-semibold">Sessions</h1>
+        <h1 className="text-base font-medium">Sessions</h1>
         <div className="ml-auto flex items-center gap-2">
           <ThemeSelect theme={theme} onChange={onThemePreferenceChange} />
           <Button
@@ -283,7 +285,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
               {damaged.length > 0 && (
                 <p
                   role="status"
-                  className="border-b border-notice-border bg-notice px-2 py-1.5 text-[11px] text-notice-foreground"
+                  className="border-b border-notice-border bg-notice px-2 py-1.5 text-xs text-notice-foreground"
                 >
                   {damaged.length === 1
                     ? '1 Session could not be read and is not listed.'
@@ -327,7 +329,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
                 {query.projectRoot !== null && (
                   // A filter that hides Sessions has to say so, or the list
                   // looks like an inbox that lost them.
-                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                  <div className="flex items-center gap-1 text-2xs text-muted-foreground">
                     <span className="min-w-0 flex-1 truncate font-mono">{query.projectRoot}</span>
                     <button
                       type="button"
@@ -483,13 +485,13 @@ function SessionGroup({ groupKey, sessions, ...props }: SessionGroupProps): Reac
   const meta = GROUP_META[groupKey]
   return (
     <section aria-label={meta.label} className="px-2">
-      <h2 className="flex items-center gap-1.5 px-2 pb-1 text-[10px] font-semibold tracking-wide uppercase">
+      <h2 className="flex items-center gap-1.5 px-2 pb-1 text-2xs font-medium tracking-wide uppercase">
         <meta.icon aria-hidden="true" className={cn('size-3', meta.colorClass)} />
         <span className={meta.colorClass}>{meta.label}</span>
         <span className="text-muted-foreground">{sessions.length}</span>
       </h2>
       {sessions.length === 0 ? (
-        <p className="px-2 pb-1 text-[11px] text-muted-foreground italic">
+        <p className="px-2 pb-1 text-xs text-muted-foreground italic">
           {groupKey === 'running' ? 'No Runs yet' : 'None'}
         </p>
       ) : (
@@ -529,18 +531,18 @@ function SessionRow({ session, selectedId, ...props }: SessionRowProps): React.J
               so here rather than in Needs attention: nothing is waiting on an
               answer, but the row still has to admit what happened. */}
           {session.waitingFor !== null && (
-            <span className="block truncate text-[10px] text-amber-600 dark:text-amber-400">
+            <span className="block truncate text-2xs text-status-blocked">
               {session.waitingFor === 'approval'
                 ? 'Waiting for your approval'
                 : 'Waiting for your answer'}
             </span>
           )}
           {session.status === 'failed' && (
-            <span className="block truncate text-[10px] text-destructive">The last Run failed</span>
+            <span className="block truncate text-2xs text-status-failed">The last Run failed</span>
           )}
         </span>
         {session.dormant && (
-          <span className="rounded-sm bg-notice px-1 text-[10px] font-medium text-notice-foreground">
+          <span className="rounded-sm bg-notice px-1 text-2xs font-medium text-notice-foreground">
             Dormant
           </span>
         )}
@@ -615,29 +617,40 @@ function ViewToggle({
 }
 
 /**
- * What the rail says about a Session with no room for words. Only the two
- * states the inbox exists for get their own mark; the rest read as a chat.
+ * What the rail says about a Session with no room for words.
+ *
+ * Every state gets its own mark. The rail used to fall back to one generic
+ * message icon, which was a placeholder left behind when ticket 03 removed
+ * the kind icons: it gave every Session the same face, which is the one thing
+ * a status rail must not do.
  */
-const RAIL_STATUS: Partial<
-  Record<SessionStatus, { icon: LucideIcon; colorClass: string; said: string }>
-> = {
+const RAIL_STATUS: Record<SessionStatus, { icon: LucideIcon; colorClass: string; said: string }> = {
   blocked: {
     icon: AlertTriangle,
-    colorClass: 'text-amber-600 dark:text-amber-400',
+    colorClass: 'text-status-blocked',
     said: ', needs attention'
   },
   running: {
     icon: CircleDashed,
-    colorClass: 'text-sky-600 dark:text-sky-400',
+    colorClass: 'text-status-running',
     said: ', running'
+  },
+  failed: {
+    icon: CircleSlash,
+    colorClass: 'text-status-failed',
+    said: ', last Run failed'
+  },
+  idle: {
+    icon: Circle,
+    colorClass: 'text-status-idle',
+    said: ''
   }
 }
 
 /** What a Session looks like with no room to say anything about it. */
 function RailIcon({ status }: { status: SessionStatus }): React.JSX.Element {
   const marked = RAIL_STATUS[status]
-  const Icon = marked?.icon ?? MessageSquare
-  return <Icon aria-hidden="true" className={cn('size-3.5 shrink-0', marked?.colorClass)} />
+  return <marked.icon aria-hidden="true" className={cn('size-3.5 shrink-0', marked.colorClass)} />
 }
 
 interface CompactRailProps {
@@ -695,7 +708,7 @@ function CompactRail({
           }
           title={waiting === 1 ? '1 Session needs attention' : `${String(waiting)} need attention`}
           onClick={onExpand}
-          className="flex size-7 items-center justify-center rounded-full bg-amber-500/15 text-[11px] font-semibold text-amber-600 focus-visible:ring-2 focus-visible:ring-ring dark:text-amber-400"
+          className="flex size-7 items-center justify-center rounded-full bg-status-blocked-surface text-xs font-medium text-status-blocked focus-visible:ring-2 focus-visible:ring-ring"
         >
           {waiting}
         </button>
@@ -706,7 +719,7 @@ function CompactRail({
           <li key={session.id} className="relative">
             <button
               type="button"
-              aria-label={`${session.title}${RAIL_STATUS[session.status]?.said ?? ''}`}
+              aria-label={`${session.title}${RAIL_STATUS[session.status].said}`}
               title={session.title}
               aria-current={selectedId === session.id ? 'true' : undefined}
               onClick={() => onOpen(session)}
@@ -752,7 +765,7 @@ function DeleteConfirmSurface({
       className="mx-auto flex w-full max-w-xl flex-col gap-4 p-6"
     >
       <div>
-        <h2 id="delete-confirm-title" className="text-lg font-semibold">
+        <h2 id="delete-confirm-title" className="text-lg font-medium">
           Delete “{session.title}”?
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -810,7 +823,7 @@ function SessionDetail({
           </span>
         )}
       </div>
-      <h2 className="mt-2 text-lg font-semibold select-text">{session.title}</h2>
+      <h2 className="mt-2 text-lg font-medium select-text">{session.title}</h2>
       {/* The Project this Session works in, named exactly. */}
       <p className="mt-4 rounded-md border border-border bg-surface p-3 font-mono text-xs break-all text-muted-foreground select-text">
         {session.projectRoot}

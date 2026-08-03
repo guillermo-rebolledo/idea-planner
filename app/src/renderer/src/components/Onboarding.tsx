@@ -23,7 +23,7 @@ export function Onboarding({ onComplete }: OnboardingProps): React.JSX.Element {
       <header className="app-drag-region h-11 shrink-0" aria-hidden="true" />
       <main className="flex flex-1 items-center justify-center p-8">
         <section className="w-full max-w-md" aria-labelledby="onboarding-title">
-          <h1 id="onboarding-title" className="text-lg font-semibold">
+          <h1 id="onboarding-title" className="text-lg font-medium">
             Add your first Project
           </h1>
           <p className="mt-2 leading-relaxed text-muted-foreground">

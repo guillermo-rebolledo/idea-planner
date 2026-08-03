@@ -7,7 +7,7 @@ import type { DiffHunk } from '@shared/contract'
  */
 export function DiffView({ hunks }: { hunks: DiffHunk[] }): React.JSX.Element {
   return (
-    <pre className="mt-1 overflow-x-auto rounded-md border border-border bg-surface p-2 font-mono text-[11px] select-text">
+    <pre className="mt-1 overflow-x-auto rounded-md border border-border bg-surface p-2 font-mono text-xs select-text">
       {hunks.map((hunk, index) => (
         // A hunk is identified by where it starts and how far it runs.
         <div key={`${hunk.oldStart}:${hunk.newStart}:${hunk.lines.length}`}>
@@ -19,9 +19,9 @@ export function DiffView({ hunks }: { hunks: DiffHunk[] }): React.JSX.Element {
               key={lineIndex}
               className={
                 line.startsWith('+')
-                  ? 'text-positive'
+                  ? 'bg-diff-added-surface text-diff-added-foreground'
                   : line.startsWith('-')
-                    ? 'text-destructive'
+                    ? 'bg-diff-removed-surface text-diff-removed-foreground'
                     : 'text-muted-foreground'
               }
             >

@@ -58,7 +58,7 @@ export function PopoverContent({
         <BasePopover.Popup
           ref={ref}
           className={cn(
-            'z-50 rounded-md border border-border bg-surface text-foreground shadow-md outline-none',
+            'z-50 rounded-md border border-border bg-popover text-foreground shadow-md outline-none',
             className
           )}
           {...props}

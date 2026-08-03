@@ -131,6 +131,36 @@ export default tseslint.config(
     }
   },
 
+  // Every value a component uses comes from the token layer in `styles.css`
+  // (ticket 15). A palette colour or a bracketed size written into a class is
+  // a value that no theme can reach, so it is a design question rather than a
+  // lint annoyance: add the role you need to the token layer instead.
+  {
+    name: 'app/design-tokens',
+    files: ['app/src/renderer/**/*.tsx'],
+    // The provider marks are the providers' own colours, not this app's, and
+    // there is no theme in which Anthropic's orange should become something
+    // else.
+    ignores: ['app/src/renderer/src/components/ui/logos.tsx'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            'Literal[value=/(^|\\s)(bg|text|border|ring|fill|stroke|from|via|to|shadow|outline|divide|caret|decoration|p|px|py|pt|pr|pb|pl|m|mx|my|mt|mr|mb|ml|w|h|size|gap|min-w|min-h|max-w|max-h|rounded|leading|tracking|duration|delay)-(\\[|(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-)/]',
+          message:
+            'Use a semantic token from styles.css, not a raw value or a palette colour: a theme cannot reach this.'
+        },
+        {
+          selector:
+            'Literal[value=/#[0-9a-fA-F]{3}\\b|#[0-9a-fA-F]{6}\\b|rgba?\\(|hsla?\\(|oklch\\(/]',
+          message:
+            'Colours belong to the token layer in styles.css, where every theme can restate them.'
+        }
+      ]
+    }
+  },
+
   // React, everywhere there is JSX. `eslint-plugin-react` 7.x calls APIs that
   // ESLint 10 removed, so the maintained ESLint React plugin replaces it; the
   // React Compiler rules come from eslint-plugin-react-hooks v7.

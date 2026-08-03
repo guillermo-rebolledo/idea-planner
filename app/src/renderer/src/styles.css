@@ -1,43 +1,126 @@
 @import 'tailwindcss';
 
-@custom-variant dark (&:is(.dark *));
+/**
+ * The app's visual identity, in two layers.
+ *
+ * **Families** are the raw colours, named after what they are. They exist so a
+ * hue is stated once and the roles that share it cannot drift apart.
+ * **Roles** are what components ask for, named after what they mean. A
+ * component never names a family, and never names a value.
+ *
+ * A theme is one block of role values and nothing else: adding one is
+ * `[data-theme='name'] { … }` plus the values, with no component touched.
+ * `app/tests/design.spec.ts` demonstrates that by re-skinning the running app
+ * from values alone, and `src/shared/theme.test.ts` checks every pair below
+ * for WCAG AA rather than trusting that it looks fine.
+ *
+ * Restraint is the point. Hierarchy is carried by luminance, borders are
+ * structure rather than decoration, and the brand blue is deliberately the
+ * least interesting colour on a screen whose job is making code changes
+ * legible. Green, red and amber are spoken for by the product — additions,
+ * deletions, and the blocked state — and are never spent on decoration.
+ */
 
-:root {
-  --background: oklch(0.985 0.001 90);
-  --foreground: oklch(0.24 0.006 260);
-  --muted: oklch(0.955 0.002 90);
-  --muted-foreground: oklch(0.52 0.008 260);
-  --surface: oklch(1 0 0);
-  --border: oklch(0.905 0.003 90);
-  --ring: oklch(0.55 0.14 260);
-  --accent: oklch(0.94 0.004 90);
-  --accent-foreground: oklch(0.24 0.006 260);
-  --primary: oklch(0.5 0.15 262);
-  --primary-foreground: oklch(0.99 0 0);
-  --destructive: oklch(0.55 0.19 25);
-  --notice: oklch(0.96 0.03 85);
-  --notice-border: oklch(0.85 0.07 80);
-  --notice-foreground: oklch(0.42 0.07 70);
-  --positive: oklch(0.55 0.12 150);
+@font-face {
+  font-family: 'Geist';
+  src: url('./assets/fonts/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
 }
 
-.dark {
-  --background: oklch(0.2 0.005 260);
-  --foreground: oklch(0.93 0.004 260);
-  --muted: oklch(0.24 0.005 260);
-  --muted-foreground: oklch(0.68 0.008 260);
-  --surface: oklch(0.235 0.005 260);
-  --border: oklch(0.3 0.006 260);
-  --ring: oklch(0.62 0.12 260);
-  --accent: oklch(0.29 0.006 260);
-  --accent-foreground: oklch(0.93 0.004 260);
-  --primary: oklch(0.62 0.13 262);
-  --primary-foreground: oklch(0.98 0 0);
-  --destructive: oklch(0.65 0.17 25);
-  --notice: oklch(0.27 0.02 80);
-  --notice-border: oklch(0.38 0.04 80);
-  --notice-foreground: oklch(0.82 0.07 85);
-  --positive: oklch(0.7 0.12 150);
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('./assets/fonts/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* Light. Designed on its own terms: the dark theme's identity is translucent
+   white over near-black, which has no light equivalent, so inverting it would
+   have produced grey mush. Here the page is the recessive surface and panels
+   step *up* towards white. */
+:root,
+[data-theme='light'] {
+  --green: oklch(0.48 0.13 152);
+  --green-surface: oklch(0.945 0.035 152);
+  --red: oklch(0.51 0.19 25);
+  --red-surface: oklch(0.955 0.032 25);
+  --amber: oklch(0.48 0.11 70);
+  --amber-surface: oklch(0.96 0.045 82);
+  --amber-border: oklch(0.79 0.1 78);
+  --cyan: oklch(0.48 0.09 220);
+  --blue: oklch(0.47 0.16 252);
+
+  --background: oklch(0.968 0.002 265);
+  --surface: oklch(0.995 0.001 265);
+  --surface-raised: oklch(1 0 0);
+  --muted: oklch(0.945 0.003 265);
+  --border: oklch(0.895 0.004 265);
+  --foreground: oklch(0.24 0.011 265);
+  --muted-foreground: oklch(0.475 0.012 265);
+  --accent: oklch(0.925 0.005 265);
+  --primary: var(--blue);
+  --primary-foreground: oklch(0.99 0 0);
+  --ring: oklch(0.54 0.15 252);
+
+  /* The same white that goes on any strong fill. */
+  --destructive-foreground: var(--primary-foreground);
+}
+
+/* Dark. Near-black with a trace of blue, and depth from stacked near-equal
+   surfaces rather than shadows. */
+[data-theme='dark'] {
+  --green: oklch(0.78 0.14 152);
+  --green-surface: oklch(0.255 0.04 152);
+  --red: oklch(0.72 0.16 25);
+  --red-surface: oklch(0.265 0.05 25);
+  --amber: oklch(0.82 0.12 80);
+  --amber-surface: oklch(0.29 0.045 78);
+  --amber-border: oklch(0.46 0.08 78);
+  --cyan: oklch(0.79 0.1 220);
+  --blue: oklch(0.68 0.095 252);
+
+  --background: oklch(0.168 0.005 265);
+  --surface: oklch(0.202 0.005 265);
+  --surface-raised: oklch(0.235 0.006 265);
+  --muted: oklch(0.222 0.005 265);
+  --border: oklch(0.305 0.007 265);
+  --foreground: oklch(0.945 0.003 265);
+  --muted-foreground: oklch(0.735 0.011 265);
+  --accent: oklch(0.268 0.007 265);
+  --primary: var(--blue);
+  --primary-foreground: oklch(0.15 0.02 252);
+  --ring: oklch(0.7 0.13 252);
+
+  --destructive-foreground: oklch(0.18 0.02 25);
+}
+
+/* The roles that follow their family whatever the theme is, so a theme states
+   its families and its own greys and nothing else. `var()` resolves against
+   the theme in force, which is what makes one line here serve every theme. */
+:root {
+  --accent-foreground: var(--foreground);
+  --positive: var(--green);
+  --destructive: var(--red);
+  --notice: var(--amber-surface);
+  --notice-border: var(--amber-border);
+  --notice-foreground: var(--amber);
+
+  --diff-added-foreground: var(--green);
+  --diff-added-surface: var(--green-surface);
+  --diff-removed-foreground: var(--red);
+  --diff-removed-surface: var(--red-surface);
+
+  --status-running: var(--cyan);
+  --status-blocked: var(--amber);
+  --status-blocked-surface: var(--amber-surface);
+  --status-blocked-border: var(--amber-border);
+  --status-idle: var(--muted-foreground);
+  --status-failed: var(--red);
 }
 
 @theme inline {
@@ -46,6 +129,7 @@
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
   --color-border: var(--border);
   --color-ring: var(--ring);
   --color-accent: var(--accent);
@@ -53,12 +137,67 @@
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-notice: var(--notice);
   --color-notice-border: var(--notice-border);
   --color-notice-foreground: var(--notice-foreground);
   --color-positive: var(--positive);
+
+  /* The two families the product has spent: a diff, and a Session's state. */
+  --color-diff-added-foreground: var(--diff-added-foreground);
+  --color-diff-added-surface: var(--diff-added-surface);
+  --color-diff-removed-foreground: var(--diff-removed-foreground);
+  --color-diff-removed-surface: var(--diff-removed-surface);
+  --color-status-running: var(--status-running);
+  --color-status-blocked: var(--status-blocked);
+  --color-status-blocked-surface: var(--status-blocked-surface);
+  --color-status-blocked-border: var(--status-blocked-border);
+  --color-status-idle: var(--status-idle);
+  --color-status-failed: var(--status-failed);
+
+  /* What the vendored shadcn-style primitives ask for, answered in this
+     app's terms rather than by adding a second palette. */
+  --color-popover: var(--surface-raised);
+  --color-input: var(--border);
+  --color-secondary: var(--muted);
+  --color-secondary-foreground: var(--foreground);
+
   --font-sans:
-    ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    'Geist', ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial,
+    sans-serif;
+  /* Load-bearing, not decorative: every diff, path, command and hash. */
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Tight, and narrow on purpose: six sizes, and emphasis carried by one
+     weight (medium) so hierarchy stays a matter of luminance. */
+  --text-2xs: 10px;
+  --text-2xs--line-height: 14px;
+  --text-xs: 11px;
+  --text-xs--line-height: 15px;
+  --text-sm: 12px;
+  --text-sm--line-height: 17px;
+  --text-base: 13px;
+  --text-base--line-height: 19px;
+  --text-lg: 15px;
+  --text-lg--line-height: 21px;
+  --text-xl: 18px;
+  --text-xl--line-height: 25px;
+
+  /* Every spacing utility in the app is a multiple of this. */
+  --spacing: 4px;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  /* Depth comes from stacked surfaces; a shadow only says "this floats above
+     the window", so there are two of them and both are quiet. */
+  --shadow-md: 0 2px 8px oklch(0 0 0 / 0.14);
+  --shadow-lg: 0 8px 28px oklch(0 0 0 / 0.22);
+
+  --default-transition-duration: 120ms;
+  --default-transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 html,
@@ -68,8 +207,18 @@ body,
 }
 
 body {
-  @apply bg-background font-sans text-[13px] text-foreground antialiased;
+  @apply bg-background font-sans text-base text-foreground antialiased;
   user-select: none;
+}
+
+/* The floor for keyboard focus: anything focused shows the ring unless it
+   says otherwise, and the only thing allowed to say otherwise is a control
+   whose surrounding field shows the focus for it (`focus-within:ring`). */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

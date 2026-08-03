@@ -88,7 +88,7 @@ export function ModelPicker({
 
   if (groups.length === 0) {
     return (
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         No Harness is ready, so there is nothing to run a message with.
       </p>
     )
@@ -184,7 +184,7 @@ function HarnessNote({
   const group = groups.find((entry) => entry.harness === harness)
   if (!group) return null
   return (
-    <p className="text-[10px] text-muted-foreground">
+    <p className="text-2xs text-muted-foreground">
       {group.displayName} {HARNESS_DIFFERENCE[harness]}
       {group.source === 'documented' && ' It lists no models, so these are the ones it documents.'}
     </p>

@@ -27,6 +27,19 @@ Sessions, Conversations, Runs, settings — lives in
 `~/Library/Application Support/com.memojiinc.argos` (ADR 0002), and a build is signed and
 notarized under it.
 
+## Visual identity
+
+`src/renderer/src/styles.css` holds the whole identity in two layers: families
+(what a colour is) and roles (what it means). Components name roles only —
+never a value, never a family — which is what makes a theme a block of values
+and nothing else. A raw colour or a bracketed size in a component is an ESLint
+error, `src/shared/theme.test.ts` computes WCAG contrast for every pair in
+every theme, and `tests/design.spec.ts` re-skins the running app from invented
+values to prove nothing is hard-coded.
+
+Geist and Geist Mono are self-hosted under `src/renderer/src/assets/fonts`
+(SIL OFL, licence alongside them). Nothing about the app loads over a network.
+
 ## Commands
 
 ```bash

@@ -30,7 +30,7 @@ export function LaunchGate({ snapshot, onContinue }: LaunchGateProps): React.JSX
       <header className="app-drag-region h-11 shrink-0" aria-hidden="true" />
       <main className="flex min-h-0 flex-1 justify-center overflow-y-auto p-8">
         <section className="w-full max-w-xl" aria-labelledby="launch-gate-title">
-          <h1 id="launch-gate-title" className="text-lg font-semibold">
+          <h1 id="launch-gate-title" className="text-lg font-medium">
             This app needs a coding agent to work
           </h1>
           <p className="mt-2 leading-relaxed text-muted-foreground">

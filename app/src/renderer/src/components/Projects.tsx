@@ -142,7 +142,7 @@ export function Projects({
   return (
     <section aria-label="Projects" className="flex flex-col gap-1 border-b border-border p-2">
       <div className="flex items-center gap-1.5 px-1">
-        <h2 className="text-[10px] font-semibold tracking-wide uppercase">Projects</h2>
+        <h2 className="text-2xs font-medium tracking-wide uppercase">Projects</h2>
         <Button
           variant="ghost"
           size="sm"
@@ -183,7 +183,7 @@ export function Projects({
       )}
 
       {failure && (
-        <p className="mt-1 text-[11px] text-destructive" role="status">
+        <p className="mt-1 text-xs text-destructive" role="status">
           {failure}
         </p>
       )}
@@ -211,13 +211,13 @@ function ProjectListContent({
   onFilter?: (projectRoot: string | null) => void
 }): React.JSX.Element {
   if (list.state === 'loading') {
-    return <p className="px-1 py-1 text-[11px] text-muted-foreground">Reading your Projects…</p>
+    return <p className="px-1 py-1 text-xs text-muted-foreground">Reading your Projects…</p>
   }
 
   if (list.state === 'failed') {
     return (
       <div role="alert" className="flex flex-col items-start gap-1 px-1 py-1">
-        <p className="text-[11px] text-muted-foreground">Your Projects could not be read.</p>
+        <p className="text-xs text-muted-foreground">Your Projects could not be read.</p>
         <Button variant="secondary" size="sm" className="h-6" onClick={onRetry}>
           Try again
         </Button>
@@ -227,7 +227,7 @@ function ProjectListContent({
 
   if (list.projects.length === 0) {
     return (
-      <p className="px-1 py-1 text-[11px] text-muted-foreground">
+      <p className="px-1 py-1 text-xs text-muted-foreground">
         No Projects yet. Add a Project to work in.
       </p>
     )
@@ -290,7 +290,7 @@ function StandingApprovals({ project }: { project: ProjectView }): React.JSX.Ele
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
-        className="text-[10px] text-muted-foreground underline-offset-2 hover:underline"
+        className="text-2xs text-muted-foreground underline-offset-2 hover:underline"
       >
         {granted.length === 1
           ? '1 Standing Approval'
@@ -301,18 +301,18 @@ function StandingApprovals({ project }: { project: ProjectView }): React.JSX.Ele
           {granted.map((approval) => (
             <li key={approval.id} className="flex items-start gap-1">
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[10px] text-muted-foreground">
+                <span className="block truncate text-2xs text-muted-foreground">
                   {approval.summary}
                 </span>
                 {/* The rule itself, because the rule is what actually decides. */}
-                <span className="block font-mono text-[10px] break-all select-text">
+                <span className="block font-mono text-2xs break-all select-text">
                   {ruleText(approval)}
                 </span>
               </span>
               <Button
                 size="sm"
                 variant="ghost"
-                className="h-5 shrink-0 px-1 text-[10px]"
+                className="h-5 shrink-0 px-1 text-2xs"
                 onClick={() => void revoke(approval)}
               >
                 Revoke
@@ -322,7 +322,7 @@ function StandingApprovals({ project }: { project: ProjectView }): React.JSX.Ele
         </ul>
       )}
       {failure && (
-        <p role="status" className="text-[10px] text-destructive">
+        <p role="status" className="text-2xs text-destructive">
           {failure}
         </p>
       )}
@@ -353,12 +353,12 @@ function ProjectRow({
       <span className="min-w-0 flex-1">
         <span className="block truncate text-xs">{project.name}</span>
         {/* The exact identity of the Project, never abbreviated away. */}
-        <span className="block truncate font-mono text-[10px] text-muted-foreground select-text">
+        <span className="block truncate font-mono text-2xs text-muted-foreground select-text">
           {project.root}
         </span>
       </span>
       {!project.available && (
-        <span className="flex shrink-0 items-center gap-1 rounded-sm bg-notice px-1 text-[10px] font-medium text-notice-foreground">
+        <span className="flex shrink-0 items-center gap-1 rounded-sm bg-notice px-1 text-2xs font-medium text-notice-foreground">
           <AlertTriangle aria-hidden="true" className="size-2.5" />
           Unavailable
         </span>
@@ -442,7 +442,7 @@ function RootConfirmationNotice({
   return (
     <div
       role="alert"
-      className="mt-1 rounded-md border border-notice-border bg-notice p-2 text-[11px] text-notice-foreground"
+      className="mt-1 rounded-md border border-notice-border bg-notice p-2 text-xs text-notice-foreground"
     >
       <p>That folder is inside a Project:</p>
       <p className="mt-1 font-mono break-all select-text">{confirmation.chosen}</p>
@@ -484,7 +484,7 @@ function RefusalNotice({
   return (
     <div
       role="alert"
-      className="mt-1 rounded-md border border-notice-border bg-notice p-2 text-[11px] text-notice-foreground"
+      className="mt-1 rounded-md border border-notice-border bg-notice p-2 text-xs text-notice-foreground"
     >
       {refusal.reason === 'not-a-repository' ? (
         <>

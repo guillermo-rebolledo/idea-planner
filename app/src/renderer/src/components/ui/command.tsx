@@ -63,7 +63,7 @@ export function CommandGroup({
         'overflow-hidden p-1 text-foreground',
         // The heading is what names the Harness a group of models belongs to.
         '[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5',
-        '[&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-semibold',
+        '[&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:font-medium',
         '[&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:uppercase',
         '[&_[cmdk-group-heading]]:text-muted-foreground',
         className

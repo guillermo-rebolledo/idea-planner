@@ -169,10 +169,10 @@ function HarnessCard({
       className="rounded-md border border-border bg-surface"
     >
       <header className="flex items-center gap-2 border-b border-border px-3 py-2">
-        <h3 className="text-[13px] font-semibold">{harness.displayName}</h3>
+        <h3 className="text-base font-medium">{harness.displayName}</h3>
         <span
           className={cn(
-            'rounded-full border px-1.5 py-0.5 text-[11px]',
+            'rounded-full border px-1.5 py-0.5 text-xs',
             harness.available
               ? 'border-positive/40 text-positive'
               : 'border-border text-muted-foreground'
@@ -305,7 +305,7 @@ function CheckRow({ check }: { check: ReadinessCheck }): React.JSX.Element {
         {icon}
         <span className="text-xs font-medium">{DIMENSION_LABELS[check.dimension]}</span>
         <span className="sr-only">{statusLabel}.</span>
-        <span className="ml-auto text-[11px] text-muted-foreground">{statusLabel}</span>
+        <span className="ml-auto text-xs text-muted-foreground">{statusLabel}</span>
       </div>
       <p className="pl-5.5 text-xs leading-relaxed text-muted-foreground">{check.summary}</p>
       {check.command && check.status !== 'ready' && <CopyableCommand command={check.command} />}
@@ -436,10 +436,10 @@ export function ReadinessDialog({ onClose }: ReadinessDialogProps): React.JSX.El
         role="dialog"
         aria-modal="true"
         aria-labelledby="readiness-dialog-title"
-        className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-lg border border-border bg-background shadow-lg"
+        className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-lg border border-border bg-surface-raised shadow-lg"
       >
         <header className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-          <h2 id="readiness-dialog-title" className="text-[13px] font-semibold">
+          <h2 id="readiness-dialog-title" className="text-base font-medium">
             Harnesses
           </h2>
           <Button

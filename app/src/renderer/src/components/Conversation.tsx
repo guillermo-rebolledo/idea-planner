@@ -487,7 +487,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
 
         {catalog?.projectTrusted &&
           catalog.available.some((entry) => entry.source === 'project') && (
-            <p className="mx-3 mb-3 text-[11px] text-muted-foreground">
+            <p className="mx-3 mb-3 text-xs text-muted-foreground">
               This Project’s own Skills are offered because you trusted them.{' '}
               <button
                 type="button"
@@ -525,7 +525,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
                   {entry.description && (
                     <span className="text-muted-foreground"> — {entry.description}</span>
                   )}
-                  <span className="block font-mono text-[10px] break-all text-muted-foreground select-text">
+                  <span className="block font-mono text-2xs break-all text-muted-foreground select-text">
                     {entry.path}
                   </span>
                 </li>
@@ -547,7 +547,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
             >
               Trust this Project’s Skills
             </Button>
-            <p className="mt-1 text-[11px] text-muted-foreground">
+            <p className="mt-1 text-xs text-muted-foreground">
               Read them first — they are files in the repository. You can withdraw this at any time.
             </p>
           </div>
@@ -569,10 +569,10 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
             </p>
             {pendingApproval.detail && (
               <details className="mt-1">
-                <summary className="cursor-pointer text-[11px] text-muted-foreground">
+                <summary className="cursor-pointer text-xs text-muted-foreground">
                   What it sent
                 </summary>
-                <pre className="mt-1 max-h-40 overflow-auto rounded-md border border-border bg-surface p-2 font-mono text-[11px] whitespace-pre-wrap select-text">
+                <pre className="mt-1 max-h-40 overflow-auto rounded-md border border-border bg-surface p-2 font-mono text-xs whitespace-pre-wrap select-text">
                   {pendingApproval.detail}
                 </pre>
               </details>
@@ -605,19 +605,19 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
                 Decline
               </Button>
             </div>
-            <p className="mt-2 text-[11px] text-muted-foreground">
+            <p className="mt-2 text-xs text-muted-foreground">
               Declining is not a stop: the agent is told why and carries on without it.
             </p>
             {pendingApproval.proposedRule && (
               <div className="mt-2 border-t border-border pt-2">
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-xs text-muted-foreground">
                   {STANDING_EXPLANATION[pendingApproval.proposedRule.kind]}. The agent stops asking,
                   so this is the exact rule that gets stored:
                 </p>
                 {/* Shown before it is accepted, and never paraphrased. Once a rule
                   is stored the Harness answers with it before this app is asked
                   anything, so this line is the last chance to read it. */}
-                <p className="mt-1 font-mono text-[11px] break-all select-text">
+                <p className="mt-1 font-mono text-xs break-all select-text">
                   {ruleText(pendingApproval.proposedRule)}
                 </p>
                 <Button
@@ -629,7 +629,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
                 >
                   Always allow this
                 </Button>
-                <p className="mt-1 text-[11px] break-all text-muted-foreground">
+                <p className="mt-1 text-xs break-all text-muted-foreground">
                   {/* Named in full, because which Project this applies to is the
                     whole scope of what is being granted. */}
                   Only in {session.projectRoot}, and you can take it back at any time.
@@ -647,7 +647,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
             <p className="mt-1 text-xs break-words text-muted-foreground">
               What happened: {phase.snapshot.recovery.summary}
             </p>
-            <p className="mt-1 text-[11px] text-muted-foreground">
+            <p className="mt-1 text-xs text-muted-foreground">
               The full sanitized activity for this Run is below.
             </p>
             {resumable && resumableText?.kind === 'message' && (
@@ -735,7 +735,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
                       )}
                     </span>
                     {entry.description && (
-                      <span className="text-[11px] text-muted-foreground">{entry.description}</span>
+                      <span className="text-xs text-muted-foreground">{entry.description}</span>
                     )}
                   </button>
                 </li>
@@ -751,7 +751,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
             className="min-h-20 rounded-md border border-border bg-background p-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           />
           {chosenSkill && (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               This message asks for the{' '}
               <span className="font-medium text-foreground">{chosenSkill}</span> Skill.{' '}
               <button
@@ -814,16 +814,16 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
             <div role="status" className="rounded-md border border-border bg-muted/50 p-2">
               <p className="text-xs text-foreground">{canDevelop.summary}</p>
               {canDevelop.command && (
-                <code className="mt-1 block font-mono text-[11px] break-all select-text">
+                <code className="mt-1 block font-mono text-xs break-all select-text">
                   {canDevelop.command}
                 </code>
               )}
-              <p className="mt-1 text-[11px] text-muted-foreground">
+              <p className="mt-1 text-xs text-muted-foreground">
                 This app never installs or updates a Harness for you.
               </p>
             </div>
           )}
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {permissionMode === 'ask'
               ? 'In Ask, the agent stops for your approval before it edits or runs anything.'
               : 'In Full access, the agent edits and runs without asking. The Harness applies its own permissions for this Run.'}
@@ -831,7 +831,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           {/* The mapping onto each Harness is lossy, and ADR 0003 says the
             differences are stated rather than discovered. */}
           {chosenHarness === 'codex' && (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Codex differs from Claude Code here: in Ask it edits inside this Project without
               asking and stops for commands, it proposes its own “always allow” rule rather than
               being given one, and a Skill reaches it as instructions for the Run rather than
@@ -871,7 +871,7 @@ function Field({
   children: React.ReactNode
 }): React.JSX.Element {
   return (
-    <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+    <span className="flex items-center gap-1 text-xs text-muted-foreground">
       {label}
       {children}
     </span>
@@ -910,11 +910,11 @@ function CommandRow({
         <p className="flex flex-wrap items-baseline gap-x-2 font-mono text-xs">
           <span className="text-muted-foreground">$</span>
           <span className="break-all select-text">{command}</span>
-          {running && <span className="text-[11px] text-muted-foreground">running…</span>}
-          {failed && <span className="text-[11px] text-destructive">failed</span>}
+          {running && <span className="text-xs text-muted-foreground">running…</span>}
+          {failed && <span className="text-xs text-destructive">failed</span>}
         </p>
         {lines.length === 0 ? (
-          <p className="mt-1 text-[11px] text-muted-foreground">
+          <p className="mt-1 text-xs text-muted-foreground">
             {running ? 'Waiting for it to finish.' : 'No output.'}
           </p>
         ) : (
@@ -923,13 +923,13 @@ function CommandRow({
               <button
                 type="button"
                 aria-expanded={expanded}
-                className="mt-1 text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                className="mt-1 text-xs text-muted-foreground underline-offset-2 hover:underline"
                 onClick={() => setExpanded((current) => !current)}
               >
                 {expanded ? 'Show less' : `Show all ${String(lines.length)} lines`}
               </button>
             )}
-            <pre className="mt-1 max-h-96 overflow-auto rounded-md border border-border bg-surface p-2 font-mono text-[11px] whitespace-pre-wrap select-text">
+            <pre className="mt-1 max-h-96 overflow-auto rounded-md border border-border bg-surface p-2 font-mono text-xs whitespace-pre-wrap select-text">
               {shown.join('\n')}
             </pre>
           </>
@@ -965,9 +965,9 @@ function FileChangeRow({
       <div className="min-w-0 flex-1">
         <p className="flex flex-wrap items-baseline gap-x-2 text-xs">
           <span className="font-mono break-all select-text">{path}</span>
-          <span className="text-[11px] text-muted-foreground">
-            <span className="text-positive">+{added}</span>{' '}
-            <span className="text-destructive">−{removed}</span>
+          <span className="text-xs text-muted-foreground">
+            <span className="text-diff-added-foreground">+{added}</span>{' '}
+            <span className="text-diff-removed-foreground">−{removed}</span>
           </span>
         </p>
         <DiffView hunks={hunks} />
@@ -1005,7 +1005,7 @@ function ApprovalRow({
           <span className="text-muted-foreground">{entry.tool}</span>{' '}
           <span className="font-mono break-all select-text">{entry.summary}</span>
         </p>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {entry.decision === null ? 'Waiting for your answer' : APPROVAL_OUTCOME[entry.decision]}
           {entry.decision === 'denied' && entry.message ? ` — “${entry.message}”` : ''}
           {entry.remembered && entry.proposedRule
@@ -1039,7 +1039,7 @@ function EntryRow({ entry }: { entry: ConversationEntry }): React.JSX.Element | 
   if (entry.kind === 'approval') return <ApprovalRow entry={entry} />
   if (entry.kind === 'boundary') {
     return (
-      <li className="text-[11px] text-muted-foreground">
+      <li className="text-xs text-muted-foreground">
         <span className="rounded border border-border px-1.5 py-0.5">{entry.summary}</span>
       </li>
     )
@@ -1073,7 +1073,7 @@ function UsagePanel({
   const used = usage.run?.contextUsed ?? null
   return (
     <section className="border-t border-border px-3 py-2" aria-label="Harness-reported usage">
-      <dl className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+      <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
         <span className="flex gap-1">
           <dt>This Run</dt>
           <dd className="text-foreground">
@@ -1093,7 +1093,7 @@ function UsagePanel({
           </span>
         )}
       </dl>
-      <p className="mt-1 text-[11px] text-muted-foreground">
+      <p className="mt-1 text-xs text-muted-foreground">
         Reported by the Harness and informational only. It is not a quota, allowance, or cost.
       </p>
     </section>
@@ -1115,7 +1115,7 @@ function ActivityPanel({
 }): React.JSX.Element {
   return (
     <details open={defaultOpen} className="group border-t border-border px-3 py-2">
-      <summary className="flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground">
+      <summary className="flex cursor-pointer items-center gap-1 text-xs text-muted-foreground">
         <ChevronRight
           aria-hidden="true"
           className="size-3 transition-transform group-open:rotate-90 motion-reduce:transition-none"
@@ -1124,13 +1124,13 @@ function ActivityPanel({
       </summary>
       {/* What this Run was actually asked for, pinned when it was accepted.
           A Run keeps what it was given, whatever is chosen after it. */}
-      <p className="mt-2 text-[11px] text-muted-foreground">
+      <p className="mt-2 text-xs text-muted-foreground">
         {run.configuration.harness === 'claude' ? 'Claude Code' : 'Codex'} ·{' '}
         <span className="font-mono">{run.configuration.model}</span>
         {run.configuration.effort !== null && ` · thinking ${run.configuration.effort}`}
         {run.configuration.skill && ` · ${run.configuration.skill.name} Skill`}
       </p>
-      <ol className="mt-2 flex max-h-40 flex-col gap-1 overflow-y-auto text-[11px]">
+      <ol className="mt-2 flex max-h-40 flex-col gap-1 overflow-y-auto text-xs">
         {run.activity.slice(-40).map((activity) => (
           <li
             key={activity.id}
@@ -1155,12 +1155,12 @@ function Attribution(): React.JSX.Element {
     void window.shell.openExternalLink(url).catch(() => undefined)
   }
   return (
-    <footer className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
+    <footer className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
       {SKILL_ATTRIBUTION.notice}{' '}
       <Button
         size="sm"
         variant="ghost"
-        className="h-auto px-1 text-[11px] underline"
+        className="h-auto px-1 text-xs underline"
         onClick={() => open(SKILL_ATTRIBUTION.website)}
       >
         {SKILL_ATTRIBUTION.author}’s website
@@ -1168,7 +1168,7 @@ function Attribution(): React.JSX.Element {
       <Button
         size="sm"
         variant="ghost"
-        className="h-auto px-1 text-[11px] underline"
+        className="h-auto px-1 text-xs underline"
         onClick={() => open(SKILL_ATTRIBUTION.repository)}
       >
         skills repository ({SKILL_ATTRIBUTION.licence})

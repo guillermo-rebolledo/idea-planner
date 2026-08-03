@@ -40,6 +40,7 @@ import {
   type ChooseProjectResult,
   type ThemeState
 } from '@shared/contract'
+import { WINDOW_BACKGROUND } from '@shared/theme'
 import {
   chooseExecutableResultSchema,
   harnessIdSchema,
@@ -487,7 +488,7 @@ function createWindow(): void {
     show: false,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 18, y: 18 },
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#101012' : '#fafafa',
+    backgroundColor: WINDOW_BACKGROUND[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'],
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
@@ -556,7 +557,9 @@ void app.whenReady().then(() => {
   // from macOS System appearance or an explicit preference change.
   nativeTheme.on('updated', () => {
     if (!mainWindow) return
-    mainWindow.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#101012' : '#fafafa')
+    mainWindow.setBackgroundColor(
+      WINDOW_BACKGROUND[nativeTheme.shouldUseDarkColors ? 'dark' : 'light']
+    )
     mainWindow.webContents.send(IPC_CHANNELS.themeChanged, themeState())
   })
 

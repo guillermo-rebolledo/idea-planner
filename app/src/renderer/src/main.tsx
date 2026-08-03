@@ -9,10 +9,10 @@ if (!root) throw new Error('Missing #root element')
 // Main sets nativeTheme before this window exists, so the OS-level color
 // scheme already reflects the resolved System/Light/Dark choice. Apply it
 // before first paint; getBootState then keeps it in sync.
-document.documentElement.classList.toggle(
-  'dark',
-  window.matchMedia('(prefers-color-scheme: dark)').matches
-)
+document.documentElement.dataset['theme'] = window.matchMedia('(prefers-color-scheme: dark)')
+  .matches
+  ? 'dark'
+  : 'light'
 
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
