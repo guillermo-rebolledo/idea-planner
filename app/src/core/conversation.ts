@@ -311,12 +311,30 @@ export function createConversationEffects(options: ConversationOptions): Convers
   ): Effect.Effect<number, CoreError> =>
     Effect.gen(function* () {
       const state = yield* readState(sessionDir)
-      if (state.activeRunId === runId) {
-        return kind === 'read' ? state.runReads : state.runFileChanges
-      }
+      if (state.activeRunId === runId) return state.runSteps[kind]
       return (yield* readEntries(sessionDir)).filter(
         (entry) => entry.kind === kind && entry.runId === runId
       ).length
+    })
+
+  /**
+   * When one Run's command was seen starting, if it was: from the projection
+   * for the active Run, and from the journal for any other — the projection's
+   * running commands belong to the active Run alone, and a finish arriving
+   * late must not lose its measurement over that.
+   */
+  const commandStartedAt = (
+    sessionDir: string,
+    runId: string,
+    entryId: string
+  ): Effect.Effect<string | undefined, CoreError> =>
+    Effect.gen(function* () {
+      const state = yield* readState(sessionDir)
+      if (state.activeRunId === runId) return state.runningCommands[entryId]
+      const running = (yield* readEntries(sessionDir)).find(
+        (entry) => entry.kind === 'command' && entry.id === entryId && entry.running
+      )
+      return running?.at
     })
 
   const snapshot = (
@@ -595,7 +613,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
               // keeps an honest null.
               const startedAt = event.running
                 ? undefined
-                : (yield* readState(sessionDir)).runningCommands[id]
+                : yield* commandStartedAt(sessionDir, input.runId, id)
               const durationMs =
                 event.durationMs ??
                 (startedAt !== undefined

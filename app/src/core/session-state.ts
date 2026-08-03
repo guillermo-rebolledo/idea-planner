@@ -45,12 +45,14 @@ export const sessionStateSchema = z.object({
    */
   runningCommands: z.record(z.string(), z.string()),
   /**
-   * How many durable steps the active Run has taken so far, for the ordinal
-   * ids the next step gets. Counted here so a long Run does not pay a full
-   * journal read per step.
+   * How many durable steps of each ordinal-numbered kind the active Run has
+   * taken so far, for the id the next step gets. Counted here so a long Run
+   * does not pay a full journal read per step.
    */
-  runReads: z.number().int().nonnegative(),
-  runFileChanges: z.number().int().nonnegative(),
+  runSteps: z.object({
+    read: z.number().int().nonnegative(),
+    'file-change': z.number().int().nonnegative()
+  }),
   /** Bytes of the journal this was derived from. */
   journalBytes: z.number().int().nonnegative()
 })
@@ -82,8 +84,7 @@ export const EMPTY_STATE: SessionState = {
   recentMessageIds: [],
   recovery: null,
   runningCommands: {},
-  runReads: 0,
-  runFileChanges: 0,
+  runSteps: { read: 0, 'file-change': 0 },
   journalBytes: 0
 }
 
@@ -97,8 +98,7 @@ export function advance(state: SessionState, entry: ConversationEntry): SessionS
         activeRunId: entry.runId,
         recovery: null,
         runningCommands: {},
-        runReads: 0,
-        runFileChanges: 0
+        runSteps: { read: 0, 'file-change': 0 }
       }
     }
     if (entry.runId !== state.activeRunId) return state
@@ -119,13 +119,12 @@ export function advance(state: SessionState, entry: ConversationEntry): SessionS
       )
     }
   }
-  if (entry.kind === 'read') {
-    return entry.runId === state.activeRunId ? { ...state, runReads: state.runReads + 1 } : state
-  }
-  if (entry.kind === 'file-change') {
-    return entry.runId === state.activeRunId
-      ? { ...state, runFileChanges: state.runFileChanges + 1 }
-      : state
+  if (entry.kind === 'read' || entry.kind === 'file-change') {
+    if (entry.runId !== state.activeRunId) return state
+    return {
+      ...state,
+      runSteps: { ...state.runSteps, [entry.kind]: state.runSteps[entry.kind] + 1 }
+    }
   }
   if (entry.kind === 'approval') {
     // The order is the order they were asked in, because that is the order
