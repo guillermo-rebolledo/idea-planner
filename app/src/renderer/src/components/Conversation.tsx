@@ -13,6 +13,7 @@ import {
 import {
   countDiffLines,
   HARNESS_DEFAULT_MODEL,
+  projectDisplayName,
   ruleText,
   type ApprovalDecision,
   type ConversationEntry,
@@ -613,7 +614,7 @@ export function Conversation({
                           disabled={deciding}
                           onClick={() => void decide(pendingApproval, 'allow', true)}
                         >
-                          Always allow for {projectName(session.projectRoot)}
+                          Always allow for {projectDisplayName(session.projectRoot)}
                         </Button>
                       )}
                       <Button
@@ -1153,11 +1154,6 @@ function groupEntries(entries: ConversationEntry[]): ConversationItem[] {
 
 /** The Run's Permission Mode, in the product's own words. */
 const MODE_LABEL: Record<PermissionMode, string> = { ask: 'Ask', auto: 'Full access' }
-
-/** The Project as a person names it: the folder, not the whole path. */
-function projectName(projectRoot: string): string {
-  return projectRoot.split('/').filter(Boolean).at(-1) ?? projectRoot
-}
 
 /** `8.2s`, `22s`, `3m 05s` — the precision worth reading at each scale. */
 function formatDuration(ms: number): string {

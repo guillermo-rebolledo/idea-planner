@@ -1,8 +1,8 @@
 import { readFile, stat } from 'node:fs/promises'
-import { basename, isAbsolute, join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { Effect } from 'effect'
 import { CoreError } from '@shared/contract'
-import { projectSchema, type Project, type ProjectView } from '@shared/project'
+import { projectDisplayName, projectSchema, type Project, type ProjectView } from '@shared/project'
 import { writeJsonAtomic } from './atomic'
 
 const STORE_FILE = 'projects.json'
@@ -51,7 +51,7 @@ export class ProjectStore {
 
         const project: Project = {
           root,
-          name: basename(root),
+          name: projectDisplayName(root),
           addedAt: this.now().toISOString(),
           skillsTrustedAt: null
         }

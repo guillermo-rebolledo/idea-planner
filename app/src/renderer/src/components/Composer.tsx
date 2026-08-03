@@ -59,11 +59,10 @@ export function Composer({
   const [projects, setProjects] = useState<ProjectView[]>([])
   const [projectRoot, setProjectRoot] = useState(boundProjectRoot ?? '')
   const [sessions, setSessions] = useState<SessionSummary[]>([])
-  // What the person chose for this message, per Project — switching Projects
-  // keeps each one's choice. Where nothing was chosen, the default below is
-  // the kind that Project's most recent Session used.
-  const [chosenCheckout, setChosenCheckout] = useState<Record<string, CheckoutRequest>>({})
-  const [lastIsolated, setLastIsolated] = useState<Record<string, boolean>>({})
+  // The Checkout per Project: seeded from the kind that Project's most recent
+  // Session used, replaced by whatever the person chooses for this message —
+  // switching Projects keeps each one's choice.
+  const [checkouts, setCheckouts] = useState<Record<string, CheckoutRequest>>({})
   // One choice, not three: the model carries the Harness that reaches it.
   const { models, readiness } = useModelCatalog()
   const [chosen, setChosen] = useState<ModelChoice | null>(null)
@@ -90,12 +89,17 @@ export function Composer({
         setProjects(listed)
         setSessions(listedSessions)
         // Sessions are newest first, so the first seen per Project is its
-        // most recent — and its Checkout kind is that Project's default.
-        const byProject: Record<string, boolean> = {}
+        // most recent — and its Checkout kind is that Project's default. An
+        // isolated default arrives with no base; the picker settles it onto
+        // a real branch. Anything already chosen stays chosen.
+        const defaults: Record<string, CheckoutRequest> = {}
         for (const session of listedSessions) {
-          byProject[session.projectRoot] ??= session.checkout.kind === 'worktree'
+          defaults[session.projectRoot] ??=
+            session.checkout.kind === 'worktree'
+              ? { kind: 'isolated', baseBranch: '' }
+              : { kind: 'local' }
         }
-        setLastIsolated(byProject)
+        setCheckouts((current) => ({ ...defaults, ...current }))
         setProjectRoot((current) => {
           if (current && listed.some((project) => project.root === current)) return current
           const available = (root: string | undefined): string | undefined =>
@@ -121,11 +125,7 @@ export function Composer({
     messageRef.current?.focus()
   }, [])
 
-  // Derived rather than corrected: the choice for this Project when one was
-  // made, otherwise the kind its most recent Session used.
-  const checkout: CheckoutRequest =
-    chosenCheckout[projectRoot] ??
-    (lastIsolated[projectRoot] ? { kind: 'isolated', baseBranch: '' } : { kind: 'local' })
+  const checkout: CheckoutRequest = checkouts[projectRoot] ?? { kind: 'local' }
 
   // A Harness that stops being usable stops being offered, and the choice
   // falls back to one that can still answer a message.
@@ -253,9 +253,7 @@ export function Composer({
             <CheckoutPicker
               projectRoot={projectRoot}
               value={checkout}
-              onChange={(next) =>
-                setChosenCheckout((current) => ({ ...current, [projectRoot]: next }))
-              }
+              onChange={(next) => setCheckouts((current) => ({ ...current, [projectRoot]: next }))}
               disabled={sending}
             />
             <PermissionModePicker

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { FolderTree, Monitor } from 'lucide-react'
 import type { BranchList, CheckoutRequest } from '@shared/contract'
+import { ChipTrigger, PopoverHeading } from '@renderer/components/ui/chip-popover'
 import { ChoiceRow } from '@renderer/components/ui/choice'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { Popover, PopoverContent } from '@renderer/components/ui/popover'
 
 /**
  * The Checkout chip for a Session that does not exist yet. A Checkout is
@@ -64,13 +65,7 @@ export function CheckoutPicker({
   const isolated = value.kind === 'isolated'
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      {/* A chip in the composer's row: quiet text, no outline, no glyph —
-          the row is read as a sentence about this message, not as a toolbar. */}
-      <PopoverTrigger
-        aria-label="Checkout"
-        disabled={(disabled ?? false) || !projectRoot}
-        className="flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-      >
+      <ChipTrigger aria-label="Checkout" disabled={(disabled ?? false) || !projectRoot}>
         {value.kind === 'isolated' ? (
           <>
             Worktree
@@ -79,11 +74,9 @@ export function CheckoutPicker({
         ) : (
           'Local'
         )}
-      </PopoverTrigger>
+      </ChipTrigger>
       <PopoverContent align="start" className="w-72">
-        <p className="px-3 pt-2.5 pb-1 font-mono text-2xs font-semibold tracking-wide text-muted-foreground uppercase">
-          Checkout
-        </p>
+        <PopoverHeading>Checkout</PopoverHeading>
         <div className="flex flex-col gap-0.5 px-1.5 pb-2">
           <ChoiceRow
             icon={<Monitor aria-hidden="true" className="size-3.5 text-muted-foreground" />}

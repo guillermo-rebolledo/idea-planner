@@ -27,6 +27,15 @@ export type Project = z.infer<typeof projectSchema>
 export const projectViewSchema = projectSchema.extend({ available: z.boolean() })
 export type ProjectView = z.infer<typeof projectViewSchema>
 
+/**
+ * The Project as a person names it: the folder, not the whole path. The one
+ * derivation behind `Project.name` and every chip that says it, so a surface
+ * can name a Project from its root alone without re-inventing the rule.
+ */
+export function projectDisplayName(root: string): string {
+  return root.split('/').filter(Boolean).at(-1) ?? root
+}
+
 /** Why a chosen folder could not become a Project. */
 export const projectRejectionSchema = z.enum(['not-a-repository', 'git-unavailable'])
 export type ProjectRejection = z.infer<typeof projectRejectionSchema>

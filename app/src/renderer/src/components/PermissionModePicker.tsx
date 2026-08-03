@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Lock, TriangleAlert } from 'lucide-react'
-import type { PermissionMode } from '@shared/contract'
+import { projectDisplayName, type PermissionMode } from '@shared/contract'
+import { ChipTrigger, PopoverHeading } from '@renderer/components/ui/chip-popover'
 import { ChoiceRow } from '@renderer/components/ui/choice'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { Popover, PopoverContent } from '@renderer/components/ui/popover'
 import {
   listApprovalsByProject,
   StandingApprovalsDialog,
@@ -75,23 +76,12 @@ export function PermissionModePicker({
   return (
     <>
       <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger
-          aria-label="Permission Mode"
-          disabled={disabled ?? false}
-          className={cn(
-            'flex h-7 items-center gap-1.5 rounded-md px-2 text-xs',
-            fullAccess
-              ? 'bg-status-blocked-surface text-status-blocked'
-              : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-          )}
-        >
+        <ChipTrigger aria-label="Permission Mode" disabled={disabled ?? false} alert={fullAccess}>
           {fullAccess && <TriangleAlert aria-hidden="true" className="size-3 shrink-0" />}
           {MODE_COPY[value].title}
-        </PopoverTrigger>
+        </ChipTrigger>
         <PopoverContent align="start" className="w-72">
-          <p className="px-3 pt-2.5 pb-1 font-mono text-2xs font-semibold tracking-wide text-muted-foreground uppercase">
-            Permission Mode
-          </p>
+          <PopoverHeading>Permission Mode</PopoverHeading>
           <div className="flex flex-col gap-0.5 px-1.5 pb-2">
             {(['ask', 'auto'] as const).map((mode) => (
               <ChoiceRow
@@ -123,7 +113,7 @@ export function PermissionModePicker({
             <Lock aria-hidden="true" className="size-3 shrink-0" />
             {count === null
               ? 'Standing Approvals'
-              : `${String(count)} Standing Approval${count === 1 ? '' : 's'} for ${projectName(projectRoot)}`}
+              : `${String(count)} Standing Approval${count === 1 ? '' : 's'} for ${projectDisplayName(projectRoot)}`}
             <span className="ml-auto text-foreground">Manage</span>
           </button>
         </PopoverContent>
@@ -137,9 +127,4 @@ export function PermissionModePicker({
       )}
     </>
   )
-}
-
-/** The Project as a person names it: the folder, not the whole path. */
-function projectName(projectRoot: string): string {
-  return projectRoot.split('/').filter(Boolean).at(-1) ?? projectRoot
 }

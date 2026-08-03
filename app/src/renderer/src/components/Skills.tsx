@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { SKILL_ATTRIBUTION } from '@shared/contract'
 import type { HarnessId, SkillCatalog } from '@shared/contract'
+import { PopoverHeading } from '@renderer/components/ui/chip-popover'
 
 /**
  * Asking a message for a methodology, wherever a message is written. Both
@@ -58,9 +59,7 @@ export function SkillSuggestions({
 }): React.JSX.Element {
   return (
     <div className="overflow-hidden rounded-md border border-border bg-popover shadow-sm">
-      <p className="px-2.5 pt-2 pb-1 font-mono text-2xs font-semibold tracking-wide text-muted-foreground uppercase">
-        Skills
-      </p>
+      <PopoverHeading>Skills</PopoverHeading>
       <ul aria-label="Skills" className="max-h-40 overflow-y-auto px-1 pb-1">
         {matching.length === 0 && (
           <li className="px-1.5 py-1.5 text-xs text-muted-foreground">
