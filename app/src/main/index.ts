@@ -1,4 +1,5 @@
-import { basename, delimiter, join } from 'node:path'
+import { basename, delimiter, dirname, join } from 'node:path'
+import { stat } from 'node:fs/promises'
 import {
   BrowserWindow,
   app,
@@ -236,11 +237,16 @@ function registerIpc(): void {
   )
 
   // A folder the person dropped onto the window: already named by them, so
-  // no picker — but probed exactly like a picked one.
+  // no picker — but probed exactly like a picked one. A dropped file offers
+  // the folder that holds it: the file names a place, and a Project is the
+  // place, so git resolves the root from there like any subdirectory.
   handleInvoke(
     IPC_CHANNELS.offerProject,
     z.string().min(1),
-    async (path): Promise<ChooseProjectResult> => addProject(path)
+    async (path): Promise<ChooseProjectResult> => {
+      const offered = (await stat(path).catch(() => null))?.isDirectory() ? path : dirname(path)
+      return addProject(offered)
+    }
   )
 
   handleInvoke(IPC_CHANNELS.listProjects, z.undefined(), async () =>

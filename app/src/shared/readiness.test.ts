@@ -73,7 +73,8 @@ describe('gateProblem', () => {
       severity: 'missing',
       label: 'Not installed',
       summary: 'The claude command was not found on your PATH.',
-      command: 'npm install -g @anthropic-ai/claude-code'
+      command: 'npm install -g @anthropic-ai/claude-code',
+      links: []
     })
   })
 
@@ -98,7 +99,8 @@ describe('gateProblem', () => {
       severity: 'blocked',
       label: 'Installed, version not supported',
       summary: 'Version 0.1.0 is older than this app can talk to.',
-      command: 'npm update -g @anthropic-ai/claude-code'
+      command: 'npm update -g @anthropic-ai/claude-code',
+      links: []
     })
   })
 
@@ -123,7 +125,8 @@ describe('gateProblem', () => {
       severity: 'blocked',
       label: 'Installed, not signed in',
       summary: 'codex is installed but not signed in.',
-      command: 'codex login'
+      command: 'codex login',
+      links: []
     })
   })
 
@@ -141,7 +144,8 @@ describe('gateProblem', () => {
       severity: 'blocked',
       label: 'Installed, cannot run a Session yet',
       summary: 'This Codex cannot run a Session with this app yet.',
-      command: 'npm update -g @openai/codex'
+      command: 'npm update -g @openai/codex',
+      links: []
     })
   })
 

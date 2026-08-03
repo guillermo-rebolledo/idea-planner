@@ -8,6 +8,8 @@ interface OnboardingProps {
   onComplete: (projects: ProjectView[]) => void
 }
 
+const COULD_NOT_ADD = 'That folder could not be added.'
+
 /** A folder the app declined, with the exact path the person offered it. */
 type Refusal = Extract<ChooseProjectResult, { status: 'refused' }>
 
@@ -26,12 +28,15 @@ type RootConfirmation = Extract<ChooseProjectResult, { status: 'confirm-root' }>
  * before choosing a folder.
  */
 export function Onboarding({ onComplete }: OnboardingProps): React.JSX.Element {
-  const [added, setAdded] = useState<ProjectView | null>(null)
+  // Everything added this visit, oldest first — the card shows the latest,
+  // but leaving hands the app all of them, because all of them were added.
+  const [added, setAdded] = useState<ProjectView[]>([])
   const [refusal, setRefusal] = useState<Refusal | null>(null)
   const [confirmation, setConfirmation] = useState<RootConfirmation | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [draggingOver, setDraggingOver] = useState(false)
+  const latest = added.at(-1)
 
   const adopt = useCallback((result: ChooseProjectResult) => {
     if (result.status === 'cancelled') return
@@ -40,7 +45,11 @@ export function Onboarding({ onComplete }: OnboardingProps): React.JSX.Element {
     setFailure(null)
     if (result.status === 'refused') setRefusal(result)
     else if (result.status === 'confirm-root') setConfirmation(result)
-    else setAdded(result.project)
+    else
+      setAdded((current) => [
+        ...current.filter((project) => project.root !== result.project.root),
+        result.project
+      ])
   }, [])
 
   /** Offers a folder, or answers one of the app's follow-up questions. */
@@ -64,7 +73,7 @@ export function Onboarding({ onComplete }: OnboardingProps): React.JSX.Element {
     void offer(() => {
       const path = window.shell.pathForFile(file)
       return window.shell.offerProject(path)
-    }, 'That folder could not be added.')
+    }, COULD_NOT_ADD)
   }
 
   return (
@@ -97,7 +106,11 @@ export function Onboarding({ onComplete }: OnboardingProps): React.JSX.Element {
               event.preventDefault()
               setDraggingOver(true)
             }}
-            onDragLeave={() => setDraggingOver(false)}
+            onDragLeave={(event) => {
+              // Leaving a child of the zone is not leaving the zone.
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                setDraggingOver(false)
+            }}
             onDrop={onDrop}
             className={cn(
               'flex w-full flex-col items-center gap-2 rounded-xl border border-dashed px-5 py-6',
@@ -109,9 +122,7 @@ export function Onboarding({ onComplete }: OnboardingProps): React.JSX.Element {
             <Button
               className="mt-1.5"
               disabled={busy}
-              onClick={() =>
-                void offer(() => window.shell.chooseProject(), 'That folder could not be added.')
-              }
+              onClick={() => void offer(() => window.shell.chooseProject(), COULD_NOT_ADD)}
             >
               Choose a folder…
             </Button>
@@ -153,19 +164,19 @@ export function Onboarding({ onComplete }: OnboardingProps): React.JSX.Element {
             </p>
           )}
 
-          {added && (
+          {latest && (
             <div
               className="flex w-full items-center gap-2 rounded-md border border-border bg-surface px-3 py-2"
               role="status"
             >
               <FolderGit2 aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-xs font-medium">{added.name}</span>
+                <span className="block truncate text-xs font-medium">{latest.name}</span>
                 <span className="block truncate font-mono text-2xs text-muted-foreground select-text">
-                  {added.root}
+                  {latest.root}
                 </span>
               </span>
-              <Button onClick={() => onComplete([added])}>Continue</Button>
+              <Button onClick={() => onComplete(added)}>Continue</Button>
             </div>
           )}
         </section>

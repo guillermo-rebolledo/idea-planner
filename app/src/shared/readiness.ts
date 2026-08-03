@@ -35,10 +35,6 @@ export const GATING_DIMENSIONS: readonly ReadinessDimension[] = [
   'authentication'
 ]
 
-export function isGating(dimension: ReadinessDimension): boolean {
-  return GATING_DIMENSIONS.includes(dimension)
-}
-
 /**
  * `warning` keeps a Harness usable (for example an untested version);
  * `failed` disables only the failing dimension's dependents; `not-probed`
@@ -156,9 +152,18 @@ export interface GateProblem {
   summary: string
   /** Copyable terminal remediation. The app never runs it. */
   command: string | null
+  /** Where to read more, when the check named somewhere. */
+  links: RemediationLink[]
 }
 
-const GATE_LABELS: Record<Exclude<ReadinessDimension, 'skills'>, string> = {
+/** A dimension that can actually stand between a Harness and a Session. */
+type GatingDimension = Exclude<ReadinessDimension, 'skills'>
+
+export function isGating(dimension: ReadinessDimension): dimension is GatingDimension {
+  return GATING_DIMENSIONS.includes(dimension)
+}
+
+const GATE_LABELS: Record<GatingDimension, string> = {
   executable: 'Not installed',
   compatibility: 'Installed, version not supported',
   authentication: 'Installed, not signed in'
@@ -170,12 +175,13 @@ export function gateProblem(harness: HarnessReadiness): GateProblem | null {
     (check) =>
       isGating(check.dimension) && (check.status === 'failed' || check.status === 'not-probed')
   )
-  if (failing) {
+  if (failing && isGating(failing.dimension)) {
     return {
       severity: failing.dimension === 'executable' ? 'missing' : 'blocked',
-      label: GATE_LABELS[failing.dimension as keyof typeof GATE_LABELS],
+      label: GATE_LABELS[failing.dimension],
       summary: failing.summary,
-      command: failing.command
+      command: failing.command,
+      links: failing.links
     }
   }
   // Every check passes and a Session still cannot run: the capability is the
@@ -184,7 +190,8 @@ export function gateProblem(harness: HarnessReadiness): GateProblem | null {
     severity: 'blocked',
     label: 'Installed, cannot run a Session yet',
     summary: harness.capabilities.developSession.summary,
-    command: harness.capabilities.developSession.command
+    command: harness.capabilities.developSession.command,
+    links: []
   }
 }
 
