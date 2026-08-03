@@ -439,7 +439,10 @@ const EDITING_CLAUDE_FAKE = `case "$1" in
   -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
   --print)
     echo '{"type":"system","subtype":"init"}'
+    echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_0","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_0","name":"Read","input":{"file_path":"greeting.ts"}}]},"session_id":"thread-1"}'
     echo '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok"}]},"session_id":"thread-1","tool_use_result":{"filePath":"greeting.ts","oldString":"hello","newString":"goodbye","structuredPatch":[{"oldStart":1,"oldLines":1,"newStart":1,"newLines":1,"lines":["-export const greeting = \\"hello\\"","+export const greeting = \\"goodbye\\""]}]}}'
+    echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"echo ok"}}]},"session_id":"thread-1"}'
+    echo '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_2","type":"tool_result","content":"ok","is_error":false}]},"session_id":"thread-1","tool_use_result":{"stdout":"ok","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false}}'
     echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}]},"session_id":"thread-1"}'
     /bin/sleep 1
     exit 0;;
@@ -488,6 +491,27 @@ test('a Session says which files it changed, and offers nothing to accept', asyn
     // The diff numbers toggle: the same chip puts the panel away.
     await chip.click()
     await expect(panel).toHaveCount(0)
+
+    // The Conversation marks the Run with a quiet divider, and the Run's
+    // activity collapses to one line when it finishes (mock 2d).
+    const history = page.getByRole('list', { name: 'Conversation history' })
+    await expect(history.getByText(/^Run · /).last()).toBeVisible()
+    const block = history.getByLabel('Run activity').last()
+    await expect(block).toContainText('Edited 1 file')
+
+    // The chevron re-expands it to the chronological step list — the read,
+    // the edit, the command. Steps only, no captured output.
+    await block.getByRole('button', { name: /Edited 1 file/ }).click()
+    const steps = history.getByRole('list', { name: 'Run steps' })
+    await expect(steps.getByText('Read greeting.ts')).toBeVisible()
+    await expect(steps.getByText('echo ok')).toBeVisible()
+    await expect(steps.getByText('ok', { exact: true })).toHaveCount(0)
+
+    // The edited file is a way into the Files panel, focused on that file.
+    const step = steps.getByRole('button', { name: /greeting\.ts/ })
+    await expect(step).toBeVisible()
+    await step.click()
+    await expect(panel.getByText('+export const greeting = "goodbye"')).toBeVisible()
   } finally {
     await app.close()
   }

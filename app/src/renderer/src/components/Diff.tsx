@@ -21,6 +21,15 @@ export function DiffCounts({
 }
 
 /**
+ * A command's exit code, the only other place the Conversation is allowed
+ * green or red: `exit 0` reads as worked and `exit 1` as didn't at a glance,
+ * and a step list is exactly a glance.
+ */
+export function ExitCode({ code }: { code: number }): React.JSX.Element {
+  return <span className={code === 0 ? 'text-positive' : 'text-destructive'}>exit {code}</span>
+}
+
+/**
  * A diff, exactly as the Harness computed it. It is read-only everywhere it
  * appears: the change is already on disk (ADR 0004) and git is the only undo,
  * so there is nothing here to accept or reject.

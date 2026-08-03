@@ -37,7 +37,7 @@ import {
  * Every payload crossing a process boundary is validated against these
  * schemas before it is acted on or presented.
  */
-export const CONTRACT_VERSION = 4
+export const CONTRACT_VERSION = 5
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */

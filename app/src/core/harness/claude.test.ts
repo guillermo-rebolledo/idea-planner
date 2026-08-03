@@ -214,7 +214,39 @@ describe('commands', () => {
         command: 'wc -l lines.txt',
         output: '       3 lines.txt',
         failed: false,
-        running: false
+        running: false,
+        // Claude reports only whether it errored; measuring the duration is
+        // the Conversation's job, from the start it saw to this result.
+        exitCode: null,
+        durationMs: null
+      }
+    ])
+  })
+
+  it('names the file a Read tool call is reading', () => {
+    const adapter = createClaudeAdapter()
+    const frame = {
+      type: 'assistant',
+      message: {
+        id: 'msg_read',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_read',
+            name: 'Read',
+            input: { file_path: '/a-project/hooks/useLocation.ts' }
+          }
+        ]
+      },
+      session_id: 'thread-fixture'
+    }
+    expect(adapter.ingest(`${JSON.stringify(frame)}\n`)).toEqual([
+      {
+        type: 'tool',
+        name: 'Read',
+        summary: 'Called Claude tool Read',
+        path: '/a-project/hooks/useLocation.ts'
       }
     ])
   })
@@ -275,7 +307,9 @@ describe('a command that never finished', () => {
       command: 'pnpm test',
       output: '',
       failed: false,
-      running: false
+      running: false,
+      exitCode: null,
+      durationMs: null
     })
   })
 })
@@ -316,7 +350,9 @@ describe('a command that is still running', () => {
         command: 'pnpm test',
         output: '',
         failed: false,
-        running: true
+        running: true,
+        exitCode: null,
+        durationMs: null
       }
     ])
   })

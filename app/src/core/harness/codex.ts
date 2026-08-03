@@ -105,6 +105,7 @@ const itemSchema = z.object({
   command: z.string().optional(),
   aggregatedOutput: z.string().nullable().optional(),
   exitCode: z.number().nullable().optional(),
+  durationMs: z.number().nullable().optional(),
   changes: z.array(changeSchema).optional(),
   summary: z.array(z.string()).optional()
 })
@@ -417,7 +418,13 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
             command: redactCredentials(command),
             output: redactCredentials(item.aggregatedOutput ?? ''),
             failed: !started && (item.exitCode ?? 0) !== 0,
-            running: started
+            running: started,
+            // Codex says both outright; a command still starting has neither.
+            exitCode: started ? null : (item.exitCode ?? null),
+            durationMs:
+              started || item.durationMs === undefined || item.durationMs === null
+                ? null
+                : Math.max(0, Math.round(item.durationMs))
           }
         ]
       }

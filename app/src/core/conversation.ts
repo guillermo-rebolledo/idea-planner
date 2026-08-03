@@ -566,17 +566,31 @@ export function createConversationEffects(options: ConversationOptions): Convers
               // recorded when it started is the one replaced when it finishes
               // rather than a second entry beside it. Reloading keeps the last
               // write for an id, which is the finished one.
+              const id = `command:${input.runId}:${event.id}`
+              // The Harness's own figure when it gives one; otherwise measured
+              // between the start this Conversation saw and the finish. A
+              // command never seen starting keeps an honest null.
+              const started = event.running
+                ? undefined
+                : (yield* readEntries(sessionDir)).find(
+                    (entry) => entry.kind === 'command' && entry.id === id && entry.running
+                  )
+              const durationMs =
+                event.durationMs ??
+                (started ? Math.max(0, now.getTime() - Date.parse(started.at)) : null)
               yield* append(
                 sessionDir,
                 conversationEntrySchema.parse({
                   kind: 'command',
-                  id: `command:${input.runId}:${event.id}`,
+                  id,
                   at: now.toISOString(),
                   runId: input.runId,
                   command: describeCommand(event.command),
                   output: describeOutput(event.output),
                   failed: event.failed,
-                  running: event.running
+                  running: event.running,
+                  exitCode: event.exitCode,
+                  durationMs: event.running ? null : durationMs
                 })
               )
               return
@@ -660,13 +674,35 @@ export function createConversationEffects(options: ConversationOptions): Convers
               )
               return
             }
+            case 'tool': {
+              // A tool call that read a file is a step of the Run's record; one
+              // that names no file stays in the sanitized activity stream only.
+              if (event.path === undefined) return
+              const checkout = yield* options.checkoutFor(input.sessionId)
+              const ordinal =
+                (yield* readEntries(sessionDir)).filter(
+                  (entry) => entry.kind === 'read' && entry.runId === input.runId
+                ).length + 1
+              yield* append(
+                sessionDir,
+                conversationEntrySchema.parse({
+                  kind: 'read',
+                  id: `read:${input.runId}:${ordinal}`,
+                  at: now.toISOString(),
+                  runId: input.runId,
+                  // Kept relative to the Checkout: an absolute path is this
+                  // machine's, not this Conversation's.
+                  path: redactCredentials(event.path).replaceAll(checkout, '.').slice(0, 1_000)
+                })
+              )
+              return
+            }
             case 'reasoning':
-            case 'tool':
             case 'retrying':
             case 'completed':
             case 'failed':
-              // Reasoning summaries and tool calls belong to the sanitized
-              // activity stream only.
+              // Reasoning summaries belong to the sanitized activity stream
+              // only.
               return
           }
         })

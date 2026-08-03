@@ -117,7 +117,16 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
     changeKind: changeKindSchema.optional(),
     hunks: z.array(diffHunkSchema).min(1)
   }),
-  z.object({ type: z.literal('tool'), name: z.string().min(1), summary: z.string().min(1) }),
+  z.object({
+    type: z.literal('tool'),
+    name: z.string().min(1),
+    summary: z.string().min(1),
+    /**
+     * The file the tool read, when it read one. A read becomes a durable step
+     * of the Run; a tool call that names no file stays activity only.
+     */
+    path: z.string().min(1).optional()
+  }),
   /**
    * One command the Harness ran in the Checkout, and what it printed. Kept
    * apart from `tool` because the output is the point: a Run that compiles or
@@ -130,7 +139,11 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
     command: z.string().min(1),
     output: z.string(),
     failed: z.boolean(),
-    running: z.boolean().default(false)
+    running: z.boolean().default(false),
+    /** As the Harness reported it. Null when it says only that it failed. */
+    exitCode: z.number().int().nullable().default(null),
+    /** Null when the Harness reported none and nothing saw the start. */
+    durationMs: z.number().int().nonnegative().nullable().default(null)
   }),
   z.object({
     type: z.literal('choices'),
@@ -331,7 +344,30 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
      * earliest the app can say anything: the command appears the moment it
      * starts and its output fills in when it lands.
      */
-    running: z.boolean().default(false)
+    running: z.boolean().default(false),
+    /** As the Harness reported it. Null when it says only that it failed. */
+    exitCode: z.number().int().nullable().default(null),
+    /**
+     * How long it ran. The Harness's own figure when it gives one; otherwise
+     * measured between the start the Conversation saw and the finish. Null
+     * for a command never seen starting.
+     */
+    durationMs: z.number().int().nonnegative().nullable().default(null)
+  }),
+  /**
+   * A file the Run read. A step of the Run's record rather than Conversation
+   * prose: together with commands and file changes it is what the Run
+   * actually did, re-readable after the Run is gone.
+   */
+  z.object({
+    kind: z.literal('read'),
+    id: z.string().min(1),
+    at: z.string().datetime(),
+    runId: z.string().min(1),
+    /** Relative to the Checkout, as every durable path is. */
+    path: z.string().min(1),
+    /** Null when the Harness does not say how long a read took — most do not. */
+    durationMs: z.number().int().nonnegative().nullable().default(null)
   }),
   /**
    * Something the agent asked permission for, and what the person answered.

@@ -59,7 +59,7 @@ The posture the user selects for a Run: **Ask**, where the agent requests consen
 _Avoid_: Approval policy, sandbox mode, YOLO
 
 **Approval Request**:
-One thing the agent asks to be allowed before it does it, in Ask mode, carrying the command or change it would make. Its Run is blocked while the request stands; approving lets the agent proceed and denying returns a message it carries on without.
+One thing the agent asks to be allowed before it does it, in Ask mode, carrying the command or change it would make. Its Run is blocked while the request stands; approving lets the agent proceed and denying refuses it — the agent is told, and carries on without.
 _Avoid_: Permission prompt, confirmation, dialog
 
 **Standing Approval**:

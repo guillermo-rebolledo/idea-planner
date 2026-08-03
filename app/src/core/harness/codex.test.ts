@@ -114,12 +114,21 @@ describe('what the Run did', () => {
   it('shows a command when it starts and again with what it printed', async () => {
     const { events } = await replay()
     expect(events.filter((event) => event.type === 'command')).toMatchObject([
-      { command: "/bin/zsh -lc 'wc -l greeting.txt'", running: true, output: '' },
+      {
+        command: "/bin/zsh -lc 'wc -l greeting.txt'",
+        running: true,
+        output: '',
+        exitCode: null,
+        durationMs: null
+      },
       {
         command: "/bin/zsh -lc 'wc -l greeting.txt'",
         running: false,
         failed: false,
-        output: '       2 greeting.txt\n'
+        output: '       2 greeting.txt\n',
+        // Codex says both outright, so the record keeps its figures.
+        exitCode: 0,
+        durationMs: 0
       }
     ])
   })

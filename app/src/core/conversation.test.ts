@@ -1026,7 +1026,9 @@ describe('commands in the Conversation', () => {
         command: 'pnpm test',
         output: `token=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\n${'log line\n'.repeat(5_000)}`,
         failed: false,
-        running: false
+        running: false,
+        exitCode: null,
+        durationMs: null
       }
     })
 
@@ -1045,6 +1047,115 @@ describe('commands in the Conversation', () => {
     expect(only.output.length).toBeLessThanOrEqual(16_100)
     // Says that something was dropped rather than pretending it is whole.
     expect(only.output).toContain('earlier output not kept')
+  })
+})
+
+describe('what a command step records', () => {
+  it('keeps the exit code and duration the Harness reported', async () => {
+    const runId = await startRun('Run the tests', 'submission-exit')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'command',
+        id: 'toolu_1',
+        command: 'npx jest hooks --watchAll=false',
+        output: '1 failed',
+        failed: true,
+        running: false,
+        exitCode: 1,
+        durationMs: 8_200
+      }
+    })
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    const commands = reloaded.entries.filter((entry) => entry.kind === 'command')
+    expect(commands).toMatchObject([{ failed: true, exitCode: 1, durationMs: 8_200 }])
+  })
+
+  it('measures the duration itself when the Harness reports none', async () => {
+    const runId = await startRun('Run the tests', 'submission-measured')
+    const command = (running: boolean) =>
+      core.applyHarnessEvent({
+        sessionId,
+        runId,
+        event: {
+          type: 'command',
+          id: 'toolu_1',
+          command: 'pnpm test',
+          output: '',
+          failed: false,
+          running,
+          exitCode: null,
+          durationMs: null
+        }
+      })
+
+    await command(true)
+    await command(false)
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    const [only] = reloaded.entries.filter((entry) => entry.kind === 'command')
+    if (only?.kind !== 'command') throw new Error('expected a command entry')
+    // The clock ticks one second per reading, so between the start the
+    // Conversation saw and the finish there is a measurable gap.
+    expect(only.durationMs).toBeGreaterThan(0)
+  })
+
+  it('leaves the duration unknown for a command never seen starting', async () => {
+    const runId = await startRun('Run the tests', 'submission-unseen')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'command',
+        id: 'toolu_1',
+        command: 'pnpm test',
+        output: 'done',
+        failed: false,
+        running: false,
+        exitCode: null,
+        durationMs: null
+      }
+    })
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    expect(reloaded.entries.filter((entry) => entry.kind === 'command')).toMatchObject([
+      { durationMs: null }
+    ])
+  })
+})
+
+describe('what a Run read', () => {
+  it('records a read with its path kept relative to the Checkout', async () => {
+    const runId = await startRun('Look around', 'submission-read')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'tool',
+        name: 'Read',
+        summary: 'Called Claude tool Read',
+        path: join(projectRoot, 'hooks/useLocation.ts')
+      }
+    })
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    const reads = reloaded.entries.filter((entry) => entry.kind === 'read')
+    // An absolute path is this machine's, not this Conversation's.
+    expect(reads).toMatchObject([{ runId, path: './hooks/useLocation.ts' }])
+  })
+
+  it('keeps dropping tool calls that name no file', async () => {
+    const runId = await startRun('Look around', 'submission-tool')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: { type: 'tool', name: 'WebSearch', summary: 'Called Claude tool WebSearch' }
+    })
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    expect(reloaded.entries.filter((entry) => entry.kind === 'read')).toHaveLength(0)
   })
 })
 
@@ -1087,7 +1198,9 @@ describe('a command from start to finish', () => {
           command: 'pnpm test',
           output: patch.output ?? '',
           failed: false,
-          running: patch.running
+          running: patch.running,
+          exitCode: null,
+          durationMs: null
         }
       })
 

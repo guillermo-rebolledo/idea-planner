@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Bot,
   ChevronRight,
   FileDiff,
+  FileText,
+  LoaderCircle,
   Send,
   ShieldQuestion,
   Square,
   Terminal,
-  User
+  TriangleAlert
 } from 'lucide-react'
 import {
   countDiffLines,
@@ -26,7 +27,6 @@ import {
   type RunSnapshot,
   type SessionSummary,
   type SkillCatalog,
-  type StandingApprovalKind,
   type SuggestedResponse
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
@@ -36,7 +36,7 @@ import {
   ModelPicker,
   type ModelChoice
 } from '@renderer/components/ModelPicker'
-import { DiffCounts } from '@renderer/components/Diff'
+import { DiffCounts, DiffView, ExitCode } from '@renderer/components/Diff'
 import { cn } from '@renderer/lib/utils'
 
 /**
@@ -80,7 +80,14 @@ const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
     'Harness cleanup could not be verified. Quit the app and check Activity Monitor before starting another Run.'
 }
 
-export function Conversation({ session }: { session: SessionSummary }): React.JSX.Element {
+export function Conversation({
+  session,
+  onOpenFile
+}: {
+  session: SessionSummary
+  /** Opens the Files panel focused on one file — the app's one diff surface. */
+  onOpenFile: (path: string) => void
+}): React.JSX.Element {
   const sessionId = session.id
   const [phase, setPhase] = useState<Phase>({ state: 'loading' })
   const [runs, setRuns] = useState<RunSnapshot[]>([])
@@ -97,14 +104,24 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
   // Ask by default: a Run edits the Project in place, and being asked first is
   // the posture somebody would choose if they were choosing deliberately.
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
-  const [denyMessage, setDenyMessage] = useState('')
   const [deciding, setDeciding] = useState(false)
+  // Read once per second only while a Run works, so the divider and the
+  // activity block can say how long it has been at it.
+  const [clock, setClock] = useState(() => Date.now())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
 
   const snapshot = phase.state === 'ready' ? phase.snapshot : null
   const activeRunId = snapshot?.activeRunId ?? null
+  const pendingApproval = useMemo(
+    () =>
+      snapshot?.entries.find(
+        (entry): entry is Extract<ConversationEntry, { kind: 'approval' }> =>
+          entry.kind === 'approval' && entry.id === snapshot.pendingApprovalId
+      ) ?? null,
+    [snapshot]
+  )
 
   // The Harness comes from the model, and the first group is one that can
   // actually run a Session: offering one the app has just said it cannot use
@@ -161,6 +178,12 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
     const timer = window.setInterval(() => void refresh(), 750)
     return () => window.clearInterval(timer)
   }, [activeRunId, refresh])
+
+  useEffect(() => {
+    if (!activeRunId) return
+    const timer = window.setInterval(() => setClock(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [activeRunId])
 
   useEffect(
     () =>
@@ -316,11 +339,9 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           runId: approval.runId,
           approvalId: approval.requestId,
           decision,
-          message: denyMessage.trim(),
           remember
         })
         setPhase({ state: 'ready', snapshot: next })
-        setDenyMessage('')
       } catch {
         setError('That request could not be answered. The Run may have already ended.')
         await refresh()
@@ -328,8 +349,51 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
         setDeciding(false)
       }
     },
-    [sessionId, denyMessage, refresh]
+    [sessionId, refresh]
   )
+
+  const stop = useCallback(() => {
+    if (!activeRunId) return
+    void window.shell.stopRun({ runId: activeRunId, sessionId }).then(
+      () => refresh(),
+      () => setError('The Run could not be stopped.')
+    )
+  }, [activeRunId, sessionId, refresh])
+
+  // The card's own shortcuts, exactly as it states them: ⏎ allow · esc deny.
+  // ⌘. stops the Run whether or not anything is being asked. Typing surfaces
+  // keep their keys — the composer is disabled while a Run works anyway.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.metaKey && event.key === '.') {
+        if (!activeRunId) return
+        event.preventDefault()
+        stop()
+        return
+      }
+      if (!pendingApproval || deciding || event.metaKey || event.altKey || event.ctrlKey) return
+      const target = event.target
+      // A focused control already answers Enter itself; answering here too
+      // would decide the same request twice, or a different thing entirely.
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLButtonElement && event.key === 'Enter')
+      ) {
+        return
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault()
+        void decide(pendingApproval, 'allow')
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        void decide(pendingApproval, 'deny')
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [pendingApproval, deciding, decide, activeRunId, stop])
 
   if (phase.state === 'loading') {
     return (
@@ -367,10 +431,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
       : []
   const plainOptions =
     activeRunId === null && latestAssistant?.kind === 'message' && latestAssistant.plainOptions
-  const pendingApproval = entries.find(
-    (entry): entry is Extract<ConversationEntry, { kind: 'approval' }> =>
-      entry.kind === 'approval' && entry.id === phase.snapshot.pendingApprovalId
-  )
+  const items = groupEntries(entries)
   const activeRun = runs.find((run) => run.id === activeRunId) ?? runs[0]
   // Whether the Harness behind the chosen model can run a Session at all.
   const canDevelop = readiness?.harnesses.find((entry) => entry.harness === chosenHarness)
@@ -398,17 +459,7 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
             </p>
           </div>
           {activeRunId && (
-            <Button
-              className="ml-auto"
-              size="sm"
-              variant="secondary"
-              onClick={() =>
-                void window.shell.stopRun({ runId: activeRunId, sessionId }).then(
-                  () => refresh(),
-                  () => setError('The Run could not be stopped.')
-                )
-              }
-            >
+            <Button className="ml-auto" size="sm" variant="secondary" onClick={stop}>
               <Square aria-hidden="true" className="size-3" /> Stop
             </Button>
           )}
@@ -426,50 +477,35 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
               installed, type / to work to one.
             </li>
           )}
-          {entries.map((entry) => (
-            <EntryRow key={entry.id} entry={entry} />
-          ))}
-          {liveForActiveRun?.messages
-            .filter((message) => message.text)
-            .map((message) => (
-              <li key={message.id} className="flex gap-2">
-                <Bot
-                  aria-hidden="true"
-                  className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+          {items.map((item) => {
+            if (item.type === 'user') return <UserBubble key={item.entry.id} entry={item.entry} />
+            if (item.type === 'assistant')
+              return (
+                <AgentText
+                  key={item.entry.id}
+                  text={item.entry.text}
+                  partial={item.entry.completeness === 'partial'}
                 />
-                <div className="min-w-0">
-                  <p className="text-xs font-medium text-muted-foreground">Assistant</p>
-                  <p className="text-sm whitespace-pre-wrap select-text">{message.text}</p>
-                </div>
-              </li>
-            ))}
-          {liveForActiveRun?.commands
-            .filter(
-              (entry) =>
-                !entries.some(
-                  (durable) =>
-                    durable.kind === 'command' &&
-                    durable.id === `command:${liveForActiveRun.runId}:${entry.id}`
-                )
-            )
-            .map((entry) => (
-              <CommandRow
-                key={entry.id}
-                command={entry.command}
-                output={entry.output}
-                failed={entry.failed}
-                running={entry.running}
+              )
+            if (item.type === 'note')
+              return (
+                <li key={item.entry.id} className="font-mono text-2xs text-muted-foreground">
+                  {item.entry.summary}
+                </li>
+              )
+            return (
+              <RunSection
+                key={item.runId}
+                group={item}
+                run={runs.find((run) => run.id === item.runId) ?? null}
+                active={item.runId === activeRunId}
+                waiting={pendingApproval?.runId === item.runId}
+                clock={clock}
+                live={liveForActiveRun?.runId === item.runId ? liveForActiveRun : null}
+                onOpenFile={onOpenFile}
               />
-            ))}
-          {liveForActiveRun?.changes
-            .slice(
-              entries.filter(
-                (entry) => entry.kind === 'file-change' && entry.runId === liveForActiveRun.runId
-              ).length
             )
-            .map((change) => (
-              <FileChangeRow key={change.id} path={change.path} hunks={change.hunks} />
-            ))}
+          })}
           {activeRunId &&
             !pendingApproval &&
             !liveForActiveRun?.messages.some((message) => message.text) && (
@@ -550,18 +586,18 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
           <div
             role="alert"
             aria-label="Approval request"
-            className="mx-3 mb-3 rounded-md border border-border bg-muted/50 p-3"
+            className="mx-3 mb-3 rounded-lg border border-status-blocked-border bg-status-blocked-surface"
           >
-            <p className="flex items-center gap-2 text-xs font-medium">
-              <ShieldQuestion aria-hidden="true" className="size-3.5 shrink-0" />
-              The agent is asking before it uses {pendingApproval.tool}. This Run is blocked until
-              you answer.
+            <p className="flex items-center gap-2 px-3.5 pt-3 text-xs">
+              <TriangleAlert aria-hidden="true" className="size-3.5 shrink-0 text-status-blocked" />
+              <span className="font-semibold">Approval Request</span>
+              <span className="text-muted-foreground">Run is waiting</span>
             </p>
-            <p className="mt-2 font-mono text-xs break-all select-text">
+            <p className="mx-3.5 mt-2 rounded-md border border-border bg-surface px-3 py-2 font-mono text-xs break-all select-text">
               {pendingApproval.summary}
             </p>
             {pendingApproval.detail && (
-              <details className="mt-1">
+              <details className="mx-3.5 mt-1">
                 <summary className="cursor-pointer text-xs text-muted-foreground">
                   What it sent
                 </summary>
@@ -570,64 +606,47 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
                 </pre>
               </details>
             )}
-            <label className="sr-only" htmlFor="approval-message">
-              What to tell the agent if you decline
-            </label>
-            <input
-              id="approval-message"
-              value={denyMessage}
-              disabled={deciding}
-              onChange={(event) => setDenyMessage(event.target.value)}
-              placeholder="If you decline, what should it do instead? (optional)"
-              className="mt-2 h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
-            />
-            <div className="mt-2 flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2 px-3.5 py-3">
               <Button
                 size="sm"
                 disabled={deciding}
                 onClick={() => void decide(pendingApproval, 'allow')}
               >
-                Approve
+                Allow
               </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={deciding}
-                onClick={() => void decide(pendingApproval, 'deny')}
-              >
-                Decline
-              </Button>
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Declining is not a stop: the agent is told why and carries on without it.
-            </p>
-            {pendingApproval.proposedRule && (
-              <div className="mt-2 border-t border-border pt-2">
-                <p className="text-xs text-muted-foreground">
-                  {STANDING_EXPLANATION[pendingApproval.proposedRule.kind]}. The agent stops asking,
-                  so this is the exact rule that gets stored:
-                </p>
-                {/* Shown before it is accepted, and never paraphrased. Once a rule
-                  is stored the Harness answers with it before this app is asked
-                  anything, so this line is the last chance to read it. */}
-                <p className="mt-1 font-mono text-xs break-all select-text">
-                  {ruleText(pendingApproval.proposedRule)}
-                </p>
+              {pendingApproval.proposedRule && (
                 <Button
-                  className="mt-2"
                   size="sm"
                   variant="secondary"
                   disabled={deciding}
                   onClick={() => void decide(pendingApproval, 'allow', true)}
                 >
-                  Always allow this
+                  Always allow for {projectName(session.projectRoot)}
                 </Button>
-                <p className="mt-1 text-xs break-all text-muted-foreground">
-                  {/* Named in full, because which Project this applies to is the
-                    whole scope of what is being granted. */}
-                  Only in {session.projectRoot}, and you can take it back at any time.
-                </p>
-              </div>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={deciding}
+                onClick={() => void decide(pendingApproval, 'deny')}
+              >
+                Deny
+              </Button>
+              <span className="ml-auto font-mono text-2xs text-muted-foreground">
+                ⏎ allow · esc deny
+              </span>
+            </div>
+            {pendingApproval.proposedRule && (
+              // Shown before it is accepted, and never paraphrased. Once a rule
+              // is stored the Harness answers with it before this app is asked
+              // anything, so this line is the last chance to read it.
+              <p className="border-t border-status-blocked-border px-3.5 py-2 text-2xs break-all text-muted-foreground">
+                Always allow stores exactly{' '}
+                <span className="font-mono select-text">
+                  {ruleText(pendingApproval.proposedRule)}
+                </span>{' '}
+                — only in {session.projectRoot}, revocable at any time.
+              </p>
             )}
           </div>
         )}
@@ -841,13 +860,11 @@ export function Conversation({ session }: { session: SessionSummary }): React.JS
 
         <UsagePanel usage={phase.snapshot.usage} />
 
-        {activeRun && (
-          <ActivityPanel
-            run={activeRun}
-            // A Run that ended badly is exactly when the detail matters, so it
-            // does not stay hidden behind a disclosure.
-            defaultOpen={FAILED_STATUSES.has(activeRun.status)}
-          />
+        {/* The sanitized activity log surfaces only when a Run ended badly —
+            that is exactly when the detail matters. A healthy Run's record is
+            its activity block in the Conversation itself. */}
+        {activeRun && FAILED_STATUSES.has(activeRun.status) && (
+          <ActivityPanel run={activeRun} defaultOpen />
         )}
 
         <Attribution />
@@ -871,105 +888,236 @@ function Field({
   )
 }
 
-/** How many lines of output are shown before it is worth collapsing. */
-const OUTPUT_PREVIEW_LINES = 12
+/** How many diff lines the live preview shows of the file being written. */
+const PREVIEW_LINES = 6
 
 /**
- * A command the Run ran, and what it printed. A compact terminal block: the
- * output is usually the answer the person was waiting for, so it sits inline
- * rather than behind a disclosure — until it is long enough that leaving it
- * open would bury the Conversation around it.
+ * The running indicator — the product's one use of its brand colour, so every
+ * step in flight spins the same way.
  */
-function CommandRow({
-  command,
-  output,
-  failed,
-  running
+function Spinner(): React.JSX.Element {
+  return (
+    <LoaderCircle
+      aria-hidden="true"
+      className="size-3 shrink-0 animate-spin text-status-running motion-reduce:animate-none"
+    />
+  )
+}
+
+/**
+ * One activity block per Run (mock 2d). While the Run works it streams the
+ * current step and a live preview of the last file written; the moment it
+ * finishes it collapses to one line, so the Conversation is quiet at rest.
+ * The chevron re-expands it any time to the chronological step list — steps
+ * only, no captured output. Clicking an edited file opens the Files panel on
+ * it, the app's one diff surface.
+ */
+function RunActivityBlock({
+  steps,
+  active,
+  elapsed,
+  live,
+  onOpenFile
 }: {
-  command: string
-  output: string
-  failed: boolean
-  running: boolean
-}): React.JSX.Element {
-  const lines = output ? output.split('\n') : []
-  const long = lines.length > OUTPUT_PREVIEW_LINES
-  const [expanded, setExpanded] = useState(false)
-  const shown = expanded || !long ? lines : lines.slice(-OUTPUT_PREVIEW_LINES)
+  steps: StepEntry[]
+  active: boolean
+  elapsed: number | null
+  live: LiveRun | null
+  onOpenFile: (path: string) => void
+}): React.JSX.Element | null {
+  const [choice, setChoice] = useState<boolean | null>(null)
+  // Open while it works, collapsed once it finishes — unless the person chose.
+  const expanded = choice ?? active
+
+  // What streamed but is not durable yet. A command or change becomes durable
+  // within the refresh interval; until then the live copy stands in for it.
+  const liveCommands = (live?.commands ?? []).filter(
+    (command) =>
+      !steps.some(
+        (step) => step.kind === 'command' && step.id === `command:${live?.runId}:${command.id}`
+      )
+  )
+  const liveChanges = (live?.changes ?? []).slice(
+    steps.filter((step) => step.kind === 'file-change').length
+  )
+
+  const changes = steps.flatMap((step) => (step.kind === 'file-change' ? [step] : []))
+  const reads = steps.filter((step) => step.kind === 'read').length
+  const edited = new Set([
+    ...changes.map((step) => step.path),
+    ...liveChanges.map((change) => change.path)
+  ])
+  const commandCount = steps.filter((step) => step.kind === 'command').length + liveCommands.length
+  const totals = [...changes, ...liveChanges.map((change) => countDiffLines(change.hunks))].reduce(
+    (sum, change) => ({
+      added: sum.added + change.added,
+      removed: sum.removed + change.removed
+    }),
+    { added: 0, removed: 0 }
+  )
+  if (!active && steps.length === 0) return null
+
+  const summary =
+    [
+      reads > 0 && `Read ${String(reads)} file${reads === 1 ? '' : 's'}`,
+      edited.size > 0 && `Edited ${String(edited.size)} file${edited.size === 1 ? '' : 's'}`,
+      commandCount > 0 && `Ran ${String(commandCount)} command${commandCount === 1 ? '' : 's'}`
+    ]
+      .filter(Boolean)
+      .join(' · ') || 'Worked'
+
+  // The step in flight, for the collapsed running line.
+  const runningCommand =
+    liveCommands.find((command) => command.running) ??
+    steps.flatMap((step) => (step.kind === 'command' && step.running ? [step] : [])).at(-1)
+  const lastWrite = liveChanges.at(-1) ?? changes.at(-1)
+  const current = runningCommand
+    ? runningCommand.command
+    : lastWrite
+      ? `Wrote ${lastWrite.path}`
+      : 'Working…'
+
+  // The live preview: the tail of the last diff the Harness reported.
+  const previewHunk = active ? (lastWrite?.hunks.at(-1) ?? null) : null
 
   return (
-    <li className="flex gap-2">
-      <Terminal aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <p className="flex flex-wrap items-baseline gap-x-2 font-mono text-xs">
-          <span className="text-muted-foreground">$</span>
-          <span className="break-all select-text">{command}</span>
-          {running && <span className="text-xs text-muted-foreground">running…</span>}
-          {failed && <span className="text-xs text-destructive">failed</span>}
-        </p>
-        {lines.length === 0 ? (
-          <p className="mt-1 text-xs text-muted-foreground">
-            {running ? 'Waiting for it to finish.' : 'No output.'}
-          </p>
-        ) : (
-          <>
-            {long && (
-              <button
-                type="button"
-                aria-expanded={expanded}
-                className="mt-1 text-xs text-muted-foreground underline-offset-2 hover:underline"
-                onClick={() => setExpanded((current) => !current)}
-              >
-                {expanded ? 'Show less' : `Show all ${String(lines.length)} lines`}
-              </button>
+    <li>
+      <div className="overflow-hidden rounded-lg border border-border" aria-label="Run activity">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setChoice(!expanded)}
+          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-muted/40"
+        >
+          <ChevronRight
+            aria-hidden="true"
+            className={cn(
+              'size-3 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none',
+              expanded && 'rotate-90'
             )}
-            <pre className="mt-1 max-h-96 overflow-auto rounded-md border border-border bg-surface p-2 font-mono text-xs whitespace-pre-wrap select-text">
-              {shown.join('\n')}
-            </pre>
-          </>
+          />
+          {active && !expanded && <Spinner />}
+          <span className="min-w-0 flex-1 truncate">
+            {active ? (expanded ? 'Working…' : current) : summary}
+          </span>
+          {active && elapsed !== null ? (
+            <span className="shrink-0 font-mono text-2xs text-muted-foreground">
+              {formatDuration(elapsed)}
+            </span>
+          ) : (
+            (totals.added > 0 || totals.removed > 0) && (
+              <span className="shrink-0 font-mono text-2xs">
+                <DiffCounts added={totals.added} removed={totals.removed} />
+              </span>
+            )
+          )}
+        </button>
+        {expanded && (steps.length > 0 || liveCommands.length > 0 || liveChanges.length > 0) && (
+          <ol className="border-t border-border py-1" aria-label="Run steps">
+            {steps.map((step) => (
+              <StepRow key={step.id} step={step} onOpenFile={onOpenFile} />
+            ))}
+            {liveCommands.map((command) => (
+              <li
+                key={command.id}
+                className="flex items-center gap-2 px-3 py-1 font-mono text-xs text-muted-foreground"
+              >
+                {command.running ? (
+                  <Spinner />
+                ) : (
+                  <Terminal aria-hidden="true" className="size-3 shrink-0" />
+                )}
+                <span className="min-w-0 flex-1 truncate select-text">{command.command}</span>
+              </li>
+            ))}
+            {liveChanges.map((change) => {
+              const counted = countDiffLines(change.hunks)
+              return (
+                <li
+                  key={change.id}
+                  className="flex items-center gap-2 px-3 py-1 font-mono text-xs text-muted-foreground"
+                >
+                  <FileDiff aria-hidden="true" className="size-3 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate select-text">{change.path}</span>
+                  <span className="shrink-0">
+                    <DiffCounts added={counted.added} removed={counted.removed} />
+                  </span>
+                </li>
+              )
+            })}
+          </ol>
+        )}
+        {expanded && previewHunk && (
+          <div className="border-t border-border">
+            <DiffView
+              hunks={[{ ...previewHunk, lines: previewHunk.lines.slice(-PREVIEW_LINES) }]}
+            />
+          </div>
+        )}
+        {expanded && active && (
+          <p className="flex items-center gap-2 border-t border-border px-3 py-1.5 text-2xs text-muted-foreground">
+            Streaming as the agent works — collapses when the Run finishes.
+            <span className="ml-auto shrink-0 font-mono">⌘. stop</span>
+          </p>
         )}
       </div>
     </li>
   )
 }
 
-/**
- * A file the Run changed, named as it happened. The change is already on disk
- * — edits land in the Checkout in place (ADR 0004) — so this is a record, not
- * an offer. The diff itself lives in the Files panel, the app's one
- * diff-viewing surface; this row is the Conversation remembering the change.
- */
-function FileChangeRow({
-  path,
-  hunks,
-  counted
+/** One chronological step of a Run: a read, an edit, or a command. */
+function StepRow({
+  step,
+  onOpenFile
 }: {
-  path: string
-  hunks: DiffHunk[]
-  /**
-   * What the whole change did, when it is known. A stored diff is shortened,
-   * so counting the lines on screen would report less than happened; a change
-   * still streaming has every line it has produced so far.
-   */
-  counted?: { added: number; removed: number }
+  step: StepEntry
+  onOpenFile: (path: string) => void
 }): React.JSX.Element {
-  const { added, removed } = counted ?? countDiffLines(hunks)
+  if (step.kind === 'read') {
+    return (
+      <li className="flex items-center gap-2 px-3 py-1 font-mono text-xs text-muted-foreground">
+        <FileText aria-hidden="true" className="size-3 shrink-0" />
+        <span className="min-w-0 flex-1 truncate select-text">Read {step.path}</span>
+        {step.durationMs !== null && (
+          <span className="shrink-0 text-2xs">{formatDuration(step.durationMs)}</span>
+        )}
+      </li>
+    )
+  }
+  if (step.kind === 'command') {
+    return (
+      <li className="flex items-center gap-2 px-3 py-1 font-mono text-xs text-muted-foreground">
+        {step.running ? <Spinner /> : <Terminal aria-hidden="true" className="size-3 shrink-0" />}
+        <span className="min-w-0 flex-1 truncate select-text">{step.command}</span>
+        {!step.running && step.exitCode !== null ? (
+          <span className="shrink-0">
+            <ExitCode code={step.exitCode} />
+          </span>
+        ) : (
+          !step.running && step.failed && <span className="shrink-0 text-destructive">failed</span>
+        )}
+        {!step.running && step.durationMs !== null && (
+          <span className="shrink-0 text-2xs">{formatDuration(step.durationMs)}</span>
+        )}
+      </li>
+    )
+  }
+  // An edit. The row is a way into the Files panel, the one diff surface.
   return (
-    <li className="flex gap-2">
-      <FileDiff aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-      <p className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 text-xs">
-        <span className="font-mono break-all select-text">{path}</span>
-        <span className="text-xs">
-          <DiffCounts added={added} removed={removed} />
+    <li>
+      <button
+        type="button"
+        onClick={() => onOpenFile(step.path)}
+        className="flex w-full items-center gap-2 px-3 py-1 text-left font-mono text-xs text-muted-foreground hover:bg-muted/40"
+      >
+        <FileDiff aria-hidden="true" className="size-3 shrink-0" />
+        <span className="min-w-0 flex-1 truncate select-text">{step.path}</span>
+        <span className="shrink-0">
+          <DiffCounts added={step.added} removed={step.removed} />
         </span>
-      </p>
+      </button>
     </li>
   )
-}
-
-/** What granting the offered rule would actually mean, in plain words. */
-const STANDING_EXPLANATION: Record<StandingApprovalKind, string> = {
-  command: 'You can always allow commands like this one',
-  edit: 'You can always allow file changes anywhere in this Project'
 }
 
 /** What the agent asked for, and what the person decided about it. */
@@ -1007,48 +1155,257 @@ function ApprovalRow({
   )
 }
 
-function EntryRow({ entry }: { entry: ConversationEntry }): React.JSX.Element | null {
-  if (entry.kind === 'usage' || entry.kind === 'thread') return null
-  if (entry.kind === 'command')
-    return (
-      <CommandRow
-        command={entry.command}
-        output={entry.output}
-        failed={entry.failed}
-        running={entry.running}
-      />
-    )
-  if (entry.kind === 'file-change')
-    return (
-      <FileChangeRow
-        path={entry.path}
-        hunks={entry.hunks}
-        counted={{ added: entry.added, removed: entry.removed }}
-      />
-    )
-  if (entry.kind === 'approval') return <ApprovalRow entry={entry} />
-  if (entry.kind === 'boundary') {
-    return (
-      <li className="text-xs text-muted-foreground">
-        <span className="rounded border border-border px-1.5 py-0.5">{entry.summary}</span>
-      </li>
-    )
+type MessageEntry = Extract<ConversationEntry, { kind: 'message' }>
+type BoundaryEntry = Extract<ConversationEntry, { kind: 'boundary' }>
+type ApprovalEntry = Extract<ConversationEntry, { kind: 'approval' }>
+/** What a Run did, in the order it did it: reads, edits, commands. */
+type StepEntry = Extract<ConversationEntry, { kind: 'command' | 'file-change' | 'read' }>
+
+interface RunGroup {
+  type: 'run'
+  runId: string
+  started: BoundaryEntry | null
+  ended: BoundaryEntry | null
+  messages: MessageEntry[]
+  steps: StepEntry[]
+  approvals: ApprovalEntry[]
+}
+
+type ConversationItem =
+  | { type: 'user'; entry: MessageEntry }
+  | { type: 'assistant'; entry: MessageEntry }
+  | { type: 'note'; entry: BoundaryEntry }
+  | RunGroup
+
+/**
+ * The flat durable journal folded into what the surface shows: user messages
+ * on their own, and one group per Run holding its prose, its steps and its
+ * approvals. The order of the groups is the order the Runs happened in.
+ */
+function groupEntries(entries: ConversationEntry[]): ConversationItem[] {
+  const items: ConversationItem[] = []
+  const groups = new Map<string, RunGroup>()
+  const groupFor = (runId: string): RunGroup => {
+    const known = groups.get(runId)
+    if (known) return known
+    const created: RunGroup = {
+      type: 'run',
+      runId,
+      started: null,
+      ended: null,
+      messages: [],
+      steps: [],
+      approvals: []
+    }
+    groups.set(runId, created)
+    items.push(created)
+    return created
   }
-  const Icon = entry.role === 'user' ? User : Bot
+  for (const entry of entries) {
+    switch (entry.kind) {
+      case 'message':
+        if (entry.role === 'user') items.push({ type: 'user', entry })
+        else if (entry.runId !== null) groupFor(entry.runId).messages.push(entry)
+        else items.push({ type: 'assistant', entry })
+        break
+      case 'boundary':
+        if (entry.boundary === 'run-started') groupFor(entry.runId).started = entry
+        else if (entry.boundary === 'configuration') items.push({ type: 'note', entry })
+        else groupFor(entry.runId).ended = entry
+        break
+      case 'command':
+      case 'file-change':
+      case 'read':
+        groupFor(entry.runId).steps.push(entry)
+        break
+      case 'approval':
+        groupFor(entry.runId).approvals.push(entry)
+        break
+      case 'usage':
+      case 'thread':
+        break
+    }
+  }
+  return items
+}
+
+/** The Run's Permission Mode, in the product's own words. */
+const MODE_LABEL: Record<PermissionMode, string> = { ask: 'Ask', auto: 'Full access' }
+
+/** The Project as a person names it: the folder, not the whole path. */
+function projectName(projectRoot: string): string {
+  return projectRoot.split('/').filter(Boolean).at(-1) ?? projectRoot
+}
+
+/** `8.2s`, `22s`, `3m 05s` — the precision worth reading at each scale. */
+function formatDuration(ms: number): string {
+  const seconds = Math.max(0, ms) / 1_000
+  if (seconds < 10) return `${seconds.toFixed(1)}s`
+  if (seconds < 60) return `${String(Math.round(seconds))}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${String(minutes)}m ${String(Math.round(seconds % 60)).padStart(2, '0')}s`
+}
+
+function formatClock(at: string): string {
+  return new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+}
+
+function UserBubble({ entry }: { entry: MessageEntry }): React.JSX.Element {
   return (
-    <li className="flex gap-2">
-      <Icon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-      <div className="min-w-0">
-        <p className="text-xs font-medium text-muted-foreground">
-          {entry.role === 'user' ? 'You' : 'Assistant'}
-          {entry.completeness === 'partial' && (
-            <span className="ml-1 font-normal">
-              · partial, the Run ended before this message finished
-            </span>
-          )}
-        </p>
-        <p className="text-sm whitespace-pre-wrap select-text">{entry.text}</p>
+    <li className="flex justify-end">
+      <p className="max-w-md rounded-lg bg-accent px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap select-text">
+        {entry.text}
+      </p>
+    </li>
+  )
+}
+
+/**
+ * Assistant prose, flat like a document: no avatar, no header. Backtick spans
+ * render as the same mono chips the rest of the product uses for paths and
+ * symbols, because that is what they are.
+ */
+function AgentText({ text, partial }: { text: string; partial: boolean }): React.JSX.Element {
+  const parts = text.split('`')
+  const balanced = parts.length % 2 === 1
+  return (
+    <li>
+      <div className="text-sm leading-relaxed whitespace-pre-wrap select-text">
+        {balanced && parts.length > 1
+          ? parts.map((part, index) =>
+              index % 2 === 1 && part && !part.includes('\n') ? (
+                // A chip is identified by nothing but where it sits in the text.
+                // eslint-disable-next-line @eslint-react/no-array-index-key
+                <code key={index} className="rounded-sm bg-accent px-1 font-mono text-xs">
+                  {part}
+                </code>
+              ) : (
+                // eslint-disable-next-line @eslint-react/no-array-index-key
+                <span key={index}>{index % 2 === 1 ? `\`${part}\`` : part}</span>
+              )
+            )
+          : text}
       </div>
+      {partial && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Partial — the Run ended before this message finished.
+        </p>
+      )}
+    </li>
+  )
+}
+
+/**
+ * One Run of the Conversation: its quiet mono divider, its prose, its
+ * activity block, and the approvals it asked for. One fragment of list rows
+ * rather than a box — the Conversation stays a single flat document.
+ */
+function RunSection({
+  group,
+  run,
+  active,
+  waiting,
+  clock,
+  live,
+  onOpenFile
+}: {
+  group: RunGroup
+  run: RunSnapshot | null
+  active: boolean
+  waiting: boolean
+  clock: number
+  live: LiveRun | null
+  onOpenFile: (path: string) => void
+}): React.JSX.Element {
+  const startedAt = group.started?.at ?? run?.acceptedAt ?? null
+  const resolved = group.approvals.filter((entry) => entry.decision !== null)
+  return (
+    <>
+      <RunDivider
+        group={group}
+        run={run}
+        active={active}
+        waiting={waiting}
+        clock={clock}
+        startedAt={startedAt}
+      />
+      {group.messages.map((message) => (
+        <AgentText
+          key={message.id}
+          text={message.text}
+          partial={message.completeness === 'partial'}
+        />
+      ))}
+      {(live?.messages ?? [])
+        .filter((message) => message.text)
+        .map((message) => (
+          <AgentText key={message.id} text={message.text} partial={false} />
+        ))}
+      <RunActivityBlock
+        steps={group.steps}
+        active={active}
+        elapsed={active && startedAt !== null ? clock - Date.parse(startedAt) : null}
+        live={live}
+        onOpenFile={onOpenFile}
+      />
+      {resolved.map((entry) => (
+        <ApprovalRow key={entry.id} entry={entry} />
+      ))}
+    </>
+  )
+}
+
+/**
+ * The Run boundary as a rule of the page: `Run · model · mode`, a hairline,
+ * and on the right what became of it — running, waited on, or how long it
+ * worked. Mono and muted, so history reads as history.
+ */
+function RunDivider({
+  group,
+  run,
+  active,
+  waiting,
+  clock,
+  startedAt
+}: {
+  group: RunGroup
+  run: RunSnapshot | null
+  active: boolean
+  waiting: boolean
+  clock: number
+  startedAt: string | null
+}): React.JSX.Element {
+  const model = run?.configuration.model ?? group.started?.model ?? null
+  const mode = run ? MODE_LABEL[run.configuration.permissionMode] : null
+  const label = ['Run', model, mode].filter(Boolean).join(' · ')
+  const ended = group.ended
+  let outcome: React.ReactNode = null
+  if (active && !waiting) {
+    outcome = (
+      <span className="flex items-center gap-1.5">
+        <span aria-hidden="true" className="size-1.5 rounded-full bg-status-running" />
+        Running{startedAt !== null && ` · ${formatDuration(clock - Date.parse(startedAt))}`}
+      </span>
+    )
+  } else if (active && waiting) {
+    outcome = startedAt !== null ? formatClock(startedAt) : null
+  } else if (ended?.boundary === 'run-completed' && startedAt !== null) {
+    outcome = `Worked for ${formatDuration(Date.parse(ended.at) - Date.parse(startedAt))}`
+  } else if (ended?.boundary === 'run-stopped') {
+    outcome = 'Stopped'
+  } else if (ended?.boundary === 'run-failed') {
+    outcome = 'Failed'
+  } else if (startedAt !== null) {
+    outcome = formatClock(startedAt)
+  }
+  return (
+    <li
+      aria-label={label}
+      className="flex items-center gap-2.5 font-mono text-2xs text-muted-foreground"
+    >
+      <span className="shrink-0">{label}</span>
+      <span aria-hidden="true" className="h-px min-w-4 flex-1 bg-border" />
+      {outcome !== null && <span className="shrink-0">{outcome}</span>}
     </li>
   )
 }

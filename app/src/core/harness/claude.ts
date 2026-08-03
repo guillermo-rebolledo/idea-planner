@@ -182,7 +182,9 @@ export function createClaudeAdapter(): HarnessAdapter {
           command: redactCredentials(command),
           output: '',
           failed: false,
-          running: false
+          running: false,
+          exitCode: null,
+          durationMs: null
         })
       }
       pendingCommands.clear()
@@ -265,10 +267,12 @@ function describeAssistant(raw: unknown, pendingCommands: Map<string, string>): 
       pendingCommands.set(block.id, command)
       continue
     }
+    const read = readPathOf(block.name, block.input)
     events.push({
       type: 'tool',
       name: normalizeToolName(block.name),
-      summary: describeTool(block.name)
+      summary: describeTool(block.name),
+      ...(read !== null ? { path: redactCredentials(read) } : {})
     })
   }
   return events
@@ -294,7 +298,9 @@ function describeCommandStarted(
       command: redactCredentials(command),
       output: '',
       failed: false,
-      running: true
+      running: true,
+      exitCode: null,
+      durationMs: null
     }
   ]
 }
@@ -304,6 +310,13 @@ function commandOf(name: string, input: unknown): string | null {
   if (name !== 'Bash') return null
   const parsed = z.object({ command: z.string().min(1) }).safeParse(input)
   return parsed.success ? parsed.data.command : null
+}
+
+/** The file a tool call is reading, if it is reading one. */
+function readPathOf(name: string, input: unknown): string | null {
+  if (name !== 'Read') return null
+  const parsed = z.object({ file_path: z.string().min(1) }).safeParse(input)
+  return parsed.success ? parsed.data.file_path : null
 }
 
 /**
@@ -340,7 +353,11 @@ function describeCommandResult(
       command: redactCredentials(command),
       output: redactCredentials(output),
       failed: block.data.is_error ?? false,
-      running: false
+      running: false,
+      // Claude reports only whether it errored; the Conversation measures the
+      // duration between the start it saw and this result.
+      exitCode: null,
+      durationMs: null
     })
   }
   return events

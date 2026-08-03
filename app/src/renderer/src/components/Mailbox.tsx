@@ -474,6 +474,10 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
               onTogglePinned={(session) => void togglePinned(session)}
               onSetArchived={(session, archived) => void setArchived(session, archived)}
               onDelete={setDeleting}
+              onOpenFile={(path) => {
+                setFilesOpen(true)
+                setFocusedFile(path)
+              }}
             />
           ) : (
             <Composer
@@ -1069,12 +1073,14 @@ function SessionDetail({
   session,
   onTogglePinned,
   onSetArchived,
-  onDelete
+  onDelete,
+  onOpenFile
 }: {
   session: SessionSummary
   onTogglePinned: (session: SessionSummary) => void
   onSetArchived: (session: SessionSummary, archived: boolean) => void
   onDelete: (session: SessionSummary) => void
+  onOpenFile: (path: string) => void
 }): React.JSX.Element {
   const savedAt = new Date(session.updatedAt)
   const archived = session.archivedAt !== null
@@ -1105,7 +1111,7 @@ function SessionDetail({
       <p className="mt-4 rounded-md border border-border bg-surface p-3 font-mono text-xs break-all text-muted-foreground select-text">
         {session.projectRoot}
       </p>
-      <Conversation key={session.id} session={session} />
+      <Conversation key={session.id} session={session} onOpenFile={onOpenFile} />
       <div className="mt-4 flex items-center gap-2">
         <Button variant="secondary" size="sm" onClick={() => onTogglePinned(session)}>
           {session.pinned ? (
