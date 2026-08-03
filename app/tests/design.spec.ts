@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { _electron as electron, expect, test, type ElectronApplication } from '@playwright/test'
 
@@ -27,8 +29,51 @@ const ROLES = [
   )
 ]
 
+/**
+ * Its own application support and its own Harness, like every other suite
+ * here: a test must never read or write the state of the app installed on
+ * this machine, and one that did would pass or fail on what it found there.
+ */
+interface Sandbox {
+  appDataDir: string
+  readinessBinDir: string
+  readinessHomeDir: string
+}
+
+let sandbox: Sandbox
+
+test.beforeEach(async () => {
+  sandbox = {
+    appDataDir: await mkdtemp(join(tmpdir(), 'app-design-appdata-')),
+    readinessBinDir: await mkdtemp(join(tmpdir(), 'app-design-bin-')),
+    readinessHomeDir: await mkdtemp(join(tmpdir(), 'app-design-home-'))
+  }
+  // The app refuses to open without a Harness that can run a Session, and
+  // every test here is about what is on screen past that gate.
+  await writeFile(
+    join(sandbox.readinessBinDir, 'claude'),
+    `#!/bin/sh\ncase "$1" in\n  --version) echo "2.1.220 (Claude Code)"; exit 0;;\n  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;\nesac\n`,
+    { mode: 0o755 }
+  )
+})
+
+test.afterEach(async () => {
+  await rm(sandbox.appDataDir, { recursive: true, force: true })
+  await rm(sandbox.readinessBinDir, { recursive: true, force: true })
+  await rm(sandbox.readinessHomeDir, { recursive: true, force: true })
+})
+
 async function launchShell(): Promise<ElectronApplication> {
-  return electron.launch({ executablePath: electronBinary, args: [mainEntry] })
+  return electron.launch({
+    executablePath: electronBinary,
+    args: [mainEntry],
+    env: {
+      ...process.env,
+      APP_TEST_APP_DATA: sandbox.appDataDir,
+      APP_TEST_READINESS_PATH: sandbox.readinessBinDir,
+      APP_TEST_READINESS_HOME: sandbox.readinessHomeDir
+    }
+  })
 }
 
 test('the app is set in Geist, and code in Geist Mono', async () => {
