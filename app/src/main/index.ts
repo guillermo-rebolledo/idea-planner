@@ -48,6 +48,7 @@ import {
   SKILL_ATTRIBUTION,
   projectViewSchema,
   type BootState,
+  type Checkout,
   type ChooseProjectResult,
   type ThemeState
 } from '@shared/contract'
@@ -327,8 +328,8 @@ function registerIpc(): void {
     // An isolated checkout is settled before the Session exists: the linked
     // worktree is created here, on a branch derived from the message, and
     // Core only ever stores a directory that is really there.
-    let checkout = request.checkout
-    if (checkout.kind === 'isolated') {
+    let checkout: Checkout
+    if (request.checkout.kind === 'isolated') {
       const created = await createWorktree({
         projectRoot: request.projectRoot,
         worktreesDirectory: join(
@@ -337,12 +338,14 @@ function registerIpc(): void {
           worktreesDirectoryName(request.projectRoot)
         ),
         branch: isolatedBranchName(request.message),
-        baseBranch: checkout.baseBranch
+        baseBranch: request.checkout.baseBranch
       })
       if (created.status !== 'created') {
         throw new Error(`The isolated checkout could not be created: ${created.message}`)
       }
       checkout = { kind: 'worktree', path: created.path }
+    } else {
+      checkout = request.checkout
     }
     // Creating the Session and answering its message is one act, and the Run
     // service owns it: sending on the launch screen is a Session and its

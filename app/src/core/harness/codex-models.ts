@@ -136,6 +136,5 @@ function frame(message: unknown): string {
 
 /** Codex names its levels in one word; this is that word, for a button. */
 function label(effort: string): string {
-  if (effort === 'medium') return 'Med'
   return effort.charAt(0).toUpperCase() + effort.slice(1)
 }

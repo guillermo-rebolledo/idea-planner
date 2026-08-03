@@ -183,7 +183,7 @@ export type StartSessionInput = z.input<typeof startSessionInputSchema>
  * ever stores directories that exist.
  */
 export const startSessionRequestSchema = startSessionInputSchema.extend({
-  checkout: checkoutRequestSchema.default(LOCAL_CHECKOUT),
+  checkout: checkoutRequestSchema.default({ kind: 'local' }),
   /**
    * How the starting message is answered. Present is the ordinary case: the
    * launch screen chooses a model and a Permission Mode, and sending both

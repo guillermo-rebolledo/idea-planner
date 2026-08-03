@@ -24,11 +24,11 @@ export const LOCAL_CHECKOUT: Checkout = { kind: 'local' }
  * What a new Session asks for, before it is settled. `isolated` is the ask —
  * "make me an isolated checkout from this base branch" — which Main answers
  * by creating the linked worktree and settling it into `worktree` before the
- * Session exists. A caller that already has a worktree may name it directly.
+ * Session exists. A raw worktree path is deliberately not accepted here: the
+ * window never has one to name, and an input nothing sends is attack surface.
  */
 export const checkoutRequestSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('local') }),
-  z.object({ kind: z.literal('worktree'), path: z.string().min(1) }),
   z.object({ kind: z.literal('isolated'), baseBranch: z.string().min(1).max(200) })
 ])
 export type CheckoutRequest = z.infer<typeof checkoutRequestSchema>

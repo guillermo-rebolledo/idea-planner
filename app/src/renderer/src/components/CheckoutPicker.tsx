@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { FolderTree, Monitor } from 'lucide-react'
+import { Check, FolderTree, Monitor } from 'lucide-react'
 import type { BranchList, CheckoutRequest } from '@shared/contract'
 import { ChipTrigger, PopoverHeading } from '@renderer/components/ui/chip-popover'
 import { ChoiceRow } from '@renderer/components/ui/choice'
@@ -105,24 +105,34 @@ export function CheckoutPicker({
             </p>
           )}
           {value.kind === 'isolated' && (
-            <label className="flex items-center gap-2 px-2 py-1.5 text-2xs text-muted-foreground">
-              Base branch
-              <select
-                aria-label="Base branch"
-                value={value.baseBranch}
-                className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-1.5 font-mono text-xs"
-                onChange={(event) => onChange({ kind: 'isolated', baseBranch: event.target.value })}
-              >
-                {value.baseBranch !== '' && !listed(branches).includes(value.baseBranch) && (
-                  <option value={value.baseBranch}>{value.baseBranch}</option>
-                )}
-                {listed(branches).map((branch) => (
-                  <option key={branch} value={branch}>
-                    {branch}
-                  </option>
+            <div className="mt-0.5 border-t border-border pt-1">
+              <p className="px-2 py-1 text-2xs text-muted-foreground">Base branch</p>
+              {/* The same rows as the choices above rather than a native
+                  select: one popover, one look. A base already chosen but no
+                  longer listed stays offered — it is what would be cut from. */}
+              <ul aria-label="Base branch" className="max-h-40 overflow-y-auto">
+                {[
+                  ...(value.baseBranch !== '' && !listed(branches).includes(value.baseBranch)
+                    ? [value.baseBranch]
+                    : []),
+                  ...listed(branches)
+                ].map((branch) => (
+                  <li key={branch}>
+                    <button
+                      type="button"
+                      aria-pressed={branch === value.baseBranch}
+                      onClick={() => onChange({ kind: 'isolated', baseBranch: branch })}
+                      className="flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1 text-left font-mono text-xs outline-none hover:bg-accent focus-visible:bg-accent"
+                    >
+                      <span className="min-w-0 flex-1 truncate">{branch}</span>
+                      {branch === value.baseBranch && (
+                        <Check aria-hidden="true" className="size-3.5 shrink-0" />
+                      )}
+                    </button>
+                  </li>
                 ))}
-              </select>
-            </label>
+              </ul>
+            </div>
           )}
         </div>
       </PopoverContent>

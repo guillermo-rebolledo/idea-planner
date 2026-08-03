@@ -83,7 +83,7 @@ export const CLAUDE_MODEL_ALIASES: { id: string; name: string; description: stri
  */
 export const CLAUDE_EFFORTS: EffortOption[] = [
   { id: 'low', name: 'Low' },
-  { id: 'medium', name: 'Med' },
+  { id: 'medium', name: 'Medium' },
   { id: 'high', name: 'High' },
   { id: 'xhigh', name: 'Xhigh' },
   { id: 'max', name: 'Max' }
