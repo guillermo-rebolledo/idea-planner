@@ -1,0 +1,64 @@
+/* shadcn/ui — Color tokens. Base scale = Tailwind Slate (the file's neutral).
+   Values transcribed verbatim from the Figma "Colors" page palette. */
+:root {
+  /* Slate scale (neutral base) */
+  --slate-50: #f8fafc;
+  --slate-100: #f1f5f9;
+  --slate-200: #e2e8f0;
+  --slate-300: #cbd5e1;
+  --slate-400: #94a3b8;
+  --slate-500: #64748b;
+  --slate-600: #475569;
+  --slate-700: #334155;
+  --slate-800: #1e293b;
+  --slate-900: #0f172a;
+  --slate-950: #020817;
+
+  /* Absolute */
+  --white: #ffffff;
+  --black: #000000;
+
+  /* Semantic — light theme (default) */
+  --background: var(--white);
+  --foreground: var(--slate-900);
+  --card: var(--white);
+  --card-foreground: var(--slate-900);
+  --popover: var(--white);
+  --popover-foreground: var(--slate-900);
+  --primary: var(--slate-900);
+  --primary-foreground: var(--slate-50);
+  --secondary: var(--slate-100);
+  --secondary-foreground: var(--slate-900);
+  --muted: var(--slate-100);
+  --muted-foreground: var(--slate-500);
+  --accent: var(--slate-100);
+  --accent-foreground: var(--slate-900);
+  --destructive: #ef4444;
+  --destructive-foreground: var(--slate-50);
+  --border: var(--slate-200);
+  --input: var(--slate-300); /* input field stroke in the file is slate-300 */
+  --ring: var(--slate-400);
+}
+
+/* Dark theme — shadcn Slate dark. Apply .dark on a wrapping element. */
+.dark {
+  --background: var(--slate-900);
+  --foreground: var(--slate-50);
+  --card: var(--slate-900);
+  --card-foreground: var(--slate-50);
+  --popover: var(--slate-900);
+  --popover-foreground: var(--slate-50);
+  --primary: var(--slate-50);
+  --primary-foreground: var(--slate-900);
+  --secondary: var(--slate-800);
+  --secondary-foreground: var(--slate-50);
+  --muted: var(--slate-800);
+  --muted-foreground: var(--slate-400);
+  --accent: var(--slate-800);
+  --accent-foreground: var(--slate-50);
+  --destructive: #7f1d1d;
+  --destructive-foreground: var(--slate-50);
+  --border: var(--slate-800);
+  --input: var(--slate-800);
+  --ring: var(--slate-300);
+}

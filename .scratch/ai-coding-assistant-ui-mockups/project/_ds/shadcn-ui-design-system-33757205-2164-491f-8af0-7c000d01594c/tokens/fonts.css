@@ -1,0 +1,5 @@
+/* shadcn/ui — Webfonts.
+   The source uses Inter (sans) and Menlo (mono, 1 usage). Inter is loaded from
+   Google Fonts here rather than bundled TTFs — see readme.md "Fonts" caveat.
+   Menlo is a macOS system mono; the stack in typography.css falls back cleanly. */
+@import url("https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap");

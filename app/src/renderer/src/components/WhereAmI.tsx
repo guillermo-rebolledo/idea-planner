@@ -132,10 +132,14 @@ export function WhereAmI({
           aria-label={`Project card for ${folderName(session.projectRoot)}`}
           className="flex items-center gap-1.5 rounded-md focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <span className={cn(CHIP_CLASS, 'font-mono')}>
-            <GitBranch aria-hidden="true" className="size-3" />
-            {facts?.branch ?? '—'}
-          </span>
+          {/* The chip waits for git rather than flashing a dash it will
+              replace. Once the facts are in, — is honest: detached HEAD. */}
+          {facts !== null && (
+            <span className={cn(CHIP_CLASS, 'font-mono')}>
+              <GitBranch aria-hidden="true" className="size-3" />
+              {facts.branch ?? '—'}
+            </span>
+          )}
           <span className={CHIP_CLASS}>{isWorktree ? 'Worktree' : 'Local'}</span>
         </PopoverTrigger>
         <PopoverContent align="end" className="w-72">

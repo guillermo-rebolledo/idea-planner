@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import Markdown, { type Components } from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   ArrowUp,
   ChevronRight,
@@ -400,26 +402,28 @@ export function Conversation({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [pendingApproval, deciding, decide, activeRunId, stop])
 
+  // Centered like every other whole-surface state in the app: the surface is
+  // loading or failed, not a card that happens to sit at its top-left corner.
   if (phase.state === 'loading') {
     return (
-      <section className="mt-4 rounded-md border border-border bg-surface p-3" aria-busy="true">
+      <div className="flex h-full items-center justify-center" aria-busy="true">
         <p role="status" aria-live="polite" className="text-xs text-muted-foreground">
           Reading this Session’s Conversation…
         </p>
-      </section>
+      </div>
     )
   }
 
   if (phase.state === 'failed') {
     return (
-      <section className="mt-4 rounded-md border border-border bg-surface p-3">
-        <p role="alert" className="text-xs text-destructive">
+      <div role="alert" className="flex h-full flex-col items-center justify-center gap-2 p-8">
+        <p className="text-xs text-destructive">
           This Session’s Conversation could not be read. Nothing in your Project was changed.
         </p>
-        <Button className="mt-2" size="sm" variant="secondary" onClick={() => void refresh()}>
+        <Button size="sm" variant="secondary" onClick={() => void refresh()}>
           Try again
         </Button>
-      </section>
+      </div>
     )
   }
 
@@ -1150,30 +1154,71 @@ function UserBubble({ entry }: { entry: MessageEntry }): React.JSX.Element {
 }
 
 /**
- * Assistant prose, flat like a document: no avatar, no header. Backtick spans
- * render as the same mono chips the rest of the product uses for paths and
- * symbols, because that is what they are.
+ * How assistant markdown wears this app's clothes. Headings stay modest —
+ * chat prose is a document inside a document — code spans are the same mono
+ * chips the rest of the product uses for paths and symbols, and fenced code
+ * gets the bordered mono block every other captured text gets. Links render
+ * as text with the URL on hover: the app opens no arbitrary external link by
+ * design, and a link that looks clickable but is refused would be a lie.
+ */
+const MARKDOWN_COMPONENTS: Components = {
+  p: ({ children }) => <p className="mt-2 first:mt-0">{children}</p>,
+  h1: ({ children }) => <p className="mt-3 text-base font-medium first:mt-0">{children}</p>,
+  h2: ({ children }) => <p className="mt-3 text-base font-medium first:mt-0">{children}</p>,
+  h3: ({ children }) => <p className="mt-3 text-sm font-medium first:mt-0">{children}</p>,
+  h4: ({ children }) => <p className="mt-3 text-sm font-medium first:mt-0">{children}</p>,
+  h5: ({ children }) => <p className="mt-3 text-sm font-medium first:mt-0">{children}</p>,
+  h6: ({ children }) => <p className="mt-3 text-sm font-medium first:mt-0">{children}</p>,
+  ul: ({ children }) => (
+    <ul className="mt-2 flex list-disc flex-col gap-1 pl-5 first:mt-0">{children}</ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="mt-2 flex list-decimal flex-col gap-1 pl-5 first:mt-0">{children}</ol>
+  ),
+  code: ({ children }) => (
+    <code className="rounded-sm bg-accent px-1 font-mono text-xs">{children}</code>
+  ),
+  pre: ({ children }) => (
+    <pre className="mt-2 overflow-x-auto rounded-md border border-border bg-surface p-2 font-mono text-xs whitespace-pre first:mt-0 [&_code]:bg-transparent [&_code]:p-0">
+      {children}
+    </pre>
+  ),
+  a: ({ children, href }) => (
+    <span title={typeof href === 'string' ? href : undefined} className="underline">
+      {children}
+    </span>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote className="mt-2 border-l border-border pl-3 text-muted-foreground first:mt-0">
+      {children}
+    </blockquote>
+  ),
+  table: ({ children }) => (
+    <div className="mt-2 overflow-x-auto first:mt-0">
+      <table className="w-full border-collapse text-xs">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th className="border-b border-border px-2 py-1 text-left font-medium">{children}</th>
+  ),
+  td: ({ children }) => <td className="border-b border-border px-2 py-1">{children}</td>,
+  hr: () => <hr className="mt-3 border-border" />
+}
+
+const MARKDOWN_PLUGINS = [remarkGfm]
+
+/**
+ * Assistant prose, flat like a document: no avatar, no header. The agent
+ * writes markdown, so markdown is what renders — as React elements, never
+ * injected HTML, and raw HTML in the message stays inert text.
  */
 function AgentText({ text, partial }: { text: string; partial: boolean }): React.JSX.Element {
-  const parts = text.split('`')
-  const balanced = parts.length % 2 === 1
   return (
     <div>
-      <div className="text-sm leading-relaxed whitespace-pre-wrap select-text">
-        {balanced && parts.length > 1
-          ? parts.map((part, index) =>
-              index % 2 === 1 && part && !part.includes('\n') ? (
-                // A chip is identified by nothing but where it sits in the text.
-                // eslint-disable-next-line @eslint-react/no-array-index-key
-                <code key={index} className="rounded-sm bg-accent px-1 font-mono text-xs">
-                  {part}
-                </code>
-              ) : (
-                // eslint-disable-next-line @eslint-react/no-array-index-key
-                <span key={index}>{index % 2 === 1 ? `\`${part}\`` : part}</span>
-              )
-            )
-          : text}
+      <div className="text-sm leading-relaxed select-text">
+        <Markdown remarkPlugins={MARKDOWN_PLUGINS} components={MARKDOWN_COMPONENTS}>
+          {text}
+        </Markdown>
       </div>
       {partial && (
         <p className="mt-1 text-xs text-muted-foreground">
@@ -1291,14 +1336,14 @@ function RunDivider({ view }: { view: RunDividerView }): React.JSX.Element {
     outcome = formatClock(startedAt)
   }
   return (
-    <li
+    <div
       aria-label={label}
       className="flex items-center gap-2.5 font-mono text-2xs text-muted-foreground"
     >
       <span className="shrink-0">{label}</span>
       <span aria-hidden="true" className="h-px min-w-4 flex-1 bg-border" />
       {outcome !== null && <span className="shrink-0">{outcome}</span>}
-    </li>
+    </div>
   )
 }
 

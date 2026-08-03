@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="_ds/shadcn-ui-design-system-33757205-2164-491f-8af0-7c000d01594c/tokens/fonts.css">
+<link rel="stylesheet" href="_ds/shadcn-ui-design-system-33757205-2164-491f-8af0-7c000d01594c/tokens/colors.css">
+<link rel="stylesheet" href="_ds/shadcn-ui-design-system-33757205-2164-491f-8af0-7c000d01594c/tokens/typography.css">
+<link rel="stylesheet" href="_ds/shadcn-ui-design-system-33757205-2164-491f-8af0-7c000d01594c/tokens/spacing.css">
+<link rel="stylesheet" href="_ds/shadcn-ui-design-system-33757205-2164-491f-8af0-7c000d01594c/styles.css">
+<script src="_ds/shadcn-ui-design-system-33757205-2164-491f-8af0-7c000d01594c/_ds_bundle.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#e9e7e2;font-family:"Geist",Inter,system-ui,sans-serif}
+a{color:#334155;text-decoration:none}a:hover{text-decoration:underline}
+.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(0,0,0,.08);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 20px}
+.dv-tid{font:600 10px "Geist Mono",monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 13px/1.2 "Geist",sans-serif;color:#1a1a1a}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px "Geist Mono",monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 11px/1.3 "Geist",sans-serif;color:rgba(0,0,0,.55)}
+.dv-card{max-width:100%;border-radius:10px;box-shadow:0 12px 40px rgba(15,23,42,.22),0 1px 3px rgba(0,0,0,.1);overflow:hidden}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-next{margin:22px 0 0;font:12px/1.5 "Geist",sans-serif;color:rgba(0,0,0,.5)}
+</style>
+</helmet>
+<section class="dv-turn" id="t3">
+<div class="dv-thd"><a class="dv-tid" href="#t3">3</a><span class="dv-tname">Inbox interactions — pin, archive, delete, and the theme control</span></div>
+<div style="max-width:980px;font:12.5px/1.6 'Geist',sans-serif;color:rgba(0,0,0,.6);margin:0 0 24px">Rows stay bare at rest — actions only exist on hover and in the context menu, so the list never grows chrome. Delete is the one destructive act (a Conversation is permanent history), so it alone gets a confirm dialog. Theme lives with the other rarely-touched things, behind the app menu.</div>
+<div class="dv-opts">
+
+<div class="dv-opt" id="3a"><div class="dv-olabel"><a class="dv-oid" href="#3a">3a</a>Sidebar row states — rest · hover · context menu · archived</div>
+<div class="dv-card dark" style="width:560px;background:var(--background);color:var(--foreground);padding:24px 28px;display:flex;flex-direction:column;gap:10px">
+  <div style="font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--muted-foreground);text-transform:uppercase">Rest</div>
+  <div style="width:236px;display:flex;align-items:center;gap:7px;padding:5px 9px;border-radius:6px;font-size:12.5px;color:var(--muted-foreground)"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Dark mode for radar screen</span></div>
+  <div style="font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--muted-foreground);text-transform:uppercase;margin-top:6px">Hover — quick actions fade in, status dot yields to them</div>
+  <div style="width:236px;display:flex;align-items:center;gap:7px;padding:5px 9px;border-radius:6px;font-size:12.5px;background:var(--accent)">
+    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Dark mode for radar screen</span>
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground);flex:none"><path d="M12 17v5M9 10.8 4 15h16l-5-4.2V4.5L16.5 2h-9L9 4.5z"></path></svg>
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground);flex:none"><circle cx="5" cy="12" r="1.4"></circle><circle cx="12" cy="12" r="1.4"></circle><circle cx="19" cy="12" r="1.4"></circle></svg>
+  </div>
+  <div style="font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--muted-foreground);text-transform:uppercase;margin-top:6px">Context menu (right-click or ⋯)</div>
+  <div style="display:flex;gap:14px;align-items:flex-start">
+    <div style="width:236px;display:flex;align-items:center;gap:7px;padding:5px 9px;border-radius:6px;font-size:12.5px;background:var(--accent)"><span style="flex:1">Dark mode for radar screen</span></div>
+    <div style="width:220px;background:var(--popover);border:1px solid var(--border);border-radius:9px;box-shadow:var(--shadow-popover);padding:4px 5px;font-size:12.5px">
+      <div style="display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;background:var(--accent)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 17v5M9 10.8 4 15h16l-5-4.2V4.5L16.5 2h-9L9 4.5z"></path></svg>Pin<span style="margin-left:auto;font:10.5px 'Geist Mono',monospace;color:var(--muted-foreground)">⇧⌘P</span></div>
+      <div style="display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="5" rx="1"></rect><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"></path></svg>Archive<span style="margin-left:auto;font:10.5px 'Geist Mono',monospace;color:var(--muted-foreground)">⌘⌫</span></div>
+      <div style="display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"></path></svg>Rename</div>
+      <div style="height:1px;background:var(--border);margin:4px 3px"></div>
+      <div style="display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;color:#f87171"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>Delete…</div>
+    </div>
+  </div>
+  <div style="font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--muted-foreground);text-transform:uppercase;margin-top:6px">Archived — dimmed, restore on hover</div>
+  <div style="width:236px;display:flex;align-items:center;gap:7px;padding:5px 9px;border-radius:6px;font-size:12.5px;color:var(--muted-foreground);opacity:.75">
+    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none">Refactor WeatherKit wrapper</span>
+    <span style="font-size:10.5px;border:1px solid var(--border);border-radius:5px;padding:2px 7px;color:var(--foreground)">Restore</span>
+  </div>
+  <div style="font-size:10.5px;color:var(--muted-foreground);line-height:1.5;margin-top:4px">Pinned rows show the pin glyph only on hover too. Archive is instant and undoable (⌘Z); Delete opens <a class="dv-oid" href="#3b" style="background:rgba(255,255,255,.14);color:var(--foreground)">3b</a>.</div>
+</div></div>
+
+<div class="dv-opt" id="3b"><div class="dv-olabel"><a class="dv-oid" href="#3b">3b</a>Delete confirm — the only destructive dialog in the app</div>
+<div class="dv-card dark" style="width:440px;background:var(--background);color:var(--foreground);padding:36px 32px;display:flex;align-items:center;justify-content:center">
+  <div style="width:360px;background:var(--popover);border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow-popover);padding:18px 18px 14px">
+    <div style="font-size:14px;font-weight:600">Delete "Dark mode for radar screen"?</div>
+    <div style="font-size:12px;color:var(--muted-foreground);line-height:1.6;margin-top:7px">The Conversation is deleted permanently. Files the Session changed stay on disk in <span style="font:11px 'Geist Mono',monospace">weather-app</span> — use git to undo those.</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+      <span style="padding:6px 13px;border-radius:6px;border:1px solid var(--border);font-size:12.5px">Cancel</span>
+      <span style="padding:6px 13px;border-radius:6px;background:#dc2626;color:#fff;font-size:12.5px;font-weight:500">Delete Session</span>
+    </div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="3c"><div class="dv-olabel"><a class="dv-oid" href="#3c">3c</a>App menu — theme preference lives here, not in a settings page</div>
+<div class="dv-card dark" style="width:400px;background:var(--background);color:var(--foreground);padding:26px 28px;display:flex;justify-content:center">
+  <div style="width:280px;background:var(--popover);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow-popover);padding:4px 5px;font-size:12.5px">
+    <div style="display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground)"><path d="M4 7a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path><path d="M12 11v4m-2-2h4"></path></svg>Add Project…</div>
+    <div style="display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground)"><path d="m5 7 5 5-5 5M12 17h7"></path></svg>Harnesses<span style="margin-left:auto;display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:#22c55e"></span><span style="width:6px;height:6px;border-radius:50%;background:#f59e0b"></span></span></div>
+    <div style="display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground)"><rect x="4" y="10" width="16" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>Standing Approvals<span style="margin-left:auto;font:10.5px 'Geist Mono',monospace;color:var(--muted-foreground)">2</span></div>
+    <div style="height:1px;background:var(--border);margin:4px 3px"></div>
+    <div style="display:flex;align-items:center;gap:9px;padding:7px 8px">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground)"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>Theme
+      <span style="margin-left:auto;display:flex;gap:2px;border:1px solid var(--border);border-radius:6px;padding:2px;font-size:11px">
+        <span style="padding:3px 9px;border-radius:4px;background:var(--accent);font-weight:500">System</span>
+        <span style="padding:3px 9px;border-radius:4px;color:var(--muted-foreground)">Light</span>
+        <span style="padding:3px 9px;border-radius:4px;color:var(--muted-foreground)">Dark</span>
+      </span>
+    </div>
+    <div style="height:1px;background:var(--border);margin:4px 3px"></div>
+    <div style="display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px;color:var(--muted-foreground)">Archived Sessions<span style="margin-left:auto;font:10.5px 'Geist Mono',monospace">12</span></div>
+  </div>
+</div></div>
+
+</div>
+<p class="dv-next">Try next: "show a pinned row's hover state" · "confirm-less delete with a 5s undo toast instead" · "put theme in the sidebar footer"</p>
+</section>
+<section class="dv-turn" id="t2">
+<div class="dv-thd"><a class="dv-tid" href="#t2">2</a><span class="dv-tname">Where am I? — branch / Local vs Worktree / change count / Open in</span></div>
+<div style="max-width:980px;font:12.5px/1.6 'Geist',sans-serif;color:rgba(0,0,0,.6);margin:0 0 24px">Three placements for the same facts: current branch, whether the Session works on the local checkout or a git worktree, total lines changed (click opens the Files panel), and an "Open in" menu of editors detected on this Mac. Vocabulary stays product-true: it's the <strong style="color:#1a1a1a">Project</strong>, never "repo".</div>
+<div class="dv-opts">
+
+<div class="dv-opt" id="2a"><div class="dv-olabel"><a class="dv-oid" href="#2a">2a</a>Title-bar cluster · popover panel with everything, "Open in" menu open</div>
+<div class="dv-card dark" style="width:920px;background:var(--background);color:var(--foreground);font-size:13px">
+  <div style="display:flex;align-items:center;height:44px;border-bottom:1px solid var(--border);padding:0 14px;gap:10px">
+    <div style="display:flex;gap:8px;width:100px"><span style="width:12px;height:12px;border-radius:50%;background:#ff5f57"></span><span style="width:12px;height:12px;border-radius:50%;background:#febc2e"></span><span style="width:12px;height:12px;border-radius:50%;background:#28c840"></span></div>
+    <div style="flex:1;display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="font-weight:600">Add hourly forecast view</span></div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <span style="display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:6px;border:1px solid var(--border);font:11.5px 'Geist Mono',monospace;color:var(--muted-foreground)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2.6"></circle><circle cx="6" cy="18" r="2.6"></circle><circle cx="18" cy="9" r="2.6"></circle><path d="M6 8.6v6.8M18 11.6c0 3-3 4-6.5 4"></path></svg>main</span>
+      <span style="display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:6px;border:1px solid var(--border);font-size:11.5px;color:var(--muted-foreground)">Local</span>
+      <span style="display:flex;align-items:center;gap:5px;padding:5px 10px;border-radius:6px;border:1px solid var(--border);font:11.5px 'Geist Mono',monospace;background:var(--accent)"><span style="color:#4ade80">+61</span><span style="color:#f87171">−9</span></span>
+      <span style="display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:6px;border:1px solid var(--border);font-size:12px;font-weight:500">Open in<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"></path></svg></span>
+    </div>
+  </div>
+  <div style="position:relative;height:380px">
+    <div style="padding:26px 40px;color:var(--muted-foreground);font-size:13px;max-width:540px;line-height:1.65">The cluster stays quiet in the title bar — mono for branch and counts, no color except the diff numbers. Clicking <span style="font:11.5px 'Geist Mono',monospace;background:var(--accent);padding:1px 6px;border-radius:4px;color:var(--foreground)">+61 −9</span>  toggles the Files panel; clicking the branch or Local opens the panel in <a class="dv-oid" href="#2b" style="background:rgba(255,255,255,.14);color:var(--foreground)">2b</a>.</div>
+    <div style="position:absolute;top:8px;right:14px;width:248px;background:var(--popover);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow-popover);overflow:hidden">
+      <div style="padding:10px 12px 4px;font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--muted-foreground);text-transform:uppercase">Detected on this Mac</div>
+      <div style="display:flex;flex-direction:column;padding:4px 6px 6px">
+        <div style="display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px;background:var(--accent);font-size:12.5px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2 3 7v10l9 5 9-5V7z"></path><path d="M12 22V12L3 7M12 12l9-5"></path></svg>Cursor<span style="margin-left:auto;font:10.5px 'Geist Mono',monospace;color:var(--muted-foreground)">⌘⇧O</span></div>
+        <div style="display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px;font-size:12.5px;color:var(--muted-foreground)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m17 3-11 8 4 3-4 3 11 8 4-2V5z"></path></svg>Visual Studio Code</div>
+        <div style="display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px;font-size:12.5px;color:var(--muted-foreground)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16L4 19h16"></path></svg>Zed</div>
+      </div>
+      <div style="border-top:1px solid var(--border);display:flex;flex-direction:column;padding:4px 6px 6px">
+        <div style="display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px;font-size:12.5px;color:var(--muted-foreground)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m5 7 5 5-5 5M12 17h7"></path></svg>Terminal</div>
+        <div style="display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px;font-size:12.5px;color:var(--muted-foreground)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path></svg>Finder</div>
+      </div>
+      <div style="border-top:1px solid var(--border);padding:8px 14px;font-size:10.5px;color:var(--muted-foreground)">Opens the Project folder — the agent's edits are already there.</div>
+    </div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="2b"><div class="dv-olabel"><a class="dv-oid" href="#2b">2b</a>"Project" panel · one card with all the facts (reference-style)</div>
+<div class="dv-card dark" style="width:300px;background:var(--popover);color:var(--popover-foreground);border:1px solid var(--border);box-shadow:var(--shadow-popover)">
+  <div style="padding:13px 16px 6px;display:flex;align-items:center;font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--muted-foreground);text-transform:uppercase">weather-app</div>
+  <div style="display:flex;flex-direction:column;padding:2px 8px 8px">
+    <div style="display:flex;align-items:center;gap:11px;padding:8px 8px;border-radius:7px;font-size:13px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="color:var(--muted-foreground)"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M12 11v6m-3-3h6"></path></svg>Changes
+      <span style="margin-left:auto;font:12px 'Geist Mono',monospace"><span style="color:#4ade80">+61</span> <span style="color:#f87171">−9</span></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:11px;padding:8px 8px;border-radius:7px;font-size:13px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="color:var(--muted-foreground)"><rect x="3" y="5" width="18" height="12" rx="2"></rect><path d="M7 21h10"></path></svg>Local
+      <span style="margin-left:auto;font-size:11px;color:var(--muted-foreground)">working copy</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:11px;padding:8px 8px;border-radius:7px;font-size:13px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="color:var(--muted-foreground)"><circle cx="6" cy="6" r="2.6"></circle><circle cx="6" cy="18" r="2.6"></circle><circle cx="18" cy="9" r="2.6"></circle><path d="M6 8.6v6.8M18 11.6c0 3-3 4-6.5 4"></path></svg><span style="font:12.5px 'Geist Mono',monospace">main</span>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-left:auto;color:var(--muted-foreground)"><path d="m6 9 6 6 6-6"></path></svg>
+    </div>
+  </div>
+  <div style="border-top:1px solid var(--border);padding:8px 8px">
+    <div style="display:flex;align-items:center;gap:11px;padding:8px 8px;border-radius:7px;font-size:13px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="color:var(--muted-foreground)"><path d="M12 2 3 7v10l9 5 9-5V7z"></path><path d="M12 22V12L3 7M12 12l9-5"></path></svg>Open in Cursor
+      <span style="margin-left:auto;font-size:11px;color:var(--muted-foreground)">change ›</span>
+    </div>
+  </div>
+  <div style="border-top:1px solid var(--border);padding:9px 16px 11px;font-size:10.5px;color:var(--muted-foreground);line-height:1.5">Clicking Changes opens "Files this Session changed". Everything on disk, under git.</div>
+</div>
+<div class="dv-card dark" style="width:300px;background:var(--popover);color:var(--popover-foreground);border:1px solid var(--border);box-shadow:var(--shadow-popover);margin-top:14px">
+  <div style="padding:13px 16px 6px;display:flex;align-items:center;font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--muted-foreground);text-transform:uppercase">weather-app<span style="margin-left:auto;font-family:'Geist',sans-serif;font-weight:400;text-transform:none;letter-spacing:0;font-size:10.5px">Worktree variant</span></div>
+  <div style="display:flex;flex-direction:column;padding:2px 8px 8px">
+    <div style="display:flex;align-items:center;gap:11px;padding:8px 8px;border-radius:7px;font-size:13px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="color:var(--muted-foreground)"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M12 11v6m-3-3h6"></path></svg>Changes
+      <span style="margin-left:auto;font:12px 'Geist Mono',monospace"><span style="color:#4ade80">+14</span> <span style="color:#f87171">−5</span></span>
+    </div>
+    <div style="display:flex;align-items:flex-start;gap:11px;padding:8px 8px;border-radius:7px;font-size:13px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="color:var(--muted-foreground);margin-top:2px"><path d="M12 3v6m0 0-4 4m4-4 4 4M4 21h16"></path></svg>
+      <span><span style="display:block">Worktree</span><span style="display:block;font:10.5px 'Geist Mono',monospace;color:var(--muted-foreground);margin-top:2px">.worktrees/fix-location-crash</span></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:11px;padding:8px 8px;border-radius:7px;font-size:13px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="color:var(--muted-foreground)"><circle cx="6" cy="6" r="2.6"></circle><circle cx="6" cy="18" r="2.6"></circle><circle cx="18" cy="9" r="2.6"></circle><path d="M6 8.6v6.8M18 11.6c0 3-3 4-6.5 4"></path></svg><span style="font:12.5px 'Geist Mono',monospace">fix-location-crash</span>
+    </div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="2c"><div class="dv-olabel"><a class="dv-oid" href="#2c">2c</a>Context strip above the composer · always visible, zero chrome</div>
+<div class="dv-card dark" style="width:680px;background:var(--background);color:var(--foreground);padding:22px 28px 20px">
+  <div style="display:flex;align-items:center;gap:14px;padding:0 6px 9px;font:11.5px 'Geist Mono',monospace;color:var(--muted-foreground)">
+    <span style="display:flex;align-items:center;gap:6px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path></svg>weather-app</span>
+    <span style="display:flex;align-items:center;gap:6px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="12" rx="2"></rect><path d="M7 21h10"></path></svg>Local</span>
+    <span style="display:flex;align-items:center;gap:6px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2.6"></circle><circle cx="6" cy="18" r="2.6"></circle><circle cx="18" cy="9" r="2.6"></circle><path d="M6 8.6v6.8M18 11.6c0 3-3 4-6.5 4"></path></svg>main</span>
+    <span style="display:flex;align-items:center;gap:5px;border-bottom:1px dashed var(--border);cursor:default"><span style="color:#4ade80">+61</span><span style="color:#f87171">−9</span></span>
+    <span style="margin-left:auto;display:flex;align-items:center;gap:5px;color:var(--foreground);font-family:'Geist',sans-serif;font-size:11.5px">Open in Cursor<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"></path></svg></span>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.03);padding:10px 12px 8px">
+    <div style="color:var(--muted-foreground);font-size:13px;padding:2px 4px 10px">Reply, or / for a Skill…</div>
+    <div style="display:flex;align-items:center;gap:4px">
+      <span style="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;color:var(--muted-foreground)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"></path></svg></span>
+      <span style="padding:4px 9px;border-radius:6px;font-size:12px;color:var(--muted-foreground)">Ask</span>
+      <span style="margin-left:auto;display:flex;align-items:center;gap:5px;padding:4px 9px;border-radius:6px;font-size:12px;color:var(--muted-foreground)">Sonnet 4.6 · Medium<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"></path></svg></span>
+      <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--primary);color:var(--primary-foreground)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 19V5m-7 7 7-7 7 7"></path></svg></span>
+    </div>
+  </div>
+  <div style="padding:9px 6px 0;font-size:10.5px;color:var(--muted-foreground)">The strip rides with the composer (like Codex's chips). Clicking <span style="color:#4ade80">+61</span> <span style="color:#f87171">−9</span> opens the Files panel; "Open in" remembers your last editor.</div>
+</div></div>
+
+</div>
+<div class="dv-opts" style="margin-top:28px">
+<div class="dv-opt" id="2d"><div class="dv-olabel"><a class="dv-oid" href="#2d">2d</a>Run activity — collapsed ↔ expanded, running and finished</div>
+<div class="dv-card dark" style="width:640px;background:var(--background);color:var(--foreground);padding:24px 28px;display:flex;flex-direction:column;gap:10px">
+  <div style="font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--muted-foreground);text-transform:uppercase">Running · collapsed</div>
+  <div style="display:flex;align-items:center;gap:9px;border:1px solid var(--border);border-radius:9px;padding:9px 13px">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground)"><path d="m9 6 6 6-6 6"></path></svg>
+    <span style="width:11px;height:11px;flex:none;border-radius:50%;border:1.5px solid #3b82f6;border-top-color:transparent"></span>
+    <span style="font-size:12.5px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Writing <span style="font:11.5px 'Geist Mono',monospace">hooks/__tests__/useLocation.denied.test.ts</span>…</span>
+    <span style="font:11px 'Geist Mono',monospace;color:var(--muted-foreground)">22s</span>
+  </div>
+  <div style="font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--muted-foreground);text-transform:uppercase;margin-top:8px">Running · expanded</div>
+  <div style="border:1px solid var(--border);border-radius:9px">
+    <div style="display:flex;align-items:center;gap:9px;padding:9px 13px">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground)"><path d="m6 9 6 6 6-6"></path></svg>
+      <span style="font-size:12.5px">Working…</span>
+      <span style="margin-left:auto;font:11px 'Geist Mono',monospace;color:var(--muted-foreground)">22s</span>
+    </div>
+    <div style="border-top:1px solid var(--border);padding:4px 0">
+      <div style="display:flex;align-items:center;gap:9px;padding:5px 13px;font:11.5px 'Geist Mono',monospace;color:var(--muted-foreground)">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path></svg>
+        <span style="flex:1">Read hooks/useLocation.ts</span><span style="opacity:.6">2s</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:9px;padding:5px 13px;font:11.5px 'Geist Mono',monospace">
+        <span style="width:11px;height:11px;flex:none;border-radius:50%;border:1.5px solid #3b82f6;border-top-color:transparent"></span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Writing hooks/__tests__/useLocation.denied.test.ts</span>
+        <span style="color:#4ade80">+9</span><span style="color:var(--muted-foreground);opacity:.6">…</span>
+      </div>
+    </div>
+    <div style="border-top:1px solid var(--border);padding:6px 0;font:11px 'Geist Mono',monospace;line-height:1.7">
+      <div style="padding:0 13px;background:rgba(74,222,128,.08);color:#4ade80">+ it('falls back to search when denied', () =&gt; {</div>
+      <div style="padding:0 13px;background:rgba(74,222,128,.08);color:#4ade80">+   mockPermission('denied');</div>
+      <div style="padding:0 13px;background:rgba(74,222,128,.08);color:#4ade80">+   expect(result.current.state).toBe('search');<span style="display:inline-block;width:7px;height:12px;background:#4ade80;vertical-align:-2px;margin-left:2px;opacity:.8"></span></div>
+    </div>
+  </div>
+  <div style="font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--muted-foreground);text-transform:uppercase;margin-top:8px">Finished · collapsed (the resting state)</div>
+  <div style="display:flex;align-items:center;gap:9px;border:1px solid var(--border);border-radius:9px;padding:9px 13px">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground)"><path d="m9 6 6 6-6 6"></path></svg>
+    <span style="font-size:12.5px">Edited 1 file · Ran 4 commands</span>
+    <span style="margin-left:auto;font:11.5px 'Geist Mono',monospace"><span style="color:#4ade80">+14</span> <span style="color:#f87171">−5</span></span>
+  </div>
+  <div style="font-size:10.5px;color:var(--muted-foreground);line-height:1.5">One block per Run. While running it streams the current step; the moment the Run finishes it collapses to a single line — the Conversation stays quiet at rest. Chevron re-expands any time.</div>
+</div></div>
+</div>
+<p class="dv-next">Try next: "put <a class="dv-oid" href="#2a">2a</a>'s cluster into the full Session view" · "make <a class="dv-oid" href="#2b">2b</a> open from the branch chip" · "Open in should also list JetBrains"</p>
+</section>
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Core surfaces — quiet, Codex-style flow · Geist / shadcn Slate tokens · dark &amp; light</span></div>
+<div style="max-width:980px;font:12.5px/1.6 'Geist',sans-serif;color:rgba(0,0,0,.6);margin:0 0 24px">
+<strong style="color:#1a1a1a">Assumptions &amp; reasoning.</strong> One rule drives everything: at rest, the screen is only the Conversation and the Composer. Everything else (activity, diffs, approvals) earns its pixels only when it needs an answer. Flat doc-like agent text, right-aligned user blocks, one collapsed activity line per Run, quiet mono dividers for Run boundaries. Green/red only on diff numbers, amber only when something is blocked or Full access is on; brand blue appears once (running dot). Sidebar groups by Project with Sessions nested. Sample content: a developer building a mobile weather app.
+</div>
+<div class="dv-opts">
+
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Session view · dark · approval waiting + Files panel open</div>
+<div class="dv-card dark" style="width:1240px;background:var(--background);color:var(--foreground);font-size:13px">
+  <div style="display:flex;align-items:center;height:44px;border-bottom:1px solid var(--border);padding:0 14px;gap:10px">
+    <div style="display:flex;gap:8px;width:120px"><span style="width:12px;height:12px;border-radius:50%;background:#ff5f57"></span><span style="width:12px;height:12px;border-radius:50%;background:#febc2e"></span><span style="width:12px;height:12px;border-radius:50%;background:#28c840"></span></div>
+    <div style="flex:1;display:flex;align-items:center;gap:8px;font-size:12.5px">
+      <span style="font-weight:600">Add hourly forecast view</span>
+      <span style="color:var(--muted-foreground);font:11px 'Geist Mono',monospace">weather-app · main</span>
+    </div>
+    <div style="display:flex;gap:4px;color:var(--muted-foreground)">
+      <span style="padding:5px 8px;border-radius:6px;font-size:11.5px;background:var(--accent);color:var(--accent-foreground)">Files · 3</span>
+      <span style="padding:5px 8px;border-radius:6px;font-size:11.5px">Harnesses</span>
+    </div>
+  </div>
+  <div style="display:flex;height:700px">
+    <div style="width:236px;flex:none;border-right:1px solid var(--border);background:rgba(255,255,255,.02);display:flex;flex-direction:column">
+      <div style="padding:10px 10px 6px;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:6px;padding:6px 9px;color:var(--muted-foreground);font-size:12px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>Search<span style="margin-left:auto;font:10.5px 'Geist Mono',monospace">⌘K</span></div>
+        <div style="display:flex;align-items:center;gap:7px;padding:6px 9px;border-radius:6px;font-size:12.5px;font-weight:500"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"></path></svg>New Session<span style="margin-left:auto;font:10.5px 'Geist Mono',monospace;color:var(--muted-foreground)">⌘N</span></div>
+      </div>
+      <div style="flex:1;overflow:hidden;padding:4px 10px;display:flex;flex-direction:column;gap:2px">
+        <div style="font:600 10px 'Geist Mono',monospace;letter-spacing:.06em;color:var(--muted-foreground);padding:8px 9px 4px;text-transform:uppercase">Pinned</div>
+        <div style="display:flex;align-items:center;gap:7px;padding:5px 9px;border-radius:6px;font-size:12.5px;color:var(--muted-foreground)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path></svg><span style="color:var(--foreground)">weather-app</span></div>
+        <div style="display:flex;align-items:center;gap:7px;padding:5px 9px 5px 29px;border-radius:6px;font-size:12.5px;background:var(--accent)"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Add hourly forecast view</span><span style="width:7px;height:7px;border-radius:50%;background:#f59e0b;flex:none"></span></div>
+        <div style="display:flex;align-items:center;gap:7px;padding:5px 9px 5px 29px;border-radius:6px;font-size:12.5px;color:var(--muted-foreground)"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Fix location permission crash</span><span style="width:7px;height:7px;border-radius:50%;background:#3b82f6;flex:none"></span></div>
+        <div style="font:600 10px 'Geist Mono',monospace;letter-spacing:.06em;color:var(--muted-foreground);padding:14px 9px 4px;text-transform:uppercase">Projects</div>
+        <div style="display:flex;align-items:center;gap:7px;padding:5px 9px;border-radius:6px;font-size:12.5px;color:var(--muted-foreground)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path></svg><span style="color:var(--foreground)">weather-app</span></div>
+        <div style="padding:5px 9px 5px 29px;font-size:12.5px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Dark mode for radar screen</div>
+        <div style="padding:5px 9px 5px 29px;font-size:12.5px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Refactor WeatherKit wrapper</div>
+        <div style="display:flex;align-items:center;gap:7px;padding:5px 9px 5px 29px;font-size:12.5px;color:var(--muted-foreground)"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Widget timeline provider</span><span style="width:7px;height:7px;border-radius:50%;background:#ef4444;flex:none"></span></div>
+        <div style="display:flex;align-items:center;gap:7px;padding:5px 9px;border-radius:6px;font-size:12.5px;color:var(--muted-foreground)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path></svg>dotfiles</div>
+        <div style="padding:5px 9px 5px 29px;font-size:12.5px;color:var(--muted-foreground)">Migrate zsh aliases</div>
+      </div>
+      <div style="border-top:1px solid var(--border);padding:9px 19px;display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted-foreground)">Archived · 12<span style="margin-left:auto;font:10.5px 'Geist Mono',monospace">⌘.</span></div>
+    </div>
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+      <div style="flex:1;overflow:hidden;padding:26px 40px 0;display:flex;flex-direction:column;gap:18px;max-width:720px;margin:0 auto;width:100%;box-sizing:border-box">
+        <div style="display:flex;justify-content:flex-end"><div style="max-width:78%;background:var(--accent);border-radius:10px;padding:9px 13px;font-size:13px;line-height:1.55">Add an hourly forecast strip under the daily card. Reuse the existing WeatherKit wrapper — don't add new API calls.</div></div>
+        <div style="display:flex;align-items:center;gap:10px;color:var(--muted-foreground);font:11px 'Geist Mono',monospace"><span>Run · Claude Sonnet 4.6 · Ask</span><span style="flex:1;height:1px;background:var(--border)"></span><span>2:41 PM</span></div>
+        <div style="font-size:13.5px;line-height:1.65">I'll add an <span style="font:12px 'Geist Mono',monospace;background:var(--accent);padding:1px 5px;border-radius:4px">HourlyForecastStrip</span> component fed by the wrapper's cached <span style="font:12px 'Geist Mono',monospace;background:var(--accent);padding:1px 5px;border-radius:4px">hourly()</span> call, and slot it into <span style="font:12px 'Geist Mono',monospace;background:var(--accent);padding:1px 5px;border-radius:4px">TodayScreen</span> under the daily card. No new network paths.</div>
+        <div style="display:flex;align-items:center;gap:8px;color:var(--muted-foreground);font-size:12px;cursor:default"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"></path></svg>Read 6 files · Edited 2 files · Ran 1 command<span style="font:11px 'Geist Mono',monospace;margin-left:2px">1m 40s</span></div>
+        <div style="border:1px solid rgba(245,158,11,.45);border-radius:10px;background:rgba(245,158,11,.05)">
+          <div style="display:flex;align-items:center;gap:9px;padding:11px 14px 0">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path></svg>
+            <span style="font-weight:600;font-size:12.5px">Approval Request</span>
+            <span style="color:var(--muted-foreground);font-size:11.5px">Run is waiting</span>
+          </div>
+          <div style="margin:9px 14px;padding:8px 11px;background:rgba(0,0,0,.35);border-radius:7px;font:12px 'Geist Mono',monospace;color:var(--foreground)">npm test -- HourlyForecastStrip</div>
+          <div style="display:flex;gap:8px;padding:0 14px 12px;align-items:center">
+            <span style="padding:6px 13px;border-radius:6px;background:var(--primary);color:var(--primary-foreground);font-size:12.5px;font-weight:500">Allow</span>
+            <span style="padding:6px 13px;border-radius:6px;border:1px solid var(--border);font-size:12.5px">Always allow for weather-app</span>
+            <span style="padding:6px 13px;border-radius:6px;font-size:12.5px;color:var(--muted-foreground)">Deny</span>
+            <span style="margin-left:auto;font:10.5px 'Geist Mono',monospace;color:var(--muted-foreground)">⏎ allow · esc deny</span>
+          </div>
+        </div>
+      </div>
+      <div style="padding:14px 40px 18px;max-width:720px;margin:0 auto;width:100%;box-sizing:border-box">
+        <div style="border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.03);padding:10px 12px 8px">
+          <div style="color:var(--muted-foreground);font-size:13px;padding:2px 4px 10px">Reply, or / for a Skill…</div>
+          <div style="display:flex;align-items:center;gap:4px">
+            <span style="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;color:var(--muted-foreground)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"></path></svg></span>
+            <span style="padding:4px 9px;border-radius:6px;font-size:12px;color:var(--muted-foreground)">Ask</span>
+            <span style="margin-left:auto;display:flex;align-items:center;gap:5px;padding:4px 9px;border-radius:6px;font-size:12px;color:var(--muted-foreground)">Sonnet 4.6 · Medium<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"></path></svg></span>
+            <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--primary);color:var(--primary-foreground)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 19V5m-7 7 7-7 7 7"></path></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="width:300px;flex:none;border-left:1px solid var(--border);background:rgba(255,255,255,.02);display:flex;flex-direction:column">
+      <div style="padding:14px 16px 8px;display:flex;align-items:baseline;gap:8px">
+        <span style="font-weight:600;font-size:12.5px">Files this Session changed</span>
+        <span style="margin-left:auto;font:11px 'Geist Mono',monospace"><span style="color:#4ade80">+61</span> <span style="color:#f87171">−9</span></span>
+      </div>
+      <div style="padding:0 16px 10px;font-size:11px;color:var(--muted-foreground);line-height:1.5">Already on disk. git is the undo.</div>
+      <div style="display:flex;flex-direction:column">
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 16px;font:11.5px 'Geist Mono',monospace"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none;color:var(--muted-foreground)"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path></svg><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted-foreground)">ui/HourlyForecastStrip.tsx</span><span style="color:#4ade80">+48</span></div>
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 16px;font:11.5px 'Geist Mono',monospace;background:var(--accent)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none;color:var(--muted-foreground)"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path></svg><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">screens/TodayScreen.tsx</span><span style="color:#4ade80">+11</span> <span style="color:#f87171">−6</span></div>
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 16px;font:11.5px 'Geist Mono',monospace;color:var(--muted-foreground)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path></svg><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">api/WeatherKitWrapper.ts</span><span style="color:#4ade80">+2</span> <span style="color:#f87171">−3</span></div>
+      </div>
+      <div style="flex:1;margin:8px 12px 12px;border:1px solid var(--border);border-radius:8px;overflow:hidden;font:11px 'Geist Mono',monospace;line-height:1.7">
+        <div style="padding:6px 10px;border-bottom:1px solid var(--border);color:var(--muted-foreground);font-size:10.5px;display:flex;gap:8px"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">screens/TodayScreen.tsx</span><span style="color:#4ade80">+11</span> <span style="color:#f87171">−6</span></div>
+        <div style="padding:6px 0;color:var(--muted-foreground)">
+          <div style="padding:0 10px"><span style="opacity:.5">@@ -41,9 +41,12 @@ export function TodayScreen()</span></div>
+          <div style="padding:0 10px">    &lt;DailyCard forecast={daily} /&gt;</div>
+          <div style="padding:0 10px;background:rgba(248,113,113,.09);color:#f87171">-   &lt;Divider /&gt;</div>
+          <div style="padding:0 10px;background:rgba(248,113,113,.09);color:#f87171">-   {loading &amp;&amp; &lt;Spinner /&gt;}</div>
+          <div style="padding:0 10px;background:rgba(248,113,113,.09);color:#f87171">-   &lt;RadarPreview coords={coords!} /&gt;</div>
+          <div style="padding:0 10px;background:rgba(74,222,128,.08);color:#4ade80">+   &lt;HourlyForecastStrip</div>
+          <div style="padding:0 10px;background:rgba(74,222,128,.08);color:#4ade80">+     hours={wrapper.hourly()}</div>
+          <div style="padding:0 10px;background:rgba(74,222,128,.08);color:#4ade80">+   /&gt;</div>
+          <div style="padding:0 10px;background:rgba(74,222,128,.08);color:#4ade80">+   &lt;Divider /&gt;</div>
+          <div style="padding:0 10px;background:rgba(74,222,128,.08);color:#4ade80">+   {coords &amp;&amp; &lt;RadarPreview coords={coords} /&gt;}</div>
+          <div style="padding:0 10px">    &lt;/ScrollView&gt;</div>
+          <div style="padding:0 10px">  );</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Session view · light · finished Run, inline change summary, Full access on</div>
+<div class="dv-card" style="width:1080px;background:var(--background);color:var(--foreground);font-size:13px">
+  <div style="display:flex;align-items:center;height:44px;border-bottom:1px solid var(--border);padding:0 14px;gap:10px">
+    <div style="display:flex;gap:8px;width:120px"><span style="width:12px;height:12px;border-radius:50%;background:#ff5f57"></span><span style="width:12px;height:12px;border-radius:50%;background:#febc2e"></span><span style="width:12px;height:12px;border-radius:50%;background:#28c840"></span></div>
+    <div style="flex:1;display:flex;align-items:center;gap:8px;font-size:12.5px">
+      <span style="font-weight:600">Fix location permission crash</span>
+      <span style="color:var(--muted-foreground);font:11px 'Geist Mono',monospace">weather-app · main</span>
+    </div>
+    <div style="display:flex;gap:4px;color:var(--muted-foreground)"><span style="padding:5px 8px;border-radius:6px;font-size:11.5px">Files · 1</span><span style="padding:5px 8px;border-radius:6px;font-size:11.5px">Harnesses</span></div>
+  </div>
+  <div style="display:flex;height:990px">
+    <div style="width:236px;flex:none;border-right:1px solid var(--border);background:var(--muted);display:flex;flex-direction:column">
+      <div style="padding:10px 10px 6px;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:6px;padding:6px 9px;color:var(--muted-foreground);font-size:12px;background:var(--background)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>Search<span style="margin-left:auto;font:10.5px 'Geist Mono',monospace">⌘K</span></div>
+        <div style="display:flex;align-items:center;gap:7px;padding:6px 9px;border-radius:6px;font-size:12.5px;font-weight:500"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"></path></svg>New Session</div>
+      </div>
+      <div style="flex:1;padding:4px 10px;display:flex;flex-direction:column;gap:2px">
+        <div style="font:600 10px 'Geist Mono',monospace;letter-spacing:.06em;color:var(--muted-foreground);padding:8px 9px 4px;text-transform:uppercase">Projects</div>
+        <div style="display:flex;align-items:center;gap:7px;padding:5px 9px;font-size:12.5px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground)"><path d="M4 7a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path></svg>weather-app</div>
+        <div style="display:flex;align-items:center;gap:7px;padding:5px 9px 5px 29px;border-radius:6px;font-size:12.5px;background:var(--accent)"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Fix location permission crash</span></div>
+        <div style="padding:5px 9px 5px 29px;font-size:12.5px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Add hourly forecast view</div>
+        <div style="padding:5px 9px 5px 29px;font-size:12.5px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Dark mode for radar screen</div>
+        <div style="display:flex;align-items:center;gap:7px;padding:5px 9px;font-size:12.5px;margin-top:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground)"><path d="M4 7a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path></svg>dotfiles</div>
+        <div style="padding:5px 9px 5px 29px;font-size:12.5px;color:var(--muted-foreground)">Migrate zsh aliases</div>
+      </div>
+      <div style="border-top:1px solid var(--border);padding:9px 19px;font-size:11.5px;color:var(--muted-foreground)">Archived · 12</div>
+    </div>
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+      <div style="flex:1;overflow:hidden;padding:26px 40px 0;display:flex;flex-direction:column;gap:18px;max-width:680px;margin:0 auto;width:100%;box-sizing:border-box">
+        <div style="display:flex;justify-content:flex-end"><div style="max-width:78%;background:var(--muted);border-radius:10px;padding:9px 13px;line-height:1.55">The app crashes on first launch when the user denies location. Can you reproduce and fix it?</div></div>
+        <div style="display:flex;align-items:center;gap:10px;color:var(--muted-foreground);font:11px 'Geist Mono',monospace"><span>Run · GPT-5.4 · Full access</span><span style="flex:1;height:1px;background:var(--border)"></span><span>Worked for 3m 05s</span></div>
+        <div style="font-size:13.5px;line-height:1.65">Reproduced it — <span style="font:12px 'Geist Mono',monospace;background:var(--muted);padding:1px 5px;border-radius:4px">useLocation()</span> force-unwraps the coordinate before the permission promise settles. I guarded the hook and added a denied-state fallback that shows the search field instead. Tests pass.</div>
+        <div style="border:1px solid var(--border);border-radius:9px">
+          <div style="display:flex;align-items:center;gap:9px;padding:9px 13px">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground)"><path d="m6 9 6 6 6-6"></path></svg>
+            <span style="font-size:12.5px">Edited 1 file · Ran 4 commands</span>
+            <span style="margin-left:auto;font:11.5px 'Geist Mono',monospace"><span style="color:#16a34a">+14</span> <span style="color:#dc2626">−5</span></span>
+          </div>
+          <div style="border-top:1px solid var(--border);padding:4px 0">
+            <div style="display:flex;align-items:center;gap:9px;padding:5px 13px;font:11.5px 'Geist Mono',monospace;color:var(--muted-foreground)">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none"><path d="m5 7 5 5-5 5M12 17h7"></path></svg>
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">npx jest hooks --watchAll=false</span>
+              <span style="color:#dc2626">exit 1</span><span style="opacity:.6">8.2s</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:9px;padding:5px 13px;font:11.5px 'Geist Mono',monospace;color:var(--muted-foreground)">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path></svg>
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">hooks/useLocation.ts</span>
+              <span style="color:#16a34a">+14</span> <span style="color:#dc2626">−5</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:9px;padding:5px 13px;font:11.5px 'Geist Mono',monospace;color:var(--muted-foreground)">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none"><path d="m5 7 5 5-5 5M12 17h7"></path></svg>
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">npx jest hooks --watchAll=false</span>
+              <span style="color:#16a34a">exit 0</span><span style="opacity:.6">7.9s</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:9px;padding:5px 13px;font:11.5px 'Geist Mono',monospace;color:var(--muted-foreground)">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none"><path d="m5 7 5 5-5 5M12 17h7"></path></svg>
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">npx tsc --noEmit</span>
+              <span style="color:#16a34a">exit 0</span><span style="opacity:.6">4.1s</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:9px;padding:5px 13px;font:11.5px 'Geist Mono',monospace;color:var(--muted-foreground)">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none"><path d="m5 7 5 5-5 5M12 17h7"></path></svg>
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">git status --porcelain</span>
+              <span style="color:#16a34a">exit 0</span><span style="opacity:.6">0.1s</span>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end"><div style="max-width:78%;background:var(--muted);border-radius:10px;padding:9px 13px;line-height:1.55">Nice. Add a unit test for the denied path too.</div></div>
+        <div style="display:flex;align-items:center;gap:10px;color:var(--muted-foreground);font:11px 'Geist Mono',monospace"><span>Run · GPT-5.4 · Full access</span><span style="flex:1;height:1px;background:var(--border)"></span><span style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:#3b82f6"></span>Running · 22s</span></div>
+        <div style="border:1px solid var(--border);border-radius:9px">
+          <div style="display:flex;align-items:center;gap:9px;padding:9px 13px">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-foreground)"><path d="m6 9 6 6 6-6"></path></svg>
+            <span style="font-size:12.5px">Working…</span>
+            <span style="margin-left:auto;font:11px 'Geist Mono',monospace;color:var(--muted-foreground)">22s</span>
+          </div>
+          <div style="border-top:1px solid var(--border);padding:4px 0">
+            <div style="display:flex;align-items:center;gap:9px;padding:5px 13px;font:11.5px 'Geist Mono',monospace;color:var(--muted-foreground)">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path></svg>
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Read hooks/useLocation.ts</span>
+              <span style="opacity:.6">2s</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:9px;padding:5px 13px;font:11.5px 'Geist Mono',monospace">
+              <span style="width:11px;height:11px;flex:none;border-radius:50%;border:1.5px solid #3b82f6;border-top-color:transparent"></span>
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Writing hooks/__tests__/useLocation.denied.test.ts</span>
+              <span style="color:#16a34a">+9</span><span style="color:var(--muted-foreground);opacity:.6">…</span>
+            </div>
+          </div>
+          <div style="border-top:1px solid var(--border);margin:0;padding:6px 0;font:11px 'Geist Mono',monospace;line-height:1.7;color:var(--muted-foreground)">
+            <div style="padding:0 13px;background:rgba(22,163,74,.07);color:#16a34a">+ it('falls back to search when denied', () =&gt; {</div>
+            <div style="padding:0 13px;background:rgba(22,163,74,.07);color:#16a34a">+   mockPermission('denied');</div>
+            <div style="padding:0 13px;background:rgba(22,163,74,.07);color:#16a34a">+   const { result } = renderHook(useLocation);</div>
+            <div style="padding:0 13px;background:rgba(22,163,74,.07);color:#16a34a">+   expect(result.current.coords).toBeNull();</div>
+            <div style="padding:0 13px;background:rgba(22,163,74,.07);color:#16a34a">+   expect(result.current.state).toBe('search');<span style="display:inline-block;width:7px;height:12px;background:#16a34a;vertical-align:-2px;margin-left:2px;opacity:.8"></span></div>
+          </div>
+          <div style="border-top:1px solid var(--border);padding:7px 13px;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted-foreground)">Streaming as the agent writes — collapses to one line when the step finishes.<span style="margin-left:auto;font:10.5px 'Geist Mono',monospace">⌘. stop</span></div>
+        </div>
+      </div>
+      <div style="padding:14px 40px 18px;max-width:680px;margin:0 auto;width:100%;box-sizing:border-box">
+        <div style="border:1px solid var(--border);border-radius:12px;background:var(--background);box-shadow:var(--shadow-sm);padding:10px 12px 8px">
+          <div style="color:var(--muted-foreground);font-size:13px;padding:2px 4px 10px">Reply, or / for a Skill…</div>
+          <div style="display:flex;align-items:center;gap:4px">
+            <span style="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;color:var(--muted-foreground)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"></path></svg></span>
+            <span style="display:flex;align-items:center;gap:5px;padding:4px 9px;border-radius:6px;font-size:12px;color:#b45309;background:rgba(245,158,11,.12)"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path></svg>Full access</span>
+            <span style="margin-left:auto;display:flex;align-items:center;gap:5px;padding:4px 9px;border-radius:6px;font-size:12px;color:var(--muted-foreground)">GPT-5.4 · Low<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"></path></svg></span>
+            <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--muted);color:var(--muted-foreground)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="7" width="10" height="10" rx="1.5"></rect></svg></span>
+          </div>
+        </div>
+        <div style="text-align:center;font-size:10.5px;color:var(--muted-foreground);padding-top:8px">Stop with ⌘. — the Run keeps its Conversation either way</div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>New Session · dark · empty state</div>
+<div class="dv-card dark" style="width:960px;background:var(--background);color:var(--foreground);font-size:13px">
+  <div style="display:flex;align-items:center;height:44px;padding:0 14px;gap:10px">
+    <div style="display:flex;gap:8px;width:120px"><span style="width:12px;height:12px;border-radius:50%;background:#ff5f57"></span><span style="width:12px;height:12px;border-radius:50%;background:#febc2e"></span><span style="width:12px;height:12px;border-radius:50%;background:#28c840"></span></div>
+    <span style="color:var(--muted-foreground);font-size:12px">New Session</span>
+  </div>
+  <div style="display:flex;height:600px">
+    <div style="width:52px;flex:none;border-right:1px solid var(--border);background:rgba(255,255,255,.02);display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:6px;color:var(--muted-foreground)">
+      <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:7px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M9 4v16"></path></svg></span>
+      <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:7px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg></span>
+      <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:7px;background:var(--accent);color:var(--foreground)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"></path></svg></span>
+    </div>
+    <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px;padding:0 60px">
+      <div style="font-size:22px;font-weight:500;letter-spacing:-.01em">What should we build in <span style="border-bottom:1px dashed var(--muted-foreground)">weather-app</span>?</div>
+      <div style="width:100%;max-width:620px;border:1px solid var(--border);border-radius:14px;background:rgba(255,255,255,.03);padding:12px 14px 10px">
+        <div style="color:var(--muted-foreground);font-size:13.5px;padding:2px 4px 14px">Describe the work, or / for a Skill…</div>
+        <div style="display:flex;align-items:center;gap:4px">
+          <span style="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;color:var(--muted-foreground)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"></path></svg></span>
+          <span style="padding:4px 9px;border-radius:6px;font-size:12px;color:var(--muted-foreground)">Ask</span>
+          <span style="margin-left:auto;display:flex;align-items:center;gap:5px;padding:4px 9px;border-radius:6px;font-size:12px;color:var(--muted-foreground)">Sonnet 4.6 · Medium<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"></path></svg></span>
+          <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--muted);color:var(--muted-foreground)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 19V5m-7 7 7-7 7 7"></path></svg></span>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;font-size:11.5px;color:var(--muted-foreground)">
+        <span style="border:1px solid var(--border);border-radius:99px;padding:5px 12px">Fix a failing test</span>
+        <span style="border:1px solid var(--border);border-radius:99px;padding:5px 12px">Explain this codebase</span>
+        <span style="border:1px solid var(--border);border-radius:99px;padding:5px 12px">Continue "Dark mode for radar screen"</span>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Onboarding · light · add your first Project</div>
+<div class="dv-card" style="width:760px;background:var(--background);color:var(--foreground)">
+  <div style="display:flex;align-items:center;height:44px;padding:0 14px"><div style="display:flex;gap:8px"><span style="width:12px;height:12px;border-radius:50%;background:#ff5f57"></span><span style="width:12px;height:12px;border-radius:50%;background:#febc2e"></span><span style="width:12px;height:12px;border-radius:50%;background:#28c840"></span></div></div>
+  <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:496px;gap:22px;padding:0 60px">
+    <div style="width:44px;height:44px;border-radius:11px;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-sm)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path><path d="M12 11v4m-2-2h4"></path></svg></div>
+    <div style="text-align:center">
+      <div style="font-size:19px;font-weight:600;letter-spacing:-.01em">Add your first Project</div>
+      <div style="font-size:13px;color:var(--muted-foreground);margin-top:6px;max-width:400px;line-height:1.55">A Project is a local git repository. Sessions, approvals and history all belong to it — and never leave this Mac.</div>
+    </div>
+    <div style="width:100%;max-width:460px;border:1.5px dashed var(--border);border-radius:12px;padding:26px 20px;display:flex;flex-direction:column;align-items:center;gap:8px">
+      <div style="font-size:13px;font-weight:500">Drop a folder here</div>
+      <div style="font:11.5px 'Geist Mono',monospace;color:var(--muted-foreground)">~/dev/weather-app</div>
+      <div style="margin-top:6px;padding:7px 14px;border-radius:6px;background:var(--primary);color:var(--primary-foreground);font-size:12.5px;font-weight:500">Choose a folder…</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted-foreground)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v4m0 4h.01"></path></svg>Must be a git repository — git is the only undo for the agent's edits.</div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1e"><div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Launch gate · dark · per-Harness Readiness</div>
+<div class="dv-card dark" style="width:640px;background:var(--background);color:var(--foreground)">
+  <div style="display:flex;align-items:center;height:44px;padding:0 14px"><div style="display:flex;gap:8px"><span style="width:12px;height:12px;border-radius:50%;background:#ff5f57"></span><span style="width:12px;height:12px;border-radius:50%;background:#febc2e"></span><span style="width:12px;height:12px;border-radius:50%;background:#28c840"></span></div></div>
+  <div style="padding:18px 44px 40px;display:flex;flex-direction:column;gap:18px">
+    <div>
+      <div style="font-size:17px;font-weight:600;letter-spacing:-.01em">No Harness can run a Session yet</div>
+      <div style="font-size:12.5px;color:var(--muted-foreground);margin-top:5px;line-height:1.55">This app drives coding agents already installed on your Mac. Fix either one below and you're in.</div>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:10px">
+      <div style="padding:13px 16px;display:flex;flex-direction:column;gap:9px">
+        <div style="display:flex;align-items:center;gap:9px">
+          <span style="width:7px;height:7px;border-radius:50%;background:#ef4444"></span>
+          <span style="font-weight:600;font-size:13px">Claude Code</span>
+          <span style="font-size:11.5px;color:#f87171">Not installed</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:7px;padding:7px 11px;font:11.5px 'Geist Mono',monospace;color:var(--foreground)">npm install -g @anthropic-ai/claude-code<span style="margin-left:auto;color:var(--muted-foreground)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg></span></div>
+      </div>
+      <div style="border-top:1px solid var(--border);padding:13px 16px;display:flex;flex-direction:column;gap:9px">
+        <div style="display:flex;align-items:center;gap:9px">
+          <span style="width:7px;height:7px;border-radius:50%;background:#f59e0b"></span>
+          <span style="font-weight:600;font-size:13px">Codex</span>
+          <span style="font-size:11.5px;color:#fbbf24">Installed, not authenticated</span>
+          <span style="margin-left:auto;font:10.5px 'Geist Mono',monospace;color:var(--muted-foreground)">v0.42.1</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:7px;padding:7px 11px;font:11.5px 'Geist Mono',monospace">codex login<span style="margin-left:auto;color:var(--muted-foreground)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg></span></div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span style="padding:7px 14px;border-radius:7px;border:1px solid var(--border);font-size:12.5px;font-weight:500">Check again</span>
+      <span style="font-size:11.5px;color:var(--muted-foreground)">Also re-checks on its own every few seconds — no restart needed.</span>
+    </div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1f"><div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>Pickers · one combined model popover (grouped by Harness, effort inline) · Permission Mode · Skill via /</div>
+<div style="display:flex;gap:20px;align-items:flex-start">
+  <div class="dv-card dark" style="width:320px;background:var(--popover);color:var(--popover-foreground);border:1px solid var(--border);box-shadow:var(--shadow-popover)">
+    <div style="padding:12px 14px;border-bottom:1px solid var(--border);font-size:13px;color:var(--muted-foreground)">Search models…</div>
+    <div style="padding:12px 14px 4px;font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--muted-foreground);text-transform:uppercase">Codex</div>
+    <div style="display:flex;flex-direction:column;padding:0 6px">
+      <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 8px;border-radius:7px;background:var(--accent)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="flex:none;margin-top:1px"><path d="M22.28 9.82a5.98 5.98 0 0 0-.52-4.91 6.05 6.05 0 0 0-6.51-2.9A6.07 6.07 0 0 0 4.98 4.18a5.98 5.98 0 0 0-4 2.9 6.05 6.05 0 0 0 .75 7.1 5.98 5.98 0 0 0 .51 4.91 6.05 6.05 0 0 0 6.51 2.9A5.98 5.98 0 0 0 13.26 24a6.06 6.06 0 0 0 5.77-4.21 5.99 5.99 0 0 0 4-2.9 6.06 6.06 0 0 0-.75-7.07zm-9.02 12.61a4.48 4.48 0 0 1-2.88-1.04l.14-.08 4.78-2.76a.79.79 0 0 0 .39-.68v-6.74l2.02 1.17a.07.07 0 0 1 .04.05v5.58a4.5 4.5 0 0 1-4.49 4.5zm-9.66-4.13a4.47 4.47 0 0 1-.54-3.01l.14.09 4.78 2.76a.77.77 0 0 0 .78 0l5.84-3.37v2.33a.08.08 0 0 1-.03.06L9.74 19.95a4.5 4.5 0 0 1-6.14-1.65zM2.34 7.9a4.48 4.48 0 0 1 2.37-1.97v5.68a.77.77 0 0 0 .39.68l5.81 3.35-2.02 1.17a.08.08 0 0 1-.07 0L4 14.02A4.5 4.5 0 0 1 2.34 7.9zm16.6 3.86-5.83-3.39L15.12 7.2a.08.08 0 0 1 .07 0l4.83 2.79a4.49 4.49 0 0 1-.68 8.1v-5.68a.79.79 0 0 0-.4-.66zm2.01-3.02-.14-.09-4.77-2.79a.78.78 0 0 0-.78 0L9.42 9.23V6.9a.07.07 0 0 1 .03-.06l4.83-2.79a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.13-2.02-1.16a.08.08 0 0 1-.04-.06V6.07a4.5 4.5 0 0 1 7.38-3.45l-.14.08-4.78 2.76a.79.79 0 0 0-.39.68zm1.1-2.37 2.6-1.5 2.6 1.5v3l-2.6 1.5-2.6-1.5z"></path></svg>
+        <span style="flex:1;min-width:0"><span style="display:block;font-size:13px;font-weight:500">GPT-5.5</span><span style="display:block;font-size:11px;color:var(--muted-foreground);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Frontier model for complex coding, rese…</span></span>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 8px;border-radius:7px">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="flex:none;margin-top:1px;color:var(--muted-foreground)"><path d="M22.28 9.82a5.98 5.98 0 0 0-.52-4.91 6.05 6.05 0 0 0-6.51-2.9A6.07 6.07 0 0 0 4.98 4.18a5.98 5.98 0 0 0-4 2.9 6.05 6.05 0 0 0 .75 7.1 5.98 5.98 0 0 0 .51 4.91 6.05 6.05 0 0 0 6.51 2.9A5.98 5.98 0 0 0 13.26 24a6.06 6.06 0 0 0 5.77-4.21 5.99 5.99 0 0 0 4-2.9 6.06 6.06 0 0 0-.75-7.07zm-9.02 12.61a4.48 4.48 0 0 1-2.88-1.04l.14-.08 4.78-2.76a.79.79 0 0 0 .39-.68v-6.74l2.02 1.17a.07.07 0 0 1 .04.05v5.58a4.5 4.5 0 0 1-4.49 4.5zm-9.66-4.13a4.47 4.47 0 0 1-.54-3.01l.14.09 4.78 2.76a.77.77 0 0 0 .78 0l5.84-3.37v2.33a.08.08 0 0 1-.03.06L9.74 19.95a4.5 4.5 0 0 1-6.14-1.65zM2.34 7.9a4.48 4.48 0 0 1 2.37-1.97v5.68a.77.77 0 0 0 .39.68l5.81 3.35-2.02 1.17a.08.08 0 0 1-.07 0L4 14.02A4.5 4.5 0 0 1 2.34 7.9zm16.6 3.86-5.83-3.39L15.12 7.2a.08.08 0 0 1 .07 0l4.83 2.79a4.49 4.49 0 0 1-.68 8.1v-5.68a.79.79 0 0 0-.4-.66zm2.01-3.02-.14-.09-4.77-2.79a.78.78 0 0 0-.78 0L9.42 9.23V6.9a.07.07 0 0 1 .03-.06l4.83-2.79a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.13-2.02-1.16a.08.08 0 0 1-.04-.06V6.07a4.5 4.5 0 0 1 7.38-3.45l-.14.08-4.78 2.76a.79.79 0 0 0-.39.68zm1.1-2.37 2.6-1.5 2.6 1.5v3l-2.6 1.5-2.6-1.5z"></path></svg>
+        <span style="flex:1;min-width:0"><span style="display:block;font-size:13px">GPT-5.4</span><span style="display:block;font-size:11px;color:var(--muted-foreground);margin-top:1px">Strong model for everyday coding.</span></span>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 8px;border-radius:7px">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="flex:none;margin-top:1px;color:var(--muted-foreground)"><path d="M22.28 9.82a5.98 5.98 0 0 0-.52-4.91 6.05 6.05 0 0 0-6.51-2.9A6.07 6.07 0 0 0 4.98 4.18a5.98 5.98 0 0 0-4 2.9 6.05 6.05 0 0 0 .75 7.1 5.98 5.98 0 0 0 .51 4.91 6.05 6.05 0 0 0 6.51 2.9A5.98 5.98 0 0 0 13.26 24a6.06 6.06 0 0 0 5.77-4.21 5.99 5.99 0 0 0 4-2.9 6.06 6.06 0 0 0-.75-7.07zm-9.02 12.61a4.48 4.48 0 0 1-2.88-1.04l.14-.08 4.78-2.76a.79.79 0 0 0 .39-.68v-6.74l2.02 1.17a.07.07 0 0 1 .04.05v5.58a4.5 4.5 0 0 1-4.49 4.5zm-9.66-4.13a4.47 4.47 0 0 1-.54-3.01l.14.09 4.78 2.76a.77.77 0 0 0 .78 0l5.84-3.37v2.33a.08.08 0 0 1-.03.06L9.74 19.95a4.5 4.5 0 0 1-6.14-1.65zM2.34 7.9a4.48 4.48 0 0 1 2.37-1.97v5.68a.77.77 0 0 0 .39.68l5.81 3.35-2.02 1.17a.08.08 0 0 1-.07 0L4 14.02A4.5 4.5 0 0 1 2.34 7.9zm16.6 3.86-5.83-3.39L15.12 7.2a.08.08 0 0 1 .07 0l4.83 2.79a4.49 4.49 0 0 1-.68 8.1v-5.68a.79.79 0 0 0-.4-.66zm2.01-3.02-.14-.09-4.77-2.79a.78.78 0 0 0-.78 0L9.42 9.23V6.9a.07.07 0 0 1 .03-.06l4.83-2.79a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.13-2.02-1.16a.08.08 0 0 1-.04-.06V6.07a4.5 4.5 0 0 1 7.38-3.45l-.14.08-4.78 2.76a.79.79 0 0 0-.39.68zm1.1-2.37 2.6-1.5 2.6 1.5v3l-2.6 1.5-2.6-1.5z"></path></svg>
+        <span style="flex:1;min-width:0"><span style="display:block;font-size:13px">GPT-5.4-Mini</span><span style="display:block;font-size:11px;color:var(--muted-foreground);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Small, fast, and cost-efficient model for …</span></span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" style="flex:none;margin-top:3px"><path d="m5 13 4 4L19 7"></path></svg>
+      </div>
+    </div>
+    <div style="padding:12px 14px 4px;font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--muted-foreground);text-transform:uppercase">Claude Code</div>
+    <div style="display:flex;flex-direction:column;padding:0 6px 8px">
+      <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 8px;border-radius:7px">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#D97757" style="flex:none;margin-top:1px"><path d="M12 2.2c.5 0 .9.4.9.9l.3 5.4 3-4.5a.9.9 0 0 1 1.5 1l-2.7 4.7 5.2-1.5a.9.9 0 0 1 .5 1.7l-5.1 1.8 5.1 1.8a.9.9 0 0 1-.5 1.7l-5.2-1.5 2.7 4.7a.9.9 0 0 1-1.5 1l-3-4.5-.3 5.4a.9.9 0 0 1-1.8 0l-.3-5.4-3 4.5a.9.9 0 0 1-1.5-1l2.7-4.7-5.2 1.5a.9.9 0 0 1-.5-1.7l5.1-1.8-5.1-1.8a.9.9 0 0 1 .5-1.7l5.2 1.5L6.3 5a.9.9 0 0 1 1.5-1l3 4.5.3-5.4c0-.5.4-.9.9-.9z"></path></svg>
+        <span style="flex:1;min-width:0"><span style="display:block;font-size:13px">Default</span><span style="display:block;font-size:11px;color:var(--muted-foreground);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Whatever Claude Code is configured to …</span></span>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 8px;border-radius:7px">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#D97757" style="flex:none;margin-top:1px"><path d="M12 2.2c.5 0 .9.4.9.9l.3 5.4 3-4.5a.9.9 0 0 1 1.5 1l-2.7 4.7 5.2-1.5a.9.9 0 0 1 .5 1.7l-5.1 1.8 5.1 1.8a.9.9 0 0 1-.5 1.7l-5.2-1.5 2.7 4.7a.9.9 0 0 1-1.5 1l-3-4.5-.3 5.4a.9.9 0 0 1-1.8 0l-.3-5.4-3 4.5a.9.9 0 0 1-1.5-1l2.7-4.7-5.2 1.5a.9.9 0 0 1-.5-1.7l5.1-1.8-5.1-1.8a.9.9 0 0 1 .5-1.7l5.2 1.5L6.3 5a.9.9 0 0 1 1.5-1l3 4.5.3-5.4c0-.5.4-.9.9-.9z"></path></svg>
+        <span style="flex:1;min-width:0"><span style="display:block;font-size:13px">Sonnet 4.6</span><span style="display:block;font-size:11px;color:var(--muted-foreground);margin-top:1px">Everyday pair programming.</span></span>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 8px;border-radius:7px">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#D97757" style="flex:none;margin-top:1px"><path d="M12 2.2c.5 0 .9.4.9.9l.3 5.4 3-4.5a.9.9 0 0 1 1.5 1l-2.7 4.7 5.2-1.5a.9.9 0 0 1 .5 1.7l-5.1 1.8 5.1 1.8a.9.9 0 0 1-.5 1.7l-5.2-1.5 2.7 4.7a.9.9 0 0 1-1.5 1l-3-4.5-.3 5.4a.9.9 0 0 1-1.8 0l-.3-5.4-3 4.5a.9.9 0 0 1-1.5-1l2.7-4.7-5.2 1.5a.9.9 0 0 1-.5-1.7l5.1-1.8-5.1-1.8a.9.9 0 0 1 .5-1.7l5.2 1.5L6.3 5a.9.9 0 0 1 1.5-1l3 4.5.3-5.4c0-.5.4-.9.9-.9z"></path></svg>
+        <span style="flex:1;min-width:0"><span style="display:block;font-size:13px">Opus 4.5</span><span style="display:block;font-size:11px;color:var(--muted-foreground);margin-top:1px">Deepest reasoning, slower.</span></span>
+      </div>
+    </div>
+    <div style="border-top:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:6px">
+      <span style="font-size:12.5px;color:var(--muted-foreground)">Thinking</span>
+      <span style="margin-left:auto;display:flex;gap:2px;font-size:12px">
+        <span style="padding:4px 10px;border-radius:6px;background:var(--accent);font-weight:500">Low</span>
+        <span style="padding:4px 10px;border-radius:6px;color:var(--muted-foreground)">Med</span>
+        <span style="padding:4px 10px;border-radius:6px;color:var(--muted-foreground)">High</span>
+        <span style="padding:4px 10px;border-radius:6px;color:var(--muted-foreground)">Xhigh</span>
+      </span>
+    </div>
+  </div>
+  <div class="dv-card dark" style="width:280px;background:var(--popover);color:var(--popover-foreground);border:1px solid var(--border);box-shadow:var(--shadow-popover)">
+    <div style="padding:10px 12px 4px;font:600 10px 'Geist Mono',monospace;letter-spacing:.06em;color:var(--muted-foreground);text-transform:uppercase">Permission Mode</div>
+    <div style="display:flex;flex-direction:column;padding:4px 6px 8px;gap:2px">
+      <div style="padding:8px 9px;border-radius:6px;background:var(--accent)">
+        <div style="display:flex;align-items:center;font-size:13px;font-weight:500">Ask<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="margin-left:auto"><path d="m5 13 4 4L19 7"></path></svg></div>
+        <div style="font-size:11px;color:var(--muted-foreground);margin-top:2px;line-height:1.5">The agent stops for your consent before edits and commands.</div>
+      </div>
+      <div style="padding:8px 9px;border-radius:6px">
+        <div style="display:flex;align-items:center;gap:6px;font-size:13px;color:#fbbf24"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path></svg>Full access</div>
+        <div style="font-size:11px;color:var(--muted-foreground);margin-top:2px;line-height:1.5">Edits and runs without asking. Composer stays amber as a reminder.</div>
+      </div>
+    </div>
+    <div style="border-top:1px solid var(--border);padding:9px 15px 11px;font-size:11px;color:var(--muted-foreground);display:flex;align-items:center;gap:7px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>2 Standing Approvals for weather-app · Manage</div>
+  </div>
+  <div class="dv-card dark" style="width:300px;background:var(--popover);color:var(--popover-foreground);border:1px solid var(--border);box-shadow:var(--shadow-popover)">
+    <div style="padding:10px 12px;border-bottom:1px solid var(--border);font:12.5px 'Geist Mono',monospace;color:var(--muted-foreground)">/<span style="color:var(--foreground)">td</span><span style="opacity:.4">|</span></div>
+    <div style="padding:10px 12px 4px;font:600 10px 'Geist Mono',monospace;letter-spacing:.06em;color:var(--muted-foreground);text-transform:uppercase">Skills</div>
+    <div style="display:flex;flex-direction:column;padding:0 6px 10px;gap:2px">
+      <div style="padding:8px 9px;border-radius:6px;background:var(--accent)">
+        <div style="font-size:13px;font-weight:500">TDD</div>
+        <div style="font-size:11px;color:var(--muted-foreground);margin-top:2px">Write the failing test first, then make it pass.</div>
+      </div>
+      <div style="padding:8px 9px;border-radius:6px">
+        <div style="font-size:13px">Tidy diffs</div>
+        <div style="font-size:11px;color:var(--muted-foreground);margin-top:2px">Small commits, no drive-by refactors.</div>
+      </div>
+      <div style="padding:8px 9px;border-radius:6px">
+        <div style="font-size:13px">Explain as you go</div>
+        <div style="font-size:11px;color:var(--muted-foreground);margin-top:2px">Narrate decisions in plain language.</div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+</div>
+<p class="dv-next">Try next: "riff on <a class="dv-oid" href="#1a">1a</a>'s approval card" · "make the Files panel a bottom drawer instead" · "show the blocked/failed inbox states" · "a more radical, terminal-flavored direction"</p>
+</section>
+
+</x-dc>
+</body>
+</html>

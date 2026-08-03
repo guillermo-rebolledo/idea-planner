@@ -1,0 +1,40 @@
+/* shadcn/ui — Spacing, radius, shadow, motion tokens.
+   Radii transcribed from component geometry: button/input 6px, checkbox 2px,
+   tab pill 3px, cards 8px. */
+:root {
+  /* Spacing scale (Tailwind 4px base) */
+  --space-0: 0px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* Radius */
+  --radius: 8px;      /* cards, popovers, dialogs */
+  --radius-md: 6px;   /* buttons, inputs, textarea */
+  --radius-sm: 4px;   /* small controls, code, tabs trigger */
+  --radius-xs: 2px;   /* checkbox */
+  --radius-full: 9999px;
+
+  /* Shadows (exact rgba from file) */
+  --shadow-xs: 0 1px 2px 0 rgba(0,0,0,0.05);
+  --shadow-sm: 0 1px 3px 0 rgba(0,0,0,0.09), 0 1px 2px -1px rgba(0,0,0,0.09);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.09), 0 2px 4px -2px rgba(0,0,0,0.09);
+  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.09), 0 4px 6px -4px rgba(0,0,0,0.09);
+  --shadow-popover: 0 4px 12px rgba(15,23,42,0.15);
+
+  /* Focus ring (shadcn: 2px ring + 2px offset) */
+  --ring-width: 2px;
+  --ring-offset: 2px;
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1); /* @kind other */
+  --duration-fast: 150ms; /* @kind other */
+  --duration-base: 200ms; /* @kind other */
+}

@@ -1,0 +1,6 @@
+/* shadcn/ui Design System — global entry point.
+   Consumers link this one file. Import-only; no rules declared here. */
+@import "./tokens/fonts.css";
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";
