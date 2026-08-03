@@ -18,6 +18,14 @@ _Avoid_: Idea, task, thread, chat
 The directory a Session operates on — either the **primary checkout**, the Project's own working directory edited in place, or an **isolated checkout**, a linked git worktree created for the Session from a chosen base branch.
 _Avoid_: Working Directory, workspace, worktree, sandbox
 
+**Archive**:
+Setting a Session aside while keeping everything it owns. An archived Session leaves the inbox but is restorable at any time; archiving says "not now", never "gone".
+_Avoid_: Delete, hide, close
+
+**Delete**:
+Permanently removing a Session and its Conversation. The one destructive act in the app, and the only one that asks for confirmation. Files the Session changed stay on disk in its Checkout — git, not the app, is the undo for those.
+_Avoid_: Archive, remove, clear
+
 ### Conversation
 
 **Conversation**:

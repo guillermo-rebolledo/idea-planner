@@ -1,8 +1,8 @@
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { MailboxCoreQuery, MailboxSnapshot } from '@shared/contract'
+import type { MailboxCoreQuery, MailboxProject, MailboxSnapshot } from '@shared/contract'
 import { createCore, type Core } from './core'
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -22,13 +22,19 @@ function makeCore(): Core {
 }
 
 function query(overrides: Partial<MailboxCoreQuery> = {}): MailboxCoreQuery {
-  return { search: '', view: 'active', projectRoot: null, dormantAfterDays: 14, ...overrides }
+  return { search: '', view: 'active', dormantAfterDays: 14, ...overrides }
 }
 
-function group(snapshot: MailboxSnapshot, key: string): string[] {
-  return (snapshot.groups.find((g) => g.key === key)?.sessions ?? []).map(
+/** The Session titles one Project group holds, or [] when it is absent. */
+function titles(groups: MailboxProject[], root: string): string[] {
+  return (groups.find((group) => group.root === root)?.sessions ?? []).map(
     (session) => session.title
   )
+}
+
+/** Every title in the snapshot's project groups, in presented order. */
+function projectTitles(snapshot: MailboxSnapshot): string[] {
+  return snapshot.projects.flatMap((group) => group.sessions.map((session) => session.title))
 }
 
 beforeEach(async () => {
@@ -49,8 +55,44 @@ async function start(message: string) {
   return core.startSession({ projectRoot, message })
 }
 
+describe('project grouping', () => {
+  it('nests Sessions under the Project that owns them', async () => {
+    const otherRoot = await mkdtemp(join(tmpdir(), 'session-mailbox-other-'))
+    await core.addProject(otherRoot)
+    await start('Here at home')
+    now = new Date(now.getTime() + 1000)
+    await core.startSession({ projectRoot: otherRoot, message: 'Elsewhere entirely' })
+
+    const snapshot = await core.queryMailbox(query())
+    expect(snapshot.matched).toBe(2)
+    expect(titles(snapshot.projects, projectRoot)).toEqual(['Here at home'])
+    expect(titles(snapshot.projects, otherRoot)).toEqual(['Elsewhere entirely'])
+    await rm(otherRoot, { recursive: true, force: true })
+  })
+
+  it('lists a Project with no Sessions at all: it is still somewhere to start one', async () => {
+    const snapshot = await core.queryMailbox(query())
+    expect(snapshot.projects).toEqual([
+      expect.objectContaining({ root: projectRoot, sessions: [] })
+    ])
+  })
+
+  it('keeps a Session whose Project was removed, under an unavailable group named by its root', async () => {
+    await start('Orphaned but not lost')
+    await core.removeProject(projectRoot)
+
+    const snapshot = await core.queryMailbox(query())
+    const orphanGroup = snapshot.projects.find((group) => group.root === projectRoot)
+    expect(orphanGroup).toMatchObject({
+      name: basename(projectRoot),
+      available: false
+    })
+    expect(titles(snapshot.projects, projectRoot)).toEqual(['Orphaned but not lost'])
+  })
+})
+
 describe('pinning', () => {
-  it('groups pinned Sessions first', async () => {
+  it('lifts pinned Sessions into the pinned groups, still under their Project', async () => {
     const pinnedSession = await start('Pinned older Session')
     now = new Date(now.getTime() + DAY_MS)
     await start('Newer unpinned Session')
@@ -59,14 +101,9 @@ describe('pinning', () => {
     expect(updated.pinned).toBe(true)
 
     const snapshot = await core.queryMailbox(query())
-    expect(group(snapshot, 'pinned')).toEqual(['Pinned older Session'])
-    expect(group(snapshot, 'recent')).toEqual(['Newer unpinned Session'])
-    expect(snapshot.groups.map((g) => g.key)).toEqual([
-      'pinned',
-      'needs-attention',
-      'running',
-      'recent'
-    ])
+    expect(titles(snapshot.pinned, projectRoot)).toEqual(['Pinned older Session'])
+    // Lifted, not copied: the project group no longer lists it.
+    expect(titles(snapshot.projects, projectRoot)).toEqual(['Newer unpinned Session'])
   })
 
   it('survives a restart', async () => {
@@ -74,7 +111,7 @@ describe('pinning', () => {
     await core.setSessionPinned(session.id, true)
 
     const snapshot = await makeCore().queryMailbox(query())
-    expect(group(snapshot, 'pinned')).toEqual(['Stays pinned'])
+    expect(titles(snapshot.pinned, projectRoot)).toEqual(['Stays pinned'])
   })
 
   it('unpins reversibly', async () => {
@@ -83,27 +120,24 @@ describe('pinning', () => {
     const unpinned = await core.setSessionPinned(session.id, false)
     expect(unpinned.pinned).toBe(false)
     const snapshot = await core.queryMailbox(query())
-    expect(group(snapshot, 'pinned')).toEqual([])
-    expect(group(snapshot, 'recent')).toEqual(['Toggle pin'])
+    expect(snapshot.pinned).toEqual([])
+    expect(titles(snapshot.projects, projectRoot)).toEqual(['Toggle pin'])
   })
 
-  it('marks a pinned Session Dormant after the configured threshold without reordering it', async () => {
+  it('marks a pinned Session Dormant after the configured threshold without moving it', async () => {
     const dormantSession = await start('Sleepy pinned Session')
     await core.setSessionPinned(dormantSession.id, true)
     now = new Date(now.getTime() + 20 * DAY_MS)
     await start('Fresh unpinned Session')
 
     const snapshot = await core.queryMailbox(query({ dormantAfterDays: 14 }))
-    const pinnedGroup = snapshot.groups.find((g) => g.key === 'pinned')
-    expect(pinnedGroup?.sessions[0]).toMatchObject({
+    expect(snapshot.pinned[0]?.sessions[0]).toMatchObject({
       title: 'Sleepy pinned Session',
       dormant: true
     })
-    // Still presented in the pinned group, ahead of unpinned Sessions.
-    expect(snapshot.groups[0]?.key).toBe('pinned')
 
     const relaxed = await core.queryMailbox(query({ dormantAfterDays: 30 }))
-    expect(relaxed.groups.find((g) => g.key === 'pinned')?.sessions[0]?.dormant).toBe(false)
+    expect(relaxed.pinned[0]?.sessions[0]?.dormant).toBe(false)
   })
 
   it('refuses to pin a Session that does not exist', async () => {
@@ -124,13 +158,15 @@ describe('archiving', () => {
 
     const active = await core.queryMailbox(query())
     expect(active.matched).toBe(0)
+    expect(active.archivedTotal).toBe(1)
     const archivedView = await core.queryMailbox(query({ view: 'archived' }))
-    expect(group(archivedView, 'archived')).toEqual(['Archivable Session'])
+    expect(titles(archivedView.projects, projectRoot)).toEqual(['Archivable Session'])
 
     const restored = await core.setSessionArchived(session.id, false)
     expect(restored.archivedAt).toBeNull()
     const activeAgain = await core.queryMailbox(query())
-    expect(group(activeAgain, 'recent')).toEqual(['Archivable Session'])
+    expect(titles(activeAgain.projects, projectRoot)).toEqual(['Archivable Session'])
+    expect(activeAgain.archivedTotal).toBe(0)
   })
 
   it('keeps archive state across restarts', async () => {
@@ -141,11 +177,44 @@ describe('archiving', () => {
     const active = await reborn.queryMailbox(query())
     expect(active.total).toBe(0)
     const archivedView = await reborn.queryMailbox(query({ view: 'archived' }))
-    expect(group(archivedView, 'archived')).toEqual(['Stays archived'])
+    expect(titles(archivedView.projects, projectRoot)).toEqual(['Stays archived'])
+  })
+
+  it('leaves Projects with nothing archived out of the archived view', async () => {
+    await start('Never archived')
+    const archivedView = await core.queryMailbox(query({ view: 'archived' }))
+    expect(archivedView.projects).toEqual([])
   })
 })
 
-describe('search and filters', () => {
+describe('renaming', () => {
+  it('replaces the derived title with the given one, durably', async () => {
+    const session = await start('What the first message suggested')
+
+    const renamed = await core.renameSession(session.id, 'My own words')
+    expect(renamed.title).toBe('My own words')
+
+    const snapshot = await makeCore().queryMailbox(query())
+    expect(titles(snapshot.projects, projectRoot)).toEqual(['My own words'])
+  })
+
+  it('trims, and refuses a title that is only whitespace', async () => {
+    const session = await start('Renameable')
+    const renamed = await core.renameSession(session.id, '  Tidy  ')
+    expect(renamed.title).toBe('Tidy')
+    await expect(core.renameSession(session.id, '   ')).rejects.toMatchObject({
+      code: 'INVALID_INPUT'
+    })
+  })
+
+  it('refuses to rename a Session that does not exist', async () => {
+    await expect(core.renameSession('never-started', 'Ghost')).rejects.toMatchObject({
+      code: 'SESSION_NOT_FOUND'
+    })
+  })
+})
+
+describe('search', () => {
   beforeEach(async () => {
     await start('Offline recipe planner')
     now = new Date(now.getTime() + 1000)
@@ -154,32 +223,15 @@ describe('search and filters', () => {
 
   it('matches Session titles, term by term', async () => {
     const oneTerm = await core.queryMailbox(query({ search: 'recipe' }))
-    expect(group(oneTerm, 'recent')).toEqual(['Offline recipe planner'])
+    expect(projectTitles(oneTerm)).toEqual(['Offline recipe planner'])
     const bothTerms = await core.queryMailbox(query({ search: 'community tool' }))
-    expect(group(bothTerms, 'recent')).toEqual(['Community tool library'])
+    expect(projectTitles(bothTerms)).toEqual(['Community tool library'])
   })
 
   it('distinguishes no results from having no Sessions at all', async () => {
     const snapshot = await core.queryMailbox(query({ search: 'zeppelin' }))
     expect(snapshot.total).toBe(2)
     expect(snapshot.matched).toBe(0)
-  })
-
-  it('narrows to one Project without hiding that the others exist', async () => {
-    const otherRoot = await mkdtemp(join(tmpdir(), 'session-mailbox-other-'))
-    await core.addProject(otherRoot)
-    now = new Date(now.getTime() + 1000)
-    await core.startSession({ projectRoot: otherRoot, message: 'Elsewhere entirely' })
-
-    const everything = await core.queryMailbox(query())
-    expect(everything.matched).toBe(3)
-
-    const narrowed = await core.queryMailbox(query({ projectRoot: otherRoot }))
-    expect(group(narrowed, 'recent')).toEqual(['Elsewhere entirely'])
-    // The Sessions it filtered out are still in view, so the person can be
-    // told the list is narrowed rather than emptied.
-    expect(narrowed.total).toBe(3)
-    await rm(otherRoot, { recursive: true, force: true })
   })
 })
 
@@ -211,7 +263,14 @@ async function beginRun(sessionId: string): Promise<string> {
   return run.id
 }
 
-it('puts a Session blocked on an approval in needs-attention, and nothing else', async () => {
+/** The one row a title names, wherever its Project group is. */
+function row(snapshot: MailboxSnapshot, title: string) {
+  return [...snapshot.pinned, ...snapshot.projects]
+    .flatMap((group) => group.sessions)
+    .find((session) => session.title === title)
+}
+
+it('says what each Session is doing on its row, without moving it', async () => {
   const waiting = await start('Waiting on me')
   const working = await start('Still working')
   const quiet = await start('Replied and stopped')
@@ -230,7 +289,6 @@ it('puts a Session blocked on an approval in needs-attention, and nothing else',
     }
   })
   await beginRun(working.id)
-  // Replied and stopped is exactly the case that must not be in the group.
   const quietRun = await beginRun(quiet.id)
   await core.applyHarnessEvent({
     sessionId: quiet.id,
@@ -246,9 +304,14 @@ it('puts a Session blocked on an approval in needs-attention, and nothing else',
   })
 
   const snapshot = await core.queryMailbox(query())
-  expect(group(snapshot, 'needs-attention')).toEqual(['Waiting on me'])
-  expect(group(snapshot, 'running')).toEqual(['Still working'])
-  expect(group(snapshot, 'recent')).toEqual(['Replied and stopped'])
+  // One group holds all three: status is a dot on the row, not an address.
+  expect(titles(snapshot.projects, projectRoot)).toHaveLength(3)
+  expect(row(snapshot, 'Waiting on me')).toMatchObject({
+    status: 'blocked',
+    waitingFor: 'approval'
+  })
+  expect(row(snapshot, 'Still working')).toMatchObject({ status: 'running' })
+  expect(row(snapshot, 'Replied and stopped')).toMatchObject({ status: 'idle' })
 })
 
 it('counts an unanswered structured question as waiting, and prose as not', async () => {
@@ -277,7 +340,10 @@ it('counts an unanswered structured question as waiting, and prose as not', asyn
   })
 
   const waiting = await core.queryMailbox(query())
-  expect(group(waiting, 'needs-attention')).toEqual(['Asked me something'])
+  expect(row(waiting, 'Asked me something')).toMatchObject({
+    status: 'blocked',
+    waitingFor: 'question'
+  })
 
   // Answering it is what stops it waiting.
   await core.submitConversationMessage({
@@ -287,8 +353,7 @@ it('counts an unanswered structured question as waiting, and prose as not', asyn
     source: 'suggested-response'
   })
   const answered = await core.queryMailbox(query())
-  expect(group(answered, 'needs-attention')).toEqual([])
-  expect(group(answered, 'recent')).toEqual(['Asked me something'])
+  expect(row(answered, 'Asked me something')).toMatchObject({ status: 'idle', waitingFor: null })
 })
 
 describe('what the inbox reads', () => {
@@ -310,7 +375,9 @@ describe('what the inbox reads', () => {
       stateFile(session.id),
       JSON.stringify({ ...projected, activeRunId: 'run-invented' })
     )
-    expect(group(await core.queryMailbox(query()), 'running')).toEqual(['Quietly idle'])
+    expect(row(await core.queryMailbox(query()), 'Quietly idle')).toMatchObject({
+      status: 'running'
+    })
   })
 
   it('never says something the Conversation itself would not', async () => {
@@ -354,7 +421,7 @@ describe('what the inbox reads', () => {
     })
 
     const projected = await core.queryMailbox(query())
-    expect(group(projected, 'needs-attention')).toEqual([])
+    expect(row(projected, 'Answered while it streamed')).toMatchObject({ waitingFor: null })
     // And the Conversation, read in full, says exactly the same thing.
     const conversation = await core.getConversation(session.id)
     const spoken = conversation.entries.filter((entry) => entry.kind === 'message').at(-1)
@@ -378,15 +445,16 @@ describe('what the inbox reads', () => {
     )
 
     const snapshot = await core.queryMailbox(query())
-    expect(group(snapshot, 'running')).toEqual([])
-    expect(group(snapshot, 'recent')).toEqual(['Told the truth'])
+    expect(row(snapshot, 'Told the truth')).toMatchObject({ status: 'idle' })
   })
 
   it('answers without a projection at all, and leaves one behind', async () => {
     const session = await start('Never projected')
     await rm(stateFile(session.id), { force: true })
 
-    expect(group(await core.queryMailbox(query()), 'recent')).toEqual(['Never projected'])
+    expect(row(await core.queryMailbox(query()), 'Never projected')).toMatchObject({
+      status: 'idle'
+    })
     await expect(readFile(stateFile(session.id), 'utf8')).resolves.toContain('journalBytes')
   })
 })
@@ -399,7 +467,9 @@ describe('what is waiting for me', () => {
     // What a restart finds: nothing finalized it, so it still reads as
     // working — which is what makes closing it worth doing.
     expect(await core.listUnfinishedRuns()).toEqual([{ sessionId: abandoned.id, runId }])
-    expect(group(await core.queryMailbox(query()), 'running')).toEqual(['Quit while it worked'])
+    expect(row(await core.queryMailbox(query()), 'Quit while it worked')).toMatchObject({
+      status: 'running'
+    })
 
     await core.finalizeConversationRun({
       sessionId: abandoned.id,
@@ -410,9 +480,9 @@ describe('what is waiting for me', () => {
     })
 
     expect(await core.listUnfinishedRuns()).toEqual([])
-    const snapshot = await core.queryMailbox(query())
-    expect(group(snapshot, 'running')).toEqual([])
-    expect(group(snapshot, 'recent')).toEqual(['Quit while it worked'])
+    expect(row(await core.queryMailbox(query()), 'Quit while it worked')).toMatchObject({
+      status: 'failed'
+    })
     // The person's message is theirs to send again.
     const conversation = await core.getConversation(abandoned.id)
     expect(conversation.recovery?.resumableSubmissionId).toBe(`submission-${abandoned.id}`)
@@ -430,11 +500,10 @@ describe('what is waiting for me', () => {
     })
 
     const snapshot = await core.queryMailbox(query())
-    const [session] = snapshot.groups.find((entry) => entry.key === 'recent')?.sessions ?? []
-    expect(session).toMatchObject({ title: 'Stopped it myself', status: 'idle' })
+    expect(row(snapshot, 'Stopped it myself')).toMatchObject({ status: 'idle' })
   })
 
-  it('leaves a failed Run out of needs-attention, and says so on its row', async () => {
+  it('reports a failed Run as failed on its row', async () => {
     const failed = await start('Ended badly')
     const runId = await beginRun(failed.id)
     await core.finalizeConversationRun({
@@ -446,9 +515,6 @@ describe('what is waiting for me', () => {
     })
 
     const snapshot = await core.queryMailbox(query())
-    // Nothing is waiting on an answer, so nothing is asking for attention.
-    expect(group(snapshot, 'needs-attention')).toEqual([])
-    const [session] = snapshot.groups.find((entry) => entry.key === 'recent')?.sessions ?? []
-    expect(session).toMatchObject({ title: 'Ended badly', status: 'failed' })
+    expect(row(snapshot, 'Ended badly')).toMatchObject({ status: 'failed' })
   })
 })

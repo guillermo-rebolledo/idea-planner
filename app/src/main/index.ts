@@ -18,6 +18,7 @@ import {
   startSessionInputSchema,
   mailboxQuerySchema,
   mailboxSnapshotSchema,
+  renameSessionInputSchema,
   setSessionArchivedInputSchema,
   setSessionPinnedInputSchema,
   themePreferenceSchema,
@@ -330,6 +331,10 @@ function registerIpc(): void {
     )
   )
 
+  handleInvoke(IPC_CHANNELS.renameSession, renameSessionInputSchema, async (input) =>
+    sessionSummarySchema.parse(await coreClient.send({ type: 'session/rename', input }))
+  )
+
   // Forgetting a Session is app state only: the Project it worked in keeps
   // every file, because that is where the work lives (ADR 0002).
   handleInvoke(IPC_CHANNELS.deleteSession, z.string().min(1), async (sessionId) => {
@@ -502,6 +507,19 @@ function createWindow(): void {
 
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
+
+  // ⌘Z never reaches the page: the application menu's Undo consumes it
+  // first. This hook fires before the menu, so the Renderer is told and can
+  // undo its own last action — while typing it does nothing, and the menu's
+  // Undo goes on serving the text field.
+  window.webContents.on('before-input-event', (_event, input) => {
+    const undo =
+      input.type === 'keyDown' &&
+      input.key.toLowerCase() === 'z' &&
+      (input.meta || input.control) &&
+      !input.shift
+    if (undo) window.webContents.send(IPC_CHANNELS.undoShortcut)
+  })
 
   window.on('ready-to-show', () => window.show())
   window.on('closed', () => {

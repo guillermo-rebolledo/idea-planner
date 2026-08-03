@@ -2,36 +2,48 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Archive,
-  ArchiveRestore,
   Circle,
   CircleDashed,
   CircleSlash,
-  Clock3,
+  FolderGit2,
   Inbox,
-  MessageSquare,
+  MoreHorizontal,
   PanelLeft,
-  Bot,
+  Pencil,
   Pin,
   PinOff,
   Plus,
   Search,
   Trash2,
+  X,
   type LucideIcon
 } from 'lucide-react'
 import type {
-  SessionSummary,
-  MailboxGroupKey,
-  MailboxSession,
+  MailboxProject,
   MailboxQuery,
+  MailboxSession,
   MailboxSnapshot,
   SessionStatus,
+  SessionSummary,
   ThemePreference,
   ThemeState
 } from '@shared/contract'
+import { AppMenu } from '@renderer/components/AppMenu'
 import { Button } from '@renderer/components/ui/button'
 import { Composer } from '@renderer/components/Composer'
 import { Conversation } from '@renderer/components/Conversation'
-import { Projects } from '@renderer/components/Projects'
+import { Modal } from '@renderer/components/ui/dialog'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuTrigger,
+  Menu,
+  MenuContent,
+  MenuItem,
+  MenuSeparator,
+  MenuShortcut,
+  MenuTrigger
+} from '@renderer/components/ui/menu'
 import { ReadinessDialog } from '@renderer/components/Readiness'
 import { cn } from '@renderer/lib/utils'
 
@@ -42,56 +54,59 @@ interface MailboxProps {
 
 type CenterSurface =
   /** Home. A new chat, optionally already bound to a Project. */
-  | { kind: 'new-chat'; projectRoot?: string }
-  | { kind: 'session'; session: SessionSummary }
-  | { kind: 'confirm-delete'; session: SessionSummary }
+  { kind: 'new-chat'; projectRoot?: string } | { kind: 'session'; session: SessionSummary }
 
 type MailboxData =
   { state: 'reading' } | { state: 'ready'; snapshot: MailboxSnapshot } | { state: 'failed' }
 
-interface GroupMeta {
-  label: string
-  icon: LucideIcon
-  colorClass: string
-}
-
-const GROUP_META: Record<MailboxGroupKey, GroupMeta> = {
-  pinned: { label: 'Pinned', icon: Pin, colorClass: 'text-primary' },
-  'needs-attention': {
-    label: 'Needs attention',
-    icon: AlertTriangle,
-    colorClass: 'text-status-blocked'
-  },
-  running: { label: 'Running', icon: CircleDashed, colorClass: 'text-status-running' },
-  recent: { label: 'Recent', icon: Clock3, colorClass: 'text-muted-foreground' },
-  archived: { label: 'Archived', icon: Archive, colorClass: 'text-muted-foreground' }
-}
-
 /** What the rail asks for: every active Session, narrowed by nothing. */
-const RAIL_QUERY: MailboxQuery = { search: '', view: 'active', projectRoot: null }
+const RAIL_QUERY: MailboxQuery = { search: '', view: 'active' }
+
+/** The hover-revealed icon actions sharing a row with what they act on. */
+const QUICK_ACTION_CLASS =
+  'rounded p-1 text-muted-foreground hover:bg-border hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring'
+
+/** The last segment of a Project root: how the person knows the folder. */
+function folderName(root: string): string {
+  return root.split('/').filter(Boolean).at(-1) ?? root
+}
 
 /**
- * The Focus Mailbox production frame: a collapsible Session inbox on the left
- * (expanded list or compact rail) and the primary center surface, which this
- * slice uses for starting a Session, reading it, and deleting it.
+ * Whether ⌘Z belongs to the focused element rather than to the inbox. A field
+ * holding text owns its undo; an empty one — the composer at rest, where
+ * focus usually lives — has nothing to take back, so the shortcut is free to
+ * honor the promise the archive announcement just made.
+ */
+function ownsUndo(target: Element | null): boolean {
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    return target.value.length > 0
+  }
+  return target instanceof HTMLElement && target.isContentEditable
+}
+
+/**
+ * The production frame: a collapsible Project-grouped sidebar on the left
+ * (expanded list or compact rail), the app menu in its footer, and the
+ * primary center surface for starting and reading Sessions.
  */
 export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React.JSX.Element {
   const [surface, setSurface] = useState<CenterSurface>({ kind: 'new-chat' })
   const [inboxCollapsed, setInboxCollapsed] = useState(false)
   const [readinessOpen, setReadinessOpen] = useState(false)
   const [announcement, setAnnouncement] = useState('')
-  const [query, setQuery] = useState<MailboxQuery>({
-    search: '',
-    view: 'active',
-    projectRoot: null
-  })
+  const [query, setQuery] = useState<MailboxQuery>({ search: '', view: 'active' })
   const [mailbox, setMailbox] = useState<MailboxData>({ state: 'reading' })
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<SessionSummary | null>(null)
   // Sessions whose record could not be read. Shown rather than left out: a
   // Session that disappears without a word is the failure the store exists to
   // prevent, and not listing one is only half of not being silent.
   const [damaged, setDamaged] = useState<string[]>([])
   const searchRef = useRef<HTMLInputElement>(null)
   const requestSequenceRef = useRef(0)
+  // The one archive ⌘Z takes back. An action, not a stack: the promise the
+  // shortcut makes is "undo what I just did".
+  const lastArchivedRef = useRef<SessionSummary | null>(null)
 
   // Collapsing hides the filters, so it also drops them: a rail narrowed by a
   // search nobody can see would answer "is anything waiting for me, anywhere"
@@ -121,7 +136,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
 
   // A Session's status is derived from its Conversation, so the inbox is only
   // as true as the last time it read one. Anything that happens in a
-  // Conversation is exactly what can move a Session between groups.
+  // Conversation is exactly what can change the dot on a row.
   useEffect(() => {
     let timer = 0
     const stop = window.shell.onConversationEvent(() => {
@@ -141,24 +156,132 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       .catch(() => setDamaged([]))
   }, [mailbox])
 
-  /** Home. Optionally already bound, as the button on a Project row does. */
+  /** Home. Optionally already bound, as a Project header's plus does. */
   const startNewChat = useCallback(
     (projectRoot?: string) => setSurface({ kind: 'new-chat', projectRoot }),
     []
   )
+
+  function openSession(session: SessionSummary): void {
+    setSurface({ kind: 'session', session })
+  }
+
+  const togglePinned = useCallback(
+    async (session: SessionSummary): Promise<void> => {
+      try {
+        const updated = await window.shell.setSessionPinned({
+          sessionId: session.id,
+          pinned: !session.pinned
+        })
+        setAnnouncement(
+          updated.pinned ? `Pinned “${session.title}”.` : `Unpinned “${session.title}”.`
+        )
+      } catch {
+        setAnnouncement(`Could not update the pin on “${session.title}”.`)
+      }
+      void refreshMailbox(effectiveQuery)
+    },
+    [effectiveQuery, refreshMailbox]
+  )
+
+  const setArchived = useCallback(
+    async (session: SessionSummary, archived: boolean): Promise<void> => {
+      try {
+        await window.shell.setSessionArchived({ sessionId: session.id, archived })
+        if (archived) {
+          lastArchivedRef.current = session
+          setAnnouncement(`Archived “${session.title}”. Press ⌘Z to undo.`)
+        } else {
+          if (lastArchivedRef.current?.id === session.id) lastArchivedRef.current = null
+          setAnnouncement(`Restored “${session.title}” to the inbox.`)
+        }
+        setSurface((current) =>
+          archived && current.kind === 'session' && current.session.id === session.id
+            ? { kind: 'new-chat' }
+            : current
+        )
+      } catch {
+        setAnnouncement(`Could not ${archived ? 'archive' : 'restore'} “${session.title}”.`)
+      }
+      void refreshMailbox(effectiveQuery)
+    },
+    [effectiveQuery, refreshMailbox]
+  )
+
+  const undoArchive = useCallback((): void => {
+    const undone = lastArchivedRef.current
+    if (undone) void setArchived(undone, false)
+  }, [setArchived])
+
+  const renameTo = useCallback(
+    async (session: SessionSummary, title: string): Promise<void> => {
+      setRenaming(null)
+      const trimmed = title.trim()
+      if (trimmed.length === 0 || trimmed === session.title) return
+      try {
+        const renamed = await window.shell.renameSession({ sessionId: session.id, title: trimmed })
+        setAnnouncement(`Renamed to “${renamed.title}”.`)
+        setSurface((current) =>
+          current.kind === 'session' && current.session.id === session.id
+            ? { kind: 'session', session: renamed }
+            : current
+        )
+      } catch {
+        setAnnouncement(`Could not rename “${session.title}”.`)
+      }
+      void refreshMailbox(effectiveQuery)
+    },
+    [effectiveQuery, refreshMailbox]
+  )
+
+  async function confirmDelete(session: SessionSummary): Promise<void> {
+    setDeleting(null)
+    try {
+      await window.shell.deleteSession(session.id)
+      setAnnouncement(`Deleted “${session.title}”. Your Project was not touched.`)
+      setSurface((current) =>
+        current.kind === 'session' && current.session.id === session.id
+          ? { kind: 'new-chat' }
+          : current
+      )
+    } catch {
+      setAnnouncement(`Deleting “${session.title}” failed. Nothing was lost.`)
+    }
+    void refreshMailbox(effectiveQuery)
+  }
+
+  const selectedSession = surface.kind === 'session' ? surface.session : undefined
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       const target = event.target as HTMLElement
       const typing =
         target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
-      if (typing || event.metaKey || event.ctrlKey) {
-        if (event.key === '\\' && (event.metaKey || event.ctrlKey)) {
+      if (event.metaKey || event.ctrlKey) {
+        if (event.key === '\\') {
           event.preventDefault()
           setInboxCollapsed((collapsed) => !collapsed)
         }
+        if (event.shiftKey && event.key.toLowerCase() === 'p' && selectedSession) {
+          event.preventDefault()
+          void togglePinned(selectedSession)
+        }
+        // Ordinarily the application menu's Undo consumes ⌘Z before the page
+        // sees it and Main forwards it instead (onUndoShortcut); this branch
+        // catches the same key when it does arrive — synthesized input, or a
+        // build without the menu. Undoing twice is a no-op, so both paths may
+        // safely exist.
+        if (event.key.toLowerCase() === 'z' && !event.shiftKey && !ownsUndo(target)) {
+          undoArchive()
+        }
+        if (typing) return
+        if (event.key === 'Backspace' && selectedSession) {
+          event.preventDefault()
+          void setArchived(selectedSession, selectedSession.archivedAt === null)
+        }
         return
       }
+      if (typing) return
       if (event.key.toLowerCase() === 'n') {
         event.preventDefault()
         startNewChat()
@@ -171,7 +294,15 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [startNewChat])
+  }, [startNewChat, selectedSession, togglePinned, setArchived, undoArchive])
+
+  // ⌘Z arrives from Main — the menu's Undo owns the key itself. A field
+  // holding text keeps its own undo; anywhere else the inbox's applies.
+  useEffect(() => {
+    return window.shell.onUndoShortcut(() => {
+      if (!ownsUndo(document.activeElement)) undoArchive()
+    })
+  }, [undoArchive])
 
   function handleStarted(session: SessionSummary): void {
     void refreshMailbox(effectiveQuery)
@@ -179,60 +310,25 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     setAnnouncement(`Started “${session.title}”.`)
   }
 
-  function openSession(session: SessionSummary): void {
-    setSurface({ kind: 'session', session })
-  }
-
-  async function togglePinned(session: SessionSummary): Promise<void> {
-    try {
-      const updated = await window.shell.setSessionPinned({
-        sessionId: session.id,
-        pinned: !session.pinned
-      })
-      setAnnouncement(
-        updated.pinned ? `Pinned “${session.title}”.` : `Unpinned “${session.title}”.`
-      )
-    } catch {
-      setAnnouncement(`Could not update the pin on “${session.title}”.`)
-    }
-    void refreshMailbox(effectiveQuery)
-  }
-
-  async function setArchived(session: SessionSummary, archived: boolean): Promise<void> {
-    try {
-      await window.shell.setSessionArchived({ sessionId: session.id, archived })
-      setAnnouncement(
-        archived
-          ? `Archived “${session.title}”. Nothing about it moves; restore it any time.`
-          : `Restored “${session.title}” to the inbox.`
-      )
-      setSurface((current) =>
-        current.kind === 'session' && current.session.id === session.id
-          ? { kind: 'new-chat' }
-          : current
-      )
-    } catch {
-      setAnnouncement(`Could not ${archived ? 'archive' : 'restore'} “${session.title}”.`)
-    }
-    void refreshMailbox(effectiveQuery)
-  }
-
-  async function confirmDelete(session: SessionSummary): Promise<void> {
-    try {
-      await window.shell.deleteSession(session.id)
-      setAnnouncement(`Deleted “${session.title}”. Your Project was not touched.`)
-      setSurface({ kind: 'new-chat' })
-    } catch {
-      setAnnouncement(`Deleting “${session.title}” failed. Nothing was lost.`)
-    }
-    void refreshMailbox(effectiveQuery)
-  }
-
-  const selectedSession =
-    surface.kind === 'session' || surface.kind === 'confirm-delete' ? surface.session : undefined
-
   const snapshot = mailbox.state === 'ready' ? mailbox.snapshot : null
-  const allSessions = snapshot?.groups.flatMap((group) => group.sessions) ?? []
+  const allSessions =
+    snapshot === null
+      ? []
+      : [...snapshot.pinned, ...snapshot.projects].flatMap((group) => group.sessions)
+
+  const rowHandlers: RowHandlers = {
+    selectedId: selectedSession?.id,
+    renamingId: renaming,
+    onOpen: openSession,
+    onTogglePinned: (session) => void togglePinned(session),
+    onSetArchived: (session, archived) => void setArchived(session, archived),
+    // Deferred past the closing menu's focus restoration, which would
+    // otherwise blur — and thereby cancel — the rename it just asked for.
+    onRename: (session) => window.setTimeout(() => setRenaming(session.id), 0),
+    onRenameTo: (session, title) => void renameTo(session, title),
+    onRenameCancel: () => setRenaming(null),
+    onDelete: setDeleting
+  }
 
   return (
     <div className="relative flex h-full flex-col">
@@ -247,22 +343,6 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
           <PanelLeft aria-hidden="true" className="size-4" />
         </Button>
         <h1 className="text-base font-medium">Sessions</h1>
-        <div className="ml-auto flex items-center gap-2">
-          <ThemeSelect theme={theme} onChange={onThemePreferenceChange} />
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label="Harnesses"
-            onClick={() => setReadinessOpen(true)}
-          >
-            <Bot aria-hidden="true" className="size-3.5" />
-            Harnesses
-          </Button>
-          <Button onClick={() => startNewChat()} size="sm">
-            <Plus aria-hidden="true" className="size-3.5" />
-            New chat
-          </Button>
-        </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
@@ -276,11 +356,6 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
           />
         ) : (
           <div className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/40">
-            <Projects
-              onNewChat={(root) => startNewChat(root)}
-              filteredRoot={query.projectRoot}
-              onFilter={(projectRoot) => setQuery((current) => ({ ...current, projectRoot }))}
-            />
             <nav aria-label="Session inbox" className="flex min-h-0 flex-1 flex-col">
               {damaged.length > 0 && (
                 <p
@@ -293,7 +368,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
                   Nothing in your Projects was affected.
                 </p>
               )}
-              <div className="flex flex-col gap-2 border-b border-border p-2">
+              <div className="flex flex-col gap-1.5 p-2">
                 <label className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2 focus-within:ring-2 focus-within:ring-ring">
                   <Search aria-hidden="true" className="size-3.5 text-muted-foreground" />
                   <input
@@ -308,73 +383,70 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
                     className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground"
                   />
                 </label>
-                <div className="flex items-center gap-1">
-                  <div
-                    role="group"
-                    aria-label="Inbox view"
-                    className="flex rounded-md border border-border p-0.5"
+                <button
+                  type="button"
+                  onClick={() => startNewChat()}
+                  className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <Plus aria-hidden="true" className="size-3.5" />
+                  New Session
+                  <span
+                    aria-hidden="true"
+                    className="ml-auto font-mono text-2xs text-muted-foreground"
                   >
-                    <ViewToggle
-                      label="Inbox"
-                      active={query.view === 'active'}
-                      onClick={() => setQuery((current) => ({ ...current, view: 'active' }))}
-                    />
-                    <ViewToggle
-                      label="Archive"
-                      active={query.view === 'archived'}
-                      onClick={() => setQuery((current) => ({ ...current, view: 'archived' }))}
-                    />
-                  </div>
-                </div>
-                {query.projectRoot !== null && (
-                  // A filter that hides Sessions has to say so, or the list
-                  // looks like an inbox that lost them.
-                  <div className="flex items-center gap-1 text-2xs text-muted-foreground">
-                    <span className="min-w-0 flex-1 truncate font-mono">{query.projectRoot}</span>
-                    <button
-                      type="button"
-                      onClick={() => setQuery((current) => ({ ...current, projectRoot: null }))}
-                      className="shrink-0 underline-offset-2 hover:underline"
-                    >
-                      Show all Projects
-                    </button>
-                  </div>
-                )}
+                    N
+                  </span>
+                </button>
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto py-2">
+              {query.view === 'archived' && (
+                <div className="flex items-center gap-1.5 border-y border-border px-3 py-1.5">
+                  <Archive aria-hidden="true" className="size-3.5 text-muted-foreground" />
+                  <h2 className="text-xs font-medium">Archived Sessions</h2>
+                  <button
+                    type="button"
+                    aria-label="Back to the inbox"
+                    title="Back to the inbox"
+                    onClick={() => setQuery((current) => ({ ...current, view: 'active' }))}
+                    className="ml-auto rounded p-1 text-muted-foreground hover:bg-border hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <X aria-hidden="true" className="size-3.5" />
+                  </button>
+                </div>
+              )}
+
+              <div className="min-h-0 flex-1 overflow-y-auto py-1">
                 <InboxContent
                   mailbox={mailbox}
                   query={query}
-                  selectedId={selectedSession?.id}
-                  onOpen={openSession}
-                  onNewChat={() => startNewChat()}
-                  onClearSearch={() =>
-                    setQuery((current) => ({ ...current, search: '', projectRoot: null }))
-                  }
+                  handlers={rowHandlers}
+                  onNewChat={startNewChat}
+                  onClearSearch={() => setQuery((current) => ({ ...current, search: '' }))}
                   onRetry={() => void refreshMailbox(effectiveQuery)}
-                  onTogglePinned={(session) => void togglePinned(session)}
-                  onSetArchived={(session, archived) => void setArchived(session, archived)}
-                  onDelete={(session) => setSurface({ kind: 'confirm-delete', session })}
+                  onAnnounce={setAnnouncement}
+                  onProjectsChanged={() => void refreshMailbox(effectiveQuery)}
                 />
               </div>
             </nav>
+            <AppMenu
+              theme={theme}
+              onThemeChange={onThemePreferenceChange}
+              archivedTotal={snapshot?.archivedTotal ?? null}
+              onShowArchived={() => setQuery((current) => ({ ...current, view: 'archived' }))}
+              onOpenHarnesses={() => setReadinessOpen(true)}
+              onProjectsChanged={() => void refreshMailbox(effectiveQuery)}
+              onAnnounce={setAnnouncement}
+            />
           </div>
         )}
 
         <main className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-          {surface.kind === 'confirm-delete' ? (
-            <DeleteConfirmSurface
-              session={surface.session}
-              onCancel={() => setSurface({ kind: 'new-chat' })}
-              onConfirm={() => void confirmDelete(surface.session)}
-            />
-          ) : surface.kind === 'session' ? (
+          {surface.kind === 'session' ? (
             <SessionDetail
               session={surface.session}
               onTogglePinned={(session) => void togglePinned(session)}
               onSetArchived={(session, archived) => void setArchived(session, archived)}
-              onDelete={(session) => setSurface({ kind: 'confirm-delete', session })}
+              onDelete={setDeleting}
             />
           ) : (
             <Composer
@@ -390,22 +462,41 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
         {announcement}
       </div>
 
+      {deleting && (
+        <DeleteConfirmDialog
+          session={deleting}
+          onCancel={() => setDeleting(null)}
+          onConfirm={() => void confirmDelete(deleting)}
+        />
+      )}
+
       {readinessOpen && <ReadinessDialog onClose={() => setReadinessOpen(false)} />}
     </div>
   )
 }
 
+/** Everything a Session row can do, passed as one piece. */
+interface RowHandlers {
+  selectedId: string | undefined
+  renamingId: string | null
+  onOpen: (session: MailboxSession) => void
+  onTogglePinned: (session: MailboxSession) => void
+  onSetArchived: (session: MailboxSession, archived: boolean) => void
+  onRename: (session: MailboxSession) => void
+  onRenameTo: (session: MailboxSession, title: string) => void
+  onRenameCancel: () => void
+  onDelete: (session: MailboxSession) => void
+}
+
 interface InboxContentProps {
   mailbox: MailboxData
   query: MailboxQuery
-  selectedId: string | undefined
-  onOpen: (session: MailboxSession) => void
-  onNewChat: () => void
+  handlers: RowHandlers
+  onNewChat: (projectRoot?: string) => void
   onClearSearch: () => void
   onRetry: () => void
-  onTogglePinned: (session: MailboxSession) => void
-  onSetArchived: (session: MailboxSession, archived: boolean) => void
-  onDelete: (session: MailboxSession) => void
+  onAnnounce: (text: string) => void
+  onProjectsChanged: () => void
 }
 
 function InboxContent(props: InboxContentProps): React.JSX.Element {
@@ -436,183 +527,376 @@ function InboxContent(props: InboxContentProps): React.JSX.Element {
 
   const { snapshot } = mailbox
 
-  if (snapshot.total === 0) {
-    return snapshot.view === 'archived' ? (
-      <p className="px-4 py-6 text-center text-xs text-muted-foreground">
-        No archived Sessions. Archiving never changes your Project.
-      </p>
-    ) : (
-      <div className="flex flex-col items-center gap-2 px-4 py-6 text-center">
+  // An empty mailbox says so even when Projects are already listed below:
+  // the groups explain where Sessions would go, not that none exist.
+  const emptyHint =
+    snapshot.view === 'active' && snapshot.total === 0 ? (
+      <div className="flex flex-col items-center gap-2 px-4 py-4 text-center">
         <Inbox aria-hidden="true" className="size-5 text-muted-foreground" />
         <p className="text-xs text-muted-foreground">
           No Sessions yet. Press <kbd className="font-mono">N</kbd> to start one.
         </p>
-        <Button variant="secondary" size="sm" onClick={props.onNewChat}>
+        <Button variant="secondary" size="sm" onClick={() => props.onNewChat()}>
           Start a Session
+        </Button>
+      </div>
+    ) : null
+
+  if (query.search && snapshot.matched === 0) {
+    return (
+      <div role="status" className="flex flex-col items-center gap-2 px-4 py-6 text-center">
+        <p className="text-xs text-muted-foreground">No Sessions match “{query.search}”.</p>
+        <Button variant="secondary" size="sm" onClick={props.onClearSearch}>
+          Clear search
         </Button>
       </div>
     )
   }
 
-  if (snapshot.matched === 0) {
+  // While searching, a Project with nothing to show is noise; at rest it is
+  // still somewhere to start a Session, so it stays.
+  const searching = query.search.trim().length > 0
+  const projects = searching
+    ? snapshot.projects.filter((group) => group.sessions.length > 0)
+    : snapshot.projects
+
+  if (snapshot.view === 'archived') {
     return (
-      <div role="status" className="flex flex-col items-center gap-2 px-4 py-6 text-center">
-        <p className="text-xs text-muted-foreground">
-          No Sessions match {query.search ? `“${query.search}”` : 'the current filters'}.
-        </p>
-        <Button variant="secondary" size="sm" onClick={props.onClearSearch}>
-          {query.projectRoot ? 'Clear filters' : 'Clear search'}
-        </Button>
-      </div>
+      <section aria-label="Archived" className="px-2">
+        {projects.length === 0 ? (
+          <p className="px-2 py-4 text-center text-xs text-muted-foreground">
+            No archived Sessions. Archiving never changes your Project.
+          </p>
+        ) : (
+          projects.map((group) => (
+            <ProjectGroup key={group.root} group={group} archived {...props} />
+          ))
+        )}
+      </section>
     )
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {snapshot.groups.map((group) => (
-        <SessionGroup key={group.key} groupKey={group.key} sessions={group.sessions} {...props} />
-      ))}
+    <div className="flex flex-col gap-2">
+      {emptyHint}
+      {snapshot.pinned.length > 0 && (
+        <section aria-label="Pinned" className="px-2">
+          <h2 className="px-2 pt-1 pb-0.5 font-mono text-2xs font-medium tracking-wide text-muted-foreground uppercase">
+            Pinned
+          </h2>
+          {snapshot.pinned.map((group) => (
+            <ProjectGroup key={group.root} group={group} plainHeader {...props} />
+          ))}
+        </section>
+      )}
+      <section aria-label="Projects" className="px-2">
+        <h2 className="px-2 pt-1 pb-0.5 font-mono text-2xs font-medium tracking-wide text-muted-foreground uppercase">
+          Projects
+        </h2>
+        {projects.length === 0 ? (
+          <p className="px-2 py-2 text-xs text-muted-foreground italic">
+            No Projects yet. Add one from the menu below.
+          </p>
+        ) : (
+          projects.map((group) => <ProjectGroup key={group.root} group={group} {...props} />)
+        )}
+      </section>
     </div>
   )
 }
 
-interface SessionGroupProps extends Omit<InboxContentProps, 'mailbox' | 'query'> {
-  groupKey: MailboxGroupKey
-  sessions: MailboxSession[]
+interface ProjectGroupProps extends Omit<InboxContentProps, 'mailbox' | 'query'> {
+  group: MailboxProject
+  /** True in the archived view, where rows dim and offer Restore. */
+  archived?: boolean
+  /** True under Pinned, where the header only names the Project. */
+  plainHeader?: boolean
 }
 
-function SessionGroup({ groupKey, sessions, ...props }: SessionGroupProps): React.JSX.Element {
-  const meta = GROUP_META[groupKey]
+function ProjectGroup({
+  group,
+  archived = false,
+  plainHeader = false,
+  handlers,
+  onNewChat,
+  onAnnounce,
+  onProjectsChanged
+}: ProjectGroupProps): React.JSX.Element {
+  async function removeProject(): Promise<void> {
+    try {
+      await window.shell.removeProject(group.root)
+      onAnnounce(`Removed “${group.name}”. Nothing on disk was touched.`)
+    } catch {
+      onAnnounce(`Could not remove “${group.name}”.`)
+    }
+    onProjectsChanged()
+  }
+
   return (
-    <section aria-label={meta.label} className="px-2">
-      <h2 className="flex items-center gap-1.5 px-2 pb-1 text-2xs font-medium tracking-wide uppercase">
-        <meta.icon aria-hidden="true" className={cn('size-3', meta.colorClass)} />
-        <span className={meta.colorClass}>{meta.label}</span>
-        <span className="text-muted-foreground">{sessions.length}</span>
-      </h2>
-      {sessions.length === 0 ? (
-        <p className="px-2 pb-1 text-xs text-muted-foreground italic">
-          {groupKey === 'running' ? 'No Runs yet' : 'None'}
-        </p>
-      ) : (
-        <ul className="flex flex-col gap-px">
-          {sessions.map((session) => (
-            <SessionRow key={session.id} session={session} {...props} />
-          ))}
-        </ul>
-      )}
+    <section aria-label={group.name}>
+      <div className="group/project relative">
+        <div
+          title={group.root}
+          className="flex items-center gap-1.5 rounded-md py-1 pr-14 pl-2 text-xs text-foreground"
+        >
+          <FolderGit2 aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 truncate">{group.name}</span>
+          {!group.available && (
+            <span className="flex shrink-0 items-center gap-1 rounded-sm bg-notice px-1 text-2xs font-medium text-notice-foreground">
+              <AlertTriangle aria-hidden="true" className="size-2.5" />
+              Unavailable
+            </span>
+          )}
+        </div>
+        {!plainHeader && !archived && (
+          <span className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within/project:opacity-100 group-hover/project:opacity-100">
+            {group.available && (
+              <button
+                type="button"
+                aria-label={`New Session in “${group.name}”`}
+                title={`New Session in “${group.name}”`}
+                onClick={() => onNewChat(group.root)}
+                className={QUICK_ACTION_CLASS}
+              >
+                <Plus aria-hidden="true" className="size-3.5" />
+              </button>
+            )}
+            <Menu>
+              <MenuTrigger aria-label={`More for “${group.name}”`} className={QUICK_ACTION_CLASS}>
+                <MoreHorizontal aria-hidden="true" className="size-3.5" />
+              </MenuTrigger>
+              <MenuContent>
+                <MenuItem onClick={() => void removeProject()}>
+                  <X aria-hidden="true" className="size-3.5 text-muted-foreground" />
+                  Remove Project
+                </MenuItem>
+              </MenuContent>
+            </Menu>
+          </span>
+        )}
+      </div>
+      <ul className="flex flex-col gap-px">
+        {group.sessions.map((session) => (
+          <SessionRow key={session.id} session={session} archived={archived} handlers={handlers} />
+        ))}
+      </ul>
     </section>
   )
 }
 
-interface SessionRowProps extends Omit<SessionGroupProps, 'groupKey' | 'sessions'> {
-  session: MailboxSession
+/** What the dot on a row admits about the Session, when there is anything. */
+const DOT_OF_STATUS: Partial<Record<SessionStatus, { colorClass: string; said: string }>> = {
+  blocked: { colorClass: 'bg-status-blocked', said: 'Waiting on you' },
+  running: { colorClass: 'bg-status-running', said: 'Running' },
+  failed: { colorClass: 'bg-status-failed', said: 'The last Run failed' }
 }
 
-function SessionRow({ session, selectedId, ...props }: SessionRowProps): React.JSX.Element {
-  const archived = session.archivedAt !== null
+function SessionRow({
+  session,
+  archived,
+  handlers
+}: {
+  session: MailboxSession
+  archived: boolean
+  handlers: RowHandlers
+}): React.JSX.Element {
+  const dot = DOT_OF_STATUS[session.status]
+  const said =
+    session.waitingFor === 'approval'
+      ? 'Waiting for your approval'
+      : session.waitingFor === 'question'
+        ? 'Waiting for your answer'
+        : dot?.said
+
+  if (handlers.renamingId === session.id) {
+    return (
+      <li className="py-0.5 pr-2 pl-7">
+        <RenameInput session={session} handlers={handlers} />
+      </li>
+    )
+  }
+
   return (
-    <li className="group relative">
-      <button
-        type="button"
-        onClick={() => props.onOpen(session)}
-        aria-current={selectedId === session.id ? 'true' : undefined}
-        className={cn(
-          'flex w-full items-center gap-2 rounded-md py-1.5 pr-20 pl-2 text-left transition-colors',
-          selectedId === session.id
-            ? 'bg-accent text-foreground'
-            : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-        )}
+    <ContextMenu>
+      <ContextMenuTrigger
+        render={<li className={cn('group relative', archived && 'opacity-75')} />}
       >
-        <MessageSquare aria-hidden="true" className="size-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">
-          {session.title}
-          {/* What the Session wants, when it wants something. A failed Run says
-              so here rather than in Needs attention: nothing is waiting on an
-              answer, but the row still has to admit what happened. */}
-          {session.waitingFor !== null && (
-            <span className="block truncate text-2xs text-status-blocked">
-              {session.waitingFor === 'approval'
-                ? 'Waiting for your approval'
-                : 'Waiting for your answer'}
+        <button
+          type="button"
+          onClick={() => handlers.onOpen(session)}
+          aria-current={handlers.selectedId === session.id ? 'true' : undefined}
+          className={cn(
+            'flex w-full items-center gap-2 rounded-md py-1.5 pl-7 text-left text-xs transition-colors',
+            archived ? 'pr-2' : 'pr-14',
+            handlers.selectedId === session.id
+              ? 'bg-accent text-foreground'
+              : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+          )}
+        >
+          <span className="min-w-0 flex-1 truncate">{session.title}</span>
+          {session.dormant && (
+            <span className="shrink-0 rounded-sm bg-notice px-1 text-2xs font-medium text-notice-foreground">
+              Dormant
             </span>
           )}
-          {session.status === 'failed' && (
-            <span className="block truncate text-2xs text-status-failed">The last Run failed</span>
+          {said && (
+            // The dot yields to the quick actions: hover is for acting, and
+            // the actions land exactly where it sits.
+            <span
+              role="img"
+              aria-label={said}
+              title={said}
+              className={cn(
+                'size-1.5 shrink-0 rounded-full transition-opacity group-focus-within:opacity-0 group-hover:opacity-0',
+                session.waitingFor !== null ? 'bg-status-blocked' : dot?.colorClass
+              )}
+            />
           )}
+        </button>
+        <span className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+          {archived ? (
+            <button
+              type="button"
+              onClick={() => handlers.onSetArchived(session, false)}
+              className="rounded-md border border-border px-1.5 py-0.5 text-2xs text-foreground hover:bg-border focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Restore
+            </button>
+          ) : (
+            <button
+              type="button"
+              aria-label={session.pinned ? `Unpin “${session.title}”` : `Pin “${session.title}”`}
+              title={session.pinned ? `Unpin “${session.title}”` : `Pin “${session.title}”`}
+              onClick={() => handlers.onTogglePinned(session)}
+              className={QUICK_ACTION_CLASS}
+            >
+              {session.pinned ? (
+                <PinOff aria-hidden="true" className="size-3.5" />
+              ) : (
+                <Pin aria-hidden="true" className="size-3.5" />
+              )}
+            </button>
+          )}
+          <Menu>
+            <MenuTrigger aria-label={`More for “${session.title}”`} className={QUICK_ACTION_CLASS}>
+              <MoreHorizontal aria-hidden="true" className="size-3.5" />
+            </MenuTrigger>
+            <MenuContent>
+              <SessionMenuItems session={session} handlers={handlers} />
+            </MenuContent>
+          </Menu>
         </span>
-        {session.dormant && (
-          <span className="rounded-sm bg-notice px-1 text-2xs font-medium text-notice-foreground">
-            Dormant
-          </span>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <SessionMenuItems session={session} handlers={handlers} />
+      </ContextMenuContent>
+    </ContextMenu>
+  )
+}
+
+/**
+ * The row while it is being renamed. Focus moves in because the menu that
+ * asked for the rename has just closed over this exact spot; the whole title
+ * is selected so typing replaces it.
+ */
+function RenameInput({
+  session,
+  handlers
+}: {
+  session: MailboxSession
+  handlers: RowHandlers
+}): React.JSX.Element {
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [])
+  return (
+    <input
+      ref={inputRef}
+      type="text"
+      aria-label={`Rename “${session.title}”`}
+      defaultValue={session.title}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') handlers.onRenameTo(session, event.currentTarget.value)
+        if (event.key === 'Escape') handlers.onRenameCancel()
+      }}
+      onBlur={handlers.onRenameCancel}
+      className="w-full rounded-md border border-border bg-surface px-1.5 py-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    />
+  )
+}
+
+/** One set of actions, spoken through either the ⋯ menu or a right-click. */
+function SessionMenuItems({
+  session,
+  handlers
+}: {
+  session: MailboxSession
+  handlers: RowHandlers
+}): React.JSX.Element {
+  const archived = session.archivedAt !== null
+  return (
+    <>
+      <MenuItem onClick={() => handlers.onTogglePinned(session)}>
+        {session.pinned ? (
+          <PinOff aria-hidden="true" className="size-3.5 text-muted-foreground" />
+        ) : (
+          <Pin aria-hidden="true" className="size-3.5 text-muted-foreground" />
         )}
-      </button>
-      <span className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-        <RowAction
-          label={session.pinned ? `Unpin “${session.title}”` : `Pin “${session.title}”`}
-          icon={session.pinned ? PinOff : Pin}
-          onClick={() => props.onTogglePinned(session)}
-        />
-        <RowAction
-          label={archived ? `Restore “${session.title}”` : `Archive “${session.title}”`}
-          icon={archived ? ArchiveRestore : Archive}
-          onClick={() => props.onSetArchived(session, !archived)}
-        />
-        <RowAction
-          label={`Delete “${session.title}” permanently…`}
-          icon={Trash2}
-          onClick={() => props.onDelete(session)}
-        />
-      </span>
-    </li>
+        {session.pinned ? 'Unpin' : 'Pin'}
+        <MenuShortcut>⇧⌘P</MenuShortcut>
+      </MenuItem>
+      <MenuItem onClick={() => handlers.onSetArchived(session, !archived)}>
+        <Archive aria-hidden="true" className="size-3.5 text-muted-foreground" />
+        {archived ? 'Restore' : 'Archive'}
+        <MenuShortcut>⌘⌫</MenuShortcut>
+      </MenuItem>
+      <MenuItem onClick={() => handlers.onRename(session)}>
+        <Pencil aria-hidden="true" className="size-3.5 text-muted-foreground" />
+        Rename
+      </MenuItem>
+      <MenuSeparator />
+      <MenuItem className="text-destructive" onClick={() => handlers.onDelete(session)}>
+        <Trash2 aria-hidden="true" className="size-3.5" />
+        Delete…
+      </MenuItem>
+    </>
   )
 }
 
-function RowAction({
-  label,
-  icon: Icon,
-  onClick
+/**
+ * The one destructive dialog in the app (mockup 3b). Archiving asks nothing;
+ * a Conversation is permanent history, so deleting one does.
+ */
+function DeleteConfirmDialog({
+  session,
+  onCancel,
+  onConfirm
 }: {
-  label: string
-  icon: LucideIcon
-  onClick: () => void
+  session: SessionSummary
+  onCancel: () => void
+  onConfirm: () => void
 }): React.JSX.Element {
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      className="rounded p-1 text-muted-foreground hover:bg-border hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <Icon aria-hidden="true" className="size-3.5" />
-    </button>
-  )
-}
-
-function ViewToggle({
-  label,
-  active,
-  onClick
-}: {
-  label: string
-  active: boolean
-  onClick: () => void
-}): React.JSX.Element {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={cn(
-        'rounded px-2 py-0.5 text-xs transition-colors',
-        active
-          ? 'bg-accent font-medium text-foreground'
-          : 'text-muted-foreground hover:text-foreground'
-      )}
-    >
-      {label}
-    </button>
+    <Modal destructive labelledBy="delete-confirm-title" onDismiss={onCancel}>
+      <h2 id="delete-confirm-title" className="text-sm font-semibold">
+        Delete “{session.title}”?
+      </h2>
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+        The Conversation is deleted permanently. Files the Session changed stay on disk in{' '}
+        <span className="font-mono">{folderName(session.projectRoot)}</span> — use git to undo
+        those.
+      </p>
+      <div className="mt-4 flex justify-end gap-2">
+        <Button data-autofocus="" variant="secondary" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button variant="destructive" size="sm" onClick={onConfirm}>
+          Delete Session
+        </Button>
+      </div>
+    </Modal>
   )
 }
 
@@ -663,7 +947,7 @@ interface CompactRailProps {
 
 /**
  * The collapsed inbox: a narrow rail that keeps every Session reachable
- * without displacing the central Focus Deck.
+ * without displacing the center surface.
  */
 function CompactRail({
   sessions,
@@ -745,49 +1029,6 @@ function CompactRail({
   )
 }
 
-function DeleteConfirmSurface({
-  session,
-  onCancel,
-  onConfirm
-}: {
-  session: SessionSummary
-  onCancel: () => void
-  onConfirm: () => void
-}): React.JSX.Element {
-  // Focus lands on the safe action when the destructive surface opens.
-  const cancelRef = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    cancelRef.current?.focus()
-  }, [])
-  return (
-    <section
-      aria-labelledby="delete-confirm-title"
-      className="mx-auto flex w-full max-w-xl flex-col gap-4 p-6"
-    >
-      <div>
-        <h2 id="delete-confirm-title" className="text-lg font-medium">
-          Delete “{session.title}”?
-        </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          This forgets the Session and its Conversation. Your Project is not touched, so everything
-          the agent changed stays exactly where it is, under git.
-        </p>
-      </div>
-      <p className="rounded-md border border-border bg-surface p-3 font-mono text-xs break-all text-muted-foreground select-text">
-        {session.projectRoot}
-      </p>
-      <div className="flex items-center gap-2">
-        <Button ref={cancelRef} variant="secondary" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button variant="destructive" onClick={onConfirm}>
-          Delete Session
-        </Button>
-      </div>
-    </section>
-  )
-}
-
 function SessionDetail({
   session,
   onTogglePinned,
@@ -844,7 +1085,7 @@ function SessionDetail({
         <Button variant="secondary" size="sm" onClick={() => onSetArchived(session, !archived)}>
           {archived ? (
             <>
-              <ArchiveRestore aria-hidden="true" className="size-3.5" /> Restore
+              <Archive aria-hidden="true" className="size-3.5" /> Restore
             </>
           ) : (
             <>
@@ -857,36 +1098,5 @@ function SessionDetail({
         </Button>
       </div>
     </article>
-  )
-}
-
-const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
-  { value: 'system', label: 'System' },
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' }
-]
-
-function ThemeSelect({
-  theme,
-  onChange
-}: {
-  theme: ThemeState | null
-  onChange: (preference: ThemePreference) => void
-}): React.JSX.Element {
-  return (
-    <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-      Appearance
-      <select
-        value={theme?.preference ?? 'system'}
-        onChange={(event) => onChange(event.target.value as ThemePreference)}
-        className="h-6 rounded-md border border-border bg-surface px-1 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        {THEME_OPTIONS.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
   )
 }

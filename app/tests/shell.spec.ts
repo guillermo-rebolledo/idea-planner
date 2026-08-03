@@ -111,7 +111,7 @@ async function chooseSkill(page: Page, name: string): Promise<void> {
 
 /** A Session is started by sending a message; its title comes from it. */
 async function startSession(page: Page, message: string): Promise<void> {
-  await page.getByRole('button', { name: 'New chat', exact: true }).click()
+  await page.getByRole('button', { name: 'New Session', exact: true }).click()
   await page.getByRole('form', { name: 'New chat' }).getByLabel('Message').fill(message)
   await page.getByRole('button', { name: 'Send' }).click()
   await expect(page.getByRole('heading', { name: message })).toBeVisible()
@@ -183,10 +183,12 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'listStandingApprovals',
       'onConversationEvent',
       'onThemeChanged',
+      'onUndoShortcut',
       'openExternalLink',
       'queryMailbox',
       'refreshReadiness',
       'removeProject',
+      'renameSession',
       'resolveApproval',
       'revokeStandingApproval',
       'setLoginShellDiscovery',
@@ -266,12 +268,12 @@ test('home is a new chat, and a Project row opens one already bound to it', asyn
     await composer.getByRole('button', { name: 'Send' }).click()
     await expect(inbox.getByText('Tidy the imports')).toBeVisible()
 
-    // New chat always returns to the launch surface.
-    await page.getByRole('button', { name: 'New chat', exact: true }).click()
+    // New Session always returns to the launch surface.
+    await page.getByRole('button', { name: 'New Session', exact: true }).click()
     await expect(page.getByRole('form', { name: 'New chat' })).toBeVisible()
 
-    // So does the button on a Project row, already bound to that Project.
-    await page.getByRole('button', { name: 'New chat in', exact: false }).first().click()
+    // So does the button on a Project header, already bound to that Project.
+    await page.getByRole('button', { name: 'New Session in', exact: false }).first().click()
     const bound = page.getByRole('form', { name: 'New chat' })
     await expect(bound.getByText(await realpath(sandbox.projectDir), { exact: true })).toBeVisible()
   } finally {
@@ -279,7 +281,7 @@ test('home is a new chat, and a Project row opens one already bound to it', asyn
   }
 })
 
-test('a person organizes the mailbox: pin, search, archive, restore, compact rail', async () => {
+test('a person organizes the mailbox: pin, search, archive with undo, rename, compact rail', async () => {
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
@@ -288,18 +290,20 @@ test('a person organizes the mailbox: pin, search, archive, restore, compact rai
     await startSession(page, 'Community tool library')
 
     const inbox = page.getByRole('navigation', { name: 'Session inbox' })
+    const projectName = basename(await realpath(sandbox.projectDir))
     const pinnedGroup = inbox.getByRole('region', { name: 'Pinned' })
-    const recentGroup = inbox.getByRole('region', { name: 'Recent' })
+    const home = inbox
+      .getByRole('region', { name: 'Projects' })
+      .getByRole('region', { name: projectName })
 
-    // Grouped inbox: both land in Recent, with the status groups presented.
-    await expect(recentGroup.getByText('Offline recipe planner')).toBeVisible()
-    await expect(inbox.getByRole('region', { name: 'Needs attention' })).toBeVisible()
-    await expect(inbox.getByRole('region', { name: 'Running' })).toBeVisible()
+    // Project-grouped: both Sessions sit under the Project that owns them.
+    await expect(home.getByText('Offline recipe planner')).toBeVisible()
+    await expect(home.getByText('Community tool library')).toBeVisible()
 
-    // Pin groups the Session first, out of the Recent list.
+    // Pin lifts the Session into Pinned, still under its Project.
     await inbox.getByRole('button', { name: 'Pin “Offline recipe planner”' }).click()
     await expect(pinnedGroup.getByText('Offline recipe planner')).toBeVisible()
-    await expect(recentGroup.getByText('Offline recipe planner')).toHaveCount(0)
+    await expect(home.getByText('Offline recipe planner')).toHaveCount(0)
 
     // Search narrows to matching Sessions; no-results is a visible, recoverable state.
     const search = page.getByRole('searchbox', { name: 'Search Sessions' })
@@ -311,24 +315,45 @@ test('a person organizes the mailbox: pin, search, archive, restore, compact rai
     await inbox.getByRole('button', { name: 'Clear search' }).click()
     await expect(inbox.getByText('Community tool library')).toBeVisible()
 
-    // Archive is reversible and the Project is never touched.
-    await inbox.getByRole('button', { name: 'Archive “Community tool library”' }).click()
+    // Archive is instant — no confirmation — and ⌘Z takes it back.
+    await inbox.getByRole('button', { name: 'More for “Community tool library”' }).click()
+    await page.getByRole('menuitem', { name: 'Archive' }).click()
     await expect(inbox.getByText('Community tool library')).toHaveCount(0)
-    await page.getByRole('button', { name: 'Archive', exact: true }).click()
-    await expect(inbox.getByText('Community tool library')).toBeVisible()
     expect(await readdir(sandbox.projectDir)).toEqual(['.git'])
-    await inbox.getByRole('button', { name: 'Restore “Community tool library”' }).click()
-    await page.getByRole('button', { name: 'Inbox', exact: true }).click()
+    // Only once the menu is fully gone: while it is dismissing it still owns
+    // the keyboard.
+    await expect(page.getByRole('menu')).toHaveCount(0)
+    await page.keyboard.press('ControlOrMeta+z')
     await expect(inbox.getByText('Community tool library')).toBeVisible()
 
+    // The archive lives behind the app menu, dimmed rows offering Restore.
+    await inbox.getByRole('button', { name: 'More for “Community tool library”' }).click()
+    await page.getByRole('menuitem', { name: 'Archive' }).click()
+    await page.getByRole('button', { name: 'App menu' }).click()
+    await page.getByRole('menuitem', { name: 'Archived Sessions' }).click()
+    await expect(inbox.getByText('Community tool library')).toBeVisible()
+    await inbox.getByRole('button', { name: 'Restore' }).click()
+    await expect(inbox.getByText('No archived Sessions', { exact: false })).toBeVisible()
+    await page.getByRole('button', { name: 'Back to the inbox' }).click()
+    await expect(home.getByText('Community tool library')).toBeVisible()
+
+    // Rename puts the person's own words on the row, durably.
+    await inbox.getByRole('button', { name: 'More for “Community tool library”' }).click()
+    await page.getByRole('menuitem', { name: 'Rename' }).click()
+    const rename = inbox.getByRole('textbox', { name: 'Rename “Community tool library”' })
+    await rename.fill('Tool shed')
+    await rename.press('Enter')
+    await expect(home.getByText('Tool shed')).toBeVisible()
+    await expect(inbox.getByText('Community tool library')).toHaveCount(0)
+
     // The inbox collapses to a compact rail that keeps Sessions reachable
-    // while the central Focus Deck stays in place.
+    // while the center surface stays in place.
     await page.getByRole('button', { name: 'Collapse inbox to rail' }).click()
     const rail = page.getByRole('navigation', { name: 'Session inbox (compact)' })
     await expect(rail.getByRole('button', { name: 'Offline recipe planner' })).toBeVisible()
     await expect(page.getByRole('main')).toBeVisible()
-    await rail.getByRole('button', { name: 'Community tool library' }).click()
-    await expect(page.getByRole('heading', { name: 'Community tool library' })).toBeVisible()
+    await rail.getByRole('button', { name: 'Tool shed' }).click()
+    await expect(page.getByRole('heading', { name: 'Tool shed' })).toBeVisible()
   } finally {
     await app.close()
   }
@@ -343,22 +368,30 @@ const BUSY_CLAUDE_FAKE = `case "$1" in
   -p|--print) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
 esac`
 
-test('the inbox groups by what a Session is doing and filters by Project', async () => {
+test('the sidebar groups by Project, and status is a dot that never moves a row', async () => {
   await installFakeHarness('claude', BUSY_CLAUDE_FAKE)
-  // A second Project, because the point of the flat list is that it crosses
-  // repositories and Project is only a filter over it.
+  // A second Project, because the sidebar spans repositories: every Project
+  // is its own group with its Sessions nested underneath.
   await promisify(execFile)('git', ['init', '--quiet'], { cwd: sandbox.plainDir })
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
     await completeOnboarding(page)
-    const projects = page.getByRole('region', { name: 'Projects' })
-    await projects.getByRole('button', { name: 'Add Project' }).click()
-    await projects.getByRole('alert').getByRole('button', { name: 'Add this Project' }).click()
-    await expect(projects.getByText(basename(sandbox.plainDir), { exact: true })).toBeVisible()
+    // The second Project is added from the app menu; the sandbox reaches it
+    // through a symlink, so git names the root and the app confirms it first.
+    await page.getByRole('button', { name: 'App menu' }).click()
+    await page.getByRole('menuitem', { name: 'Add Project…' }).click()
+    await page
+      .getByRole('dialog', { name: 'That folder is inside a Project' })
+      .getByRole('button', { name: 'Add this Project' })
+      .click()
+    const inboxNav = page.getByRole('navigation', { name: 'Session inbox' })
+    await expect(inboxNav.getByText(basename(sandbox.plainDir), { exact: true })).toBeVisible()
 
     await startSession(page, 'Offline recipe planner')
-    await page.getByRole('button', { name: `New chat in “${basename(sandbox.plainDir)}”` }).click()
+    await page
+      .getByRole('button', { name: `New Session in “${basename(sandbox.plainDir)}”` })
+      .click()
     await page
       .getByRole('form', { name: 'New chat' })
       .getByLabel('Message')
@@ -367,38 +400,27 @@ test('the inbox groups by what a Session is doing and filters by Project', async
     await expect(page.getByRole('heading', { name: 'Elsewhere entirely' })).toBeVisible()
 
     const inbox = page.getByRole('navigation', { name: 'Session inbox' })
-    const runningGroup = inbox.getByRole('region', { name: 'Running' })
-    const recentGroup = inbox.getByRole('region', { name: 'Recent' })
+    const homeGroup = inbox.getByRole('region', {
+      name: basename(await realpath(sandbox.projectDir))
+    })
+    const otherGroup = inbox.getByRole('region', { name: basename(sandbox.plainDir) })
 
-    // A Session nobody has developed yet is Recent, not Needs attention: a
-    // quiet Session in that group would make the group worth nothing.
-    await expect(recentGroup.getByText('Offline recipe planner')).toBeVisible()
-    await expect(
-      inbox.getByRole('region', { name: 'Needs attention' }).getByRole('listitem')
-    ).toHaveCount(0)
+    // Each Session sits under its own Project, and a quiet Session carries no
+    // dot: at rest a row is only its title.
+    await expect(homeGroup.getByText('Offline recipe planner')).toBeVisible()
+    await expect(otherGroup.getByText('Elsewhere entirely')).toBeVisible()
+    await expect(homeGroup.getByRole('img', { name: 'Running' })).toHaveCount(0)
 
-    // Developing one moves it to Running, from its Conversation rather than
-    // from anything stored beside it.
+    // Developing one puts a running dot on its row — read from its
+    // Conversation rather than from anything stored beside it — and the row
+    // stays exactly where it was.
     await page.getByLabel('Your message').fill('Change the greeting')
     await page.getByRole('button', { name: 'Send', exact: true }).click()
-    await expect(runningGroup.getByText('Elsewhere entirely')).toBeVisible()
-    await expect(recentGroup.getByText('Offline recipe planner')).toBeVisible()
+    await expect(otherGroup.getByRole('img', { name: 'Running' })).toBeVisible()
+    await expect(otherGroup.getByText('Elsewhere entirely')).toBeVisible()
+    await expect(homeGroup.getByText('Offline recipe planner')).toBeVisible()
 
-    // Clicking a Project narrows the flat list; it never navigates into it.
-    await projects
-      .getByRole('button', { name: `Show only Sessions in “${basename(sandbox.plainDir)}”` })
-      .click()
-    await expect(inbox.getByText('Offline recipe planner')).toHaveCount(0)
-    await expect(runningGroup.getByText('Elsewhere entirely')).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Elsewhere entirely' })).toBeVisible()
-    await inbox.getByRole('button', { name: 'Show all Projects' }).click()
-    await expect(inbox.getByText('Offline recipe planner')).toBeVisible()
-
-    // The rail keeps the running Session legible with the inbox collapsed, and
-    // is narrowed by nothing: a filter it cannot show is a filter it drops.
-    await projects
-      .getByRole('button', { name: `Show only Sessions in “${basename(sandbox.plainDir)}”` })
-      .click()
+    // The rail keeps the running Session legible with the inbox collapsed.
     await page.getByRole('button', { name: 'Collapse inbox to rail' }).click()
     const rail = page.getByRole('navigation', { name: 'Session inbox (compact)' })
     await expect(rail.getByRole('button', { name: 'Elsewhere entirely, running' })).toBeVisible()
@@ -566,17 +588,20 @@ test('deleting a Session forgets it and leaves the Project alone', async () => {
     await startSession(page, 'Doomed session')
 
     const inbox = page.getByRole('navigation', { name: 'Session inbox' })
-    await inbox.getByRole('button', { name: 'Delete “Doomed session” permanently…' }).click()
+    // Reached through the row's own context menu, as 3a draws it.
+    await inbox.getByText('Doomed session').click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Delete…' }).click()
 
-    // The Project is named before anything happens, because what is kept is
-    // the part the person actually cares about.
-    const confirmation = page.getByRole('region', { name: 'Delete “Doomed session”?' })
-    await expect(confirmation.getByRole('heading')).toBeVisible()
+    // The one destructive dialog in the app. The Project is named before
+    // anything happens, because what is kept is the part the person cares
+    // about — and git, not the app, is the undo for files.
+    const confirmation = page.getByRole('alertdialog', { name: 'Delete “Doomed session”?' })
+    await expect(confirmation.getByText('use git to undo those', { exact: false })).toBeVisible()
     await expect(
-      confirmation.getByText(await realpath(sandbox.projectDir), { exact: true })
+      confirmation.getByText(basename(await realpath(sandbox.projectDir)), { exact: true })
     ).toBeVisible()
 
-    await page.getByRole('button', { name: 'Delete Session' }).click()
+    await confirmation.getByRole('button', { name: 'Delete Session' }).click()
     await expect(inbox.getByText('Doomed session')).toHaveCount(0)
     await expect(page.getByText('No Sessions yet', { exact: false })).toBeVisible()
 
@@ -667,7 +692,9 @@ test('readiness reports Codex and Claude independently, with safe repair and re-
   try {
     const page = await app.firstWindow()
     await completeOnboarding(page)
-    await page.getByRole('button', { name: 'Harnesses' }).click()
+    // Harnesses live behind the app menu in the sidebar footer.
+    await page.getByRole('button', { name: 'App menu' }).click()
+    await page.getByRole('menuitem', { name: 'Harnesses' }).click()
     const dialog = page.getByRole('dialog', { name: 'Harnesses' })
     const codexCard = dialog.getByRole('region', { name: 'Codex readiness' })
     const claudeCard = dialog.getByRole('region', { name: 'Claude Code readiness' })

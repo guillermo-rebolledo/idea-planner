@@ -1,0 +1,419 @@
+import { useCallback, useEffect, useState } from 'react'
+import { Archive, Bot, FolderPlus, Lock, SunMedium } from 'lucide-react'
+import {
+  ruleText,
+  type ChooseProjectResult,
+  type ReadinessSnapshot,
+  type StandingApproval,
+  type ThemePreference,
+  type ThemeState
+} from '@shared/contract'
+import { Button } from '@renderer/components/ui/button'
+import { Modal } from '@renderer/components/ui/dialog'
+import {
+  Menu,
+  MenuContent,
+  MenuItem,
+  MenuSeparator,
+  MenuTrigger
+} from '@renderer/components/ui/menu'
+import { cn } from '@renderer/lib/utils'
+
+interface AppMenuProps {
+  theme: ThemeState | null
+  onThemeChange: (preference: ThemePreference) => void
+  /** Archived Sessions across every Project; null while the mailbox reads. */
+  archivedTotal: number | null
+  onShowArchived: () => void
+  onOpenHarnesses: () => void
+  /** The mailbox re-reads after a Project is added, so its group appears. */
+  onProjectsChanged: () => void
+  onAnnounce: (text: string) => void
+}
+
+/** A folder the app declined, with the exact path the person offered it. */
+type Refusal = Extract<ChooseProjectResult, { status: 'refused' }>
+
+/** A folder inside a Project whose root git puts somewhere else. */
+type RootConfirmation = Extract<ChooseProjectResult, { status: 'confirm-root' }>
+
+const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' }
+]
+
+/**
+ * The app menu, anchored in the sidebar footer (mockup 3c). The rarely
+ * touched things live here — adding a Project, Harnesses, Standing Approvals,
+ * the theme, the archive — so no other surface has to grow chrome for them.
+ * The footer itself is the trigger, and it carries an attention dot when a
+ * Harness needs the person.
+ */
+export function AppMenu({
+  theme,
+  onThemeChange,
+  archivedTotal,
+  onShowArchived,
+  onOpenHarnesses,
+  onProjectsChanged,
+  onAnnounce
+}: AppMenuProps): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
+  const [approvals, setApprovals] = useState<ProjectApprovals[]>([])
+  const [approvalsOpen, setApprovalsOpen] = useState(false)
+  const [refusal, setRefusal] = useState<Refusal | null>(null)
+  const [confirmation, setConfirmation] = useState<RootConfirmation | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const refreshReadiness = useCallback(() => {
+    window.shell.getReadiness().then(setReadiness, () => setReadiness(null))
+  }, [])
+
+  const refreshApprovals = useCallback(() => {
+    listApprovalsByProject().then(setApprovals, () => setApprovals([]))
+  }, [])
+
+  useEffect(refreshReadiness, [refreshReadiness])
+
+  // Both are cheap reads, refreshed when the menu opens so the numbers it
+  // shows are the numbers that are true.
+  useEffect(() => {
+    if (!open) return
+    refreshReadiness()
+    refreshApprovals()
+  }, [open, refreshReadiness, refreshApprovals])
+
+  const needsAttention =
+    readiness?.harnesses.some((harness) => !harness.capabilities.developSession.available) ?? false
+  const approvalCount = approvals.reduce((count, entry) => count + entry.approvals.length, 0)
+
+  const adopt = useCallback(
+    (result: ChooseProjectResult) => {
+      if (result.status === 'cancelled') return
+      if (result.status === 'refused') {
+        setConfirmation(null)
+        setRefusal(result)
+        return
+      }
+      if (result.status === 'confirm-root') {
+        setRefusal(null)
+        setConfirmation(result)
+        return
+      }
+      setRefusal(null)
+      setConfirmation(null)
+      onAnnounce(`Added “${result.project.name}”.`)
+      onProjectsChanged()
+    },
+    [onAnnounce, onProjectsChanged]
+  )
+
+  /** Offers a folder, or answers one of the app's follow-up questions. */
+  async function offer(work: () => Promise<ChooseProjectResult>, failure: string): Promise<void> {
+    setBusy(true)
+    try {
+      adopt(await work())
+    } catch {
+      onAnnounce(failure)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function revoke(projectRoot: string, approval: StandingApproval): Promise<void> {
+    try {
+      await window.shell.revokeStandingApproval({ projectRoot, id: approval.id })
+      onAnnounce('Revoked. The next Run asks about it again.')
+    } catch {
+      onAnnounce('That could not be revoked.')
+    }
+    refreshApprovals()
+  }
+
+  return (
+    <>
+      <Menu open={open} onOpenChange={setOpen}>
+        <MenuTrigger
+          aria-label="App menu"
+          className="flex w-full items-center gap-2 border-t border-border px-4 py-2.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent data-popup-open:text-foreground"
+        >
+          <span className="relative">
+            <Bot aria-hidden="true" className="size-3.5" />
+            {needsAttention && (
+              <span
+                aria-hidden="true"
+                className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-status-blocked"
+              />
+            )}
+          </span>
+          Argos
+          {needsAttention && <span className="sr-only">— a Harness needs you</span>}
+        </MenuTrigger>
+        <MenuContent side="top" align="start" className="m-2">
+          <MenuItem
+            onClick={() =>
+              void offer(() => window.shell.chooseProject(), 'That folder could not be added.')
+            }
+          >
+            <FolderPlus aria-hidden="true" className="size-3.5 text-muted-foreground" />
+            Add Project…
+          </MenuItem>
+          <MenuItem onClick={onOpenHarnesses}>
+            <Bot aria-hidden="true" className="size-3.5 text-muted-foreground" />
+            Harnesses
+            <span className="ml-auto flex items-center gap-1.5">
+              {readiness?.harnesses.map((harness) => (
+                <span
+                  key={harness.harness}
+                  role="img"
+                  aria-label={`${harness.displayName}: ${
+                    harness.capabilities.developSession.available ? 'ready' : 'needs you'
+                  }`}
+                  className={cn(
+                    'size-1.5 rounded-full',
+                    harness.capabilities.developSession.available
+                      ? 'bg-positive'
+                      : 'bg-status-blocked'
+                  )}
+                />
+              ))}
+            </span>
+          </MenuItem>
+          <MenuItem onClick={() => setApprovalsOpen(true)}>
+            <Lock aria-hidden="true" className="size-3.5 text-muted-foreground" />
+            Standing Approvals
+            <span className="ml-auto font-mono text-2xs text-muted-foreground">
+              {approvalCount}
+            </span>
+          </MenuItem>
+          <MenuSeparator />
+          <div className="flex items-center gap-2 px-2 py-1.5">
+            <SunMedium aria-hidden="true" className="size-3.5 text-muted-foreground" />
+            Theme
+            <span
+              role="group"
+              aria-label="Theme"
+              className="ml-auto flex gap-0.5 rounded-md border border-border p-0.5"
+            >
+              {THEME_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={(theme?.preference ?? 'system') === option.value}
+                  onClick={() => onThemeChange(option.value)}
+                  className={cn(
+                    'rounded px-2 py-0.5 text-2xs transition-colors focus-visible:ring-2 focus-visible:ring-ring',
+                    (theme?.preference ?? 'system') === option.value
+                      ? 'bg-accent font-medium text-foreground'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </span>
+          </div>
+          <MenuSeparator />
+          <MenuItem onClick={onShowArchived}>
+            <Archive aria-hidden="true" className="size-3.5 text-muted-foreground" />
+            Archived Sessions
+            <span className="ml-auto font-mono text-2xs text-muted-foreground">
+              {archivedTotal ?? ''}
+            </span>
+          </MenuItem>
+        </MenuContent>
+      </Menu>
+
+      {approvalsOpen && (
+        <StandingApprovalsDialog
+          approvals={approvals}
+          onRevoke={(projectRoot, approval) => void revoke(projectRoot, approval)}
+          onDismiss={() => setApprovalsOpen(false)}
+        />
+      )}
+
+      {refusal && (
+        <Modal labelledBy="add-project-refused-title" onDismiss={() => setRefusal(null)}>
+          {refusal.reason === 'not-a-repository' ? (
+            <>
+              <h2 id="add-project-refused-title" className="text-sm font-medium">
+                That folder is not under git yet
+              </h2>
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                A Project has to be — every safety guarantee here comes from git.
+              </p>
+              <p className="mt-2 font-mono text-xs break-all select-text">{refusal.path}</p>
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                Setting it up runs <span className="font-mono">git init</span> there and changes
+                nothing else. It is the only Git command this app ever runs for you.
+              </p>
+              <div className="mt-4 flex justify-end gap-2">
+                <Button
+                  data-autofocus=""
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => setRefusal(null)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    void offer(
+                      () => window.shell.initializeProject(refusal.path),
+                      'git could not set it up.'
+                    )
+                  }
+                >
+                  Set up git here
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <h2 id="add-project-refused-title" className="text-sm font-medium">
+                git could not be found on this machine
+              </h2>
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                This folder could not be added:
+              </p>
+              <p className="mt-2 font-mono text-xs break-all select-text">{refusal.path}</p>
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                Install git, then add the folder again.
+              </p>
+              <div className="mt-4 flex justify-end">
+                <Button data-autofocus="" size="sm" onClick={() => setRefusal(null)}>
+                  Close
+                </Button>
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
+
+      {confirmation && (
+        <Modal labelledBy="add-project-confirm-title" onDismiss={() => setConfirmation(null)}>
+          <h2 id="add-project-confirm-title" className="text-sm font-medium">
+            That folder is inside a Project
+          </h2>
+          <p className="mt-2 font-mono text-xs break-all select-text">{confirmation.chosen}</p>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            The Project itself begins here, and this is what would be added:
+          </p>
+          <p className="mt-2 font-mono text-xs break-all select-text">{confirmation.root}</p>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              data-autofocus=""
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => setConfirmation(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={() =>
+                void offer(
+                  () => window.shell.confirmProject(confirmation.root),
+                  'That Project could not be added.'
+                )
+              }
+            >
+              Add this Project
+            </Button>
+          </div>
+        </Modal>
+      )}
+    </>
+  )
+}
+
+interface ProjectApprovals {
+  root: string
+  name: string
+  approvals: StandingApproval[]
+}
+
+/** Every Project's Standing Approvals, one read per Project. */
+async function listApprovalsByProject(): Promise<ProjectApprovals[]> {
+  const projects = await window.shell.listProjects()
+  return Promise.all(
+    projects.map(async (project) => ({
+      root: project.root,
+      name: project.name,
+      approvals: await window.shell.listStandingApprovals(project.root)
+    }))
+  )
+}
+
+/**
+ * What every Project has permanently allowed, and the button that takes one
+ * back. Nothing is edited or created here: granting stays exclusively
+ * "Always allow" on a real Approval Request.
+ */
+function StandingApprovalsDialog({
+  approvals,
+  onRevoke,
+  onDismiss
+}: {
+  approvals: ProjectApprovals[]
+  onRevoke: (projectRoot: string, approval: StandingApproval) => void
+  onDismiss: () => void
+}): React.JSX.Element {
+  const granted = approvals.filter((entry) => entry.approvals.length > 0)
+  return (
+    <Modal labelledBy="standing-approvals-title" onDismiss={onDismiss} className="max-w-md">
+      <h2 id="standing-approvals-title" className="text-sm font-medium">
+        Standing Approvals
+      </h2>
+      {granted.length === 0 ? (
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          Nothing is permanently allowed. Granting happens on a real Approval Request — “Always
+          allow” is the only way in.
+        </p>
+      ) : (
+        <div className="mt-3 flex max-h-80 flex-col gap-3 overflow-y-auto">
+          {granted.map((entry) => (
+            <section key={entry.root} aria-label={entry.name}>
+              <h3 className="text-2xs font-medium tracking-wide text-muted-foreground uppercase">
+                {entry.name}
+              </h3>
+              <ul className="mt-1 flex flex-col gap-1.5">
+                {entry.approvals.map((approval) => (
+                  <li key={approval.id} className="flex items-start gap-2">
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs">{approval.summary}</span>
+                      {/* The rule itself, because the rule is what decides. */}
+                      <span className="block font-mono text-2xs break-all text-muted-foreground select-text">
+                        {ruleText(approval)}
+                      </span>
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 shrink-0"
+                      onClick={() => onRevoke(entry.root, approval)}
+                    >
+                      Revoke
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+      )}
+      <div className="mt-4 flex justify-end">
+        <Button data-autofocus="" variant="secondary" size="sm" onClick={onDismiss}>
+          Close
+        </Button>
+      </div>
+    </Modal>
+  )
+}

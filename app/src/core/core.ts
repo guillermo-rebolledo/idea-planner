@@ -1,17 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { Cause, Context, Effect, Exit, Layer } from 'effect'
 import { z } from 'zod'
 import {
   CoreError,
   startSessionInputSchema,
   type MailboxCoreQuery,
-  type MailboxGroup,
-  type MailboxGroupKey,
+  type MailboxProject,
   type MailboxSession,
   type MailboxSnapshot,
-  type SessionStatus,
   type SessionSummary,
   type StartSessionInput
 } from '@shared/contract'
@@ -87,6 +85,7 @@ export interface Core {
   queryMailbox(query: MailboxCoreQuery): Promise<MailboxSnapshot>
   setSessionPinned(sessionId: string, pinned: boolean): Promise<SessionSummary>
   setSessionArchived(sessionId: string, archived: boolean): Promise<SessionSummary>
+  renameSession(sessionId: string, title: string): Promise<SessionSummary>
   acceptRun(input: AcceptRunInput): Promise<RunSnapshot>
   listRuns(sessionId: string): Promise<RunSnapshot[]>
   recordRunEvent(input: RecordRunEventInput): Promise<RunSnapshot>
@@ -128,6 +127,7 @@ export interface CoreEffects {
   queryMailbox(query: MailboxCoreQuery): Effect.Effect<MailboxSnapshot, CoreError>
   setSessionPinned(sessionId: string, pinned: boolean): Effect.Effect<SessionSummary, CoreError>
   setSessionArchived(sessionId: string, archived: boolean): Effect.Effect<SessionSummary, CoreError>
+  renameSession(sessionId: string, title: string): Effect.Effect<SessionSummary, CoreError>
   acceptRun(input: AcceptRunInput): Effect.Effect<RunSnapshot, CoreError>
   listRuns(sessionId: string): Effect.Effect<RunSnapshot[], CoreError>
   recordRunEvent(input: RecordRunEventInput): Effect.Effect<RunSnapshot, CoreError>
@@ -262,6 +262,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
   const queryMailbox = (query: MailboxCoreQuery): Effect.Effect<MailboxSnapshot, CoreError> =>
     Effect.gen(function* () {
       const all = yield* sessions.list()
+      const knownProjects = yield* projects.list()
       const inView = all.filter((session) =>
         query.view === 'archived' ? session.archivedAt !== null : session.archivedAt === null
       )
@@ -269,7 +270,6 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       const dormantBefore = now().getTime() - query.dormantAfterDays * DAY_MS
       const matched = inView
         .filter((session) => {
-          if (query.projectRoot !== null && session.projectRoot !== query.projectRoot) return false
           const title = session.title.toLowerCase()
           return terms.every((term) => title.includes(term))
         })
@@ -313,7 +313,8 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
         view: query.view,
         total: inView.length,
         matched: described.length,
-        groups: groupSessions(described, query.view)
+        ...groupByProject(described, knownProjects, query.view),
+        archivedTotal: all.filter((session) => session.archivedAt !== null).length
       }
     })
 
@@ -527,6 +528,14 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     queryMailbox,
     setSessionPinned: (sessionId, pinned) => sessions.update(sessionId, { pinned }),
     setSessionArchived: (sessionId, archived) => sessions.update(sessionId, { archived }),
+    // Titles are derived from the first message everywhere else; this is the
+    // one place the person's own words replace the derivation.
+    renameSession: (sessionId, title) => {
+      const trimmed = title.trim()
+      return trimmed.length === 0
+        ? Effect.fail(new CoreError('INVALID_INPUT', 'A Session title cannot be empty'))
+        : sessions.update(sessionId, { title: trimmed })
+    },
     acceptRun,
     listRuns,
     recordRunEvent,
@@ -545,35 +554,57 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
 }
 
 /**
- * The inbox groups: one flat list across every Project, because the question
- * worth answering is whether anything is waiting anywhere.
+ * The sidebar's shape: Pinned on top, then Projects with Sessions nested.
+ * Pinned stays project-grouped too, so a pinned Session never loses the name
+ * of the Project it works in. Status never decides placement — rows must not
+ * re-shuffle between groups as Runs start and stop.
  *
- * Pinned wins over everything, because it is the person's own answer to where
- * a Session belongs. A failed Run is not in needs-attention: nothing is
- * waiting on an answer, and the Session says so on its own row.
+ * Every known Project appears even when it has nothing to show, because an
+ * empty Project is still somewhere to start a Session. A Session whose
+ * Project was removed still needs a home, so one is invented from its root
+ * and marked unavailable. The archived view lists only Projects that have
+ * something archived: it is a record, not a launcher.
  */
-function groupSessions(sessions: MailboxSession[], view: MailboxCoreQuery['view']): MailboxGroup[] {
-  if (view === 'archived') return [{ key: 'archived', sessions }]
-  const groups: MailboxGroup[] = [
-    { key: 'pinned', sessions: [] },
-    { key: 'needs-attention', sessions: [] },
-    { key: 'running', sessions: [] },
-    { key: 'recent', sessions: [] }
-  ]
-  const byKey = new Map(groups.map((group) => [group.key, group]))
+function groupByProject(
+  sessions: MailboxSession[],
+  knownProjects: ProjectView[],
+  view: MailboxCoreQuery['view']
+): { pinned: MailboxProject[]; projects: MailboxProject[] } {
+  const groups: MailboxProject[] = knownProjects.map((project) => ({
+    root: project.root,
+    name: project.name,
+    available: project.available,
+    sessions: []
+  }))
+  const byRoot = new Map(groups.map((group) => [group.root, group]))
+  const pinnedByRoot = new Map<string, MailboxProject>()
   for (const session of sessions) {
-    const key = session.pinned ? 'pinned' : GROUP_OF_STATUS[session.status]
-    byKey.get(key)?.sessions.push(session)
+    let home = byRoot.get(session.projectRoot)
+    if (!home) {
+      home = {
+        root: session.projectRoot,
+        name: basename(session.projectRoot),
+        available: false,
+        sessions: []
+      }
+      byRoot.set(home.root, home)
+      groups.push(home)
+    }
+    if (view === 'active' && session.pinned) {
+      let pinnedHome = pinnedByRoot.get(home.root)
+      if (!pinnedHome) {
+        pinnedHome = { ...home, sessions: [] }
+        pinnedByRoot.set(home.root, pinnedHome)
+      }
+      pinnedHome.sessions.push(session)
+    } else {
+      home.sessions.push(session)
+    }
   }
-  return groups
-}
-
-/** Where each status belongs, stated once so a new one has one place to go. */
-const GROUP_OF_STATUS: Record<SessionStatus, MailboxGroupKey> = {
-  blocked: 'needs-attention',
-  running: 'running',
-  idle: 'recent',
-  failed: 'recent'
+  return {
+    pinned: groups.flatMap((group) => pinnedByRoot.get(group.root) ?? []),
+    projects: view === 'archived' ? groups.filter((group) => group.sessions.length > 0) : groups
+  }
 }
 
 const RUN_STATUS_TRANSITIONS: Record<RunStatus, readonly RunStatus[]> = {
@@ -615,6 +646,7 @@ export function createCore(deps: CoreDeps = {}): Core {
     queryMailbox: (query) => run(core.queryMailbox(query)),
     setSessionPinned: (sessionId, pinned) => run(core.setSessionPinned(sessionId, pinned)),
     setSessionArchived: (sessionId, archived) => run(core.setSessionArchived(sessionId, archived)),
+    renameSession: (sessionId, title) => run(core.renameSession(sessionId, title)),
     acceptRun: (input) => run(core.acceptRun(input)),
     listRuns: (sessionId) => run(core.listRuns(sessionId)),
     recordRunEvent: (input) => run(core.recordRunEvent(input)),

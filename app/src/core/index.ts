@@ -96,6 +96,8 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.setSessionPinned(command.sessionId, command.pinned)
     case 'session/set-archived':
       return core.setSessionArchived(command.sessionId, command.archived)
+    case 'session/rename':
+      return core.renameSession(command.input.sessionId, command.input.title)
     case 'session/delete':
       return core.deleteSession(command.sessionId)
     case 'run/accept':

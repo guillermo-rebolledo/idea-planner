@@ -44,6 +44,9 @@ export default tseslint.config(
       '**/test-results/**',
       '**/playwright-report/**',
       '**/coverage/**',
+      // Scratch space for issues, specs, and design handoff bundles — never
+      // product code.
+      '.scratch/**',
       // Generated from the installed Codex binary; regenerated, never edited.
       'app/src/core/harness/codex-protocol/**',
       // Vendored from assistant-ui's shadcn registry and trimmed by hand;

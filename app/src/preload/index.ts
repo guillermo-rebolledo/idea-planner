@@ -26,6 +26,7 @@ const api: ShellApi = {
   queryMailbox: (query) => ipcRenderer.invoke(IPC_CHANNELS.queryMailbox, query),
   setSessionPinned: (input) => ipcRenderer.invoke(IPC_CHANNELS.setSessionPinned, input),
   setSessionArchived: (input) => ipcRenderer.invoke(IPC_CHANNELS.setSessionArchived, input),
+  renameSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.renameSession, input),
   deleteSession: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.deleteSession, sessionId),
   setThemePreference: (preference) =>
     ipcRenderer.invoke(IPC_CHANNELS.setThemePreference, preference),
@@ -54,6 +55,11 @@ const api: ShellApi = {
     const subscription = (_event: unknown, theme: ThemeState): void => listener(theme)
     ipcRenderer.on(IPC_CHANNELS.themeChanged, subscription)
     return () => ipcRenderer.off(IPC_CHANNELS.themeChanged, subscription)
+  },
+  onUndoShortcut: (listener) => {
+    const subscription = (): void => listener()
+    ipcRenderer.on(IPC_CHANNELS.undoShortcut, subscription)
+    return () => ipcRenderer.off(IPC_CHANNELS.undoShortcut, subscription)
   }
 }
 

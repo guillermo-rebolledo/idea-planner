@@ -35,7 +35,7 @@ import {
  * Every payload crossing a process boundary is validated against these
  * schemas before it is acted on or presented.
  */
-export const CONTRACT_VERSION = 2
+export const CONTRACT_VERSION = 3
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -57,12 +57,7 @@ export type MailboxView = z.infer<typeof mailboxViewSchema>
 /** The Renderer's mailbox request; Main adds the configured thresholds. */
 export const mailboxQuerySchema = z.object({
   search: z.string().max(500),
-  view: mailboxViewSchema,
-  /**
-   * Narrow the flat list to one Project. A filter, never a container: the list
-   * stays flat and cross-repository, and clearing this shows everything again.
-   */
-  projectRoot: z.string().min(1).nullable()
+  view: mailboxViewSchema
 })
 export type MailboxQuery = z.infer<typeof mailboxQuerySchema>
 
@@ -93,20 +88,22 @@ export const mailboxSessionSchema = sessionSummarySchema.extend({
 })
 export type MailboxSession = z.infer<typeof mailboxSessionSchema>
 
-export const mailboxGroupKeySchema = z.enum([
-  'pinned',
-  'needs-attention',
-  'running',
-  'recent',
-  'archived'
-])
-export type MailboxGroupKey = z.infer<typeof mailboxGroupKeySchema>
-
-export const mailboxGroupSchema = z.object({
-  key: mailboxGroupKeySchema,
+/**
+ * A Project with its Sessions nested underneath. The sidebar groups by
+ * Project, so rows never re-shuffle between groups as Runs start and stop:
+ * what a Session is doing is a dot on its row, not an address.
+ */
+export const mailboxProjectSchema = z.object({
+  root: z.string().min(1),
+  name: z.string().min(1),
+  /**
+   * False when the directory is gone, or when the Project itself was removed
+   * and only its Sessions remain to name it.
+   */
+  available: z.boolean(),
   sessions: z.array(mailboxSessionSchema)
 })
-export type MailboxGroup = z.infer<typeof mailboxGroupSchema>
+export type MailboxProject = z.infer<typeof mailboxProjectSchema>
 
 export const mailboxSnapshotSchema = z.object({
   view: mailboxViewSchema,
@@ -114,7 +111,12 @@ export const mailboxSnapshotSchema = z.object({
   total: z.number().int().nonnegative(),
   /** Sessions matching the search across all groups. */
   matched: z.number().int().nonnegative(),
-  groups: z.array(mailboxGroupSchema)
+  /** Pinned Sessions on top, still nested under the Project that owns them. */
+  pinned: z.array(mailboxProjectSchema),
+  /** Every Project the app has, then any that only Sessions still name. */
+  projects: z.array(mailboxProjectSchema),
+  /** Archived Sessions across every Project, regardless of view or search. */
+  archivedTotal: z.number().int().nonnegative()
 })
 export type MailboxSnapshot = z.infer<typeof mailboxSnapshotSchema>
 
@@ -129,6 +131,13 @@ export const setSessionArchivedInputSchema = z.object({
   archived: z.boolean()
 })
 export type SetSessionArchivedInput = z.infer<typeof setSessionArchivedInputSchema>
+
+export const renameSessionInputSchema = z.object({
+  sessionId: z.string().min(1),
+  /** The person's own words for the Session, replacing the derived title. */
+  title: z.string().trim().min(1).max(200)
+})
+export type RenameSessionInput = z.infer<typeof renameSessionInputSchema>
 
 export const startSessionInputSchema = z.object({
   /** The Project the Session works against, by the root git resolved. */
@@ -215,6 +224,7 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     sessionId: z.string().min(1),
     archived: z.boolean()
   }),
+  z.object({ type: z.literal('session/rename'), input: renameSessionInputSchema }),
   z.object({ type: z.literal('session/delete'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('run/accept'), input: acceptRunInputSchema }),
   z.object({ type: z.literal('run/list'), sessionId: z.string().min(1) }),
@@ -334,10 +344,18 @@ export interface ShellApi {
   queryMailbox(query: MailboxQuery): Promise<MailboxSnapshot>
   setSessionPinned(input: SetSessionPinnedInput): Promise<SessionSummary>
   setSessionArchived(input: SetSessionArchivedInput): Promise<SessionSummary>
+  /** Gives the Session the person's own title. */
+  renameSession(input: RenameSessionInput): Promise<SessionSummary>
   /** Forgets the Session and its history. The Project is never touched. */
   deleteSession(sessionId: string): Promise<void>
   setThemePreference(preference: ThemePreference): Promise<ThemeState>
   onThemeChanged(listener: (theme: ThemeState) => void): () => void
+  /**
+   * ⌘Z, delivered from Main: the application menu's Undo consumes the key
+   * before the page sees it, so the Renderer is told instead. Fires for every
+   * press — the listener decides whether anything of its own is undoable.
+   */
+  onUndoShortcut(listener: () => void): () => void
   /** Returns the latest readiness snapshot, probing on first demand. */
   getReadiness(): Promise<ReadinessSnapshot>
   /** Re-probes one Harness or all of them (“Check again”). */
