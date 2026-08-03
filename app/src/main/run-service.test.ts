@@ -1212,6 +1212,46 @@ describe('Codex on the app-server protocol', () => {
     expect(broker.stop).toHaveBeenCalledWith(expect.any(String), 'quit')
   })
 
+  it('ends the Run when Codex reports failure, instead of working forever', async () => {
+    const root = await readyHarnessRoot('run-codex-failed-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    // What thread/resume answers for a thread whose rollout is gone. An error
+    // breaks the app-server's one fixed exchange: nothing further will be
+    // said, and the process never exits on its own.
+    core.events = [
+      {
+        type: 'failed',
+        category: 'unknown',
+        summary: 'no rollout found for thread id saved-thread'
+      }
+    ]
+    const service = new RunService(codexDeps(root, broker, core))
+
+    await service.start(codexInput())
+    broker.launch?.onOutput?.(
+      'stdout',
+      '{"id":2,"error":{"code":-32600,"message":"no rollout found for thread id saved-thread"}}\n'
+    )
+
+    // The Run concludes as failed — the Conversation gets its recovery
+    // guidance and the inbox stops saying the agent is working.
+    await vi.waitFor(() => {
+      const terminal = (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
+        .filter(([command]) => command.type === 'run/event')
+        .at(-1)?.[0].input
+      expect(terminal?.status).toBe('failed')
+    })
+    const finalize = (
+      core.send.mock.calls as [{ type: string; input?: { outcome?: string; summary?: string } }][]
+    ).find(([command]) => command.type === 'conversation/finalize')?.[0].input
+    expect(finalize?.outcome).toBe('failed')
+    expect(finalize?.summary).toContain('no rollout found')
+    // And the process is stopped rather than left waiting for a turn nobody
+    // will ask for.
+    expect(broker.stop).toHaveBeenCalledWith(expect.any(String), 'quit')
+  })
+
   it('leaves stdin closed for a Harness nobody answers', async () => {
     const root = await readyClaudeRoot('run-claude-stdin-')
     const broker = fakeBroker()

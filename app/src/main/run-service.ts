@@ -798,6 +798,12 @@ export class RunService {
       // the Run ending here, and the process is stopped rather than left
       // running for a turn that will never be asked for.
       if (event.type === 'completed' && harness === 'codex') await this.finishTurn(run)
+      // The same server-shaped problem when it fails: an error answer breaks
+      // the one fixed exchange, nothing further will be said, and the process
+      // sits there — a Run stuck on "Working" with the person told nothing.
+      // Failure ends the Run exactly as completion does, so the Conversation
+      // records what happened and its recovery guidance appears.
+      if (event.type === 'failed' && harness === 'codex') await this.failTurn(run, event.summary)
     }
   }
 
@@ -810,6 +816,22 @@ export class RunService {
     if (this.finishing.has(run.id)) return
     this.finishing.add(run.id)
     await this.conclude(run, 'completed', 'lifecycle', 'Harness completed the turn')
+    await this.deps.broker.stop(run.id, 'quit').catch(() => undefined)
+    this.finishing.delete(run.id)
+  }
+
+  /**
+   * Ends a Run whose Harness reported failure but will not exit, the failing
+   * twin of {@link finishTurn}. The category the failure carried is already in
+   * `failures`, so conclude reports the cause rather than a bare "it failed".
+   */
+  private async failTurn(
+    run: Pick<RunSnapshot, 'id' | 'sessionId'>,
+    summary: string
+  ): Promise<void> {
+    if (this.finishing.has(run.id)) return
+    this.finishing.add(run.id)
+    await this.conclude(run, 'failed', 'error', summary.slice(0, 500))
     await this.deps.broker.stop(run.id, 'quit').catch(() => undefined)
     this.finishing.delete(run.id)
   }
