@@ -1,4 +1,4 @@
-# Desktop app
+# Argos
 
 The production macOS Electron shell. This is the real Main / Core / Preload / Renderer
 architecture; the throwaway prototype under `prototypes/` is design evidence only.
@@ -18,10 +18,14 @@ architecture; the throwaway prototype under `prototypes/` is design evidence onl
   source-owned shadcn-style components (React 19, Tailwind CSS v4).
 - `src/shared` — the versioned zod contract validated at every process boundary.
 
-Sessions are stored as ordinary Markdown: one folder per Session inside the user-chosen
-library, with minimal frontmatter (`format`, `id`, timestamps) and the content as plain
-CommonMark. A rebuildable app-support settings file remembers the library location and
-theme preference; losing it never loses a Session.
+## Identity
+
+The product is **Argos**, and the bundle identifier is **`com.memojiinc.argos`**. Both live
+in `src/main/identity.ts`, which `package.json` is tested to agree with. The name is a
+display string and can change; the identifier cannot, because everything the app owns —
+Sessions, Conversations, Runs, settings — lives in
+`~/Library/Application Support/com.memojiinc.argos` (ADR 0002), and a build is signed and
+notarized under it.
 
 ## Commands
 

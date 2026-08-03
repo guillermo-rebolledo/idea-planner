@@ -20,7 +20,8 @@ const mainEntry = join(__dirname, '../out/main/index.js')
 type Page = Awaited<ReturnType<ElectronApplication['firstWindow']>>
 
 interface Sandbox {
-  userDataDir: string
+  /** Stands in for `~/Library/Application Support` for this run. */
+  appDataDir: string
   /** PATH used for readiness discovery; empty means no Harness is found. */
   readinessBinDir: string
   /** HOME used for readiness skill discovery. */
@@ -39,7 +40,7 @@ async function launchShell(): Promise<ElectronApplication> {
     args: [mainEntry],
     env: {
       ...process.env,
-      APP_TEST_USER_DATA: sandbox.userDataDir,
+      APP_TEST_APP_DATA: sandbox.appDataDir,
       APP_TEST_READINESS_PATH: sandbox.readinessBinDir,
       APP_TEST_READINESS_HOME: sandbox.readinessHomeDir,
       // Successive answers from the Project picker, in order.
@@ -54,7 +55,7 @@ async function launchShell(): Promise<ElectronApplication> {
 
 test.beforeEach(async () => {
   sandbox = {
-    userDataDir: await mkdtemp(join(tmpdir(), 'app-shell-userdata-')),
+    appDataDir: await mkdtemp(join(tmpdir(), 'app-shell-appdata-')),
     readinessBinDir: await mkdtemp(join(tmpdir(), 'app-shell-readiness-bin-')),
     readinessHomeDir: await mkdtemp(join(tmpdir(), 'app-shell-readiness-home-')),
     projectDir: await mkdtemp(join(tmpdir(), 'app-shell-project-')),
@@ -70,7 +71,7 @@ test.beforeEach(async () => {
 })
 
 test.afterEach(async () => {
-  await rm(sandbox.userDataDir, { recursive: true, force: true })
+  await rm(sandbox.appDataDir, { recursive: true, force: true })
   await rm(sandbox.readinessBinDir, { recursive: true, force: true })
   await rm(sandbox.readinessHomeDir, { recursive: true, force: true })
   await rm(sandbox.projectDir, { recursive: true, force: true })
@@ -115,6 +116,32 @@ async function startSession(page: Page, message: string): Promise<void> {
   await page.getByRole('button', { name: 'Send' }).click()
   await expect(page.getByRole('heading', { name: message })).toBeVisible()
 }
+
+test('the app is Argos to the person and to macOS, and keeps its state under its identifier', async () => {
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await page.getByRole('heading', { name: 'Add your first Project' }).waitFor()
+
+    const identity = await app.evaluate(({ app: electronApp, BrowserWindow }) => ({
+      // What the About panel is titled with. macOS takes the application
+      // menu's own title from the bundle instead, which only a packaged build
+      // has (14b).
+      name: electronApp.getName(),
+      windowTitle: BrowserWindow.getAllWindows()[0]?.getTitle(),
+      stateDirectory: electronApp.getPath('userData')
+    }))
+
+    expect(identity.name).toBe('Argos')
+    expect(identity.windowTitle).toBe('Argos')
+    expect(await page.title()).toBe('Argos')
+    // Keyed by the identifier, which is fixed, rather than by the name, which
+    // is a display string: renaming the product must not lose a history.
+    expect(identity.stateDirectory).toBe(join(sandbox.appDataDir, 'com.memojiinc.argos'))
+  } finally {
+    await app.close()
+  }
+})
 
 test('renderer is sandboxed with only the narrow preload surface', async () => {
   const app = await launchShell()

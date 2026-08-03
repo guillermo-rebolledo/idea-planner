@@ -47,6 +47,7 @@ import {
   readinessSnapshotSchema,
   refreshReadinessInputSchema
 } from '@shared/readiness'
+import { PRODUCT_NAME, stateDirectory } from './identity'
 import { discoverSkills } from './skills'
 import { CoreClient } from './core-client'
 import { initRepository, resolveProjectRoot } from './git'
@@ -63,9 +64,10 @@ import { RunService } from './run-service'
  * Core utility process; presentation lives in the sandboxed Renderer.
  */
 
-// Test-only seams, ignored in packaged builds: redirect userData so test runs
-// are hermetic, and answer the native folder picker without a real dialog.
-const testUserData = process.env['APP_TEST_USER_DATA']
+// Test-only seams, ignored in packaged builds: substitute application support
+// so test runs are hermetic, and answer the native folder picker without a
+// real dialog.
+const testAppData = process.env['APP_TEST_APP_DATA']
 // Folders the Project picker answers with, in order; the last one repeats.
 const testChooseProjectDirs = (process.env['APP_TEST_CHOOSE_PROJECT_DIRS'] ?? '')
   .split(delimiter)
@@ -75,9 +77,18 @@ const testReadinessPath = process.env['APP_TEST_READINESS_PATH']
 const testReadinessHome = process.env['APP_TEST_READINESS_HOME']
 const testChooseExecutable = process.env['APP_TEST_CHOOSE_EXECUTABLE']
 const devServerUrl = process.env['ELECTRON_RENDERER_URL']
-if (testUserData && !app.isPackaged) {
-  app.setPath('userData', testUserData)
-}
+
+// Who the app says it is, before anything reads it: the menu bar, the About
+// panel and the window all take the name from here, and the state directory
+// takes the identifier rather than the name so renaming the product later
+// cannot orphan a person's history (ADR 0002).
+app.setName(PRODUCT_NAME)
+app.setAboutPanelOptions({ applicationName: PRODUCT_NAME, applicationVersion: app.getVersion() })
+// A test run substitutes the application-support root rather than the state
+// directory itself, so it is never the app installed on this machine that a
+// suite reads or writes, and the derivation is exercised rather than bypassed.
+const applicationSupport = testAppData && !app.isPackaged ? testAppData : app.getPath('appData')
+app.setPath('userData', stateDirectory(applicationSupport))
 
 app.enableSandbox()
 
@@ -468,6 +479,7 @@ function hardenSession(): void {
 
 function createWindow(): void {
   const window = new BrowserWindow({
+    title: PRODUCT_NAME,
     width: 1180,
     height: 780,
     minWidth: 840,

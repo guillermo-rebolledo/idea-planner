@@ -16,7 +16,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "verify": "pnpm format:check && pnpm lint && pnpm prototype:check && pnpm --filter idea-development-desktop test",
+    "verify": "pnpm format:check && pnpm lint && pnpm prototype:check && pnpm --filter argos-desktop test",
     "prepare": "husky"
   },
   "dependencies": {
