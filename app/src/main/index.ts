@@ -1,4 +1,5 @@
 import { basename, delimiter, dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import {
   BrowserWindow,
@@ -333,7 +334,7 @@ function registerIpc(): void {
         worktreesDirectory: join(
           app.getPath('userData'),
           'worktrees',
-          basename(request.projectRoot)
+          worktreesDirectoryName(request.projectRoot)
         ),
         branch: isolatedBranchName(request.message),
         baseBranch: checkout.baseBranch
@@ -535,6 +536,18 @@ function registerIpc(): void {
   handleInvoke(IPC_CHANNELS.resolveApproval, resolveApprovalInputSchema, async (input) =>
     conversationSnapshotSchema.parse(await runService.resolveApproval(input))
   )
+}
+
+/**
+ * The directory one Project's isolated checkouts live under. Keyed by the
+ * root itself, hashed, not by its folder name: two Projects called
+ * `weather-app` in different places must not share a worktrees directory.
+ * The basename stays in front so a person browsing the state directory can
+ * still tell whose worktrees these are.
+ */
+function worktreesDirectoryName(projectRoot: string): string {
+  const digest = createHash('sha256').update(projectRoot).digest('hex').slice(0, 12)
+  return `${basename(projectRoot)}-${digest}`
 }
 
 /**
