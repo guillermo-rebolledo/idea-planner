@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { SKILL_ATTRIBUTION } from '@shared/contract'
 import type { HarnessId, SkillCatalog } from '@shared/contract'
 
 /**
@@ -86,6 +87,25 @@ export function SkillSuggestions({
           </li>
         ))}
       </ul>
+      {/* Owed where Skills are offered, not paid on every screen: the notice
+          lives with the list it is about, and nowhere else. */}
+      <footer className="border-t border-border px-2.5 py-1.5 text-2xs text-muted-foreground">
+        {SKILL_ATTRIBUTION.notice}{' '}
+        <button
+          type="button"
+          className="underline underline-offset-2 hover:text-foreground"
+          onClick={() => void window.shell.openExternalLink(SKILL_ATTRIBUTION.website)}
+        >
+          {SKILL_ATTRIBUTION.author}’s website
+        </button>{' '}
+        <button
+          type="button"
+          className="underline underline-offset-2 hover:text-foreground"
+          onClick={() => void window.shell.openExternalLink(SKILL_ATTRIBUTION.repository)}
+        >
+          skills repository ({SKILL_ATTRIBUTION.licence})
+        </button>
+      </footer>
     </div>
   )
 }

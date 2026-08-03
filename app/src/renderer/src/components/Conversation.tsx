@@ -13,14 +13,12 @@ import {
 import {
   countDiffLines,
   HARNESS_DEFAULT_MODEL,
-  SKILL_ATTRIBUTION,
   ruleText,
   type ApprovalDecision,
   type ConversationEntry,
   type ConversationRecovery,
   type DiffHunk,
   type ConversationSnapshot,
-  type HarnessUsage,
   type PermissionMode,
   type RunSnapshot,
   type SessionSummary,
@@ -30,7 +28,6 @@ import { Button } from '@renderer/components/ui/button'
 import {
   applicableEffort,
   effectiveChoice,
-  HarnessNote,
   ModelPicker,
   useModelCatalog,
   type ModelChoice
@@ -680,7 +677,6 @@ export function Conversation({
                     )}
                   </div>
                 )}
-              {row('usage', <UsagePanel usage={phase.snapshot.usage} />)}
             </MessageScrollerContent>
           </MessageScrollerViewport>
           <MessageScrollerButton />
@@ -781,7 +777,6 @@ export function Conversation({
               </div>
             </div>
             {chosenSkill && <ChosenSkillNote name={chosenSkill} onClear={() => setSkill(null)} />}
-            <HarnessNote catalog={models} choice={choice} />
             {blocked && canDevelop && (
               <div role="status" className="rounded-md border border-border bg-muted/50 p-2">
                 <p className="text-xs text-foreground">{canDevelop.summary}</p>
@@ -802,8 +797,6 @@ export function Conversation({
               {error}
             </p>
           )}
-
-          <Attribution />
         </div>
       </MessageScrollerProvider>
     </div>
@@ -1336,43 +1329,6 @@ function RunDivider({
   )
 }
 
-function UsagePanel({
-  usage
-}: {
-  usage: { run: HarnessUsage | null; session: HarnessUsage }
-}): React.JSX.Element | null {
-  if (usage.session.totalTokens === 0) return null
-  const contextWindow = usage.run?.contextWindow ?? usage.session.contextWindow
-  const used = usage.run?.contextUsed ?? null
-  return (
-    <section aria-label="Harness-reported usage">
-      <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <span className="flex gap-1">
-          <dt>This Run</dt>
-          <dd className="text-foreground">
-            {(usage.run?.totalTokens ?? 0).toLocaleString()} tokens
-          </dd>
-        </span>
-        <span className="flex gap-1">
-          <dt>This Session</dt>
-          <dd className="text-foreground">{usage.session.totalTokens.toLocaleString()} tokens</dd>
-        </span>
-        {contextWindow !== null && used !== null && (
-          <span className="flex gap-1">
-            <dt>Context</dt>
-            <dd className="text-foreground">
-              {used.toLocaleString()} of {contextWindow.toLocaleString()}
-            </dd>
-          </span>
-        )}
-      </dl>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Reported by the Harness and informational only. It is not a quota, allowance, or cost.
-      </p>
-    </section>
-  )
-}
-
 const FAILED_STATUSES = new Set<RunSnapshot['status']>([
   'failed',
   'policy-violation',
@@ -1420,32 +1376,5 @@ function ActivityPanel({
         ))}
       </ol>
     </details>
-  )
-}
-
-function Attribution(): React.JSX.Element {
-  const open = (url: string): void => {
-    void window.shell.openExternalLink(url).catch(() => undefined)
-  }
-  return (
-    <footer className="pt-2 text-2xs text-muted-foreground">
-      {SKILL_ATTRIBUTION.notice}{' '}
-      <Button
-        size="sm"
-        variant="ghost"
-        className="h-auto px-1 text-2xs underline"
-        onClick={() => open(SKILL_ATTRIBUTION.website)}
-      >
-        {SKILL_ATTRIBUTION.author}’s website
-      </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        className="h-auto px-1 text-2xs underline"
-        onClick={() => open(SKILL_ATTRIBUTION.repository)}
-      >
-        skills repository ({SKILL_ATTRIBUTION.licence})
-      </Button>
-    </footer>
   )
 }

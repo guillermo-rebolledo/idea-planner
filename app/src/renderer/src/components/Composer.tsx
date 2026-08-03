@@ -14,7 +14,6 @@ import { Label } from '@renderer/components/ui/label'
 import {
   applicableEffort,
   effectiveChoice,
-  HarnessNote,
   ModelPicker,
   useModelCatalog,
   type ModelChoice
@@ -289,7 +288,6 @@ export function Composer({
           </div>
         </div>
         {chosenSkill && <ChosenSkillNote name={chosenSkill} onClear={() => setSkill(null)} />}
-        <HarnessNote catalog={models} choice={choice} />
       </div>
 
       {/* Only the work already under way — no filler the app pretends to

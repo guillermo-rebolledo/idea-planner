@@ -770,14 +770,15 @@ test('one picker chooses the model, and with it the Harness that runs it', async
     // Codex's models are the ones Codex itself listed.
     await page.getByRole('option', { name: /GPT-5.6-Sol/ }).click()
     await expect(picker).toContainText('GPT-5.6-Sol')
-    // And choosing it says what came with it, because the Harness changed.
-    await expect(page.getByText('runs Skills as instruction text', { exact: false })).toBeVisible()
 
     // Whose model it is, without reading the group heading again.
     await expect(picker.locator('svg[viewBox="0 0 256 260"]')).toBeVisible()
 
     // The thinking levels are that model's own, as Codex reported them.
     await picker.click()
+    // And the popover says what came with the choice, because the Harness
+    // changed — the surface below the composer stays empty, as the mock has it.
+    await expect(page.getByText('runs Skills as instruction text', { exact: false })).toBeVisible()
     const thinking = page.getByRole('radiogroup', { name: 'Thinking' })
     await expect(thinking.getByRole('radio', { name: 'Low' })).toBeVisible()
     await expect(thinking.getByRole('radio', { name: 'High' })).toBeVisible()

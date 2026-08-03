@@ -197,6 +197,7 @@ export function ModelPicker({
             ))}
           </div>
         )}
+        <HarnessNote catalog={catalog} choice={choice} />
         <ModelSelectorEffort />
       </ModelSelectorContent>
     </ModelSelectorRoot>
@@ -240,12 +241,11 @@ function UnusableHarnessRow({ entry }: { entry: HarnessReadiness }): React.JSX.E
 }
 
 /**
- * What comes with the Harness this model belongs to. Said near the picker
- * rather than in documentation, because switching model is where it changes —
- * and placed by whoever draws the composer, because it is a sentence and the
- * chip row it would otherwise sit in has no room for one.
+ * What comes with the Harness this model belongs to. A footer of the picker's
+ * own popover rather than a line under the composer: switching model is where
+ * it changes, and the mock keeps the surface below the composer empty.
  */
-export function HarnessNote({
+function HarnessNote({
   catalog,
   choice
 }: {
@@ -257,7 +257,7 @@ export function HarnessNote({
   if (!group || !choice) return null
   const harness = choice.harness
   return (
-    <p className="text-2xs text-muted-foreground">
+    <p className="border-t border-border px-3 py-2 text-2xs leading-relaxed text-muted-foreground">
       {group.displayName} {HARNESS_DIFFERENCE[harness]}
       {group.source === 'documented' && ' It lists no models, so these are the ones it documents.'}
     </p>

@@ -591,7 +591,9 @@ function createWindow(): void {
     minHeight: 560,
     show: false,
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 18, y: 18 },
+    // Centered in the 44px title bar every surface draws (h-11): the macOS
+    // buttons are 12px tall, so (44 − 12) / 2 from the top.
+    trafficLightPosition: { x: 18, y: 16 },
     backgroundColor: WINDOW_BACKGROUND[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'],
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
