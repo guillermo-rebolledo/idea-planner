@@ -51,6 +51,15 @@ export const DEFAULT_EFFORT_OPTIONS: readonly ModelSelectorEffortOption[] = [
   { id: 'high', name: 'High' }
 ]
 
+/**
+ * What the disabled Thinking row shows when the chosen model has no level to
+ * ask for: the full ladder (mockup 1f), so the row keeps its shape.
+ */
+const DISABLED_EFFORT_OPTIONS: readonly ModelSelectorEffortOption[] = [
+  ...DEFAULT_EFFORT_OPTIONS,
+  { id: 'xhigh', name: 'Xhigh' }
+]
+
 export type ModelOption = {
   id: string
   name: string
@@ -338,7 +347,9 @@ function ModelSelectorValue({
       {selectedModel.icon && <ModelIcon>{selectedModel.icon}</ModelIcon>}
       <span className="truncate font-medium">{selectedModel.name}</span>
       {effortName && (
-        <span className="min-w-7.5 truncate text-center text-muted-foreground">{effortName}</span>
+        <span className="min-w-7.5 truncate text-center text-muted-foreground">
+          · {effortName}
+        </span>
       )}
     </span>
   )
@@ -570,7 +581,38 @@ function ModelSelectorEffort({
 }: ModelSelectorEffortProps) {
   const { efforts, effort, setEffort } = useModelSelectorEfforts()
 
-  if (!efforts?.length) return null
+  // One Thinking row, always at the bottom: disabled rather than gone when
+  // the chosen model has no level to ask for, so the control never jumps.
+  if (!efforts?.length) {
+    return (
+      <div
+        data-slot="model-selector-effort"
+        className={cn(
+          'flex cursor-default items-center justify-between gap-3 border-t px-3 py-2 opacity-50',
+          className
+        )}
+      >
+        <span className="text-xs text-muted-foreground">{label}</span>
+        <RadioGroup
+          value=""
+          disabled
+          aria-label={typeof label === 'string' ? label : 'Reasoning effort'}
+          className="flex items-center gap-0.5"
+        >
+          {DISABLED_EFFORT_OPTIONS.map((option) => (
+            <Radio.Root
+              key={option.id}
+              value={option.id}
+              disabled
+              className="rounded-md px-2 py-1 text-xs text-muted-foreground"
+            >
+              {option.name}
+            </Radio.Root>
+          ))}
+        </RadioGroup>
+      </div>
+    )
+  }
 
   return (
     <div

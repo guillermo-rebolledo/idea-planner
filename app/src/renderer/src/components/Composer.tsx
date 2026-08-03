@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { FolderGit2, Send } from 'lucide-react'
-import type { ProjectView, SessionSummary } from '@shared/contract'
+import type { CheckoutRequest, ProjectView, SessionSummary } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
+import { CheckoutPicker } from '@renderer/components/CheckoutPicker'
 import { Label } from '@renderer/components/ui/label'
 
 interface ComposerProps {
@@ -22,6 +23,11 @@ export function Composer({ boundProjectRoot, onStarted }: ComposerProps): React.
   const [message, setMessage] = useState('')
   const [projects, setProjects] = useState<ProjectView[]>([])
   const [projectRoot, setProjectRoot] = useState(boundProjectRoot ?? '')
+  // What the person chose for this message, per Project — switching Projects
+  // keeps each one's choice. Where nothing was chosen, the default below is
+  // the kind that Project's most recent Session used.
+  const [chosenCheckout, setChosenCheckout] = useState<Record<string, CheckoutRequest>>({})
+  const [lastIsolated, setLastIsolated] = useState<Record<string, boolean>>({})
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const messageId = useId()
@@ -38,6 +44,13 @@ export function Composer({ boundProjectRoot, onStarted }: ComposerProps): React.
       .then(([listed, sessions]) => {
         if (disposedRef.current) return
         setProjects(listed)
+        // Sessions are newest first, so the first seen per Project is its
+        // most recent — and its Checkout kind is that Project's default.
+        const byProject: Record<string, boolean> = {}
+        for (const session of sessions) {
+          byProject[session.projectRoot] ??= session.checkout.kind === 'worktree'
+        }
+        setLastIsolated(byProject)
         setProjectRoot((current) => {
           if (current && listed.some((project) => project.root === current)) return current
           const available = (root: string | undefined): string | undefined =>
@@ -58,8 +71,19 @@ export function Composer({ boundProjectRoot, onStarted }: ComposerProps): React.
     messageRef.current?.focus()
   }, [])
 
+  // Derived rather than corrected: the choice for this Project when one was
+  // made, otherwise the kind its most recent Session used.
+  const checkout: CheckoutRequest =
+    chosenCheckout[projectRoot] ??
+    (lastIsolated[projectRoot] ? { kind: 'isolated', baseBranch: '' } : { kind: 'local' })
+
   const selected = projects.find((project) => project.root === projectRoot)
-  const canSend = message.trim().length > 0 && selected !== undefined && !sending
+  const canSend =
+    message.trim().length > 0 &&
+    selected !== undefined &&
+    !sending &&
+    // An isolated ask needs its base settled before there is anything to cut.
+    (checkout.kind !== 'isolated' || checkout.baseBranch !== '')
 
   async function send(): Promise<void> {
     if (!canSend || sendingRef.current) return
@@ -67,7 +91,7 @@ export function Composer({ boundProjectRoot, onStarted }: ComposerProps): React.
     setSending(true)
     setError(null)
     try {
-      onStarted(await window.shell.startSession({ projectRoot, message: message.trim() }))
+      onStarted(await window.shell.startSession({ projectRoot, message: message.trim(), checkout }))
     } catch {
       if (!disposedRef.current) setError('That Session could not be started.')
     } finally {
@@ -148,8 +172,18 @@ export function Composer({ boundProjectRoot, onStarted }: ComposerProps): React.
             void send()
           }}
         />
-        <div className="flex items-center justify-end border-t border-border p-2">
-          <Button type="submit" size="sm" className="h-7" disabled={!canSend}>
+        <div className="flex items-center gap-1 border-t border-border p-2">
+          {/* The Checkout is fixed at creation, so this chip exists only here:
+              once the Session is started it freezes into the title bar. */}
+          <CheckoutPicker
+            projectRoot={projectRoot}
+            value={checkout}
+            onChange={(next) =>
+              setChosenCheckout((current) => ({ ...current, [projectRoot]: next }))
+            }
+            disabled={sending}
+          />
+          <Button type="submit" size="sm" className="ml-auto h-7" disabled={!canSend}>
             <Send aria-hidden="true" className="size-3.5" /> Send
           </Button>
         </div>

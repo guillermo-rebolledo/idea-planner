@@ -20,7 +20,13 @@ import type { ModelCatalog } from './model'
 import { harnessIdSchema } from './readiness'
 import type { ChooseExecutableResult, HarnessId, ReadinessSnapshot } from './readiness'
 import type { ChooseProjectResult, ProjectView } from './project'
-import { checkoutSchema, LOCAL_CHECKOUT, type CheckoutFacts } from './checkout'
+import {
+  checkoutRequestSchema,
+  checkoutSchema,
+  LOCAL_CHECKOUT,
+  type BranchList,
+  type CheckoutFacts
+} from './checkout'
 import type { EditorCatalog, OpenInEditorInput } from './editor'
 import {
   acceptRunInputSchema,
@@ -37,7 +43,7 @@ import {
  * Every payload crossing a process boundary is validated against these
  * schemas before it is acted on or presented.
  */
-export const CONTRACT_VERSION = 5
+export const CONTRACT_VERSION = 6
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -161,6 +167,16 @@ export const startSessionInputSchema = z.object({
 })
 /** The caller's side of the schema, so an omitted checkout stays omittable. */
 export type StartSessionInput = z.input<typeof startSessionInputSchema>
+
+/**
+ * What the composer sends. The checkout may still be an ask (`isolated`);
+ * Main settles it into a real Checkout before Core hears anything — Core only
+ * ever stores directories that exist.
+ */
+export const startSessionRequestSchema = startSessionInputSchema.extend({
+  checkout: checkoutRequestSchema.default(LOCAL_CHECKOUT)
+})
+export type StartSessionRequest = z.input<typeof startSessionRequestSchema>
 
 export const themePreferenceSchema = z.enum(['system', 'light', 'dark'])
 export type ThemePreference = z.infer<typeof themePreferenceSchema>
@@ -347,8 +363,12 @@ export interface ShellApi {
    */
   initializeProject(path: string): Promise<ChooseProjectResult>
   confirmProject(root: string): Promise<ChooseProjectResult>
-  /** Starts a Session against a Project. Nothing is written into the Project. */
-  startSession(input: StartSessionInput): Promise<SessionSummary>
+  /**
+   * Starts a Session against a Project. Nothing is written into the Project —
+   * except when an isolated checkout is asked for, in which case its linked
+   * worktree and branch are created before the Session is.
+   */
+  startSession(input: StartSessionRequest): Promise<SessionSummary>
   listSessions(): Promise<SessionSummary[]>
   /** Ids whose record could not be read, so the loss can be shown rather than inferred. */
   listDamagedSessions(): Promise<string[]>
@@ -402,6 +422,11 @@ export interface ShellApi {
    * branch can be moved by the agent or by the person in a terminal.
    */
   getCheckoutFacts(sessionId: string): Promise<CheckoutFacts>
+  /**
+   * The Project's local branches, most recently committed first, for choosing
+   * an isolated checkout's base. Observed on each ask.
+   */
+  listBranches(projectRoot: string): Promise<BranchList>
   /** What "Open in" can offer on this Mac, and what was chosen last. */
   listEditors(): Promise<EditorCatalog>
   /**

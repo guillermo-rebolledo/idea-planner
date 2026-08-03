@@ -5,9 +5,11 @@ import { promisify } from 'node:util'
 import { execFile } from 'node:child_process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  createWorktree,
   currentBranch,
   diffSnapshots,
   initRepository,
+  listBranches,
   resolveProjectRoot,
   snapshotCheckout
 } from './git'
@@ -308,5 +310,84 @@ describe('snapshotting a Checkout', () => {
     const plain = await mkdtemp(join(tmpdir(), 'git-plain-'))
     await expect(snapshotCheckout(plain, appOwned)).resolves.toEqual({ status: 'unavailable' })
     await rm(plain, { recursive: true, force: true })
+  })
+})
+
+describe('listing branches for an isolated checkout base', () => {
+  it('names the local branches, most recently committed first, with the current one', async () => {
+    await git('git', ['init', '--quiet', '-b', 'trunk'], { cwd: root })
+    await writeFile(join(root, 'a.txt'), 'a\n')
+    await commitAll(root, 'first')
+    await git('git', ['branch', 'older'], { cwd: root })
+    await git('git', ['checkout', '--quiet', '-b', 'newer'], { cwd: root })
+    await writeFile(join(root, 'b.txt'), 'b\n')
+    await commitAll(root, 'second')
+    await git('git', ['checkout', '--quiet', 'trunk'], { cwd: root })
+
+    const listed = await listBranches(root)
+    expect(listed.current).toBe('trunk')
+    expect(listed.branches[0]).toBe('newer')
+    expect(listed.branches).toEqual(expect.arrayContaining(['trunk', 'older', 'newer']))
+  })
+
+  it('answers empty rather than failing when the folder is not a repository', async () => {
+    await expect(listBranches(root)).resolves.toEqual({ branches: [], current: null })
+  })
+})
+
+describe('creating an isolated checkout', () => {
+  it('adds a linked worktree on a new branch cut from the chosen base', async () => {
+    await git('git', ['init', '--quiet', '-b', 'trunk'], { cwd: root })
+    await writeFile(join(root, 'a.txt'), 'a\n')
+    await commitAll(root, 'first')
+    const home = await mkdtemp(join(tmpdir(), 'git-worktrees-'))
+
+    const created = await createWorktree({
+      projectRoot: root,
+      worktreesDirectory: home,
+      branch: 'fix-location-crash',
+      baseBranch: 'trunk'
+    })
+
+    if (created.status !== 'created') throw new Error('expected a worktree')
+    expect(await currentBranch(created.path)).toBe('fix-location-crash')
+    // The person's own copy never moves.
+    expect(await currentBranch(root)).toBe('trunk')
+    await rm(home, { recursive: true, force: true })
+  })
+
+  it('finds a free branch name rather than failing on a taken one', async () => {
+    await git('git', ['init', '--quiet', '-b', 'trunk'], { cwd: root })
+    await writeFile(join(root, 'a.txt'), 'a\n')
+    await commitAll(root, 'first')
+    await git('git', ['branch', 'fix-crash'], { cwd: root })
+    const home = await mkdtemp(join(tmpdir(), 'git-worktrees-'))
+
+    const created = await createWorktree({
+      projectRoot: root,
+      worktreesDirectory: home,
+      branch: 'fix-crash',
+      baseBranch: 'trunk'
+    })
+
+    if (created.status !== 'created') throw new Error('expected a worktree')
+    expect(created.branch).not.toBe('fix-crash')
+    expect(created.branch).toContain('fix-crash')
+    await rm(home, { recursive: true, force: true })
+  })
+
+  it('says what went wrong rather than throwing when the base does not exist', async () => {
+    await git('git', ['init', '--quiet', '-b', 'trunk'], { cwd: root })
+    const home = await mkdtemp(join(tmpdir(), 'git-worktrees-'))
+
+    const created = await createWorktree({
+      projectRoot: root,
+      worktreesDirectory: home,
+      branch: 'anything',
+      baseBranch: 'no-such-branch'
+    })
+
+    expect(created.status).toBe('failed')
+    await rm(home, { recursive: true, force: true })
   })
 })

@@ -97,6 +97,79 @@ export async function currentBranch(
 }
 
 /**
+ * The Project's local branches, most recently committed first, for choosing
+ * an isolated checkout's base. Observed on each ask, never stored — a branch
+ * can be made or deleted in any terminal at any time.
+ */
+export async function listBranches(
+  projectRoot: string,
+  options: GitOptions = {}
+): Promise<{ branches: string[]; current: string | null }> {
+  try {
+    const { stdout } = await run(
+      'git',
+      [
+        'for-each-ref',
+        'refs/heads',
+        '--sort=-committerdate',
+        '--count=200',
+        '--format=%(refname:short)'
+      ],
+      { cwd: projectRoot, env: environment(options), timeout: TIMEOUT_MS }
+    )
+    const branches = stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+    return { branches, current: await currentBranch(projectRoot, options) }
+  } catch {
+    return { branches: [], current: null }
+  }
+}
+
+export type WorktreeCreation =
+  { status: 'created'; path: string; branch: string } | { status: 'failed'; message: string }
+
+/**
+ * Creates a Session's isolated checkout: a linked worktree on a new branch
+ * cut from the chosen base, in the app's own directory rather than inside the
+ * Project (ADR 0002 — the person's repository is never written into beyond
+ * git's own worktree bookkeeping). A taken branch name gets a numbered
+ * sibling rather than a refusal: the name was derived, not chosen.
+ */
+export async function createWorktree(
+  input: {
+    projectRoot: string
+    /** The app-owned directory all isolated checkouts live under. */
+    worktreesDirectory: string
+    branch: string
+    baseBranch: string
+  },
+  options: GitOptions = {}
+): Promise<WorktreeCreation> {
+  await mkdir(input.worktreesDirectory, { recursive: true })
+  let failure = 'The worktree could not be created'
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const branch = attempt === 0 ? input.branch : `${input.branch}-${String(attempt + 1)}`
+    const path = join(input.worktreesDirectory, branch)
+    try {
+      await run('git', ['worktree', 'add', '--quiet', '-b', branch, path, input.baseBranch], {
+        cwd: input.projectRoot,
+        env: environment(options),
+        timeout: TIMEOUT_MS
+      })
+      return { status: 'created', path, branch }
+    } catch (error) {
+      failure = error instanceof Error ? error.message : failure
+      // Only a taken name is worth retrying under a different one; a missing
+      // base or a broken repository fails the same way every time.
+      if (!/already exists|already checked out/i.test(failure)) break
+    }
+  }
+  return { status: 'failed', message: failure.slice(0, 500) }
+}
+
+/**
  * A snapshot of a Checkout: the tree git would write if everything in the
  * working directory were staged. `unavailable` is not a failure — a Checkout
  * that is not a repository, or a machine with no git, simply has no snapshot,

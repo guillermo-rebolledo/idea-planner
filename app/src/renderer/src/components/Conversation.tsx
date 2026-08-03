@@ -37,6 +37,7 @@ import {
   type ModelChoice
 } from '@renderer/components/ModelPicker'
 import { DiffCounts, DiffView, ExitCode } from '@renderer/components/Diff'
+import { PermissionModePicker } from '@renderer/components/PermissionModePicker'
 import { cn } from '@renderer/lib/utils'
 
 /**
@@ -724,35 +725,39 @@ export function Conversation({
             Your message
           </label>
           {slashQuery !== null && (
-            <ul
-              aria-label="Skills"
-              className="max-h-40 overflow-y-auto rounded-md border border-border bg-surface"
-            >
-              {matchingSkills.length === 0 && (
-                <li className="px-2 py-1.5 text-xs text-muted-foreground">
-                  No installed Skill matches. Keep typing your message — a Skill is optional.
-                </li>
-              )}
-              {matchingSkills.map((entry) => (
-                <li key={`${entry.source}:${entry.name}`}>
-                  <button
-                    type="button"
-                    className="flex w-full flex-col items-start px-2 py-1.5 text-left hover:bg-muted/60"
-                    onClick={() => chooseSkill(entry.name)}
-                  >
-                    <span className="text-xs font-medium">
-                      {entry.name}
-                      {entry.source === 'project' && (
-                        <span className="ml-1 font-normal text-muted-foreground">this Project</span>
+            <div className="overflow-hidden rounded-md border border-border bg-popover shadow-sm">
+              <p className="px-2.5 pt-2 pb-1 font-mono text-2xs font-semibold tracking-wide text-muted-foreground uppercase">
+                Skills
+              </p>
+              <ul aria-label="Skills" className="max-h-40 overflow-y-auto px-1 pb-1">
+                {matchingSkills.length === 0 && (
+                  <li className="px-1.5 py-1.5 text-xs text-muted-foreground">
+                    No installed Skill matches. Keep typing your message — a Skill is optional.
+                  </li>
+                )}
+                {matchingSkills.map((entry) => (
+                  <li key={`${entry.source}:${entry.name}`}>
+                    <button
+                      type="button"
+                      className="flex w-full flex-col items-start rounded-md px-1.5 py-1.5 text-left hover:bg-muted/60"
+                      onClick={() => chooseSkill(entry.name)}
+                    >
+                      <span className="text-xs font-medium">
+                        {entry.name}
+                        {entry.source === 'project' && (
+                          <span className="ml-1 font-normal text-muted-foreground">
+                            this Project
+                          </span>
+                        )}
+                      </span>
+                      {entry.description && (
+                        <span className="text-xs text-muted-foreground">{entry.description}</span>
                       )}
-                    </span>
-                    {entry.description && (
-                      <span className="text-xs text-muted-foreground">{entry.description}</span>
-                    )}
-                  </button>
-                </li>
-              ))}
-            </ul>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
           <textarea
             id="conversation-composer"
@@ -775,45 +780,25 @@ export function Conversation({
               </button>
             </p>
           )}
-          <div className="flex flex-wrap items-center gap-2">
-            <Field label="Skill">
-              <select
-                aria-label="Skill"
-                value={chosenSkill ?? ''}
-                disabled={(catalog?.available.length ?? 0) === 0}
-                onChange={(event) => setSkill(event.target.value || null)}
-                className="h-8 max-w-44 rounded-md border border-border bg-background px-2 text-xs"
-              >
-                <option value="">{catalog?.available.length ? 'None' : 'None installed'}</option>
-                {catalog?.available.map((entry) => (
-                  <option key={`${entry.source}:${entry.name}`} value={entry.name}>
-                    {entry.name}
-                    {entry.source === 'project' ? ' (this Project)' : ''}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Model">
+          {/* The mock 1a/1b composer row: quiet chips, no labels. The Skill
+              is asked for with `/` in the message rather than a control. */}
+          <div className="flex flex-wrap items-center gap-1">
+            <PermissionModePicker
+              value={permissionMode}
+              onChange={setPermissionMode}
+              projectRoot={session.projectRoot}
+              disabled={activeRunId !== null}
+            />
+            <span className="ml-auto">
               <ModelPicker
                 catalog={models}
+                readiness={readiness}
                 choice={choice}
                 onChange={setChosen}
                 disabled={activeRunId !== null}
               />
-            </Field>
-            <Field label="Permission">
-              <select
-                aria-label="Permission Mode"
-                value={permissionMode}
-                onChange={(event) => setPermissionMode(event.target.value as PermissionMode)}
-                className="h-8 rounded-md border border-border bg-background px-2 text-xs"
-              >
-                <option value="ask">Ask</option>
-                <option value="auto">Full access</option>
-              </select>
-            </Field>
+            </span>
             <Button
-              className="ml-auto"
               size="sm"
               type="submit"
               disabled={busy || blocked || activeRunId !== null || !draft.trim()}
@@ -870,21 +855,6 @@ export function Conversation({
         <Attribution />
       </section>
     </>
-  )
-}
-
-function Field({
-  label,
-  children
-}: {
-  label: string
-  children: React.ReactNode
-}): React.JSX.Element {
-  return (
-    <span className="flex items-center gap-1 text-xs text-muted-foreground">
-      {label}
-      {children}
-    </span>
   )
 }
 

@@ -1,4 +1,4 @@
-import { delimiter, join } from 'node:path'
+import { basename, delimiter, join } from 'node:path'
 import {
   BrowserWindow,
   app,
@@ -33,8 +33,11 @@ import {
   standingApprovalSchema,
   startRunInputSchema,
   stopRunInputSchema,
+  branchListSchema,
   checkoutDirectory,
   checkoutFactsSchema,
+  isolatedBranchName,
+  startSessionRequestSchema,
   editorCatalogSchema,
   openInEditorInputSchema,
   conversationSnapshotSchema,
@@ -56,7 +59,13 @@ import {
 import { PRODUCT_NAME, stateDirectory } from './identity'
 import { discoverSkills } from './skills'
 import { CoreClient } from './core-client'
-import { currentBranch, initRepository, resolveProjectRoot } from './git'
+import {
+  createWorktree,
+  currentBranch,
+  initRepository,
+  listBranches,
+  resolveProjectRoot
+} from './git'
 import { detectEditors, openInEditor } from './editors'
 import { discoverModels } from './models'
 import { HARNESS_SPECS, readinessLinkHosts } from './readiness'
@@ -295,12 +304,40 @@ function registerIpc(): void {
     async (root): Promise<ChooseProjectResult> => acceptProject(root)
   )
 
-  handleInvoke(IPC_CHANNELS.startSession, startSessionInputSchema, async (input) =>
-    sessionSummarySchema.parse(
-      // Parsed once more so the omitted-checkout default is applied here and
-      // the command Core receives is the settled shape, not the caller's.
-      await coreClient.send({ type: 'session/start', input: startSessionInputSchema.parse(input) })
+  handleInvoke(IPC_CHANNELS.startSession, startSessionRequestSchema, async (raw) => {
+    // Parsed once more so the omitted-checkout default is applied here and
+    // the command Core receives is the settled shape, not the caller's.
+    const request = startSessionRequestSchema.parse(raw)
+    // An isolated checkout is settled before the Session exists: the linked
+    // worktree is created here, on a branch derived from the message, and
+    // Core only ever stores a directory that is really there.
+    let checkout = request.checkout
+    if (checkout.kind === 'isolated') {
+      const created = await createWorktree({
+        projectRoot: request.projectRoot,
+        worktreesDirectory: join(
+          app.getPath('userData'),
+          'worktrees',
+          basename(request.projectRoot)
+        ),
+        branch: isolatedBranchName(request.message),
+        baseBranch: checkout.baseBranch
+      })
+      if (created.status !== 'created') {
+        throw new Error(`The isolated checkout could not be created: ${created.message}`)
+      }
+      checkout = { kind: 'worktree', path: created.path }
+    }
+    return sessionSummarySchema.parse(
+      await coreClient.send({
+        type: 'session/start',
+        input: startSessionInputSchema.parse({ ...request, checkout })
+      })
     )
+  })
+
+  handleInvoke(IPC_CHANNELS.listBranches, z.string().min(1), async (projectRoot) =>
+    branchListSchema.parse(await listBranches(projectRoot))
   )
 
   handleInvoke(IPC_CHANNELS.listSessions, z.undefined(), async () =>

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { suggestSessionTitle } from './title'
 
 /**
  * Where a Session's work happens. `local` is the Project's own working copy,
@@ -18,6 +19,46 @@ export type Checkout = z.infer<typeof checkoutSchema>
 
 /** The default when a Session is started without saying: the working copy. */
 export const LOCAL_CHECKOUT: Checkout = { kind: 'local' }
+
+/**
+ * What a new Session asks for, before it is settled. `isolated` is the ask —
+ * "make me an isolated checkout from this base branch" — which Main answers
+ * by creating the linked worktree and settling it into `worktree` before the
+ * Session exists. A caller that already has a worktree may name it directly.
+ */
+export const checkoutRequestSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('local') }),
+  z.object({ kind: z.literal('worktree'), path: z.string().min(1) }),
+  z.object({ kind: z.literal('isolated'), baseBranch: z.string().min(1).max(200) })
+])
+export type CheckoutRequest = z.infer<typeof checkoutRequestSchema>
+
+/**
+ * The branch an isolated checkout is cut onto, derived from the message that
+ * starts the Session the same way its title is — deterministic and local. A
+ * taken name is the creator's problem to suffix, not this function's.
+ */
+export function isolatedBranchName(message: string): string {
+  const slug = suggestSessionTitle(message)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+    .replace(/-+$/, '')
+  return slug || 'session'
+}
+
+/**
+ * The Project's local branches, for choosing an isolated checkout's base.
+ * Observed when asked, never stored: branches move under any store.
+ */
+export const branchListSchema = z.object({
+  /** Most recently committed first, capped — a base is a recent branch. */
+  branches: z.array(z.string().min(1)).max(200),
+  /** The branch the working copy is on, or null when detached. */
+  current: z.string().min(1).nullable()
+})
+export type BranchList = z.infer<typeof branchListSchema>
 
 /** The directory a Checkout names, given the Project it belongs to. */
 export function checkoutDirectory(projectRoot: string, checkout: Checkout): string {

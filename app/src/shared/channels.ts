@@ -35,6 +35,7 @@ export const IPC_CHANNELS = {
   listRuns: 'run:list',
   stopRun: 'run:stop',
   getCheckoutFacts: 'checkout:facts',
+  listBranches: 'checkout:branches',
   listEditors: 'editor:list',
   openInEditor: 'editor:open',
   getConversation: 'conversation:get',

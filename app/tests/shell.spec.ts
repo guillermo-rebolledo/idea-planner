@@ -175,6 +175,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'getConversation',
       'getReadiness',
       'initializeProject',
+      'listBranches',
       'listDamagedSessions',
       'listEditors',
       'listModels',
@@ -584,9 +585,6 @@ test('the title bar states where a Session works — Local, or an isolated Workt
   await gitc(['add', '-A'])
   await gitc(['commit', '--quiet', '-m', 'init'])
   await gitc(['checkout', '--quiet', '-b', 'trunk'])
-  const worktree = join(sandbox.plainDir, 'fix-location-crash')
-  await gitc(['worktree', 'add', '--quiet', '-b', 'fix-location-crash', worktree])
-
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
@@ -618,35 +616,33 @@ test('the title bar states where a Session works — Local, or an isolated Workt
     await expect(menu.getByText('edits are already there', { exact: false })).toBeVisible()
     await page.keyboard.press('Escape')
 
-    // A Session fixed to an isolated Checkout at creation (the composer grows
-    // this control in a later slice; the contract carries it today).
-    const projectRoot = await realpath(sandbox.projectDir)
-    await page.evaluate(
-      async (input) => {
-        const shell = (
-          window as unknown as { shell: { startSession(input: unknown): Promise<unknown> } }
-        ).shell
-        await shell.startSession({
-          projectRoot: input.projectRoot,
-          message: 'Fix the location crash',
-          checkout: { kind: 'worktree', path: input.path }
-        })
-      },
-      { projectRoot, path: worktree }
-    )
-    // Searching re-reads the inbox, which is how the new row appears.
-    await page.getByRole('searchbox', { name: 'Search Sessions' }).fill('location')
-    await page
-      .getByRole('navigation', { name: 'Session inbox' })
-      .getByText('Fix the location crash')
-      .click()
+    // A Session fixed to an isolated Checkout at creation, chosen with the
+    // composer's own Checkout chip: Isolated, cut from the chosen base. The
+    // app creates the linked worktree itself, in its own state directory.
+    await page.getByRole('button', { name: 'New Session', exact: true }).click()
+    const composer = page.getByRole('form', { name: 'New chat' })
+    await composer.getByLabel('Message').fill('Fix the location crash')
+    await composer.getByRole('button', { name: 'Checkout' }).click()
+    await page.getByRole('button', { name: 'Isolated' }).click()
+    // The base settles onto the branch the working copy is on.
+    await expect(page.getByRole('combobox', { name: 'Base branch' })).toHaveValue('trunk')
+    await page.keyboard.press('Escape')
+    await expect(composer.getByRole('button', { name: 'Checkout' })).toContainText('Worktree')
+    await composer.getByRole('button', { name: 'Send' }).click()
+    await expect(page.getByRole('heading', { name: 'Fix the location crash' })).toBeVisible()
 
-    // The same cluster now states the worktree's own facts.
+    // The same cluster now states the worktree's own facts, on the branch cut
+    // from the message that started the Session.
     await expect(chips).toContainText('Worktree')
-    await expect(chips).toContainText('fix-location-crash')
+    await expect(chips).toContainText('fix-the-location-crash')
     await chips.click()
-    await expect(card.getByText(worktree)).toBeVisible()
+    await expect(card.getByText(/worktrees/)).toBeVisible()
     await expect(card.getByText('working copy')).toHaveCount(0)
+    // The person's own copy never moved.
+    const { stdout } = await git('git', ['symbolic-ref', '--short', 'HEAD'], {
+      cwd: sandbox.projectDir
+    })
+    expect(stdout.trim()).toBe('trunk')
   } finally {
     await app.close()
   }
@@ -701,6 +697,26 @@ test('one picker chooses the model, and with it the Harness that runs it', async
     await expect(thinking.getByRole('radio', { name: 'Low' })).toBeVisible()
     await expect(thinking.getByRole('radio', { name: 'High' })).toBeVisible()
     await expect(thinking.getByRole('radio', { name: 'Med' })).toHaveCount(0)
+    await page.keyboard.press('Escape')
+
+    // Permission Mode is a chip and a popover, not a select (1f). Choosing
+    // Full access turns the chip amber and its title with it.
+    const permission = page.getByRole('button', { name: 'Permission Mode' })
+    await expect(permission).toContainText('Ask')
+    await permission.click()
+    await expect(page.getByText('The agent stops for your consent', { exact: false })).toBeVisible()
+    await page.getByRole('button', { name: /Full access/ }).click()
+    await expect(permission).toContainText('Full access')
+
+    // Its footer names what this Project has permanently allowed, and opens
+    // the one manager. Nothing is granted here, so nothing is listed.
+    await permission.click()
+    await page.getByRole('button', { name: /Standing Approval/ }).click()
+    const manager = page.getByRole('dialog', { name: 'Standing Approvals' })
+    await expect(
+      manager.getByText('Nothing is permanently allowed', { exact: false })
+    ).toBeVisible()
+    await manager.getByRole('button', { name: 'Close' }).click()
   } finally {
     await app.close()
   }
@@ -880,10 +896,13 @@ test('a Project’s own Skills are shown, trusted once, and then offered', async
     await completeOnboarding(page)
     await startSession(page, 'Offline receipts')
 
-    const skills = page.getByRole('combobox', { name: 'Skill' })
-    // The global ones are offered; the repository's own is not, yet.
-    await expect(skills).toContainText('grilling')
-    await expect(skills).not.toContainText('deploy-to-prod')
+    // Skills are asked for with `/` in the message — there is no separate
+    // control. The global ones are offered; the Project's own is not, yet.
+    const skills = page.getByRole('list', { name: 'Skills' })
+    await page.getByLabel('Your message').fill('/')
+    await expect(skills.getByRole('button', { name: /grilling/ })).toBeVisible()
+    await expect(skills.getByRole('button', { name: /deploy-to-prod/ })).toHaveCount(0)
+    await page.getByLabel('Your message').fill('')
 
     // It is shown before it is trusted, with what it says it does.
     const notice = page.getByRole('alert', { name: 'Project Skills' })
@@ -891,7 +910,9 @@ test('a Project’s own Skills are shown, trusted once, and then offered', async
     await expect(notice.getByText('Ships it')).toBeVisible()
 
     await notice.getByRole('button', { name: 'Trust this Project’s Skills' }).click()
-    await expect(skills).toContainText('deploy-to-prod')
+    await page.getByLabel('Your message').fill('/')
+    await expect(skills.getByRole('button', { name: /deploy-to-prod/ })).toBeVisible()
+    await page.getByLabel('Your message').fill('')
 
     // Typing `/` offers what is installed, and the choice is for this message.
     await chooseSkill(page, 'grilling')
@@ -905,7 +926,9 @@ test('a Project’s own Skills are shown, trusted once, and then offered', async
     // Trust is revocable where it was given, and withdrawing it takes the
     // Skill back out of what is offered.
     await page.getByRole('button', { name: 'Stop trusting them' }).click()
-    await expect(skills).not.toContainText('deploy-to-prod')
+    await page.getByLabel('Your message').fill('/')
+    await expect(skills.getByRole('button', { name: /grilling/ })).toBeVisible()
+    await expect(skills.getByRole('button', { name: /deploy-to-prod/ })).toHaveCount(0)
   } finally {
     await app.close()
   }

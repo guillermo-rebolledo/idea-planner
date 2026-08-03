@@ -1,6 +1,12 @@
 import { useMemo } from 'react'
-import { harnessIdSchema, DEFAULT_EFFORT } from '@shared/contract'
-import type { HarnessId, ModelCatalog, ModelGroup } from '@shared/contract'
+import { firstProblem, harnessIdSchema, DEFAULT_EFFORT } from '@shared/contract'
+import type {
+  HarnessId,
+  HarnessReadiness,
+  ModelCatalog,
+  ModelGroup,
+  ReadinessSnapshot
+} from '@shared/contract'
 import { ClaudeLogo, OpenAILogo } from '@renderer/components/ui/logos'
 import {
   ModelSelectorRoot,
@@ -55,16 +61,28 @@ export function applicableEffort(
  */
 export function ModelPicker({
   catalog,
+  readiness,
   choice,
   onChange,
   disabled
 }: {
   catalog: ModelCatalog | null
+  /** For naming the Harnesses that cannot run a message, and why. */
+  readiness?: ReadinessSnapshot | null
   choice: ModelChoice | null
   onChange: (choice: ModelChoice) => void
   disabled?: boolean
 }): React.JSX.Element {
   const groups = useMemo(() => catalog?.groups ?? [], [catalog])
+  // Greyed rather than hidden: a Harness that cannot run a Session is still
+  // real, and what stands in its way is exactly what the person needs told.
+  // Only genuinely unusable ones qualify — a ready Harness whose model probe
+  // merely failed has no problem worth stating as one.
+  const unusable = (readiness?.harnesses ?? []).filter(
+    (entry) =>
+      !entry.capabilities.developSession.available &&
+      !groups.some((group) => group.harness === entry.harness)
+  )
   // One flat list for the selector, which owns selection and search; the
   // groups are drawn from it so a model always knows its Harness.
   const models = useMemo<SelectorModel[]>(
@@ -145,6 +163,13 @@ export function ModelPicker({
               </ModelSelectorGroup>
             ))}
           </ModelSelectorList>
+          {unusable.length > 0 && (
+            <div aria-label="Unavailable Harnesses" className="border-t border-border px-1 py-1">
+              {unusable.map((entry) => (
+                <UnusableHarnessRow key={entry.harness} entry={entry} />
+              ))}
+            </div>
+          )}
           <ModelSelectorEffort />
         </ModelSelectorContent>
       </ModelSelectorRoot>
@@ -168,6 +193,25 @@ const HARNESS_DIFFERENCE: Record<HarnessId, string> = {
   claude: 'runs Skills natively.',
   codex:
     'runs Skills as instruction text rather than natively, and reads Ask and Full access in its own terms.'
+}
+
+/**
+ * A Harness that cannot run a message, named with the one thing standing in
+ * its way. Not an option — there is nothing to choose until it is fixed in
+ * the Launch Gate or a terminal.
+ */
+function UnusableHarnessRow({ entry }: { entry: HarnessReadiness }): React.JSX.Element {
+  return (
+    <div className="flex items-start gap-2 rounded-md px-2 py-1.5 opacity-60" aria-disabled="true">
+      <span className="mt-0.5 flex size-3.5 shrink-0 items-center justify-center [&_svg]:size-3.5">
+        {HARNESS_LOGO[entry.harness]}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-xs">{entry.displayName}</span>
+        <span className="block truncate text-2xs text-muted-foreground">{firstProblem(entry)}</span>
+      </span>
+    </div>
+  )
 }
 
 /**

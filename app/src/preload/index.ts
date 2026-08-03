@@ -43,6 +43,7 @@ const api: ShellApi = {
   listRuns: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.listRuns, sessionId),
   stopRun: (input) => ipcRenderer.invoke(IPC_CHANNELS.stopRun, input),
   getCheckoutFacts: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.getCheckoutFacts, sessionId),
+  listBranches: (projectRoot) => ipcRenderer.invoke(IPC_CHANNELS.listBranches, projectRoot),
   listEditors: () => ipcRenderer.invoke(IPC_CHANNELS.listEditors),
   openInEditor: (input) => ipcRenderer.invoke(IPC_CHANNELS.openInEditor, input),
   getConversation: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.getConversation, sessionId),
