@@ -66,8 +66,13 @@
   --muted-foreground: oklch(0.475 0.012 265);
   --accent: oklch(0.925 0.005 265);
   --primary: var(--blue);
+  /* A fill under the pointer moves towards the ink, the way the quiet chips
+     move towards their fill: the page is light, so a strong fill deepens. */
+  --primary-hover: oklch(0.41 0.16 252);
   --primary-foreground: oklch(0.99 0 0);
   --ring: oklch(0.54 0.15 252);
+
+  --destructive-hover: oklch(0.44 0.19 25);
 
   /* The same white that goes on any strong fill. */
   --destructive-foreground: var(--primary-foreground);
@@ -97,9 +102,12 @@
   --muted-foreground: oklch(0.735 0.011 265);
   --accent: oklch(0.268 0.007 265);
   --primary: var(--blue);
+  /* And here it lifts, for the same reason and in the opposite direction. */
+  --primary-hover: oklch(0.75 0.1 252);
   --primary-foreground: oklch(0.15 0.02 252);
   --ring: oklch(0.7 0.13 252);
 
+  --destructive-hover: oklch(0.78 0.15 25);
   --destructive-foreground: oklch(0.18 0.02 25);
 }
 
@@ -139,8 +147,10 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
   --color-primary-foreground: var(--primary-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-hover: var(--destructive-hover);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-notice: var(--notice);
   --color-notice-border: var(--notice-border);

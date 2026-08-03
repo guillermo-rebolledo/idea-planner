@@ -63,6 +63,19 @@ const PAIRS: { role: string; on: string; least: number; why: string }[] = [
   { role: 'accent-foreground', on: 'accent', least: TEXT, why: 'text on the hover fill' },
   { role: 'primary-foreground', on: 'primary', least: TEXT, why: 'a primary button' },
   { role: 'destructive-foreground', on: 'destructive', least: TEXT, why: 'a destructive button' },
+  // A fill under the pointer is still a fill somebody has to read through.
+  {
+    role: 'primary-foreground',
+    on: 'primary-hover',
+    least: TEXT,
+    why: 'a primary button under the pointer'
+  },
+  {
+    role: 'destructive-foreground',
+    on: 'destructive-hover',
+    least: TEXT,
+    why: 'a destructive button under the pointer'
+  },
   { role: 'primary', on: 'background', least: TEXT, why: 'the brand as text' },
   { role: 'primary', on: 'surface', least: TEXT, why: 'the brand as text on a panel' },
   { role: 'destructive', on: 'background', least: TEXT, why: 'a failure said on the page' },

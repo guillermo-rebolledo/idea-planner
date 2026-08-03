@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs'
+import { execFile } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import { _electron as electron, expect, test, type ElectronApplication } from '@playwright/test'
 
 /**
@@ -38,6 +40,8 @@ interface Sandbox {
   appDataDir: string
   readinessBinDir: string
   readinessHomeDir: string
+  /** A folder under git, so a test can reach the app past onboarding. */
+  projectDir: string
 }
 
 let sandbox: Sandbox
@@ -46,8 +50,10 @@ test.beforeEach(async () => {
   sandbox = {
     appDataDir: await mkdtemp(join(tmpdir(), 'app-design-appdata-')),
     readinessBinDir: await mkdtemp(join(tmpdir(), 'app-design-bin-')),
-    readinessHomeDir: await mkdtemp(join(tmpdir(), 'app-design-home-'))
+    readinessHomeDir: await mkdtemp(join(tmpdir(), 'app-design-home-')),
+    projectDir: await mkdtemp(join(tmpdir(), 'app-design-project-'))
   }
+  await promisify(execFile)('git', ['init', '--quiet'], { cwd: sandbox.projectDir })
   // The app refuses to open without a Harness that can run a Session, and
   // every test here is about what is on screen past that gate.
   await writeFile(
@@ -61,6 +67,7 @@ test.afterEach(async () => {
   await rm(sandbox.appDataDir, { recursive: true, force: true })
   await rm(sandbox.readinessBinDir, { recursive: true, force: true })
   await rm(sandbox.readinessHomeDir, { recursive: true, force: true })
+  await rm(sandbox.projectDir, { recursive: true, force: true })
 })
 
 async function launchShell(): Promise<ElectronApplication> {
@@ -71,7 +78,8 @@ async function launchShell(): Promise<ElectronApplication> {
       ...process.env,
       APP_TEST_APP_DATA: sandbox.appDataDir,
       APP_TEST_READINESS_PATH: sandbox.readinessBinDir,
-      APP_TEST_READINESS_HOME: sandbox.readinessHomeDir
+      APP_TEST_READINESS_HOME: sandbox.readinessHomeDir,
+      APP_TEST_CHOOSE_PROJECT_DIRS: sandbox.projectDir
     }
   })
 }
@@ -150,6 +158,60 @@ test('keyboard focus is visible, and stays visible in either theme', async () =>
 
       expect(focused, `nothing took focus in ${theme}`).not.toBeNull()
       expect(focused?.shown, `focus is invisible on ${focused?.tag ?? '?'} in ${theme}`).toBe(true)
+    }
+  } finally {
+    await app.close()
+  }
+})
+
+/** A value read twice the same, so a transition in flight is never the answer. */
+async function settled(read: () => Promise<string>): Promise<string> {
+  let last = await read()
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    const next = await read()
+    if (next === last) return next
+    last = next
+  }
+  return last
+}
+
+test('a filled control answers the pointer, in the same currency as a quiet one', async () => {
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    const projects = page.getByRole('region', { name: 'Projects' })
+    await projects.getByRole('button', { name: 'Add Project' }).click()
+    // The sandbox reaches the folder through a symlink, so git names a root
+    // the person did not pick and the app confirms it first.
+    await projects.getByRole('alert').getByRole('button', { name: 'Add this Project' }).click()
+    await page.getByRole('button', { name: 'Continue', exact: true }).click()
+
+    // The app's one filled control at rest: Send, on the launch screen.
+    const composer = page.getByRole('form', { name: 'New chat' })
+    await composer.getByLabel('Message').fill('Something to send')
+    const button = composer.getByRole('button', { name: 'Send' })
+    await expect(button).toBeEnabled()
+
+    const background = (): Promise<string> =>
+      button.evaluate((element) => getComputedStyle(element).backgroundColor)
+
+    // Pinned, because the app settles onto the system theme a moment after it
+    // opens — and a reading taken across that would show a change the pointer
+    // had nothing to do with.
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((name) => {
+        document.documentElement.dataset['theme'] = name
+      }, theme)
+      await page.mouse.move(0, 0)
+      // Settled, not in flight: these fills are transitioned, so a reading
+      // taken while one is still moving is a reading of the way there.
+      const resting = await settled(background)
+      await button.hover()
+      // A colour, not an opacity: `transition-colors` animates the first and
+      // silently ignores the second, so a fill that hovered by fading was a
+      // fill that jumped. Both themes owe an answer.
+      expect(await settled(background), `no answer to the pointer in ${theme}`).not.toBe(resting)
     }
   } finally {
     await app.close()
