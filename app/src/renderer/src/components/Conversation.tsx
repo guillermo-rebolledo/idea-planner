@@ -404,8 +404,6 @@ export function Conversation({
     : activeRunId === null && latestAssistant?.kind === 'message'
       ? latestAssistant.suggestedResponses
       : []
-  const plainOptions =
-    activeRunId === null && latestAssistant?.kind === 'message' && latestAssistant.plainOptions
   const items = groupEntries(entries)
   // Whether the Harness behind the chosen model can run a Session at all.
   const canDevelop = readiness?.harnesses.find((entry) => entry.harness === chosenHarness)
@@ -707,13 +705,6 @@ export function Conversation({
                 ))}
               </ul>
             </div>
-          )}
-
-          {plainOptions && suggested.length === 0 && (
-            <p className="border-t border-border px-3 pt-3 text-xs text-muted-foreground">
-              The assistant listed options in prose rather than as structured choices, so write your
-              answer below.
-            </p>
           )}
 
           <form
