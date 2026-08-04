@@ -9,23 +9,14 @@ import { cn } from '@renderer/lib/utils'
  * Focus lands inside on open so Escape and Tab are already speaking to the
  * dialog, and the previously focused element gets focus back on close.
  */
-export function Modal({
-  labelledBy,
-  destructive = false,
-  onDismiss,
-  className,
-  children
-}: {
-  /** Id of the element naming the dialog. */
-  labelledBy: string
-  /** True for the confirm that guards a destructive act. */
-  destructive?: boolean
-  onDismiss: () => void
-  className?: string
-  children: React.ReactNode
-}): React.JSX.Element {
-  const panelRef = useRef<HTMLDivElement>(null)
-
+/**
+ * The focus discipline every dialog owes, shared so no dialog shell can skip
+ * it: focus lands inside on open (`data-autofocus` first, else the panel),
+ * Tab stays inside — a modal that lets focus walk into the inert page behind
+ * it has only dimmed the page, not taken it over — and the opener gets focus
+ * back on close.
+ */
+export function useDialogFocus(panelRef: React.RefObject<HTMLDivElement | null>): void {
   useEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const panel = panelRef.current
@@ -33,17 +24,10 @@ export function Modal({
     const safe = panel?.querySelector<HTMLElement>('[data-autofocus]')
     ;(safe ?? panel)?.focus()
     return () => opener?.focus()
-  }, [])
+  }, [panelRef])
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
-      if (event.key === 'Escape') {
-        event.stopPropagation()
-        onDismiss()
-        return
-      }
-      // Tab stays inside: a modal that lets focus walk into the inert page
-      // behind it has only dimmed the page, not taken it over.
       if (event.key !== 'Tab') return
       const panel = panelRef.current
       if (!panel) return
@@ -69,6 +53,36 @@ export function Modal({
       } else if (!event.shiftKey && active === last) {
         event.preventDefault()
         first?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [panelRef])
+}
+
+export function Modal({
+  labelledBy,
+  destructive = false,
+  onDismiss,
+  className,
+  children
+}: {
+  /** Id of the element naming the dialog. */
+  labelledBy: string
+  /** True for the confirm that guards a destructive act. */
+  destructive?: boolean
+  onDismiss: () => void
+  className?: string
+  children: React.ReactNode
+}): React.JSX.Element {
+  const panelRef = useRef<HTMLDivElement>(null)
+  useDialogFocus(panelRef)
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape') {
+        event.stopPropagation()
+        onDismiss()
       }
     }
     window.addEventListener('keydown', onKeyDown, true)

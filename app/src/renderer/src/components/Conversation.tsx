@@ -354,10 +354,12 @@ export function Conversation({
     )
   }, [activeRunId, sessionId, refresh])
 
-  // The card takes focus the moment a request arrives, so ⏎ is already
-  // speaking to it — and only to it. Allowing is the app's highest-stakes
-  // act, and a reflexive Enter with focus somewhere else must not grant a
-  // command nobody read. Escape stays global: refusing is always safe.
+  // The card takes focus the moment a request arrives, so ⏎ and esc are
+  // already speaking to it — and only to it. Allowing is the app's
+  // highest-stakes act, and a reflexive Enter with focus somewhere else must
+  // not grant a command nobody read. Denying is scoped the same way: a
+  // refusal is an instruction the agent carries on with, and Escape pressed
+  // to close a popover must not quietly steer the Run.
   const approvalCardRef = useRef<HTMLDivElement>(null)
   const pendingApprovalId = pendingApproval?.id ?? null
   useEffect(() => {
@@ -387,10 +389,10 @@ export function Conversation({
       ) {
         return
       }
+      // Both keys answer only while the person is on the card. Clicking away
+      // withdraws them; the buttons remain, and the card can be refocused.
+      if (!approvalCardRef.current?.contains(document.activeElement)) return
       if (event.key === 'Enter' && !event.shiftKey) {
-        // Enter allows only while the person is on the card. Clicking away
-        // withdraws the key; the buttons and Escape remain.
-        if (!approvalCardRef.current?.contains(document.activeElement)) return
         event.preventDefault()
         void decide(pendingApproval, 'allow')
       } else if (event.key === 'Escape') {
@@ -749,22 +751,26 @@ export function Conversation({
               next message is configured with, in the same box. The Skill is
               asked for with `/` in the message rather than with a control. */}
             <div className="rounded-xl border border-border bg-surface focus-within:ring-2 focus-within:ring-ring">
+              {/* The field stays alive while a Run works: thinking happens
+                  during the agent's turn, and a person mid-thought must not
+                  find their keyboard confiscated. Only sending waits. */}
               <textarea
                 id="conversation-composer"
                 rows={3}
                 value={draft}
-                disabled={activeRunId !== null}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key !== 'Enter') return
                   // Mid-composition Enter belongs to the input method.
                   if (event.nativeEvent.isComposing) return
                   if (event.shiftKey || event.altKey) return
+                  // While a Run works, Enter makes a line rather than a send.
+                  if (activeRunId !== null) return
                   event.preventDefault()
                   if (draft.trim()) void send(draft.trim(), 'composer')
                 }}
                 placeholder="Reply, or / for a Skill…"
-                className="w-full resize-none bg-transparent px-3 pt-3 pb-1 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
+                className="w-full resize-none bg-transparent px-3 pt-3 pb-1 text-sm outline-none placeholder:text-muted-foreground"
               />
               <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
                 <PermissionModePicker
@@ -796,6 +802,12 @@ export function Conversation({
                 </Button>
               </div>
             </div>
+            {activeRunId !== null && (
+              <p className="text-xs text-muted-foreground">
+                A Run is working. Keep typing — Send returns when it finishes, and{' '}
+                <span className="font-mono text-2xs">⌘.</span> stops it now.
+              </p>
+            )}
             {chosenSkill && <ChosenSkillNote name={chosenSkill} onClear={() => setSkill(null)} />}
             {blocked && canDevelop && (
               <div role="status" className="rounded-md border border-border bg-muted/50 p-2">

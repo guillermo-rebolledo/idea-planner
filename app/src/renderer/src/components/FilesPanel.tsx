@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react'
 import { FileDiff, FilePlus2, FileX2, X, type LucideIcon } from 'lucide-react'
 import type { ChangeKind, ChangedFile } from '@shared/contract'
 import { DiffCounts, DiffView } from '@renderer/components/Diff'
@@ -39,6 +40,13 @@ interface FilesPanelProps {
   onClose: () => void
 }
 
+/** How wide the panel opens, and how far it may be dragged either way. */
+const DEFAULT_WIDTH = 420
+const MIN_WIDTH = 320
+const MAX_WIDTH = 800
+/** One keyboard step of the resize handle. */
+const RESIZE_STEP = 24
+
 export function FilesPanel({
   changes,
   focusedPath,
@@ -47,12 +55,56 @@ export function FilesPanel({
 }: FilesPanelProps): React.JSX.Element {
   const { files, entries, totals } = changes
   const focused = files.find((file) => file.path === focusedPath) ?? null
+  // Diffs are 80–120 columns wide; a review surface must not be a keyhole.
+  // The width is the reader's to set, per visit, between honest bounds.
+  const [width, setWidth] = useState(DEFAULT_WIDTH)
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+
+  const clamp = (next: number): number => Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, next))
 
   return (
     <aside
       aria-label="Files this Session changed"
-      className="flex w-80 shrink-0 flex-col border-l border-border bg-muted/40"
+      style={{ width }}
+      className="relative flex shrink-0 flex-col border-l border-border bg-muted/40"
     >
+      {/* The panel's edge is its own control: drag it, or arrow it wider and
+          narrower from the keyboard. A focusable separator carrying
+          aria-valuenow is ARIA's own pattern for a resize handle; the lint
+          rules below do not model that widget. */}
+      {/* eslint-disable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the Files panel"
+        aria-valuenow={width}
+        aria-valuemin={MIN_WIDTH}
+        aria-valuemax={MAX_WIDTH}
+        tabIndex={0}
+        onPointerDown={(event) => {
+          dragRef.current = { startX: event.clientX, startWidth: width }
+          event.currentTarget.setPointerCapture(event.pointerId)
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current
+          if (drag) setWidth(clamp(drag.startWidth + (drag.startX - event.clientX)))
+        }}
+        onPointerUp={() => {
+          dragRef.current = null
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowLeft') {
+            event.preventDefault()
+            setWidth((current) => clamp(current + RESIZE_STEP))
+          }
+          if (event.key === 'ArrowRight') {
+            event.preventDefault()
+            setWidth((current) => clamp(current - RESIZE_STEP))
+          }
+        }}
+        className="absolute inset-y-0 -left-0.5 z-10 w-1.5 cursor-col-resize hover:bg-border focus-visible:bg-ring focus-visible:outline-none"
+      />
+      {/* eslint-enable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
       <header className="flex items-baseline gap-2 px-4 pt-3.5 pb-1">
         <h2 className="text-xs font-medium">Files this Session changed</h2>
         <span className="ml-auto font-mono text-xs">

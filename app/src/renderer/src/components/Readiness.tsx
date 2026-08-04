@@ -19,6 +19,7 @@ import {
   type ReadinessSnapshot
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
+import { useDialogFocus } from '@renderer/components/ui/dialog'
 import { cn } from '@renderer/lib/utils'
 
 /**
@@ -415,10 +416,13 @@ interface ReadinessDialogProps {
 
 /** The Harnesses surface reached from Settings and before a Run. */
 export function ReadinessDialog({ onClose }: ReadinessDialogProps): React.JSX.Element {
-  const closeRef = useRef<HTMLButtonElement | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  // The same focus discipline as the shared Modal: focus in on open, Tab
+  // trapped inside, and the opener refocused on close. This dialog keeps its
+  // own richer chrome, not its own weaker manners.
+  useDialogFocus(panelRef)
 
   useEffect(() => {
-    closeRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') onClose()
     }
@@ -432,17 +436,19 @@ export function ReadinessDialog({ onClose }: ReadinessDialogProps): React.JSX.El
       role="presentation"
     >
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="readiness-dialog-title"
-        className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-lg border border-border bg-surface-raised shadow-lg"
+        tabIndex={-1}
+        className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-lg border border-border bg-surface-raised shadow-lg outline-none"
       >
         <header className="flex items-center gap-2 border-b border-border px-4 py-2.5">
           <h2 id="readiness-dialog-title" className="text-base font-medium">
             Harnesses
           </h2>
           <Button
-            ref={closeRef}
+            data-autofocus=""
             variant="ghost"
             size="icon"
             aria-label="Close Harnesses"

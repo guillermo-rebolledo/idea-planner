@@ -97,7 +97,21 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   const [surface, setSurface] = useState<CenterSurface>({ kind: 'new-chat' })
   const [inboxCollapsed, setInboxCollapsed] = useState(false)
   const [readinessOpen, setReadinessOpen] = useState(false)
-  const [announcement, setAnnouncement] = useState('')
+  // What just happened, said once for everyone: the strip below renders it
+  // visibly and is itself the polite live region, so a failed action never
+  // reads as an ignored click and the ⌘Z hint is discoverable by sight.
+  // `at` retriggers the auto-hide when the same words are said again.
+  const [notice, setNotice] = useState<{ text: string; undoable: boolean; at: number } | null>(null)
+  const setAnnouncement = useCallback(
+    (text: string, undoable = false) => setNotice({ text, undoable, at: Date.now() }),
+    []
+  )
+  // Long enough to read and reach the Undo, short enough to never be chrome.
+  useEffect(() => {
+    if (notice === null) return
+    const timer = window.setTimeout(() => setNotice(null), 6_000)
+    return () => window.clearTimeout(timer)
+  }, [notice])
   const [query, setQuery] = useState<MailboxQuery>({ search: '', view: 'active' })
   const [mailbox, setMailbox] = useState<MailboxData>({ state: 'reading' })
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -191,7 +205,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       }
       void refreshMailbox(effectiveQuery)
     },
-    [effectiveQuery, refreshMailbox]
+    [effectiveQuery, refreshMailbox, setAnnouncement]
   )
 
   const setArchived = useCallback(
@@ -200,7 +214,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
         await window.shell.setSessionArchived({ sessionId: session.id, archived })
         if (archived) {
           lastArchivedRef.current = session
-          setAnnouncement(`Archived “${session.title}”. Press ⌘Z to undo.`)
+          setAnnouncement(`Archived “${session.title}”. Press ⌘Z to undo.`, true)
         } else {
           if (lastArchivedRef.current?.id === session.id) lastArchivedRef.current = null
           setAnnouncement(`Restored “${session.title}” to the inbox.`)
@@ -215,7 +229,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       }
       void refreshMailbox(effectiveQuery)
     },
-    [effectiveQuery, refreshMailbox]
+    [effectiveQuery, refreshMailbox, setAnnouncement]
   )
 
   const undoArchive = useCallback((): void => {
@@ -241,7 +255,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       }
       void refreshMailbox(effectiveQuery)
     },
-    [effectiveQuery, refreshMailbox]
+    [effectiveQuery, refreshMailbox, setAnnouncement]
   )
 
   async function confirmDelete(session: SessionSummary): Promise<void> {
@@ -283,24 +297,34 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     titlesRef.current = titles
   }, [mailbox])
 
-  // A Run ending in a Session that is not on screen changes only a sidebar
-  // dot; the ending is also said out loud, so a screen reader — and the
-  // announcement region — hears the mail arrive.
+  // A Run ending — or stopping to ask permission — in a Session that is not
+  // on screen changes only a sidebar dot; it is also said out loud, so the
+  // outcome strip and a screen reader hear the mail arrive. The approval is
+  // the urgent one: it is the state that blocks all progress.
   useEffect(
     () =>
       window.shell.onConversationEvent(({ sessionId, runId, event }) => {
-        if (event.type !== 'completed' && event.type !== 'failed') return
+        if (
+          event.type !== 'completed' &&
+          event.type !== 'failed' &&
+          event.type !== 'approval-request'
+        ) {
+          return
+        }
         if (sessionId === selectedIdRef.current) return
-        if (announcedRunsRef.current.has(runId)) return
-        announcedRunsRef.current.add(runId)
-        const title = titlesRef.current.get(sessionId)
+        const key = event.type === 'approval-request' ? `${runId}:${event.id}` : runId
+        if (announcedRunsRef.current.has(key)) return
+        announcedRunsRef.current.add(key)
+        const title = titlesRef.current.get(sessionId) ?? 'another Session'
         setAnnouncement(
           event.type === 'completed'
-            ? `The Run in “${title ?? 'another Session'}” finished.`
-            : `The Run in “${title ?? 'another Session'}” failed.`
+            ? `The Run in “${title}” finished.`
+            : event.type === 'failed'
+              ? `The Run in “${title}” failed.`
+              : `“${title}” is waiting for your approval.`
         )
       }),
-    []
+    [setAnnouncement]
   )
 
   // The click on a native notification: Main asks for one Session by id, and
@@ -558,8 +582,37 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
         )}
       </div>
 
-      <div aria-live="polite" role="status" className="sr-only">
-        {announcement}
+      {/* The outcome strip: one quiet pill saying what just happened, for
+          eyes and screen readers alike. It floats over the composer for a
+          moment and leaves; the archive one carries its own way back. */}
+      <div
+        aria-live="polite"
+        role="status"
+        className="pointer-events-none absolute inset-x-0 bottom-5 z-40 flex justify-center"
+      >
+        {notice && (
+          <div
+            className={cn(
+              'pointer-events-auto flex items-center gap-2 rounded-full border border-border bg-surface-raised py-1.5 text-xs shadow-md',
+              notice.undoable ? 'pr-1.5 pl-3.5' : 'px-3.5'
+            )}
+          >
+            <span className="max-w-md truncate">{notice.text}</span>
+            {notice.undoable && (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="rounded-full"
+                onClick={() => {
+                  undoArchive()
+                  setNotice(null)
+                }}
+              >
+                Undo
+              </Button>
+            )}
+          </div>
+        )}
       </div>
 
       {deleting && (

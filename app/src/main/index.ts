@@ -575,24 +575,31 @@ async function skillsFor(projectRoot: string, harness: HarnessId): Promise<Skill
 }
 
 /**
- * Runs already told out loud, so the adapter's own completed/failed event and
- * the conclusion's do not become two notifications for one ending.
+ * Moments already told out loud, so the adapter's own completed/failed event
+ * and the conclusion's do not become two notifications for one ending, and a
+ * re-journaled request does not knock twice.
  */
-const notifiedRuns = new Set<string>()
+const notifiedMoments = new Set<string>()
 
 /**
- * Finished work arrives like mail. A Run ending while the window is elsewhere
- * changes only a sidebar dot, so the ending is also said the way the desktop
- * says things — a quiet native notification, silent by design, that opens the
- * Session when clicked. A focused window needs none of this: the Conversation
- * is already telling the story.
+ * Work arrives like mail. A Run ending — or stopping to ask permission —
+ * while the window is elsewhere changes only a sidebar dot, so it is also
+ * said the way the desktop says things: a quiet native notification, silent
+ * by design, that opens the Session when clicked. The approval is the urgent
+ * one — it is the state that blocks all progress, and it must reach the
+ * person first, not last. A focused window needs none of this: the
+ * Conversation is already telling the story.
  */
-async function notifyRunEnded(streamed: ConversationStreamEvent): Promise<void> {
-  const kind = streamed.event.type
-  if (kind !== 'completed' && kind !== 'failed') return
-  if (notifiedRuns.has(streamed.runId)) return
-  notifiedRuns.add(streamed.runId)
-  if (notifiedRuns.size > 500) notifiedRuns.clear()
+async function notifyWhileAway(streamed: ConversationStreamEvent): Promise<void> {
+  const event = streamed.event
+  if (event.type !== 'completed' && event.type !== 'failed' && event.type !== 'approval-request') {
+    return
+  }
+  const moment =
+    event.type === 'approval-request' ? `${streamed.runId}:${event.id}` : streamed.runId
+  if (notifiedMoments.has(moment)) return
+  notifiedMoments.add(moment)
+  if (notifiedMoments.size > 500) notifiedMoments.clear()
   // Test runs must not post to the real Notification Center.
   if (testAppData && !app.isPackaged) return
   if (!mainWindow || mainWindow.isFocused() || !Notification.isSupported()) return
@@ -604,9 +611,11 @@ async function notifyRunEnded(streamed: ConversationStreamEvent): Promise<void> 
   const notification = new Notification({
     title,
     body:
-      kind === 'completed'
+      event.type === 'completed'
         ? 'The Run finished while you were away.'
-        : 'The Run failed. The Conversation says what is safe to do next.',
+        : event.type === 'failed'
+          ? 'The Run failed. The Conversation says what is safe to do next.'
+          : `Waiting for your approval: ${event.summary.slice(0, 120)}`,
     silent: true
   })
   notification.on('click', () => {
@@ -720,7 +729,7 @@ void app.whenReady().then(() => {
     // ending away from a focused window is also told the desktop's way.
     onConversationEvent: (event) => {
       mainWindow?.webContents.send(IPC_CHANNELS.conversationEvent, event)
-      void notifyRunEnded(event).catch(() => undefined)
+      void notifyWhileAway(event).catch(() => undefined)
     }
   })
 
