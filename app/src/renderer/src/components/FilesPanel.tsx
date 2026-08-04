@@ -205,6 +205,11 @@ function FileRow({
   )
 }
 
+/** When one write of a stacked diff happened, in the reader's clock. */
+function writeClock(at: string): string {
+  return new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+}
+
 /** The selected file's diffs, newest last, exactly as they were recorded. */
 function FocusedDiff({
   file,
@@ -234,8 +239,17 @@ function FocusedDiff({
             This file changed, and its diff was too large to keep.
           </p>
         )}
-        {changes.map((entry) => (
-          <DiffView key={entry.id} hunks={entry.hunks} />
+        {changes.map((entry, index) => (
+          <div key={entry.id}>
+            {/* A stacked log, not a net diff: each write is shown as it was
+                recorded, so an early state must not read as the final one. */}
+            {changes.length > 1 && (
+              <p className="px-1 pt-1.5 font-mono text-2xs text-muted-foreground">
+                Write {index + 1} of {changes.length} · {writeClock(entry.at)}
+              </p>
+            )}
+            <DiffView hunks={entry.hunks} />
+          </div>
         ))}
         {file.shortened && !unreadable && (
           <p className="px-1 py-1 text-xs text-muted-foreground">

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Archive, Bot, FolderPlus, Lock, SunMedium } from 'lucide-react'
+import { Archive, ArrowRightLeft, Bot, FolderPlus, Lock, SunMedium } from 'lucide-react'
 import {
   type ChooseProjectResult,
   type ReadinessSnapshot,
@@ -19,6 +19,7 @@ import {
   MenuContent,
   MenuItem,
   MenuSeparator,
+  MenuShortcut,
   MenuTrigger
 } from '@renderer/components/ui/menu'
 import { cn } from '@renderer/lib/utils'
@@ -30,6 +31,8 @@ interface AppMenuProps {
   archivedTotal: number | null
   onShowArchived: () => void
   onOpenHarnesses: () => void
+  /** Opens the ⌘K switcher — named here so the shortcut can be learned. */
+  onGoToSession: () => void
   /** The mailbox re-reads after a Project is added, so its group appears. */
   onProjectsChanged: () => void
   onAnnounce: (text: string) => void
@@ -60,6 +63,7 @@ export function AppMenu({
   archivedTotal,
   onShowArchived,
   onOpenHarnesses,
+  onGoToSession,
   onProjectsChanged,
   onAnnounce
 }: AppMenuProps): React.JSX.Element {
@@ -220,6 +224,11 @@ export function AppMenu({
             </span>
           </div>
           <MenuSeparator />
+          <MenuItem onClick={onGoToSession}>
+            <ArrowRightLeft aria-hidden="true" className="size-3.5 text-muted-foreground" />
+            Go to a Session…
+            <MenuShortcut>⌘K</MenuShortcut>
+          </MenuItem>
           <MenuItem onClick={onShowArchived}>
             <Archive aria-hidden="true" className="size-3.5 text-muted-foreground" />
             Archived Sessions

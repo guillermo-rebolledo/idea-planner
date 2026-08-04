@@ -10,7 +10,8 @@ import {
   ShieldQuestion,
   Square,
   Terminal,
-  TriangleAlert
+  TriangleAlert,
+  X
 } from 'lucide-react'
 import {
   HARNESS_DEFAULT_MODEL,
@@ -108,6 +109,10 @@ export function Conversation({
   const [runs, setRuns] = useState<RunSnapshot[]>([])
   const [live, setLive] = useState<LiveRun | null>(null)
   const [draft, setDraft] = useState('')
+  // At most one message held while a Run works. Send during a Run parks the
+  // message here instead of refusing it, and it goes the moment the Run
+  // finishes — the person walks away and their words still arrive.
+  const [queued, setQueued] = useState<{ text: string; skill: string | null } | null>(null)
   // No Skill by default. Most messages are not asking for a methodology, and
   // one applied because it happened to be selected is one nobody chose.
   const [skill, setSkill] = useState<string | null>(null)
@@ -275,8 +280,17 @@ export function Conversation({
   }, [])
 
   const send = useCallback(
-    async (text: string, source: 'composer' | 'suggested-response', submissionId?: string) => {
+    async (
+      text: string,
+      source: 'composer' | 'suggested-response',
+      submissionId?: string,
+      // A queued message carries the Skill chosen when it was parked, not
+      // whatever is selected by the time the Run finishes. `undefined` means
+      // "the composer's current pick"; `null` means "queued with no Skill".
+      queuedSkill?: string | null
+    ) => {
       if (!chosenHarness) return
+      const messageSkill = queuedSkill === undefined ? chosenSkill : queuedSkill
       setBusy(true)
       setError(null)
       try {
@@ -285,7 +299,7 @@ export function Conversation({
           submissionId: submissionId ?? crypto.randomUUID(),
           text,
           source,
-          ...(chosenSkill ? { skill: chosenSkill } : {}),
+          ...(messageSkill ? { skill: messageSkill } : {}),
           harness: chosenHarness,
           model: choice?.model ?? HARNESS_DEFAULT_MODEL,
           // Only what the chosen model can be asked for.
@@ -295,8 +309,9 @@ export function Conversation({
         setPhase({ state: 'ready', snapshot: next })
         // Per message, not per Session: real work switches methodology inside
         // one thread of context, and a Skill that outlives the message it was
-        // chosen for is one nobody chose for the next one.
-        if (source === 'composer' && !submissionId) {
+        // chosen for is one nobody chose for the next one. A queued send
+        // touches neither — whatever was typed since it was parked stays.
+        if (source === 'composer' && !submissionId && queuedSkill === undefined) {
           setDraft('')
           setSkill(null)
         }
@@ -354,21 +369,54 @@ export function Conversation({
     )
   }, [activeRunId, sessionId, refresh])
 
+  // The parked message goes the moment the Run finishes — but only after a
+  // Run that ended well. A Run that failed or was stopped leaves a recovery
+  // notice to read first, so the message returns to the composer instead of
+  // firing into a state nobody has looked at. An effect, deliberately: it
+  // reacts to committed state exactly once per transition, where releasing
+  // from the poll's promise chain could fire from two in-flight refreshes at
+  // once and send the message twice.
+  /* eslint-disable @eslint-react/set-state-in-effect */
+  useEffect(() => {
+    if (activeRunId !== null || queued === null || busy) return
+    const held = queued
+    setQueued(null)
+    if (snapshot?.recovery) {
+      setDraft((current) => (current ? `${held.text}\n\n${current}` : held.text))
+      setSkill((current) => current ?? held.skill)
+      return
+    }
+    void send(held.text, 'composer', undefined, held.skill)
+  }, [activeRunId, queued, busy, snapshot, send])
+  /* eslint-enable @eslint-react/set-state-in-effect */
+
   // The card takes focus the moment a request arrives, so ⏎ and esc are
   // already speaking to it — and only to it. Allowing is the app's
   // highest-stakes act, and a reflexive Enter with focus somewhere else must
-  // not grant a command nobody read. Denying is scoped the same way: a
-  // refusal is an instruction the agent carries on with, and Escape pressed
-  // to close a popover must not quietly steer the Run.
+  // not grant a command nobody read. But a person mid-word in the composer
+  // keeps their keyboard: pulling focus out of a text field would turn the
+  // very next Enter — a newline one keystroke ago — into a grant. The card's
+  // alert role announces it either way; whoever is typing comes to it when
+  // they are ready.
   const approvalCardRef = useRef<HTMLDivElement>(null)
   const pendingApprovalId = pendingApproval?.id ?? null
   useEffect(() => {
-    if (pendingApprovalId !== null) approvalCardRef.current?.focus()
+    if (pendingApprovalId === null) return
+    const active = document.activeElement
+    const typing =
+      active instanceof HTMLInputElement ||
+      active instanceof HTMLTextAreaElement ||
+      (active instanceof HTMLElement && active.isContentEditable)
+    if (!typing) approvalCardRef.current?.focus()
   }, [pendingApprovalId])
 
-  // The card's own shortcuts, exactly as it states them: ⏎ allow · esc deny.
-  // ⌘. stops the Run whether or not anything is being asked. Typing surfaces
-  // keep their keys — the composer is disabled while a Run works anyway.
+  // The card's one shortcut, exactly as it states it: ⏎ allows, and only
+  // while the person is on the card. Escape is the universal "not now" — it
+  // steps off the card, withdrawing the key, and never answers the request:
+  // a refusal is an instruction the agent carries on with, and a reflex
+  // pressed to close a popover must not quietly steer the Run. Deny stays on
+  // its button, where it has to be read to be pressed. ⌘. stops the Run
+  // whether or not anything is being asked.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.metaKey && event.key === '.') {
@@ -389,15 +437,15 @@ export function Conversation({
       ) {
         return
       }
-      // Both keys answer only while the person is on the card. Clicking away
-      // withdraws them; the buttons remain, and the card can be refocused.
+      // Only while the person is on the card. Clicking away withdraws the
+      // key; the buttons remain, and the card can be refocused.
       if (!approvalCardRef.current?.contains(document.activeElement)) return
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault()
         void decide(pendingApproval, 'allow')
       } else if (event.key === 'Escape') {
         event.preventDefault()
-        void decide(pendingApproval, 'deny')
+        ;(document.activeElement as HTMLElement | null)?.blur()
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -546,8 +594,10 @@ export function Conversation({
                 catalog.untrusted.length > 0 &&
                 row(
                   'skills-untrusted',
+                  // A standing condition, not an interruption: it reads in
+                  // place instead of barging in on every mount.
                   <div
-                    role="alert"
+                    role="note"
                     aria-label="Project Skills"
                     className="rounded-md border border-border bg-muted/50 p-3"
                   >
@@ -650,9 +700,18 @@ export function Conversation({
                       >
                         Deny
                       </Button>
-                      <span className="ml-auto font-mono text-2xs text-muted-foreground">
-                        ⏎ allow · esc deny
-                      </span>
+                      {deciding ? (
+                        <span
+                          role="status"
+                          className="ml-auto flex items-center gap-1.5 font-mono text-2xs text-muted-foreground"
+                        >
+                          <Spinner /> Answering…
+                        </span>
+                      ) : (
+                        <span className="ml-auto font-mono text-2xs text-muted-foreground">
+                          ⏎ allow · esc steps away
+                        </span>
+                      )}
                     </div>
                     {pendingApproval.proposedRule && (
                       // Shown before it is accepted, and never paraphrased. Once a rule
@@ -738,9 +797,42 @@ export function Conversation({
             className="flex flex-col gap-2"
             onSubmit={(event) => {
               event.preventDefault()
-              if (draft.trim()) void send(draft.trim(), 'composer')
+              const text = draft.trim()
+              if (!text) return
+              // While a Run works, Send parks the message instead of refusing
+              // it: one held message, sent the moment the Run finishes.
+              if (activeRunId !== null) {
+                if (queued !== null) return
+                setQueued({ text, skill: chosenSkill })
+                setDraft('')
+                setSkill(null)
+                return
+              }
+              void send(text, 'composer')
             }}
           >
+            {queued !== null && (
+              <div className="flex items-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2">
+                <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                  Held until the Run finishes:{' '}
+                  <span className="text-foreground select-text">{queued.text}</span>
+                </p>
+                <button
+                  type="button"
+                  aria-label="Take this message back to the composer"
+                  title="Take it back"
+                  onClick={() => {
+                    const held = queued
+                    setQueued(null)
+                    setDraft((current) => (current ? `${held.text}\n\n${current}` : held.text))
+                    setSkill((current) => current ?? held.skill)
+                  }}
+                  className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-border hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <X aria-hidden="true" className="size-3.5" />
+                </button>
+              </div>
+            )}
             <label className="sr-only" htmlFor="conversation-composer">
               Your message
             </label>
@@ -764,7 +856,9 @@ export function Conversation({
                   // Mid-composition Enter belongs to the input method.
                   if (event.nativeEvent.isComposing) return
                   if (event.shiftKey || event.altKey) return
-                  // While a Run works, Enter makes a line rather than a send.
+                  // While a Run works, Enter makes a line rather than a send —
+                  // holding a message is the button's deliberate act, never a
+                  // keystroke's.
                   if (activeRunId !== null) return
                   event.preventDefault()
                   if (draft.trim()) void send(draft.trim(), 'composer')
@@ -794,9 +888,9 @@ export function Conversation({
                 <Button
                   type="submit"
                   size="icon"
-                  aria-label="Send"
+                  aria-label={activeRunId !== null ? 'Hold until the Run finishes' : 'Send'}
                   className="rounded-full disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                  disabled={busy || blocked || activeRunId !== null || !draft.trim()}
+                  disabled={busy || blocked || queued !== null || !draft.trim()}
                 >
                   <ArrowUp aria-hidden="true" className="size-3.5" />
                 </Button>
@@ -804,8 +898,8 @@ export function Conversation({
             </div>
             {activeRunId !== null && (
               <p className="text-xs text-muted-foreground">
-                A Run is working. Keep typing — Send returns when it finishes, and{' '}
-                <span className="font-mono text-2xs">⌘.</span> stops it now.
+                A Run is working. Keep typing — Send holds your message and it goes the moment the
+                Run finishes. <span className="font-mono text-2xs">⌘.</span> stops the Run now.
               </p>
             )}
             {chosenSkill && <ChosenSkillNote name={chosenSkill} onClear={() => setSkill(null)} />}

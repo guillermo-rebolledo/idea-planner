@@ -79,11 +79,32 @@ export function MenuSeparator(): React.JSX.Element {
   return <BaseMenu.Separator className="my-1 h-px bg-border" />
 }
 
-/** The keyboard way in, named beside the pointer way. */
+/** What each key glyph is called out loud, so a screen reader can teach it. */
+const GLYPH_NAMES: Record<string, string> = {
+  '⇧': 'Shift',
+  '⌘': 'Command',
+  '⌥': 'Option',
+  '⌃': 'Control',
+  '⌫': 'Delete',
+  '⏎': 'Return'
+}
+
+/**
+ * The keyboard way in, named beside the pointer way — for every reader. The
+ * glyphs are hidden from assistive tech and replaced with their spoken names,
+ * so “⇧⌘P” is a shortcut a screen-reader user can actually learn.
+ */
 export function MenuShortcut({ children }: { children: React.ReactNode }): React.JSX.Element {
+  const spoken =
+    typeof children === 'string'
+      ? [...new Intl.Segmenter().segment(children)]
+          .map(({ segment }) => GLYPH_NAMES[segment] ?? segment)
+          .join(' ')
+      : null
   return (
-    <span aria-hidden="true" className="ml-auto font-mono text-2xs text-muted-foreground">
-      {children}
+    <span className="ml-auto font-mono text-2xs text-muted-foreground">
+      <span aria-hidden="true">{children}</span>
+      {spoken !== null && <span className="sr-only">{spoken}</span>}
     </span>
   )
 }

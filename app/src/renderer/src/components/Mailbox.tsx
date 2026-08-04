@@ -46,6 +46,7 @@ import {
   MenuTrigger
 } from '@renderer/components/ui/menu'
 import { ReadinessDialog } from '@renderer/components/Readiness'
+import { SessionSwitcher } from '@renderer/components/SessionSwitcher'
 import { FilesPanel } from '@renderer/components/FilesPanel'
 import { WhereAmI } from '@renderer/components/WhereAmI'
 import { useSessionChanges } from '@renderer/lib/useSessionChanges'
@@ -116,6 +117,9 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   const [mailbox, setMailbox] = useState<MailboxData>({ state: 'reading' })
   const [renaming, setRenaming] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<SessionSummary | null>(null)
+  // ⌘K's palette, holding a fresh unfiltered list: the sidebar's search must
+  // not silently narrow what the switcher can reach.
+  const [switcher, setSwitcher] = useState<SessionSummary[] | null>(null)
   // The Files panel: toggled from the title-bar diff numbers, and the app's
   // only diff surface. Which file is open inside it is per visit, not stored.
   const [filesOpen, setFilesOpen] = useState(false)
@@ -297,10 +301,13 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     titlesRef.current = titles
   }, [mailbox])
 
-  // A Run ending — or stopping to ask permission — in a Session that is not
-  // on screen changes only a sidebar dot; it is also said out loud, so the
-  // outcome strip and a screen reader hear the mail arrive. The approval is
-  // the urgent one: it is the state that blocks all progress.
+  // A Run ending — or stopping to ask permission — is said out loud, so the
+  // outcome strip and a screen reader hear the mail arrive. A finished Run is
+  // announced even for the Session on screen: its only visible trace is a
+  // quiet divider, and someone who sent a message must not have to re-read
+  // the transcript to learn it was answered. Failures and approvals in the
+  // open Session already speak for themselves — the error line and the
+  // approval card are alerts of their own, and saying them twice says less.
   useEffect(
     () =>
       window.shell.onConversationEvent(({ sessionId, runId, event }) => {
@@ -311,14 +318,17 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
         ) {
           return
         }
-        if (sessionId === selectedIdRef.current) return
+        const onScreen = sessionId === selectedIdRef.current
+        if (onScreen && event.type !== 'completed') return
         const key = event.type === 'approval-request' ? `${runId}:${event.id}` : runId
         if (announcedRunsRef.current.has(key)) return
         announcedRunsRef.current.add(key)
         const title = titlesRef.current.get(sessionId) ?? 'another Session'
         setAnnouncement(
           event.type === 'completed'
-            ? `The Run in “${title}” finished.`
+            ? onScreen
+              ? 'The Run finished.'
+              : `The Run in “${title}” finished.`
             : event.type === 'failed'
               ? `The Run in “${title}” failed.`
               : `“${title}” is waiting for your approval.`
@@ -351,6 +361,12 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
         if (event.key === '\\') {
           event.preventDefault()
           setInboxCollapsed((collapsed) => !collapsed)
+        }
+        // ⌘K works from anywhere, mid-typing included: going somewhere else
+        // is exactly what someone mid-thought reaches for.
+        if (event.key.toLowerCase() === 'k' && !event.shiftKey) {
+          event.preventDefault()
+          void window.shell.listSessions().then(setSwitcher, () => undefined)
         }
         if (event.shiftKey && event.key.toLowerCase() === 'p' && selectedSession) {
           event.preventDefault()
@@ -546,6 +562,9 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
               archivedTotal={snapshot?.archivedTotal ?? null}
               onShowArchived={() => setQuery((current) => ({ ...current, view: 'archived' }))}
               onOpenHarnesses={() => setReadinessOpen(true)}
+              onGoToSession={() =>
+                void window.shell.listSessions().then(setSwitcher, () => undefined)
+              }
               onProjectsChanged={() => void refreshMailbox(effectiveQuery)}
               onAnnounce={setAnnouncement}
             />
@@ -624,6 +643,16 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       )}
 
       {readinessOpen && <ReadinessDialog onClose={() => setReadinessOpen(false)} />}
+      {switcher !== null && (
+        <SessionSwitcher
+          sessions={switcher}
+          onClose={() => setSwitcher(null)}
+          onOpen={(session) => {
+            setSwitcher(null)
+            openSession(session)
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -923,7 +952,10 @@ function SessionRow({
         >
           <span className="min-w-0 flex-1 truncate">{session.title}</span>
           {session.dormant && (
-            <span className="shrink-0 rounded-sm bg-notice px-1 text-2xs font-medium text-notice-foreground">
+            <span
+              title="Nothing has run here in a while. It wakes the moment you send a message."
+              className="shrink-0 rounded-sm bg-notice px-1 text-2xs font-medium text-notice-foreground"
+            >
               Dormant
             </span>
           )}

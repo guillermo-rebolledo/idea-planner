@@ -705,7 +705,7 @@ test('the title bar states where a Session works — Local, or an isolated Workt
     const composer = page.getByRole('form', { name: 'New chat' })
     await composer.getByLabel('Message').fill('Fix the location crash')
     await composer.getByRole('button', { name: 'Checkout' }).click()
-    await page.getByRole('button', { name: 'Isolated' }).click()
+    await page.getByRole('radio', { name: 'Isolated' }).click()
     // The base settles onto the branch the working copy is on.
     await expect(
       page
@@ -796,7 +796,7 @@ test('one picker chooses the model, and with it the Harness that runs it', async
     await expect(permission).toContainText('Ask')
     await permission.click()
     await expect(page.getByText('The agent stops for your consent', { exact: false })).toBeVisible()
-    await page.getByRole('button', { name: /Full access/ }).click()
+    await page.getByRole('radio', { name: /Full access/ }).click()
     await expect(permission).toContainText('Full access')
 
     // Its footer names what this Project has permanently allowed, and opens
@@ -1033,7 +1033,7 @@ test('a Project’s own Skills are shown, trusted once, and then offered', async
     await page.getByLabel('Your message').fill('')
 
     // It is shown before it is trusted, with what it says it does.
-    const notice = page.getByRole('alert', { name: 'Project Skills' })
+    const notice = page.getByRole('note', { name: 'Project Skills' })
     await expect(notice.getByText('deploy-to-prod', { exact: true })).toBeVisible()
     await expect(notice.getByText('Ships it')).toBeVisible()
 

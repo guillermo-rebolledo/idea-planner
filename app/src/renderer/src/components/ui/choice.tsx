@@ -33,9 +33,12 @@ export function ChoiceRow({
   className?: string
 }): React.JSX.Element {
   return (
+    // A radio, not a toggle: the options are one-of-a-set, and a screen
+    // reader should say so. Callers wrap a set in role="radiogroup".
     <button
       type="button"
-      aria-pressed={chosen}
+      role="radio"
+      aria-checked={chosen}
       onClick={onClick}
       className={cn(
         'relative flex w-full cursor-default items-start gap-2 rounded-sm px-2 py-1.5 pe-8 text-left text-xs outline-none hover:bg-accent focus-visible:bg-accent',

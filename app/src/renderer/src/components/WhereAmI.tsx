@@ -130,17 +130,31 @@ export function WhereAmI({
             answer. */}
         <PopoverTrigger
           aria-label={`Project card for ${folderName(session.projectRoot)}`}
-          className="flex items-center gap-1.5 rounded-md focus-visible:ring-2 focus-visible:ring-ring"
+          className="group flex items-center gap-1.5 rounded-md focus-visible:ring-2 focus-visible:ring-ring"
         >
           {/* The chip waits for git rather than flashing a dash it will
-              replace. Once the facts are in, — is honest: detached HEAD. */}
+              replace. Once the facts are in, — is honest: detached HEAD.
+              Hover lights both chips: they are one button, and a chip that
+              never reacts reads as a label rather than a way in. */}
           {facts !== null && (
-            <span className={cn(CHIP_CLASS, 'font-mono')}>
+            <span
+              className={cn(
+                CHIP_CLASS,
+                'font-mono transition-colors group-hover:bg-accent group-hover:text-foreground group-data-popup-open:bg-accent'
+              )}
+            >
               <GitBranch aria-hidden="true" className="size-3" />
               {facts.branch ?? '—'}
             </span>
           )}
-          <span className={CHIP_CLASS}>{isWorktree ? 'Worktree' : 'Local'}</span>
+          <span
+            className={cn(
+              CHIP_CLASS,
+              'transition-colors group-hover:bg-accent group-hover:text-foreground group-data-popup-open:bg-accent'
+            )}
+          >
+            {isWorktree ? 'Worktree' : 'Local'}
+          </span>
         </PopoverTrigger>
         <PopoverContent align="end" className="w-72">
           <ProjectCard

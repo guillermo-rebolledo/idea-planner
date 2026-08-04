@@ -210,12 +210,13 @@ function RootConfirmationNotice({
       <p className="mt-1 font-mono break-all select-text">{confirmation.chosen}</p>
       <p className="mt-1">The Project itself begins here, and this is what would be added:</p>
       <p className="mt-1 font-mono break-all select-text">{confirmation.root}</p>
+      {/* One grammar everywhere: the filled button is the go-ahead, Cancel is
+          quiet — exactly as the app menu's twin of this decision draws it. */}
       <div className="mt-2 flex gap-2">
-        <Button size="sm" className="h-6" disabled={busy} onClick={onDismiss}>
+        <Button variant="secondary" size="sm" className="h-6" disabled={busy} onClick={onDismiss}>
           Cancel
         </Button>
         <Button
-          variant="secondary"
           size="sm"
           className="h-6"
           disabled={busy}
@@ -259,12 +260,19 @@ function RefusalNotice({
             Setting it up runs <span className="font-mono">git init</span> there and changes nothing
             else. It is the only Git command this app ever runs for you.
           </p>
+          {/* The filled button is the go-ahead here too, matching the app
+              menu's version of the same decision. */}
           <div className="mt-2 flex gap-2">
-            <Button size="sm" className="h-6" disabled={busy} onClick={onDismiss}>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="h-6"
+              disabled={busy}
+              onClick={onDismiss}
+            >
               Cancel
             </Button>
             <Button
-              variant="secondary"
               size="sm"
               className="h-6"
               disabled={busy}

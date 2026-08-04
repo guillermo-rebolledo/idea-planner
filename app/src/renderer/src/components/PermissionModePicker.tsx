@@ -82,7 +82,11 @@ export function PermissionModePicker({
         </ChipTrigger>
         <PopoverContent align="start" className="w-72">
           <PopoverHeading>Permission Mode</PopoverHeading>
-          <div className="flex flex-col gap-0.5 px-1.5 pb-2">
+          <div
+            role="radiogroup"
+            aria-label="Permission Mode"
+            className="flex flex-col gap-0.5 px-1.5 pb-2"
+          >
             {(['ask', 'auto'] as const).map((mode) => (
               <ChoiceRow
                 key={mode}

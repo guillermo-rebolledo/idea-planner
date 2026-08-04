@@ -78,26 +78,31 @@ export function CheckoutPicker({
       <PopoverContent align="start" className="w-72">
         <PopoverHeading>Checkout</PopoverHeading>
         <div className="flex flex-col gap-0.5 px-1.5 pb-2">
-          <ChoiceRow
-            icon={<Monitor aria-hidden="true" className="size-3.5 text-muted-foreground" />}
-            name="Local"
-            description="Your working copy, edited in place. git is the undo."
-            chosen={!isolated}
-            onClick={() => {
-              onChange({ kind: 'local' })
-              setOpen(false)
-            }}
-          />
-          <ChoiceRow
-            icon={<FolderTree aria-hidden="true" className="size-3.5 text-muted-foreground" />}
-            name="Isolated"
-            description="A linked worktree of its own, cut from the base branch below. Your copy never moves."
-            chosen={isolated}
-            onClick={() => {
-              const kept = value.kind === 'isolated' ? value.baseBranch : ''
-              onChange({ kind: 'isolated', baseBranch: kept === '' ? defaultBase(branches) : kept })
-            }}
-          />
+          <div role="radiogroup" aria-label="Checkout" className="flex flex-col gap-0.5">
+            <ChoiceRow
+              icon={<Monitor aria-hidden="true" className="size-3.5 text-muted-foreground" />}
+              name="Local"
+              description="Your working copy, edited in place. git is the undo."
+              chosen={!isolated}
+              onClick={() => {
+                onChange({ kind: 'local' })
+                setOpen(false)
+              }}
+            />
+            <ChoiceRow
+              icon={<FolderTree aria-hidden="true" className="size-3.5 text-muted-foreground" />}
+              name="Isolated"
+              description="A linked worktree of its own, cut from the base branch below. Your copy never moves."
+              chosen={isolated}
+              onClick={() => {
+                const kept = value.kind === 'isolated' ? value.baseBranch : ''
+                onChange({
+                  kind: 'isolated',
+                  baseBranch: kept === '' ? defaultBase(branches) : kept
+                })
+              }}
+            />
+          </div>
           {branches === 'unreadable' && (
             <p role="alert" className="px-2 py-1.5 text-2xs text-muted-foreground">
               This Project’s branches could not be read, so there is no base to cut a worktree from.
