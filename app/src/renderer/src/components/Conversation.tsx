@@ -3,6 +3,7 @@ import Markdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   ArrowUp,
+  Check,
   ChevronRight,
   FileDiff,
   FileText,
@@ -128,6 +129,10 @@ export function Conversation({
   // A mode the person picked on this surface outranks any seeding.
   const modeTouchedRef = useRef(false)
   const [deciding, setDeciding] = useState(false)
+  // A standing rule is more consequential than answering this one request.
+  // The first click reveals the exact commitment in context; the second stores
+  // it. Changing requests always withdraws an unfinished confirmation.
+  const [standingApprovalConfirmId, setStandingApprovalConfirmId] = useState<string | null>(null)
   // Read once per second only while a Run works, so the divider and the
   // activity block can say how long it has been at it.
   const [clock, setClock] = useState(() => Date.now())
@@ -399,6 +404,7 @@ export function Conversation({
   // alert role announces it either way; whoever is typing comes to it when
   // they are ready.
   const approvalCardRef = useRef<HTMLDivElement>(null)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
   const pendingApprovalId = pendingApproval?.id ?? null
   useEffect(() => {
     if (pendingApprovalId === null) return
@@ -530,7 +536,7 @@ export function Conversation({
             <MessageScrollerContent
               aria-label="Conversation history"
               aria-busy={activeRunId !== null}
-              className="mx-auto w-full max-w-3xl gap-5 px-10 pt-8 pb-6"
+              className="mx-auto w-full max-w-3xl gap-6 px-6 pt-8 pb-6"
             >
               {items.map((item) => {
                 if (item.type === 'user') {
@@ -563,6 +569,7 @@ export function Conversation({
                     clock={clock}
                     live={liveForActiveRun?.runId === item.runId ? liveForActiveRun : null}
                     onOpenFile={onOpenFile}
+                    onContinue={() => composerRef.current?.focus()}
                   />
                 )
               })}
@@ -682,16 +689,6 @@ export function Conversation({
                       >
                         Allow
                       </Button>
-                      {pendingApproval.proposedRule && (
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          disabled={deciding}
-                          onClick={() => void decide(pendingApproval, 'allow', true)}
-                        >
-                          Always allow for {projectDisplayName(session.projectRoot)}
-                        </Button>
-                      )}
                       <Button
                         size="sm"
                         variant="ghost"
@@ -703,7 +700,7 @@ export function Conversation({
                       {deciding ? (
                         <span
                           role="status"
-                          className="ml-auto flex items-center gap-1.5 font-mono text-2xs text-muted-foreground"
+                          className="ml-auto flex items-center gap-1.5 font-mono text-2xs text-muted-foreground tabular-nums"
                         >
                           <Spinner /> Answering…
                         </span>
@@ -714,16 +711,57 @@ export function Conversation({
                       )}
                     </div>
                     {pendingApproval.proposedRule && (
-                      // Shown before it is accepted, and never paraphrased. Once a rule
-                      // is stored the Harness answers with it before this app is asked
-                      // anything, so this line is the last chance to read it.
-                      <p className="border-t border-status-blocked-border px-3.5 py-2 text-2xs break-all text-muted-foreground">
-                        Always allow stores exactly{' '}
-                        <span className="font-mono select-text">
+                      // The durable rule comes before the durable action. Once it is
+                      // stored the Harness answers with it before this app is asked
+                      // anything, so it must occupy the focal area first.
+                      <div className="border-t border-status-blocked-border px-3.5 py-3">
+                        <p className="font-medium">Standing authorization</p>
+                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                          Every matching request in{' '}
+                          <span className="text-foreground">
+                            {projectDisplayName(session.projectRoot)}
+                          </span>{' '}
+                          would be answered with this exact rule:
+                        </p>
+                        <code className="mt-2 block rounded-md border border-border bg-surface px-3 py-2 font-mono text-xs break-all select-text">
                           {ruleText(pendingApproval.proposedRule)}
-                        </span>{' '}
-                        — only in {session.projectRoot}, revocable at any time.
-                      </p>
+                        </code>
+                        <p className="mt-1.5 text-xs break-all text-muted-foreground">
+                          Stored only for {session.projectRoot}. You can revoke it at any time.
+                        </p>
+                        {standingApprovalConfirmId === pendingApproval.id ? (
+                          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-status-blocked-border pt-3">
+                            <p className="mr-auto text-xs font-medium">
+                              Store this rule for future matching requests?
+                            </p>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              disabled={deciding}
+                              onClick={() => setStandingApprovalConfirmId(null)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              size="sm"
+                              disabled={deciding}
+                              onClick={() => void decide(pendingApproval, 'allow', true)}
+                            >
+                              Store this rule
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            className="mt-3"
+                            size="sm"
+                            variant="secondary"
+                            disabled={deciding}
+                            onClick={() => setStandingApprovalConfirmId(pendingApproval.id)}
+                          >
+                            Always allow for {projectDisplayName(session.projectRoot)}…
+                          </Button>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
@@ -770,7 +808,7 @@ export function Conversation({
         {/* Everything the person answers with rides below the transcript, as
             the mock draws it: the composer is the floor of the surface, not a
             row of the conversation. */}
-        <div className="mx-auto w-full max-w-3xl shrink-0 px-10 pb-4">
+        <div className="mx-auto w-full max-w-3xl shrink-0 px-6 pb-4">
           {suggested.length > 0 && (
             <div className="border-t border-border p-3">
               <p className="text-xs text-muted-foreground">
@@ -848,6 +886,7 @@ export function Conversation({
                   find their keyboard confiscated. Only sending waits. */}
               <textarea
                 id="conversation-composer"
+                ref={composerRef}
                 rows={3}
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
@@ -987,13 +1026,21 @@ function RunWorkingIndicator({
  * while the agent works. Clicking an edited file opens the Files panel on it,
  * the app's one diff surface.
  */
-function RunActivityBlock({
+function RunOutcome({
+  group,
+  run,
+  startedAt,
   steps,
-  onOpenFile
+  onOpenFile,
+  onContinue
 }: {
+  group: RunGroup
+  run: RunSnapshot | null
+  startedAt: string | null
   steps: StepEntry[]
   onOpenFile: (path: string) => void
-}): React.JSX.Element | null {
+  onContinue: () => void
+}): React.JSX.Element {
   const [expanded, setExpanded] = useState(false)
 
   const changes = steps.flatMap((step) => (step.kind === 'file-change' ? [step] : []))
@@ -1007,8 +1054,6 @@ function RunActivityBlock({
     }),
     { added: 0, removed: 0 }
   )
-  if (steps.length === 0) return null
-
   const summary =
     [
       reads > 0 && `Read ${String(reads)} file${reads === 1 ? '' : 's'}`,
@@ -1017,37 +1062,109 @@ function RunActivityBlock({
     ]
       .filter(Boolean)
       .join(' · ') || 'Worked'
+  const failed =
+    group.ended?.boundary === 'run-failed' || (run !== null && FAILED_STATUSES.has(run.status))
+  const stopped = group.ended?.boundary === 'run-stopped' || run?.status === 'stopped'
+  const outcome = failed ? 'attention' : stopped ? 'stopped' : 'delivered'
+  const duration =
+    startedAt !== null && group.ended
+      ? formatDuration(Date.parse(group.ended.at) - Date.parse(startedAt))
+      : null
+  const firstChangedPath = changes[0]?.path ?? null
+  const outcomeLabel =
+    outcome === 'attention'
+      ? 'Run needs attention'
+      : outcome === 'stopped'
+        ? 'Run stopped'
+        : 'Run delivered'
+  const outcomeDetail =
+    outcome === 'attention'
+      ? 'The Run ended before it could deliver a complete result.'
+      : outcome === 'stopped'
+        ? 'Everything completed before the stop is kept.'
+        : edited.size > 0
+          ? `${String(edited.size)} changed file${edited.size === 1 ? '' : 's'} ready to review.`
+          : 'No file changes were recorded.'
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border" aria-label="Run activity">
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-muted/40"
-      >
-        <ChevronRight
-          aria-hidden="true"
+    <section aria-label="Run outcome" className="py-3">
+      <div className="flex items-start gap-3 px-3">
+        <span
           className={cn(
-            'size-3 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none',
-            expanded && 'rotate-90'
+            'mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border border-border bg-surface',
+            outcome === 'attention' && 'text-destructive',
+            outcome === 'stopped' && 'text-muted-foreground'
           )}
-        />
-        <span className="min-w-0 flex-1 truncate">{summary}</span>
-        {(totals.added > 0 || totals.removed > 0) && (
-          <span className="shrink-0 font-mono text-2xs">
-            <DiffCounts added={totals.added} removed={totals.removed} />
-          </span>
+        >
+          {outcome === 'attention' ? (
+            <TriangleAlert aria-hidden="true" className="size-3.5" />
+          ) : outcome === 'stopped' ? (
+            <Square aria-hidden="true" className="size-3" />
+          ) : (
+            <Check aria-hidden="true" className="size-3.5" />
+          )}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <h3 className="font-medium">{outcomeLabel}</h3>
+            {duration !== null && (
+              <span className="font-mono text-2xs text-muted-foreground tabular-nums">
+                {duration}
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-xs text-muted-foreground">{outcomeDetail}</p>
+        </div>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+          {firstChangedPath !== null && (
+            <Button size="sm" variant="secondary" onClick={() => onOpenFile(firstChangedPath)}>
+              Review files
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={onContinue}>
+            Continue
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-2 pt-1" aria-label="Run activity">
+        {steps.length > 0 ? (
+          <>
+            <button
+              type="button"
+              aria-expanded={expanded}
+              onClick={() => setExpanded(!expanded)}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40"
+            >
+              <ChevronRight
+                aria-hidden="true"
+                className={cn(
+                  'size-3 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none',
+                  expanded && 'rotate-90'
+                )}
+              />
+              <span className="min-w-0 flex-1 truncate">{summary}</span>
+              {(totals.added > 0 || totals.removed > 0) && (
+                <span className="shrink-0 font-mono text-2xs tabular-nums">
+                  <DiffCounts added={totals.added} removed={totals.removed} />
+                </span>
+              )}
+            </button>
+            {expanded && (
+              <ol className="border-t border-border py-1" aria-label="Run steps">
+                {steps.map((step) => (
+                  <StepRow key={step.id} step={step} onOpenFile={onOpenFile} />
+                ))}
+              </ol>
+            )}
+          </>
+        ) : (
+          <p className="px-3 py-1.5 text-xs text-muted-foreground">
+            No command or file activity was recorded.
+          </p>
         )}
-      </button>
-      {expanded && (
-        <ol className="border-t border-border py-1" aria-label="Run steps">
-          {steps.map((step) => (
-            <StepRow key={step.id} step={step} onOpenFile={onOpenFile} />
-          ))}
-        </ol>
-      )}
-    </div>
+      </div>
+    </section>
   )
 }
 
@@ -1252,7 +1369,7 @@ function formatClock(at: string): string {
 function UserBubble({ entry }: { entry: MessageEntry }): React.JSX.Element {
   return (
     <div className="flex justify-end">
-      <p className="max-w-2xl rounded-lg bg-accent px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap select-text">
+      <p className="max-w-lg rounded-lg bg-accent px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap select-text">
         {entry.text}
       </p>
     </div>
@@ -1320,7 +1437,7 @@ const MARKDOWN_PLUGINS = [remarkGfm]
  */
 function AgentText({ text, partial }: { text: string; partial: boolean }): React.JSX.Element {
   return (
-    <div>
+    <div className="max-w-lg">
       <div className="text-sm leading-relaxed select-text">
         <Markdown remarkPlugins={MARKDOWN_PLUGINS} components={MARKDOWN_COMPONENTS}>
           {text}
@@ -1347,7 +1464,8 @@ function RunSection({
   waiting,
   clock,
   live,
-  onOpenFile
+  onOpenFile,
+  onContinue
 }: {
   group: RunGroup
   run: RunSnapshot | null
@@ -1356,6 +1474,7 @@ function RunSection({
   clock: number
   live: LiveRun | null
   onOpenFile: (path: string) => void
+  onContinue: () => void
 }): React.JSX.Element {
   const startedAt = group.started?.at ?? run?.acceptedAt ?? null
   const resolved = group.approvals.filter((entry) => entry.decision !== null)
@@ -1384,7 +1503,6 @@ function RunSection({
           elapsed={startedAt !== null ? clock - Date.parse(startedAt) : null}
         />
       )}
-      {!active && <RunActivityBlock steps={group.steps} onOpenFile={onOpenFile} />}
       {resolved.map((entry) => (
         <ApprovalRow key={entry.id} entry={entry} />
       ))}
@@ -1392,6 +1510,16 @@ function RunSection({
           that is exactly when the detail matters, and it belongs to the Run
           that produced it rather than to the bottom of the screen. */}
       {run && FAILED_STATUSES.has(run.status) && <ActivityPanel run={run} defaultOpen />}
+      {!active && (
+        <RunOutcome
+          group={group}
+          run={run}
+          startedAt={startedAt}
+          steps={group.steps}
+          onOpenFile={onOpenFile}
+          onContinue={onContinue}
+        />
+      )}
     </div>
   )
 }
@@ -1421,7 +1549,6 @@ function RunDivider({ view }: { view: RunDividerView }): React.JSX.Element {
   const model = run?.configuration.model ?? group.started?.model ?? null
   const mode = run ? MODE_LABEL[run.configuration.permissionMode] : null
   const label = ['Run', model, mode].filter(Boolean).join(' · ')
-  const ended = group.ended
   let outcome: React.ReactNode = null
   if (active && !waiting) {
     outcome = (
@@ -1432,21 +1559,13 @@ function RunDivider({ view }: { view: RunDividerView }): React.JSX.Element {
     )
   } else if (active && waiting) {
     outcome = startedAt !== null ? formatClock(startedAt) : null
-  } else if (ended?.boundary === 'run-completed' && startedAt !== null) {
-    outcome = `Worked for ${formatDuration(Date.parse(ended.at) - Date.parse(startedAt))}`
-  } else if (ended?.boundary === 'run-stopped') {
-    outcome = 'Stopped'
-  } else if (ended?.boundary === 'run-failed') {
-    outcome = 'Failed'
-  } else if (startedAt !== null) {
-    outcome = formatClock(startedAt)
   }
   return (
     <div
       aria-label={label}
-      className="flex items-center gap-2.5 font-mono text-2xs text-muted-foreground"
+      className="flex min-w-0 items-center gap-2.5 font-mono text-2xs text-muted-foreground"
     >
-      <span className="shrink-0">{label}</span>
+      <span className="min-w-0 truncate">{label}</span>
       <span aria-hidden="true" className="h-px min-w-4 flex-1 bg-border" />
       {outcome !== null && <span className="shrink-0">{outcome}</span>}
     </div>

@@ -69,7 +69,7 @@ const RAIL_QUERY: MailboxQuery = { search: '', view: 'active' }
 
 /** The hover-revealed icon actions sharing a row with what they act on. */
 const QUICK_ACTION_CLASS =
-  'rounded p-1 text-muted-foreground hover:bg-border hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring'
+  'flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-border hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring'
 
 /** The last segment of a Project root: how the person knows the folder. */
 function folderName(root: string): string {
@@ -192,6 +192,13 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     // A fresh visit starts at the list, not wherever the last one left off.
     setFocusedFile(null)
     setSurface({ kind: 'session', session })
+  }
+
+  /** Files is an inspector, never a third column allowed to crush the work. */
+  function openFiles(path?: string): void {
+    if (window.innerWidth < 1_100) setInboxCollapsed(true)
+    if (path !== undefined) setFocusedFile(path)
+    setFilesOpen(true)
   }
 
   const togglePinned = useCallback(
@@ -465,8 +472,8 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
               session={selectedSession}
               totals={changes.totals}
               filesOpen={filesOpen}
-              onToggleFiles={() => setFilesOpen((open) => !open)}
-              onShowFiles={() => setFilesOpen(true)}
+              onToggleFiles={() => (filesOpen ? setFilesOpen(false) : openFiles())}
+              onShowFiles={() => openFiles()}
               onAnnounce={setAnnouncement}
             />
           </div>
@@ -576,10 +583,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
             <Conversation
               key={surface.session.id}
               session={surface.session}
-              onOpenFile={(path) => {
-                setFilesOpen(true)
-                setFocusedFile(path)
-              }}
+              onOpenFile={openFiles}
             />
           ) : (
             <Composer
@@ -826,7 +830,7 @@ function ProjectGroup({
       <div className="group/project relative">
         <div
           title={group.root}
-          className="flex items-center gap-1.5 rounded-md py-1 pr-14 pl-2 text-xs text-foreground"
+          className="flex items-center gap-1.5 rounded-md py-1 pr-16 pl-2 text-xs text-foreground"
         >
           <FolderGit2 aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 truncate">{group.name}</span>
@@ -940,11 +944,12 @@ function SessionRow({
       >
         <button
           type="button"
+          title={session.title}
           onClick={() => handlers.onOpen(session)}
           aria-current={handlers.selectedId === session.id ? 'true' : undefined}
           className={cn(
             'flex w-full items-center gap-2 rounded-md py-1.5 pl-7 text-left text-xs transition-colors',
-            archived ? 'pr-2' : 'pr-14',
+            archived ? 'pr-2' : 'pr-16',
             handlers.selectedId === session.id
               ? 'bg-accent text-foreground'
               : 'text-muted-foreground hover:bg-accent hover:text-foreground'
@@ -973,12 +978,12 @@ function SessionRow({
             />
           )}
         </button>
-        <span className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+        <span className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5">
           {archived ? (
             <button
               type="button"
               onClick={() => handlers.onSetArchived(session, false)}
-              className="rounded-md border border-border px-1.5 py-0.5 text-2xs text-foreground hover:bg-border focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring"
+              className="rounded-md border border-border px-1.5 py-0.5 text-2xs text-foreground opacity-50 hover:bg-border hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring"
             >
               Restore
             </button>
@@ -988,7 +993,10 @@ function SessionRow({
               aria-label={session.pinned ? `Unpin “${session.title}”` : `Pin “${session.title}”`}
               title={session.pinned ? `Unpin “${session.title}”` : `Pin “${session.title}”`}
               onClick={() => handlers.onTogglePinned(session)}
-              className={QUICK_ACTION_CLASS}
+              className={cn(
+                QUICK_ACTION_CLASS,
+                'opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100'
+              )}
             >
               {session.pinned ? (
                 <PinOff aria-hidden="true" className="size-3.5" />
@@ -998,7 +1006,14 @@ function SessionRow({
             </button>
           )}
           <Menu>
-            <MenuTrigger aria-label={`More for “${session.title}”`} className={QUICK_ACTION_CLASS}>
+            <MenuTrigger
+              aria-label={`More for “${session.title}”`}
+              className={cn(
+                QUICK_ACTION_CLASS,
+                'opacity-40 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100',
+                handlers.selectedId === session.id && 'opacity-100'
+              )}
+            >
               <MoreHorizontal aria-hidden="true" className="size-3.5" />
             </MenuTrigger>
             <MenuContent>

@@ -26,7 +26,7 @@
   src: url('./assets/fonts/Geist-Variable.woff2') format('woff2');
   font-weight: 100 900;
   font-style: normal;
-  font-display: block;
+  font-display: swap;
 }
 
 @font-face {
@@ -34,7 +34,7 @@
   src: url('./assets/fonts/GeistMono-Variable.woff2') format('woff2');
   font-weight: 100 900;
   font-style: normal;
-  font-display: block;
+  font-display: swap;
 }
 
 @custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
@@ -182,20 +182,21 @@
   /* Load-bearing, not decorative: every diff, path, command and hash. */
   --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  /* Tight, and narrow on purpose: six sizes, and emphasis carried by one
-     weight (medium) so hierarchy stays a matter of luminance. */
-  --text-2xs: 10px;
-  --text-2xs--line-height: 14px;
-  --text-xs: 11px;
-  --text-xs--line-height: 15px;
-  --text-sm: 12px;
-  --text-sm--line-height: 17px;
-  --text-base: 13px;
-  --text-base--line-height: 19px;
-  --text-lg: 15px;
-  --text-lg--line-height: 21px;
-  --text-xl: 18px;
-  --text-xl--line-height: 25px;
+  /* Six stable roles for a dense desktop tool. Metadata stays compact, but
+     anything read or decided now clears a 14px floor; one-pixel jumps no
+     longer have to carry the hierarchy by themselves. */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 15px;
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 14px;
+  --text-sm--line-height: 21px;
+  --text-base: 14px;
+  --text-base--line-height: 21px;
+  --text-lg: 16px;
+  --text-lg--line-height: 22px;
+  --text-xl: 20px;
+  --text-xl--line-height: 26px;
 
   /* Every spacing utility in the app is a multiple of this. */
   --spacing: 4px;
@@ -271,6 +272,13 @@ body {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+/* Dialog copy may expand or the window may be at its 560px minimum; the
+   protected task stays scrollable inside the overlay instead of leaving the
+   viewport. Named here because viewport policy belongs to the shell system. */
+.dialog-viewport {
+  max-height: calc(100% - 3rem);
 }
 
 /* The dot-matrix running indicator (`ui/dot-matrix.tsx`): every dot breathes

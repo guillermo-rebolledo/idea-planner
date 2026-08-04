@@ -199,7 +199,7 @@ export function Composer({
   return (
     <form
       aria-label="New chat"
-      className="mx-auto flex w-full max-w-2xl flex-1 flex-col justify-center gap-5 p-8"
+      className="mx-auto flex w-full max-w-3xl flex-1 -translate-y-[4vh] flex-col justify-center gap-4 p-8"
       onSubmit={(event) => {
         event.preventDefault()
         void send()
@@ -291,7 +291,7 @@ export function Composer({
       {/* Only the work already under way — no filler the app pretends to
           have thought of. Nothing to continue means no chips at all. */}
       {continuable.length > 0 && (
-        <ul aria-label="Recent Sessions" className="flex flex-wrap justify-center gap-2">
+        <ul aria-label="Recent Sessions" className="mt-2 flex flex-wrap justify-center gap-2">
           {continuable.map((session) => (
             <li key={session.id}>
               <Starter onClick={() => onOpenSession(session)}>Continue “{session.title}”</Starter>

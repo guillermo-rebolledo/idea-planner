@@ -65,7 +65,7 @@ export function FilesPanel({
   return (
     <aside
       aria-label="Files this Session changed"
-      style={{ width }}
+      style={{ width: `min(${String(width)}px, 42vw)`, minWidth: MIN_WIDTH }}
       className="relative flex shrink-0 flex-col border-l border-border bg-muted/40"
     >
       {/* The panel's edge is its own control: drag it, or arrow it wider and

@@ -402,7 +402,7 @@ const CHATTY_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
   -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
   --print)
-    echo '{"type":"system","subtype":"init","session_id":"thread-1"}'
+    echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
     i=0
     while [ $i -lt 24 ]; do
       echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_'$i'","type":"message","role":"assistant","content":[{"type":"text","text":"Paragraph '$i' of the answer, long enough to take a line of its own in the transcript."}]},"session_id":"thread-1"}'
@@ -437,7 +437,7 @@ test('a streamed reply never moves a reader who scrolled away, and offers the wa
     const top = (): Promise<number> => viewport.evaluate((element) => element.scrollTop)
     const height = (): Promise<number> => viewport.evaluate((element) => element.scrollHeight)
     await viewport.hover()
-    await page.mouse.wheel(0, -400)
+    await page.mouse.wheel(0, -1_000)
     await expect.poll(top).toBeLessThan(200)
     const held = await top()
     const heightThen = await height()
@@ -521,12 +521,13 @@ const EDITING_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
   -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
   --print)
-    echo '{"type":"system","subtype":"init"}'
+    echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
     echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_0","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_0","name":"Read","input":{"file_path":"greeting.ts"}}]},"session_id":"thread-1"}'
     echo '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok"}]},"session_id":"thread-1","tool_use_result":{"filePath":"greeting.ts","oldString":"hello","newString":"goodbye","structuredPatch":[{"oldStart":1,"oldLines":1,"newStart":1,"newLines":1,"lines":["-export const greeting = \\"hello\\"","+export const greeting = \\"goodbye\\""]}]}}'
     echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"echo ok"}}]},"session_id":"thread-1"}'
     echo '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_2","type":"tool_result","content":"ok","is_error":false}]},"session_id":"thread-1","tool_use_result":{"stdout":"ok","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false}}'
     echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}]},"session_id":"thread-1"}'
+    echo '{"type":"result","subtype":"success","is_error":false,"session_id":"thread-1","result":"Done.","usage":{"input_tokens":12,"output_tokens":2}}'
     /bin/sleep 1
     exit 0;;
 esac`
@@ -569,10 +570,17 @@ test('a Session says which files it changed, and offers nothing to accept', asyn
     await chip.click()
     await expect(panel).toHaveCount(0)
 
-    // The Conversation marks the Run with a quiet divider, and the Run's
-    // activity collapses to one line when it finishes (mock 2d).
+    // The Conversation marks the Run with a quiet divider, then delivers one
+    // durable outcome with the result, file impact, and next actions.
     const history = page.getByRole('log', { name: 'Conversation history' })
     await expect(history.getByText(/^Run · /).last()).toBeVisible()
+    const outcome = history.getByRole('region', { name: 'Run outcome' }).last()
+    await expect(outcome.getByText('Run delivered')).toBeVisible()
+    await expect(outcome).toContainText('1 changed file ready to review')
+    await expect(outcome.getByRole('button', { name: 'Review files' })).toBeVisible()
+    await expect(outcome.getByRole('button', { name: 'Continue' })).toBeVisible()
+
+    // The activity record stays one expandable line inside the delivery.
     const block = history.getByLabel('Run activity').last()
     await expect(block).toContainText('Edited 1 file')
 

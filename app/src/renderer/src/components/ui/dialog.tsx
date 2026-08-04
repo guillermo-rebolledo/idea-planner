@@ -104,7 +104,7 @@ export function Modal({
         aria-labelledby={labelledBy}
         tabIndex={-1}
         className={cn(
-          'w-full max-w-sm rounded-xl border border-border bg-surface-raised p-4 shadow-lg outline-none',
+          'dialog-viewport w-full max-w-sm overflow-y-auto rounded-xl border border-border bg-surface-raised p-4 shadow-lg outline-none',
           className
         )}
       >

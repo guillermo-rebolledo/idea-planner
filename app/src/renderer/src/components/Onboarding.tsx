@@ -81,57 +81,61 @@ export function Onboarding({ onComplete }: OnboardingProps): React.JSX.Element {
       <header className="app-drag-region h-11 shrink-0" aria-hidden="true" />
       <main className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
         <section
-          className="flex w-full max-w-md flex-col items-center gap-5"
+          className="flex w-full max-w-lg -translate-y-[4vh] flex-col items-center gap-4"
           aria-labelledby="onboarding-title"
         >
-          <div
-            aria-hidden="true"
-            className="flex size-11 items-center justify-center rounded-lg border border-border shadow-sm"
-          >
-            <FolderPlus className="size-5" />
+          <div className="flex flex-col items-center gap-3">
+            <div
+              aria-hidden="true"
+              className="flex size-12 items-center justify-center rounded-lg border border-border shadow-sm"
+            >
+              <FolderPlus className="size-5" />
+            </div>
+
+            <div className="text-center">
+              <h1 id="onboarding-title" className="text-lg font-semibold tracking-tight">
+                Add your first Project
+              </h1>
+              <p className="mt-1.5 max-w-md text-sm leading-relaxed text-muted-foreground">
+                A Project is a local git repository. Sessions, approvals and history all belong to
+                it — and never leave this Mac.
+              </p>
+            </div>
           </div>
 
-          <div className="text-center">
-            <h1 id="onboarding-title" className="text-lg font-semibold tracking-tight">
-              Add your first Project
-            </h1>
-            <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-              A Project is a local git repository. Sessions, approvals and history all belong to it
-              — and never leave this Mac.
+          <div className="mt-2 flex w-full flex-col items-center gap-2">
+            <div
+              onDragOver={(event) => {
+                event.preventDefault()
+                setDraggingOver(true)
+              }}
+              onDragLeave={(event) => {
+                // Leaving a child of the zone is not leaving the zone.
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                  setDraggingOver(false)
+              }}
+              onDrop={onDrop}
+              className={cn(
+                'flex w-full flex-col items-center gap-2 rounded-xl border border-dashed px-6 py-8',
+                draggingOver ? 'border-ring bg-accent' : 'border-border'
+              )}
+            >
+              <p className="text-sm font-medium">Drop a folder here</p>
+              <p className="font-mono text-xs text-muted-foreground">~/dev/your-project</p>
+              <Button
+                className="mt-1.5"
+                disabled={busy}
+                onClick={() => void offer(() => window.shell.chooseProject(), COULD_NOT_ADD)}
+              >
+                Choose a folder…
+              </Button>
+            </div>
+
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Info aria-hidden="true" className="size-3 shrink-0" />
+              Must be a git repository — git is the only undo for the agent&rsquo;s edits.
             </p>
           </div>
-
-          <div
-            onDragOver={(event) => {
-              event.preventDefault()
-              setDraggingOver(true)
-            }}
-            onDragLeave={(event) => {
-              // Leaving a child of the zone is not leaving the zone.
-              if (!event.currentTarget.contains(event.relatedTarget as Node | null))
-                setDraggingOver(false)
-            }}
-            onDrop={onDrop}
-            className={cn(
-              'flex w-full flex-col items-center gap-2 rounded-xl border border-dashed px-5 py-6',
-              draggingOver ? 'border-ring bg-accent' : 'border-border'
-            )}
-          >
-            <p className="text-sm font-medium">Drop a folder here</p>
-            <p className="font-mono text-xs text-muted-foreground">~/dev/your-project</p>
-            <Button
-              className="mt-1.5"
-              disabled={busy}
-              onClick={() => void offer(() => window.shell.chooseProject(), COULD_NOT_ADD)}
-            >
-              Choose a folder…
-            </Button>
-          </div>
-
-          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Info aria-hidden="true" className="size-3 shrink-0" />
-            Must be a git repository — git is the only undo for the agent&rsquo;s edits.
-          </p>
 
           {refusal && (
             <RefusalNotice
