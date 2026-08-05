@@ -1352,6 +1352,15 @@ test('a Project’s own Skills are shown, trusted once, and then offered', async
     await expect(skills.getByRole('button', { name: /deploy-to-prod/ })).toBeVisible()
     await page.getByLabel('Your message').fill('')
 
+    // Trust is bound to all nested content. A later catalog read withdraws it
+    // and names the Skill that changed before asking again.
+    await writeFile(join(own, 'template.md'), 'new instructions')
+    await page.reload()
+    await page.getByRole('button', { name: 'Offline receipts', exact: true }).click()
+    await expect(notice.getByText('Changes since you trusted them')).toBeVisible()
+    await expect(notice.getByText('Changed: deploy-to-prod (claude)')).toBeVisible()
+    await notice.getByRole('button', { name: 'Trust this Project’s Skills' }).click()
+
     // Typing `/` offers what is installed, and the choice is for this message.
     await chooseSkill(page, 'grilling')
     await expect(page.getByText('This message asks for the')).toBeVisible()

@@ -73,7 +73,9 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
     case 'project/remove':
       return core.removeProject(command.root)
     case 'project/trust-skills':
-      return core.setProjectSkillsTrusted(command.root, command.trusted)
+      return core.setProjectSkillsTrusted(command.root, command.trust)
+    case 'project/observe-skills':
+      return core.observeProjectSkills(command.root, command.digest)
     case 'approval/grant':
       return core.grantStandingApproval(command.input)
     case 'approval/list':

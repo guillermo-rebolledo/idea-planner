@@ -35,6 +35,7 @@ import {
   type ReviewAttachment,
   type RunSnapshot,
   type SessionSummary,
+  type SkillCatalog,
   type SuggestedResponse
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
@@ -151,6 +152,25 @@ const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
 
 const NO_CONVERSATION_ENTRIES: ConversationEntry[] = []
 
+function skillChangeCount(catalog: SkillCatalog): number {
+  return (
+    catalog.changes.added.length + catalog.changes.removed.length + catalog.changes.changed.length
+  )
+}
+
+function projectSkillErrorText(reason: NonNullable<SkillCatalog['projectTrustError']>): string {
+  switch (reason) {
+    case 'unreadable':
+      return 'not readable'
+    case 'unsupported':
+      return 'using a symlink or unsupported file type'
+    case 'cyclic':
+      return 'cyclic'
+    case 'over-limit':
+      return 'over the file or byte safety limit'
+  }
+}
+
 export function Conversation({
   session,
   conversation,
@@ -214,7 +234,10 @@ export function Conversation({
   const chosenHarness = choice?.harness ?? null
   const [catalog, setCatalog] = useSkillCatalog({
     projectRoot: session.projectRoot,
-    harness: chosenHarness
+    harness: chosenHarness,
+    // A queued Skill losing trust pauses at the launch gate. Re-read here so
+    // the explicit trust decision appears with that paused queue.
+    refreshWhenQueuePaused: snapshot?.queue.paused
   })
 
   // Runs arrive newest first. A mode picked here outranks later refreshes;
@@ -563,8 +586,21 @@ export function Conversation({
                   </p>
                 )}
 
-              {catalog &&
-                catalog.untrusted.length > 0 &&
+              {catalog?.projectTrustError &&
+                row(
+                  'skills-observation-error',
+                  <div
+                    role="alert"
+                    aria-label="Project Skills unavailable"
+                    className="rounded-md border border-border bg-muted/50 p-3 text-xs"
+                  >
+                    Project Skills are {projectSkillErrorText(catalog.projectTrustError)}. They are
+                    not trusted, and no Project Skill can start until this is resolved.
+                  </div>
+                )}
+
+              {catalog?.projectTrustError === null &&
+                (catalog.untrusted.length > 0 || skillChangeCount(catalog) > 0) &&
                 row(
                   'skills-untrusted',
                   // A standing condition, not an interruption: it reads in
@@ -577,8 +613,8 @@ export function Conversation({
                     <p className="text-xs">
                       This Project brings {catalog.untrusted.length === 1 ? 'a Skill' : 'Skills'} of
                       its own. A Skill is instructions for an agent that can edit files and run
-                      commands, and these arrived with the repository — so they are not offered
-                      until you say so.
+                      commands, and these arrived with the Project — so they are not offered until
+                      you say so.
                     </p>
                     <ul className="mt-2 flex flex-col gap-1">
                       {catalog.untrusted.map((entry) => (
@@ -593,16 +629,34 @@ export function Conversation({
                         </li>
                       ))}
                     </ul>
+                    {skillChangeCount(catalog) > 0 && (
+                      <div className="mt-2" aria-label="Project Skill changes">
+                        <p className="text-xs font-medium">Changes since you trusted them</p>
+                        {(['added', 'removed', 'changed'] as const).map(
+                          (kind) =>
+                            catalog.changes[kind].length > 0 && (
+                              <p key={kind} className="text-xs text-muted-foreground">
+                                <span className="capitalize">{kind}</span>:{' '}
+                                {catalog.changes[kind]
+                                  .map((entry) => `${entry.name} (${entry.harness})`)
+                                  .join(', ')}
+                              </p>
+                            )
+                        )}
+                      </div>
+                    )}
                     <Button
                       className="mt-2"
                       size="sm"
                       variant="secondary"
+                      disabled={catalog.reviewedDigest === null}
                       onClick={() =>
                         void window.shell
                           .trustProjectSkills({
                             root: session.projectRoot,
                             harness: chosenHarness ?? 'claude',
-                            trusted: true
+                            trusted: true,
+                            reviewedDigest: catalog.reviewedDigest ?? undefined
                           })
                           .then(setCatalog, () => setError('Those Skills could not be trusted.'))
                       }
@@ -610,8 +664,8 @@ export function Conversation({
                       Trust this Project’s Skills
                     </Button>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Read them first — they are files in the repository. You can withdraw this at
-                      any time.
+                      Read them first — they are files in the Project. If they change before you
+                      confirm, the grant is refused. You can withdraw this at any time.
                     </p>
                   </div>
                 )}
