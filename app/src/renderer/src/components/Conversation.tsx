@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Markdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -22,6 +22,7 @@ import {
   type ApprovalDecision,
   type ConversationEntry,
   type ConversationRecovery,
+  type ConversationStreamEvent,
   type DiffHunk,
   type PermissionMode,
   type RunSnapshot,
@@ -76,6 +77,51 @@ interface LiveRun {
   suggestedResponses: SuggestedResponse[]
 }
 
+/** Fold one pushed event into the latest value waiting for the next paint. */
+function applyLiveEvent(current: LiveRun | null, streamed: ConversationStreamEvent): LiveRun {
+  const { event, runId } = streamed
+  const base: LiveRun =
+    current?.runId === runId
+      ? current
+      : { runId, messages: [], changes: [], commands: [], suggestedResponses: [] }
+  if (event.type === 'choices') return { ...base, suggestedResponses: event.options }
+  // A change is already on disk when it arrives, so it is shown on the next
+  // paint rather than waiting for the Run to finish.
+  if (event.type === 'file-change') {
+    return {
+      ...base,
+      changes: [
+        ...base.changes,
+        {
+          id: `${runId}:${base.changes.length + 1}`,
+          path: event.path,
+          hunks: event.hunks
+        }
+      ]
+    }
+  }
+  // A command appears when it starts and is replaced in place when it ends.
+  if (event.type === 'command') {
+    const known = base.commands.some((entry) => entry.id === event.id)
+    return {
+      ...base,
+      commands: known
+        ? base.commands.map((entry) => (entry.id === event.id ? { ...event } : entry))
+        : [...base.commands, { ...event }]
+    }
+  }
+  if (event.type !== 'assistant-message') return base
+  const known = base.messages.some((message) => message.id === event.id)
+  return {
+    ...base,
+    messages: known
+      ? base.messages.map((message) =>
+          message.id === event.id ? { ...message, text: event.text } : message
+        )
+      : [...base.messages, { id: event.id, text: event.text }]
+  }
+}
+
 const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
   authentication:
     'The Harness is no longer signed in. Sign in with its own CLI, then send your message again.',
@@ -94,6 +140,8 @@ const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
   'supervision-failed':
     'Harness cleanup could not be verified. Quit the app and check Activity Monitor before starting another Run.'
 }
+
+const NO_CONVERSATION_ENTRIES: ConversationEntry[] = []
 
 export function Conversation({
   session,
@@ -132,9 +180,6 @@ export function Conversation({
   // The first click reveals the exact commitment in context; the second stores
   // it. Changing requests always withdraws an unfinished confirmation.
   const [standingApprovalConfirmId, setStandingApprovalConfirmId] = useState<string | null>(null)
-  // Read once per second only while a Run works, so the divider and the
-  // activity block can say how long it has been at it.
-  const [clock, setClock] = useState(() => Date.now())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -172,81 +217,39 @@ export function Conversation({
   }, [runs])
 
   useEffect(() => {
-    if (!activeRunId) return
-    const timer = window.setInterval(() => setClock(Date.now()), 1_000)
-    return () => window.clearInterval(timer)
-  }, [activeRunId])
-
-  useEffect(
-    () =>
-      window.shell.onConversationEvent((streamed) => {
-        if (streamed.sessionId !== sessionId) return
-        const event = streamed.event
-        if (event.type === 'failed') {
-          setError(event.summary)
-          return
-        }
-        // An approval is durable the moment it is asked for, and the Run is
-        // blocked until it is answered — so it is read back rather than kept
-        // as a second copy of the same fact on this side.
-        if (event.type === 'approval-request' || event.type === 'approval-resolved') {
-          return
-        }
-        setLive((current) => {
-          const base: LiveRun =
-            current?.runId === streamed.runId
-              ? current
-              : {
-                  runId: streamed.runId,
-                  messages: [],
-                  changes: [],
-                  commands: [],
-                  suggestedResponses: []
-                }
-          if (event.type === 'choices') return { ...base, suggestedResponses: event.options }
-          // A change is already on disk when it arrives, so it is shown as it
-          // happens rather than waiting for the Run to finish.
-          if (event.type === 'file-change') {
-            return {
-              ...base,
-              changes: [
-                ...base.changes,
-                {
-                  id: `${streamed.runId}:${base.changes.length + 1}`,
-                  path: event.path,
-                  hunks: event.hunks
-                }
-              ]
-            }
-          }
-          // A command appears the moment it starts and is replaced in place
-          // when it finishes: the Harness sends no partial output, so this is
-          // as live as it gets.
-          if (event.type === 'command') {
-            const known = base.commands.some((entry) => entry.id === event.id)
-            return {
-              ...base,
-              commands: known
-                ? base.commands.map((entry) => (entry.id === event.id ? { ...event } : entry))
-                : [...base.commands, { ...event }]
-            }
-          }
-          if (event.type !== 'assistant-message') return base
-          // Each event carries the whole message so far, so a later one for
-          // the same Harness item replaces the earlier one.
-          const known = base.messages.some((message) => message.id === event.id)
-          return {
-            ...base,
-            messages: known
-              ? base.messages.map((message) =>
-                  message.id === event.id ? { ...message, text: event.text } : message
-                )
-              : [...base.messages, { id: event.id, text: event.text }]
-          }
-        })
-      }),
-    [sessionId]
-  )
+    let publishedLive: LiveRun | null = null
+    let pendingLive: LiveRun | null = null
+    let frame: number | null = null
+    const stop = window.shell.onConversationEvent((streamed) => {
+      if (streamed.sessionId !== sessionId) return
+      const event = streamed.event
+      if (event.type === 'failed') {
+        setError(event.summary)
+        return
+      }
+      // An approval is durable the moment it is asked for, and the Run is
+      // blocked until it is answered — so it is read back rather than kept
+      // as a second copy of the same fact on this side.
+      if (event.type === 'approval-request' || event.type === 'approval-resolved') {
+        return
+      }
+      pendingLive = applyLiveEvent(pendingLive ?? publishedLive, streamed)
+      // Every event carries the complete latest value. Publishing the
+      // newest accumulated value at paint cadence keeps the Run responsive
+      // without asking React and markdown to reconcile intermediate text
+      // the browser could never display.
+      frame ??= window.requestAnimationFrame(() => {
+        frame = null
+        publishedLive = pendingLive
+        pendingLive = null
+        setLive(publishedLive)
+      })
+    })
+    return () => {
+      stop()
+      if (frame !== null) window.cancelAnimationFrame(frame)
+    }
+  }, [sessionId])
 
   const chosenSkill = offeredSkill(catalog, skill)
   const matchingSkills = skillsMatching(catalog, draft)
@@ -430,6 +433,9 @@ export function Conversation({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [pendingApproval, deciding, decide, activeRunId, stop])
 
+  const durableEntries = snapshot?.entries ?? NO_CONVERSATION_ENTRIES
+  const items = useMemo(() => groupEntries(durableEntries), [durableEntries])
+
   // Centered like every other whole-surface state in the app: the surface is
   // loading or failed, not a card that happens to sit at its top-left corner.
   if (phase.state === 'loading') {
@@ -465,7 +471,6 @@ export function Conversation({
     : activeRunId === null && latestAssistant?.kind === 'message'
       ? latestAssistant.suggestedResponses
       : []
-  const items = groupEntries(entries)
   // Whether the Harness behind the chosen model can run a Session at all.
   const canDevelop = readiness?.harnesses.find((entry) => entry.harness === chosenHarness)
     ?.capabilities.developSession
@@ -520,6 +525,7 @@ export function Conversation({
                   return row(
                     item.entry.id,
                     <AgentText
+                      id={item.entry.id}
                       text={item.entry.text}
                       partial={item.entry.completeness === 'partial'}
                     />
@@ -538,7 +544,6 @@ export function Conversation({
                     run={runs.find((run) => run.id === item.runId) ?? null}
                     active={item.runId === activeRunId}
                     waiting={pendingApproval?.runId === item.runId}
-                    clock={clock}
                     live={liveForActiveRun?.runId === item.runId ? liveForActiveRun : null}
                     onOpenFile={onOpenFile}
                     onContinue={() => composerRef.current?.focus()}
@@ -962,11 +967,11 @@ function Spinner(): React.JSX.Element {
 function RunWorkingIndicator({
   steps,
   live,
-  elapsed
+  startedAt
 }: {
   steps: StepEntry[]
   live: LiveRun | null
-  elapsed: number | null
+  startedAt: string | null
 }): React.JSX.Element {
   const runningCommand =
     (live?.commands ?? []).find((command) => command.running) ??
@@ -983,11 +988,23 @@ function RunWorkingIndicator({
     <div role="status" className="flex items-center gap-2.5 font-mono text-xs">
       <DotMatrix label="Run in progress" className="shrink-0 text-status-running" />
       <span className="min-w-0 flex-1 shimmer truncate">{current}</span>
-      {elapsed !== null && (
-        <span className="shrink-0 text-2xs text-muted-foreground">{formatDuration(elapsed)}</span>
+      {startedAt !== null && (
+        <span className="shrink-0 text-2xs text-muted-foreground">
+          <RunElapsed startedAt={startedAt} />
+        </span>
       )}
     </div>
   )
+}
+
+/** The ticking value is local, so a clock edge cannot rerender the transcript. */
+function RunElapsed({ startedAt }: { startedAt: string }): React.JSX.Element {
+  const [elapsed, setElapsed] = useState(() => Date.now() - Date.parse(startedAt))
+  useEffect(() => {
+    const timer = window.setInterval(() => setElapsed(Date.now() - Date.parse(startedAt)), 1_000)
+    return () => window.clearInterval(timer)
+  }, [startedAt])
+  return <>{formatDuration(elapsed)}</>
 }
 
 /**
@@ -1407,7 +1424,21 @@ const MARKDOWN_PLUGINS = [remarkGfm]
  * writes markdown, so markdown is what renders — as React elements, never
  * injected HTML, and raw HTML in the message stays inert text.
  */
-function AgentText({ text, partial }: { text: string; partial: boolean }): React.JSX.Element {
+const AgentText = memo(function AgentText({
+  text,
+  partial
+}: {
+  id: string
+  text: string
+  partial: boolean
+}): React.JSX.Element {
+  // The packaged-shell performance fixture installs this optional browser
+  // probe. Ordinary application windows never define it.
+  ;(
+    window as typeof window & {
+      __argosTestConversationRenderProbe?: (text: string) => void
+    }
+  ).__argosTestConversationRenderProbe?.(text)
   return (
     <div className="max-w-lg">
       <div className="text-sm leading-relaxed select-text">
@@ -1422,7 +1453,7 @@ function AgentText({ text, partial }: { text: string; partial: boolean }): React
       )}
     </div>
   )
-}
+})
 
 /**
  * One Run of the Conversation: its quiet mono divider, its prose, its
@@ -1434,7 +1465,6 @@ function RunSection({
   run,
   active,
   waiting,
-  clock,
   live,
   onOpenFile,
   onContinue
@@ -1443,7 +1473,6 @@ function RunSection({
   run: RunSnapshot | null
   active: boolean
   waiting: boolean
-  clock: number
   live: LiveRun | null
   onOpenFile: (path: string) => void
   onContinue: () => void
@@ -1476,21 +1505,22 @@ function RunSection({
   ]
   return (
     <div className="flex flex-col gap-4">
-      <RunDivider view={{ group, run, active, waiting, clock, startedAt }} />
+      <RunDivider view={{ group, run, active, waiting, startedAt }} />
       {messages
         .filter((message) => message.text)
         .map((message) => (
-          <AgentText key={message.id} text={message.text} partial={message.partial} />
+          <AgentText
+            key={message.id}
+            id={message.id}
+            text={message.text}
+            partial={message.partial}
+          />
         ))}
       {/* In flight: one pulsing line about the current step. At rest: the
           collapsed record of what the Run did. Never both — and never a
           panel that shuffles while the agent works. */}
       {active && !waiting && (
-        <RunWorkingIndicator
-          steps={group.steps}
-          live={live}
-          elapsed={startedAt !== null ? clock - Date.parse(startedAt) : null}
-        />
+        <RunWorkingIndicator steps={group.steps} live={live} startedAt={startedAt} />
       )}
       {resolved.map((entry) => (
         <ApprovalRow key={entry.id} entry={entry} />
@@ -1524,7 +1554,6 @@ interface RunDividerView {
   run: RunSnapshot | null
   active: boolean
   waiting: boolean
-  clock: number
   startedAt: string | null
 }
 
@@ -1534,7 +1563,7 @@ interface RunDividerView {
  * worked. Mono and muted, so history reads as history.
  */
 function RunDivider({ view }: { view: RunDividerView }): React.JSX.Element {
-  const { group, run, active, waiting, clock, startedAt } = view
+  const { group, run, active, waiting, startedAt } = view
   const model = run?.configuration.model ?? group.started?.model ?? null
   const mode = run ? MODE_LABEL[run.configuration.permissionMode] : null
   const label = ['Run', model, mode].filter(Boolean).join(' · ')
@@ -1543,7 +1572,8 @@ function RunDivider({ view }: { view: RunDividerView }): React.JSX.Element {
     outcome = (
       <span className="flex items-center gap-1.5">
         <span aria-hidden="true" className="size-1.5 rounded-full bg-status-running" />
-        Running{startedAt !== null && ` · ${formatDuration(clock - Date.parse(startedAt))}`}
+        Running{startedAt !== null && ' · '}
+        {startedAt !== null && <RunElapsed startedAt={startedAt} />}
       </span>
     )
   } else if (active && waiting) {
