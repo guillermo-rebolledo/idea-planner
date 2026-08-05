@@ -572,11 +572,24 @@ export const finalizeConversationRunInputSchema = z.object({
 })
 export type FinalizeConversationRunInput = z.infer<typeof finalizeConversationRunInputSchema>
 
-/** Pushed to the Renderer as it happens, ahead of any durable projection. */
+/** App-owned Run boundaries that no Harness Adapter can report for itself. */
+export const conversationLifecycleEventSchema = z.object({
+  type: z.enum(['started', 'stopped'])
+})
+export type ConversationLifecycleEvent = z.infer<typeof conversationLifecycleEventSchema>
+
+/** What Main pushes after Core has durably applied the event it represents. */
+export const conversationEventSchema = z.union([
+  conversationLifecycleEventSchema,
+  harnessEventSchema
+])
+export type ConversationEvent = z.infer<typeof conversationEventSchema>
+
+/** Pushed to the Renderer as it happens, after its durable projection. */
 export const conversationStreamEventSchema = z.object({
   sessionId: z.string().min(1),
   runId: z.string().min(1),
-  event: harnessEventSchema
+  event: conversationEventSchema
 })
 export type ConversationStreamEvent = z.infer<typeof conversationStreamEventSchema>
 

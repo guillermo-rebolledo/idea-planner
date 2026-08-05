@@ -498,6 +498,13 @@ export class RunService {
       askedPermissionMode: CLAUDE_PERMISSION_MODES[input.permissionMode],
       restorationNote: latestHarness === input.harness && !threadCompatible
     })
+    // Main owns the moment a Run starts. Publish it only after Core has made
+    // the boundary durable, so a listener can immediately read `running`.
+    this.deps.onConversationEvent?.({
+      sessionId: input.sessionId,
+      runId: accepted.id,
+      event: { type: 'started' }
+    })
     if (skill) {
       await this.record(
         accepted,
@@ -782,11 +789,17 @@ export class RunService {
     this.writeFrames(run.id, stream.outgoing)
     for (const event of stream.events) {
       if (event.type === 'failed') this.failures.set(run.id, event.category)
-      this.deps.onConversationEvent?.({
-        sessionId: run.sessionId,
-        runId: run.id,
-        event
-      })
+      // Harness terminal frames are inputs to Main's conclusion, not durable
+      // Conversation boundaries yet. `conclude` publishes the one terminal
+      // event after Core has finalized the Run, so listeners never read the
+      // old `running` projection or see the same ending twice.
+      if (event.type !== 'completed' && event.type !== 'failed') {
+        this.deps.onConversationEvent?.({
+          sessionId: run.sessionId,
+          runId: run.id,
+          event
+        })
+      }
       const activity = describeActivity(event, run.configuration.permissionMode)
       if (activity) {
         await this.record(run, undefined, activity.kind, sanitize(activity.summary, checkout))
@@ -1131,7 +1144,9 @@ export class RunService {
       event:
         status === 'completed'
           ? { type: 'completed' }
-          : { type: 'failed', category: category ?? 'unknown', summary: explained }
+          : status === 'stopped'
+            ? { type: 'stopped' }
+            : { type: 'failed', category: category ?? 'unknown', summary: explained }
     })
     return snapshot
   }
