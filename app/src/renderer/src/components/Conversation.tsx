@@ -22,7 +22,6 @@ import {
   type ConversationEntry,
   type ConversationRecovery,
   type DiffHunk,
-  type ConversationSnapshot,
   type PermissionMode,
   type RunSnapshot,
   type SessionSummary,
@@ -54,6 +53,7 @@ import {
   skillsMatching,
   useSkillCatalog
 } from '@renderer/components/Skills'
+import type { SelectedConversation } from '@renderer/lib/useSelectedConversation'
 import { cn } from '@renderer/lib/utils'
 
 /**
@@ -62,9 +62,6 @@ import { cn } from '@renderer/lib/utils'
  * against the durable snapshot, so what is on screen never outlives what was
  * saved. Suggested Responses submit directly; typed answers wait for Send.
  */
-
-type Phase =
-  { state: 'loading' } | { state: 'failed' } | { state: 'ready'; snapshot: ConversationSnapshot }
 
 /** Assistant text for the Run in flight, ahead of the durable projection. */
 interface LiveRun {
@@ -99,15 +96,16 @@ const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
 
 export function Conversation({
   session,
+  conversation,
   onOpenFile
 }: {
   session: SessionSummary
+  conversation: SelectedConversation
   /** Opens the Files panel focused on one file — the app's one diff surface. */
   onOpenFile: (path: string) => void
 }): React.JSX.Element {
   const sessionId = session.id
-  const [phase, setPhase] = useState<Phase>({ state: 'loading' })
-  const [runs, setRuns] = useState<RunSnapshot[]>([])
+  const { phase, runs, refresh, adopt: adoptSnapshot } = conversation
   const [live, setLive] = useState<LiveRun | null>(null)
   const [draft, setDraft] = useState('')
   // At most one message held while a Run works. Send during a Run parks the
@@ -163,39 +161,14 @@ export function Conversation({
     harness: chosenHarness
   })
 
-  // Runs arrive newest first, and what the next Run is configured with starts
-  // as what the last Run really used: the mode chosen at launch travels here
-  // instead of silently resetting. A pick made on this surface stays made.
-  const takeRuns = useCallback((listed: RunSnapshot[]) => {
-    setRuns(listed)
-    const latest = listed[0]
+  // Runs arrive newest first. A mode picked here outranks later refreshes;
+  // until then the most recent durable Run seeds the next one.
+  useEffect(() => {
+    const latest = runs[0]
     if (!modeTouchedRef.current && latest) {
       setPermissionMode(latest.configuration.permissionMode)
     }
-  }, [])
-
-  const refresh = useCallback(async () => {
-    try {
-      const next = await window.shell.getConversation(sessionId)
-      setPhase({ state: 'ready', snapshot: next })
-      if (next.activeRunId === null) setLive(null)
-    } catch {
-      setPhase((current) => (current.state === 'ready' ? current : { state: 'failed' }))
-    }
-    await window.shell.listRuns(sessionId).then(takeRuns, () => undefined)
-  }, [sessionId, takeRuns])
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
-
-  // While a Run is in flight the durable snapshot is what settles partial
-  // messages, so it is re-read until the Run reaches a boundary.
-  useEffect(() => {
-    if (!activeRunId) return
-    const timer = window.setInterval(() => void refresh(), 750)
-    return () => window.clearInterval(timer)
-  }, [activeRunId, refresh])
+  }, [runs])
 
   useEffect(() => {
     if (!activeRunId) return
@@ -216,7 +189,6 @@ export function Conversation({
         // blocked until it is answered — so it is read back rather than kept
         // as a second copy of the same fact on this side.
         if (event.type === 'approval-request' || event.type === 'approval-resolved') {
-          void refresh()
           return
         }
         setLive((current) => {
@@ -272,7 +244,7 @@ export function Conversation({
           }
         })
       }),
-    [sessionId, refresh]
+    [sessionId]
   )
 
   const chosenSkill = offeredSkill(catalog, skill)
@@ -311,7 +283,7 @@ export function Conversation({
           effort: applicableEffort(models, choice),
           permissionMode: permissionMode
         })
-        setPhase({ state: 'ready', snapshot: next })
+        adoptSnapshot(next)
         // Per message, not per Session: real work switches methodology inside
         // one thread of context, and a Skill that outlives the message it was
         // chosen for is one nobody chose for the next one. A queued send
@@ -320,7 +292,6 @@ export function Conversation({
           setDraft('')
           setSkill(null)
         }
-        await window.shell.listRuns(sessionId).then(takeRuns, () => undefined)
       } catch {
         setError(
           'The Run could not start. Check that the Harness is ready and that supervision has recovered.'
@@ -332,7 +303,7 @@ export function Conversation({
         setBusy(false)
       }
     },
-    [sessionId, chosenHarness, chosenSkill, choice, models, permissionMode, refresh, takeRuns]
+    [sessionId, chosenHarness, chosenSkill, choice, models, permissionMode, refresh, adoptSnapshot]
   )
 
   /**
@@ -355,7 +326,7 @@ export function Conversation({
           decision,
           remember
         })
-        setPhase({ state: 'ready', snapshot: next })
+        adoptSnapshot(next)
       } catch {
         setError('That request could not be answered. The Run may have already ended.')
         await refresh()
@@ -363,7 +334,7 @@ export function Conversation({
         setDeciding(false)
       }
     },
-    [sessionId, refresh]
+    [sessionId, refresh, adoptSnapshot]
   )
 
   const stop = useCallback(() => {

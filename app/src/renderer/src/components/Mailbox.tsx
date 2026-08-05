@@ -50,6 +50,7 @@ import { SessionSwitcher } from '@renderer/components/SessionSwitcher'
 import { FilesPanel } from '@renderer/components/FilesPanel'
 import { WhereAmI } from '@renderer/components/WhereAmI'
 import { useSessionChanges } from '@renderer/lib/useSessionChanges'
+import { useSelectedConversation } from '@renderer/lib/useSelectedConversation'
 import { cn } from '@renderer/lib/utils'
 
 interface MailboxProps {
@@ -286,9 +287,12 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   }
 
   const selectedSession = surface.kind === 'session' ? surface.session : undefined
+  // One selected-Session owner supplies every durable Conversation consumer.
+  // Conversation, Run history, title-bar totals, and Files all move together.
+  const conversation = useSelectedConversation(selectedSession?.id ?? null)
   // Session-cumulative and live: the same numbers the title bar wears and the
   // Files panel breaks down, from one read so they cannot disagree.
-  const changes = useSessionChanges(selectedSession?.id ?? null)
+  const changes = useSessionChanges(conversation.snapshot)
 
   // What the announcement subscription below needs to know without
   // resubscribing on every render: who is on screen, and what everything is
@@ -583,6 +587,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
             <Conversation
               key={surface.session.id}
               session={surface.session}
+              conversation={conversation}
               onOpenFile={openFiles}
             />
           ) : (
