@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import {
   HARNESS_DEFAULT_MODEL,
+  assistantMessageId,
   projectDisplayName,
   ruleText,
   type ApprovalDecision,
@@ -1449,20 +1450,37 @@ function RunSection({
 }): React.JSX.Element {
   const startedAt = group.started?.at ?? run?.acceptedAt ?? null
   const resolved = group.approvals.filter((entry) => entry.decision !== null)
+  const durableMessageIds = new Set(group.messages.map((message) => message.id))
+  const liveMessages = new Map(
+    (live?.messages ?? []).map((message) => [assistantMessageId(group.runId, message.id), message])
+  )
+  // A streamed message and its checkpoint share Core's durable assistant id.
+  // Keep one row at that identity: live text wins while the Run is active,
+  // then the same keyed row naturally hands off to the durable projection.
+  const messages = [
+    ...group.messages.map((message) => {
+      const streaming = liveMessages.get(message.id)
+      return {
+        id: message.id,
+        text: streaming?.text ?? message.text,
+        partial: streaming === undefined && message.completeness === 'partial'
+      }
+    }),
+    ...(live?.messages ?? [])
+      .map((message) => ({
+        id: assistantMessageId(group.runId, message.id),
+        text: message.text,
+        partial: false
+      }))
+      .filter((message) => !durableMessageIds.has(message.id))
+  ]
   return (
     <div className="flex flex-col gap-4">
       <RunDivider view={{ group, run, active, waiting, clock, startedAt }} />
-      {group.messages.map((message) => (
-        <AgentText
-          key={message.id}
-          text={message.text}
-          partial={message.completeness === 'partial'}
-        />
-      ))}
-      {(live?.messages ?? [])
+      {messages
         .filter((message) => message.text)
         .map((message) => (
-          <AgentText key={message.id} text={message.text} partial={false} />
+          <AgentText key={message.id} text={message.text} partial={message.partial} />
         ))}
       {/* In flight: one pulsing line about the current step. At rest: the
           collapsed record of what the Run did. Never both — and never a

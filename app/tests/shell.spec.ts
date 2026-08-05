@@ -413,6 +413,97 @@ const CHATTY_CLAUDE_FAKE = `case "$1" in
     exit 0;;
 esac`
 
+/**
+ * One Harness message that crosses both checkpoint boundaries: first a
+ * partial value, then its complete durable handoff. The pauses leave enough
+ * room for the renderer's durable refresh lane to observe each checkpoint.
+ */
+const CHECKPOINTING_CLAUDE_FAKE = `case "$1" in
+  --version) echo "2.1.220 (Claude Code)"; exit 0;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  --print)
+    echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
+    echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_checkpoint"}}}'
+    echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Checkpointed once"}}}'
+    /bin/sleep 0.4
+    echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" and handed off"}}}'
+    /bin/sleep 0.4
+    echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_checkpoint","type":"message","role":"assistant","content":[{"type":"text","text":"Checkpointed once and handed off"}]},"session_id":"thread-1"}'
+    /bin/sleep 0.4
+    echo '{"type":"result","subtype":"success","is_error":false,"session_id":"thread-1","result":"Checkpointed once and handed off","usage":{"input_tokens":12,"output_tokens":5}}'
+    exit 0;;
+esac`
+
+test('one streamed Harness message stays one DOM message through durable checkpoints', async () => {
+  await installFakeHarness('claude', CHECKPOINTING_CLAUDE_FAKE)
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+
+    await page.evaluate(() => {
+      const partial = 'Checkpointed once'
+      const complete = 'Checkpointed once and handed off'
+      const probe = {
+        maximumCopies: 0,
+        sawPartial: false,
+        sawComplete: false,
+        disappeared: false,
+        replaced: false,
+        message: null as HTMLParagraphElement | null
+      }
+      const inspect = (): void => {
+        const copies = Array.from(document.querySelectorAll('p')).filter(
+          (element): element is HTMLParagraphElement =>
+            element.textContent === partial || element.textContent === complete
+        )
+        probe.maximumCopies = Math.max(probe.maximumCopies, copies.length)
+        probe.sawPartial ||= copies.some((element) => element.textContent === partial)
+        probe.sawComplete ||= copies.some((element) => element.textContent === complete)
+        if (probe.message !== null && copies.length === 0) probe.disappeared = true
+        if (copies[0] !== undefined) {
+          if (probe.message === null) probe.message = copies[0]
+          else if (probe.message !== copies[0]) probe.replaced = true
+        }
+      }
+      new MutationObserver(inspect).observe(document.body, {
+        subtree: true,
+        childList: true,
+        characterData: true
+      })
+      Object.assign(window, { streamMessageProbe: probe })
+    })
+
+    await startSession(page, 'Checkpoint this answer')
+    const history = page.getByRole('log', { name: 'Conversation history' })
+    await expect(
+      history.getByText('Checkpointed once and handed off', { exact: true })
+    ).toBeVisible()
+    await expect(history.getByRole('region', { name: 'Run outcome' })).toBeVisible()
+
+    const observed = await page.evaluate(() => {
+      const probe = (window as unknown as { streamMessageProbe: Record<string, unknown> })
+        .streamMessageProbe
+      return {
+        maximumCopies: probe['maximumCopies'],
+        sawPartial: probe['sawPartial'],
+        sawComplete: probe['sawComplete'],
+        disappeared: probe['disappeared'],
+        replaced: probe['replaced']
+      }
+    })
+    expect(observed).toEqual({
+      maximumCopies: 1,
+      sawPartial: true,
+      sawComplete: true,
+      disappeared: false,
+      replaced: false
+    })
+  } finally {
+    await app.close()
+  }
+})
+
 test('a streamed reply never moves a reader who scrolled away, and offers the way back', async () => {
   await installFakeHarness('claude', CHATTY_CLAUDE_FAKE)
   const app = await launchShell()
