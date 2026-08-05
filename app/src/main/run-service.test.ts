@@ -726,6 +726,7 @@ describe('Run service', () => {
     await Promise.resolve()
     await broker.launch?.onBeforeCleanup?.()
     expect(streamed.map((entry) => entry.event.type)).toEqual([
+      'started',
       'assistant-message',
       'reasoning',
       'tool'
@@ -789,6 +790,7 @@ describe('Run service', () => {
     const core = fakeCore(join(root, 'a-project'))
     core.events = [{ type: 'failed', category: 'protocol', summary: 'Unsupported Claude event' }]
     const broker = fakeBroker()
+    const streamed: ConversationStreamEvent[] = []
     const service = new RunService({
       core,
       broker,
@@ -810,7 +812,8 @@ describe('Run service', () => {
       privateRoot: join(root, 'private'),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
-      skills: fakeSkills(root)
+      skills: fakeSkills(root),
+      onConversationEvent: (event) => streamed.push(event)
     })
     await service.start({
       submissionId: 'submission-1',
@@ -830,6 +833,8 @@ describe('Run service', () => {
         .at(-1)?.[0].input
       expect(terminal?.status).toBe('failed')
     })
+    expect(streamed.filter(({ event }) => event.type === 'failed')).toHaveLength(1)
+    expect(core.commands).toContain('conversation/finalize')
   })
 
   it('keeps the message and offers recovery when the Harness is never contacted', async () => {

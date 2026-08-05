@@ -49,10 +49,11 @@ import {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 8: the Conversation stream carries app-owned Run start and stop boundaries.
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 7
+export const CONTRACT_VERSION = 8
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */

@@ -51,6 +51,7 @@ import { FilesPanel } from '@renderer/components/FilesPanel'
 import { WhereAmI } from '@renderer/components/WhereAmI'
 import { useSessionChanges } from '@renderer/lib/useSessionChanges'
 import { useSelectedConversation } from '@renderer/lib/useSelectedConversation'
+import { ConversationMailboxRefresh } from '@renderer/lib/mailbox-refresh'
 import { cn } from '@renderer/lib/utils'
 
 interface MailboxProps {
@@ -153,6 +154,22 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     }
   }, [])
 
+  const refreshDamagedSessions = useCallback(async () => {
+    try {
+      const sessionIds = await window.shell.listDamagedSessions()
+      setDamaged(sessionIds)
+    } catch {
+      setDamaged([])
+    }
+  }, [])
+
+  const refreshSessionStructure = useCallback(
+    async (nextQuery: MailboxQuery) => {
+      await Promise.all([refreshMailbox(nextQuery), refreshDamagedSessions()])
+    },
+    [refreshDamagedSessions, refreshMailbox]
+  )
+
   useEffect(() => {
     const timer = window.setTimeout(
       () => void refreshMailbox(effectiveQuery),
@@ -161,27 +178,23 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     return () => window.clearTimeout(timer)
   }, [effectiveQuery, refreshMailbox])
 
-  // A Session's status is derived from its Conversation, so the inbox is only
-  // as true as the last time it read one. Anything that happens in a
-  // Conversation is exactly what can change the dot on a row.
+  // A Session's status is derived from its Conversation, so lifecycle and
+  // waiting-state boundaries refresh its row. Streamed content stays on the
+  // selected Conversation lane and never causes a mailbox-wide query.
   useEffect(() => {
-    let timer = 0
-    const stop = window.shell.onConversationEvent(() => {
-      window.clearTimeout(timer)
-      timer = window.setTimeout(() => void refreshMailbox(effectiveQuery), 150)
+    const refresh = new ConversationMailboxRefresh(() => void refreshMailbox(effectiveQuery))
+    const stop = window.shell.onConversationEvent(({ event }) => {
+      refresh.handle(event)
     })
     return () => {
-      window.clearTimeout(timer)
+      refresh.dispose()
       stop()
     }
   }, [effectiveQuery, refreshMailbox])
 
   useEffect(() => {
-    void window.shell
-      .listDamagedSessions()
-      .then(setDamaged)
-      .catch(() => setDamaged([]))
-  }, [mailbox])
+    void refreshDamagedSessions()
+  }, [refreshDamagedSessions])
 
   /** Home. Optionally already bound, as a Project header's plus does. */
   const startNewChat = useCallback(
@@ -215,9 +228,9 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       } catch {
         setAnnouncement(`Could not update the pin on “${session.title}”.`)
       }
-      void refreshMailbox(effectiveQuery)
+      void refreshSessionStructure(effectiveQuery)
     },
-    [effectiveQuery, refreshMailbox, setAnnouncement]
+    [effectiveQuery, refreshSessionStructure, setAnnouncement]
   )
 
   const setArchived = useCallback(
@@ -239,9 +252,9 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       } catch {
         setAnnouncement(`Could not ${archived ? 'archive' : 'restore'} “${session.title}”.`)
       }
-      void refreshMailbox(effectiveQuery)
+      void refreshSessionStructure(effectiveQuery)
     },
-    [effectiveQuery, refreshMailbox, setAnnouncement]
+    [effectiveQuery, refreshSessionStructure, setAnnouncement]
   )
 
   const undoArchive = useCallback((): void => {
@@ -265,9 +278,9 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       } catch {
         setAnnouncement(`Could not rename “${session.title}”.`)
       }
-      void refreshMailbox(effectiveQuery)
+      void refreshSessionStructure(effectiveQuery)
     },
-    [effectiveQuery, refreshMailbox, setAnnouncement]
+    [effectiveQuery, refreshSessionStructure, setAnnouncement]
   )
 
   async function confirmDelete(session: SessionSummary): Promise<void> {
@@ -283,7 +296,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     } catch {
       setAnnouncement(`Deleting “${session.title}” failed. Nothing was lost.`)
     }
-    void refreshMailbox(effectiveQuery)
+    void refreshSessionStructure(effectiveQuery)
   }
 
   const selectedSession = surface.kind === 'session' ? surface.session : undefined
@@ -422,7 +435,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   }, [undoArchive])
 
   function handleStarted({ session, runStarted }: StartSessionResult): void {
-    void refreshMailbox(effectiveQuery)
+    void refreshSessionStructure(effectiveQuery)
     openSession(session)
     // Sending starts the work, so the announcement says whether it did. A
     // Session whose first Run never started is a real Session holding a real
