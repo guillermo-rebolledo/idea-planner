@@ -434,6 +434,38 @@ const CHECKPOINTING_CLAUDE_FAKE = `case "$1" in
     exit 0;;
 esac`
 
+/**
+ * A long durable Run followed by one growing Harness message. The response
+ * then stays active long enough for the Run clock to advance independently.
+ */
+const LONG_STREAMING_CLAUDE_FAKE = `case "$1" in
+  --version) echo "2.1.220 (Claude Code)"; exit 0;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  --print)
+    echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
+    i=0
+    while [ $i -lt 120 ]; do
+      if [ $i -eq 0 ]; then
+        printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5","id":"history_0","type":"message","role":"assistant","content":[{"type":"text","text":"## Durable history 0\\n\\n    const stable = true\\n\\n| State | Value |\\n| --- | --- |\\n| durable | unchanged |\\n\\n[documentation](https://example.com)"}]},"session_id":"thread-1"}'
+      else
+        echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"history_'$i'","type":"message","role":"assistant","content":[{"type":"text","text":"Durable history '$i'"}]},"session_id":"thread-1"}'
+      fi
+      i=$((i+1))
+    done
+    /bin/sleep 2
+    echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_live"}}}'
+    i=0
+    while [ $i -lt 60 ]; do
+      echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" chunk-'$i'"}}}'
+      i=$((i+1))
+      /bin/sleep 0.005
+    done
+    /bin/sleep 2
+    echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_live","type":"message","role":"assistant","content":[{"type":"text","text":"complete latest response"}]},"session_id":"thread-1"}'
+    echo '{"type":"result","subtype":"success","is_error":false,"session_id":"thread-1","result":"complete latest response","usage":{"input_tokens":12,"output_tokens":60}}'
+    exit 0;;
+esac`
+
 test('one streamed Harness message stays one DOM message through durable checkpoints', async () => {
   await installFakeHarness('claude', CHECKPOINTING_CLAUDE_FAKE)
   const app = await launchShell()
@@ -499,6 +531,105 @@ test('one streamed Harness message stays one DOM message through durable checkpo
       disappeared: false,
       replaced: false
     })
+  } finally {
+    await app.close()
+  }
+})
+
+test('a long Conversation bounds render work while a reply streams', async () => {
+  await installFakeHarness('claude', LONG_STREAMING_CLAUDE_FAKE)
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0]?.webContents
+      if (contents === undefined) throw new Error('renderer window was not available')
+      contents.debugger.attach('1.3')
+      await contents.debugger.sendCommand('Emulation.setEmulatedMedia', {
+        media: 'screen',
+        features: [{ name: 'prefers-reduced-motion', value: 'reduce' }]
+      })
+    })
+    await completeOnboarding(page)
+    await startSession(page, 'Measure a long streamed reply')
+
+    const history = page.getByRole('log', { name: 'Conversation history' })
+    await expect(history.getByText('Durable history 119', { exact: true })).toBeVisible()
+    await expect(history.locator('pre').filter({ hasText: 'const stable = true' })).toBeVisible()
+    await expect(history.getByRole('table')).toContainText('durable')
+    const renderedLink = history.getByText('documentation', { exact: true })
+    await expect(renderedLink).toHaveAttribute('title', 'https://example.com')
+    expect(await renderedLink.evaluate((element) => element.tagName)).toBe('SPAN')
+    await page.evaluate(() => {
+      const probe = {
+        frame: 0,
+        durableRenders: 0,
+        liveRendersByFrame: new Map<number, number>()
+      }
+      const tick = (): void => {
+        probe.frame += 1
+        requestAnimationFrame(tick)
+      }
+      requestAnimationFrame(tick)
+      ;(
+        window as typeof window & {
+          __argosTestConversationRenderProbe?: (text: string) => void
+        }
+      ).__argosTestConversationRenderProbe = (text) => {
+        if (text.startsWith('Durable history')) probe.durableRenders += 1
+        if (text.includes('chunk-')) {
+          probe.liveRendersByFrame.set(
+            probe.frame,
+            (probe.liveRendersByFrame.get(probe.frame) ?? 0) + 1
+          )
+        }
+      }
+      Object.assign(window, { longConversationRenderProbe: probe })
+
+      const durableText = Array.from(document.querySelectorAll('p')).find(
+        (element) => element.textContent === 'Durable history 0'
+      )
+      if (durableText === undefined) throw new Error('durable markdown was not rendered')
+      const range = document.createRange()
+      range.selectNodeContents(durableText)
+      const selection = window.getSelection()
+      selection?.removeAllRanges()
+      selection?.addRange(range)
+    })
+
+    await expect(history.getByText(/chunk-59/, { exact: false })).toBeVisible()
+    const reducedMotion = await page
+      .getByRole('img', { name: 'Run in progress' })
+      .locator('circle')
+      .first()
+      .evaluate((element) => {
+        const style = getComputedStyle(element)
+        return {
+          matches: matchMedia('(prefers-reduced-motion: reduce)').matches,
+          duration: style.animationDuration,
+          iterations: style.animationIterationCount
+        }
+      })
+    expect(reducedMotion).toEqual({ matches: true, duration: '1e-05s', iterations: '1' })
+    await expect.poll(() => page.getByText(/^Running · /).textContent()).toMatch(/\d+s$/)
+    expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('Durable history 0')
+
+    const renderWork = await page.evaluate(() => {
+      const probe = (
+        window as typeof window & {
+          longConversationRenderProbe: {
+            durableRenders: number
+            liveRendersByFrame: Map<number, number>
+          }
+        }
+      ).longConversationRenderProbe
+      return {
+        durableRenders: probe.durableRenders,
+        maximumLiveRendersPerFrame: Math.max(0, ...probe.liveRendersByFrame.values())
+      }
+    })
+    expect(renderWork).toEqual({ durableRenders: 0, maximumLiveRendersPerFrame: 1 })
+    await expect(history.getByText('complete latest response', { exact: true })).toBeVisible()
   } finally {
     await app.close()
   }
