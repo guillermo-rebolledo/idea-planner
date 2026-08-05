@@ -50,6 +50,17 @@ const api: ShellApi = {
   openInEditor: (input) => ipcRenderer.invoke(IPC_CHANNELS.openInEditor, input),
   getConversation: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.getConversation, sessionId),
   developSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.developSession, input),
+  enqueueQueuedSubmission: (input) =>
+    ipcRenderer.invoke(IPC_CHANNELS.enqueueQueuedSubmission, input),
+  editQueuedSubmission: (input) => ipcRenderer.invoke(IPC_CHANNELS.editQueuedSubmission, input),
+  moveQueuedSubmission: (input) => ipcRenderer.invoke(IPC_CHANNELS.moveQueuedSubmission, input),
+  cancelQueuedSubmission: (input) => ipcRenderer.invoke(IPC_CHANNELS.cancelQueuedSubmission, input),
+  pauseConversationQueue: (sessionId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.pauseConversationQueue, sessionId),
+  resumeConversationQueue: (sessionId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.resumeConversationQueue, sessionId),
+  sendQueuedSubmissionNow: (input) =>
+    ipcRenderer.invoke(IPC_CHANNELS.sendQueuedSubmissionNow, input),
   resolveApproval: (input) => ipcRenderer.invoke(IPC_CHANNELS.resolveApproval, input),
   onConversationEvent: (listener) => {
     const subscription = (_event: unknown, streamed: ConversationStreamEvent): void =>

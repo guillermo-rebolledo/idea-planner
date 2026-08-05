@@ -4,10 +4,16 @@ import remarkGfm from 'remark-gfm'
 import {
   ArrowUp,
   Check,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   FileDiff,
   FileText,
   LoaderCircle,
+  Paperclip,
+  Pause,
+  Pencil,
+  Play,
   ShieldQuestion,
   Square,
   Terminal,
@@ -17,6 +23,7 @@ import {
 import {
   HARNESS_DEFAULT_MODEL,
   assistantMessageId,
+  isActiveQueuedSubmission,
   projectDisplayName,
   ruleText,
   type ApprovalDecision,
@@ -25,6 +32,7 @@ import {
   type ConversationStreamEvent,
   type DiffHunk,
   type PermissionMode,
+  type ReviewAttachment,
   type RunSnapshot,
   type SessionSummary,
   type SuggestedResponse
@@ -157,10 +165,11 @@ export function Conversation({
   const { phase, runs, refresh, adopt: adoptSnapshot } = conversation
   const [live, setLive] = useState<LiveRun | null>(null)
   const [draft, setDraft] = useState('')
-  // At most one message held while a Run works. Send during a Run parks the
-  // message here instead of refusing it, and it goes the moment the Run
-  // finishes — the person walks away and their words still arrive.
-  const [queued, setQueued] = useState<{ text: string; skill: string | null } | null>(null)
+  const [editingQueuedId, setEditingQueuedId] = useState<string | null>(null)
+  const [queuedEdit, setQueuedEdit] = useState('')
+  const [queueAnnouncement, setQueueAnnouncement] = useState('')
+  const [reviewAttachments, setReviewAttachments] = useState<ReviewAttachment[]>([])
+  const reviewAttachmentInputRef = useRef<HTMLInputElement>(null)
   // No Skill by default. Most messages are not asking for a methodology, and
   // one applied because it happened to be selected is one nobody chose.
   const [skill, setSkill] = useState<string | null>(null)
@@ -185,6 +194,7 @@ export function Conversation({
 
   const snapshot = phase.state === 'ready' ? phase.snapshot : null
   const activeRunId = snapshot?.activeRunId ?? null
+  const hasQueuedSubmissions = snapshot?.queue.items.some(isActiveQueuedSubmission) ?? false
   const pendingApproval = useMemo(
     () =>
       snapshot?.entries.find(
@@ -348,27 +358,6 @@ export function Conversation({
       () => setError('The Run could not be stopped.')
     )
   }, [activeRunId, sessionId, refresh])
-
-  // The parked message goes the moment the Run finishes — but only after a
-  // Run that ended well. A Run that failed or was stopped leaves a recovery
-  // notice to read first, so the message returns to the composer instead of
-  // firing into a state nobody has looked at. An effect, deliberately: it
-  // reacts to committed state exactly once per transition, where releasing
-  // from the poll's promise chain could fire from two in-flight refreshes at
-  // once and send the message twice.
-  /* eslint-disable @eslint-react/set-state-in-effect */
-  useEffect(() => {
-    if (activeRunId !== null || queued === null || busy) return
-    const held = queued
-    setQueued(null)
-    if (snapshot?.recovery) {
-      setDraft((current) => (current ? `${held.text}\n\n${current}` : held.text))
-      setSkill((current) => current ?? held.skill)
-      return
-    }
-    void send(held.text, 'composer', undefined, held.skill)
-  }, [activeRunId, queued, busy, snapshot, send])
-  /* eslint-enable @eslint-react/set-state-in-effect */
 
   // The card takes focus the moment a request arrives, so ⏎ and esc are
   // already speaking to it — and only to it. Allowing is the app's
@@ -797,7 +786,7 @@ export function Conversation({
                     <Button
                       size="sm"
                       variant="secondary"
-                      disabled={busy || blocked || activeRunId !== null}
+                      disabled={busy || blocked || activeRunId !== null || hasQueuedSubmissions}
                       onClick={() => void send(option.value, 'suggested-response')}
                     >
                       {option.label}
@@ -808,46 +797,285 @@ export function Conversation({
             </div>
           )}
 
+          {snapshot && snapshot.queue.items.some(isActiveQueuedSubmission) && (
+            <section
+              aria-label="Queued Submissions"
+              className="mb-2 rounded-lg border border-border bg-muted/30 p-3"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xs font-medium text-foreground">Queued Submissions</h2>
+                  <p className="text-2xs text-muted-foreground">
+                    {snapshot.queue.paused
+                      ? 'Paused. Nothing starts until you resume.'
+                      : 'The next item starts after a completed Run.'}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={busy}
+                  onClick={() => {
+                    setBusy(true)
+                    const operation = snapshot.queue.paused
+                      ? window.shell.resumeConversationQueue(sessionId)
+                      : window.shell.pauseConversationQueue(sessionId)
+                    void operation
+                      .then(
+                        (next) => {
+                          adoptSnapshot(next)
+                          setQueueAnnouncement(
+                            snapshot.queue.paused ? 'Queue resumed' : 'Queue paused'
+                          )
+                        },
+                        () => setError('The queue state could not be changed.')
+                      )
+                      .finally(() => setBusy(false))
+                  }}
+                >
+                  {snapshot.queue.paused ? (
+                    <Play aria-hidden="true" className="size-3" />
+                  ) : (
+                    <Pause aria-hidden="true" className="size-3" />
+                  )}
+                  {snapshot.queue.paused ? 'Resume queue' : 'Pause queue'}
+                </Button>
+              </div>
+              <ol className="mt-2 space-y-2">
+                {snapshot.queue.items
+                  .filter(isActiveQueuedSubmission)
+                  .map((item, index, active) => (
+                    <li key={item.id} className="rounded-md border border-border bg-surface p-2">
+                      {editingQueuedId === item.submissionId ? (
+                        <form
+                          onSubmit={(event) => {
+                            event.preventDefault()
+                            const text = queuedEdit.trim()
+                            if (!text) return
+                            setBusy(true)
+                            void window.shell
+                              .editQueuedSubmission({
+                                sessionId,
+                                submissionId: item.submissionId,
+                                text
+                              })
+                              .then((next) => {
+                                adoptSnapshot(next)
+                                setEditingQueuedId(null)
+                                setQueueAnnouncement('Queued Submission edited; queue paused')
+                                window.requestAnimationFrame(() =>
+                                  document.getElementById(`edit-${item.submissionId}`)?.focus()
+                                )
+                              })
+                              .catch(() => setError('That Queued Submission could not be edited.'))
+                              .finally(() => setBusy(false))
+                          }}
+                        >
+                          <label className="sr-only" htmlFor={`queued-edit-${item.submissionId}`}>
+                            Edit queued message
+                          </label>
+                          <textarea
+                            id={`queued-edit-${item.submissionId}`}
+                            aria-label="Edit queued message"
+                            rows={2}
+                            value={queuedEdit}
+                            onChange={(event) => setQueuedEdit(event.target.value)}
+                            className="w-full resize-none rounded border border-border bg-background p-2 text-xs outline-none focus:ring-2 focus:ring-ring"
+                          />
+                          <div className="mt-2 flex justify-end gap-1">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setEditingQueuedId(null)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button type="submit" size="sm" disabled={busy || !queuedEdit.trim()}>
+                              Save queued message
+                            </Button>
+                          </div>
+                        </form>
+                      ) : (
+                        <>
+                          <p className="text-xs text-foreground select-text">{item.text}</p>
+                          <p className="mt-1 text-2xs text-muted-foreground">
+                            {item.harness} · {item.model} · {item.permissionMode}
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              aria-label={`Move ${item.text} earlier`}
+                              disabled={
+                                busy ||
+                                index === 0 ||
+                                (item.status === 'claimed' && !snapshot.queue.paused)
+                              }
+                              onClick={() => {
+                                setBusy(true)
+                                void window.shell
+                                  .moveQueuedSubmission({
+                                    sessionId,
+                                    submissionId: item.submissionId,
+                                    direction: 'earlier'
+                                  })
+                                  .then((next) => {
+                                    adoptSnapshot(next)
+                                    setQueueAnnouncement('Moved earlier')
+                                  })
+                                  .finally(() => setBusy(false))
+                              }}
+                            >
+                              <ChevronUp aria-hidden="true" className="size-3" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              aria-label={`Move ${item.text} later`}
+                              disabled={
+                                busy ||
+                                index === active.length - 1 ||
+                                (item.status === 'claimed' && !snapshot.queue.paused)
+                              }
+                              onClick={() => {
+                                setBusy(true)
+                                void window.shell
+                                  .moveQueuedSubmission({
+                                    sessionId,
+                                    submissionId: item.submissionId,
+                                    direction: 'later'
+                                  })
+                                  .then((next) => {
+                                    adoptSnapshot(next)
+                                    setQueueAnnouncement('Moved later')
+                                  })
+                                  .finally(() => setBusy(false))
+                              }}
+                            >
+                              <ChevronDown aria-hidden="true" className="size-3" />
+                            </Button>
+                            <Button
+                              id={`edit-${item.submissionId}`}
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              aria-label={`Edit ${item.text}`}
+                              disabled={
+                                busy || (item.status === 'claimed' && !snapshot.queue.paused)
+                              }
+                              onClick={() => {
+                                setQueuedEdit(item.text)
+                                setEditingQueuedId(item.submissionId)
+                              }}
+                            >
+                              <Pencil aria-hidden="true" className="size-3" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              aria-label={`Cancel ${item.text}`}
+                              disabled={
+                                busy || (item.status === 'claimed' && !snapshot.queue.paused)
+                              }
+                              onClick={() => {
+                                const focusId =
+                                  active[index + 1]?.submissionId ?? active[index - 1]?.submissionId
+                                setBusy(true)
+                                void window.shell
+                                  .cancelQueuedSubmission({
+                                    sessionId,
+                                    submissionId: item.submissionId
+                                  })
+                                  .then((next) => {
+                                    adoptSnapshot(next)
+                                    setQueueAnnouncement('Queued Submission cancelled')
+                                    window.requestAnimationFrame(() => {
+                                      if (focusId)
+                                        document.getElementById(`edit-${focusId}`)?.focus()
+                                      else composerRef.current?.focus()
+                                    })
+                                  })
+                                  .finally(() => setBusy(false))
+                              }}
+                            >
+                              <X aria-hidden="true" className="size-3" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={busy || activeRunId !== null}
+                              onClick={() => {
+                                setBusy(true)
+                                void window.shell
+                                  .sendQueuedSubmissionNow({
+                                    sessionId,
+                                    submissionId: item.submissionId
+                                  })
+                                  .then(adoptSnapshot)
+                                  .finally(() => setBusy(false))
+                              }}
+                            >
+                              Send now
+                            </Button>
+                          </div>
+                        </>
+                      )}
+                    </li>
+                  ))}
+              </ol>
+              <p role="status" aria-live="polite" className="sr-only">
+                {queueAnnouncement}
+              </p>
+            </section>
+          )}
+
           <form
             className="flex flex-col gap-2"
             onSubmit={(event) => {
               event.preventDefault()
               const text = draft.trim()
               if (!text) return
-              // While a Run works, Send parks the message instead of refusing
-              // it: one held message, sent the moment the Run finishes.
-              if (activeRunId !== null) {
-                if (queued !== null) return
-                setQueued({ text, skill: chosenSkill })
-                setDraft('')
-                setSkill(null)
+              // While a Run works, capture every Run choice in the durable,
+              // Session-owned queue. No pending message exists only in React.
+              if (activeRunId !== null || hasQueuedSubmissions) {
+                if (!chosenHarness) return
+                setBusy(true)
+                void window.shell
+                  .enqueueQueuedSubmission({
+                    sessionId,
+                    submissionId: crypto.randomUUID(),
+                    text,
+                    source: 'composer',
+                    ...(chosenSkill ? { skill: chosenSkill } : {}),
+                    harness: chosenHarness,
+                    model: choice?.model ?? HARNESS_DEFAULT_MODEL,
+                    effort: applicableEffort(models, choice),
+                    permissionMode,
+                    reviewAttachments
+                  })
+                  .then((next) => {
+                    adoptSnapshot(next)
+                    setDraft((current) => (current === text ? '' : current))
+                    setSkill((current) => (current === chosenSkill ? null : current))
+                    setReviewAttachments([])
+                    if (reviewAttachmentInputRef.current) {
+                      reviewAttachmentInputRef.current.value = ''
+                    }
+                    setQueueAnnouncement('Queued Submission added')
+                  })
+                  .catch(() => setError('That message could not be added to the queue.'))
+                  .finally(() => setBusy(false))
                 return
               }
               void send(text, 'composer')
             }}
           >
-            {queued !== null && (
-              <div className="flex items-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2">
-                <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                  Held until the Run finishes:{' '}
-                  <span className="text-foreground select-text">{queued.text}</span>
-                </p>
-                <button
-                  type="button"
-                  aria-label="Take this message back to the composer"
-                  title="Take it back"
-                  onClick={() => {
-                    const held = queued
-                    setQueued(null)
-                    setDraft((current) => (current ? `${held.text}\n\n${current}` : held.text))
-                    setSkill((current) => current ?? held.skill)
-                  }}
-                  className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-border hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  <X aria-hidden="true" className="size-3.5" />
-                </button>
-              </div>
-            )}
             <label className="sr-only" htmlFor="conversation-composer">
               Your message
             </label>
@@ -875,7 +1103,7 @@ export function Conversation({
                   // While a Run works, Enter makes a line rather than a send —
                   // holding a message is the button's deliberate act, never a
                   // keystroke's.
-                  if (activeRunId !== null) return
+                  if (activeRunId !== null || hasQueuedSubmissions) return
                   event.preventDefault()
                   if (draft.trim()) void send(draft.trim(), 'composer')
                 }}
@@ -901,21 +1129,71 @@ export function Conversation({
                     disabled={activeRunId !== null}
                   />
                 </span>
+                {(activeRunId !== null || hasQueuedSubmissions) && (
+                  <label className="inline-flex size-8 cursor-pointer items-center justify-center rounded-md text-muted-foreground focus-within:ring-2 focus-within:ring-ring hover:bg-muted hover:text-foreground">
+                    <span className="sr-only">Attach files for queued review</span>
+                    <Paperclip aria-hidden="true" className="size-3.5" />
+                    <input
+                      ref={reviewAttachmentInputRef}
+                      type="file"
+                      multiple
+                      aria-label="Attach files for queued review"
+                      className="sr-only"
+                      onChange={(event) => {
+                        const attachments = Array.from(event.currentTarget.files ?? [])
+                          .map((file) => ({
+                            path: window.shell.pathForFile(file),
+                            name: file.name
+                          }))
+                          .filter((attachment) => attachment.path.length > 0)
+                        setReviewAttachments(attachments)
+                      }}
+                    />
+                  </label>
+                )}
                 <Button
                   type="submit"
                   size="icon"
-                  aria-label={activeRunId !== null ? 'Hold until the Run finishes' : 'Send'}
+                  aria-label={
+                    activeRunId !== null || hasQueuedSubmissions ? 'Add to queue' : 'Send'
+                  }
                   className="rounded-full disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                  disabled={busy || blocked || queued !== null || !draft.trim()}
+                  disabled={busy || blocked || !draft.trim()}
                 >
                   <ArrowUp aria-hidden="true" className="size-3.5" />
                 </Button>
               </div>
             </div>
+            {reviewAttachments.length > 0 && (
+              <div className="flex flex-wrap gap-1" aria-label="Queued review attachments">
+                {reviewAttachments.map((attachment) => (
+                  <span
+                    key={attachment.path}
+                    className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-2xs text-muted-foreground"
+                  >
+                    <FileText aria-hidden="true" className="size-3" />
+                    {attachment.name ?? attachment.path}
+                  </span>
+                ))}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setReviewAttachments([])
+                    if (reviewAttachmentInputRef.current) {
+                      reviewAttachmentInputRef.current.value = ''
+                    }
+                  }}
+                >
+                  Clear attachments
+                </Button>
+              </div>
+            )}
             {activeRunId !== null && (
               <p className="text-xs text-muted-foreground">
-                A Run is working. Keep typing — Send holds your message and it goes the moment the
-                Run finishes. <span className="font-mono text-2xs">⌘.</span> stops the Run now.
+                A Run is working. Keep typing — Send adds a durable Queued Submission.{' '}
+                <span className="font-mono text-2xs">⌘.</span> stops the Run now.
               </p>
             )}
             {chosenSkill && <ChosenSkillNote name={chosenSkill} onClear={() => setSkill(null)} />}
@@ -1333,6 +1611,8 @@ function groupEntries(entries: ConversationEntry[]): ConversationItem[] {
         break
       case 'usage':
       case 'thread':
+      case 'queued-submission':
+      case 'queue-state':
         break
     }
   }

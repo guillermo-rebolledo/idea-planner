@@ -18,7 +18,8 @@ import {
   emptyUsage,
   type ConversationSnapshot,
   type ConversationStreamEvent,
-  type HarnessEvent
+  type HarnessEvent,
+  type QueuedSubmission
 } from '@shared/conversation'
 import { LOCAL_CHECKOUT, startingSubmissionId, type SessionSummary } from '@shared/contract'
 import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
@@ -153,7 +154,8 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       harnessThreads: {},
       changedFiles: [],
       activeRunId: null,
-      pendingApprovalId: null
+      pendingApprovalId: null,
+      queue: { paused: true, items: [] }
     },
     standingRules: [],
     unfinished: []
@@ -184,6 +186,7 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     state.commands.push(command.type)
     if (command.type === 'session/get') return Promise.resolve(fakeSession(projectRoot))
     if (command.type === 'session/start') return Promise.resolve(fakeSession(projectRoot))
+    if (command.type === 'session/list') return Promise.resolve([fakeSession(projectRoot)])
     if (command.type === 'approval/rules') return Promise.resolve(state.standingRules)
     if (command.type === 'approval/grant') return Promise.resolve(undefined)
     if (command.type === 'harness/open') return Promise.resolve({ events: [], outgoing: [] })
@@ -970,6 +973,94 @@ describe('Run service', () => {
         permissionMode: 'auto'
       })
     ).rejects.toThrow('is not ready')
+  })
+
+  it('pauses every Session queue before stopping Harnesses for shutdown', async () => {
+    const root = await readyClaudeRoot('run-service-shutdown-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    const service = new RunService({ ...claudeDeps(root, broker), core })
+
+    await service.stopAll('quit')
+
+    const pauseIndex = core.commands.indexOf('conversation/queue-state')
+    expect(pauseIndex).toBeGreaterThanOrEqual(0)
+    expect(broker.stopAll).toHaveBeenCalledWith('quit')
+    expect(core.commands.at(pauseIndex)).toBe('conversation/queue-state')
+  })
+
+  it('does not create a retry attempt when a claimed queue item recovers a terminal Run', async () => {
+    const root = await readyClaudeRoot('run-service-claimed-recovery-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    const original = core.send.getMockImplementation()
+    if (!original) throw new Error('Fake Core implementation missing')
+    const accepted = (await original({ type: 'run/accept' })) as RunSnapshot
+    core.commands.length = 0
+    let acceptCalls = 0
+    core.send.mockImplementation(async (command: { type: string }): Promise<unknown> => {
+      if (command.type === 'run/accept') {
+        acceptCalls += 1
+        return { ...accepted, status: 'failed' }
+      }
+      return await Promise.resolve(original(command) as unknown)
+    })
+    const service = new RunService({ ...claudeDeps(root, broker), core })
+
+    const recovered = await service.start(startInput(), false)
+
+    expect(recovered.status).toBe('failed')
+    expect(acceptCalls).toBe(1)
+    expect(broker.start).not.toHaveBeenCalled()
+  })
+
+  it('reconciles a recovered claim against the newest derived attempt', async () => {
+    const root = await readyClaudeRoot('run-service-newest-queue-attempt-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    const original = core.send.getMockImplementation()
+    if (!original) throw new Error('Fake Core implementation missing')
+    const base = (await original({ type: 'run/accept' })) as RunSnapshot
+    core.commands.length = 0
+    const item: QueuedSubmission = {
+      kind: 'queued-submission',
+      id: 'queued:submission-1',
+      at: '2026-08-05T00:00:00.000Z',
+      submissionId: 'submission-1',
+      text: 'Latest edited prompt',
+      source: 'composer',
+      harness: base.configuration.harness,
+      model: base.configuration.model,
+      effort: base.configuration.effort,
+      skill: base.configuration.skill?.name ?? null,
+      permissionMode: base.configuration.permissionMode,
+      reviewAttachments: [],
+      status: 'claimed',
+      position: 0
+    }
+    const newest = {
+      ...base,
+      id: 'run-attempt-2',
+      submissionId: 'submission-1:attempt-2',
+      prompt: item.text,
+      status: 'failed' as const
+    }
+    let claims = 0
+    core.send.mockImplementation(async (command: { type: string }): Promise<unknown> => {
+      if (command.type === 'run/list') return [newest, { ...base, status: 'failed' }]
+      if (command.type === 'conversation/queue-claim') {
+        claims += 1
+        return claims === 1 ? item : null
+      }
+      return await Promise.resolve(original(command) as unknown)
+    })
+    const service = new RunService({ ...claudeDeps(root, broker), core })
+
+    await service.resumeConversationQueue('session')
+
+    expect(core.commands.filter((command) => command === 'run/accept')).toHaveLength(0)
+    expect(core.commands).toContain('conversation/queue-sent')
+    expect(broker.start).not.toHaveBeenCalled()
   })
 })
 

@@ -280,6 +280,47 @@ export const conversationRecoverySchema = z.object({
 })
 export type ConversationRecovery = z.infer<typeof conversationRecoverySchema>
 
+export const queuedSubmissionStatusSchema = z.enum(['pending', 'claimed', 'sent', 'cancelled'])
+export type QueuedSubmissionStatus = z.infer<typeof queuedSubmissionStatusSchema>
+
+/** A file explicitly attached for the next review-oriented submission. */
+export const reviewAttachmentSchema = z.object({
+  path: z.string().min(1),
+  name: z.string().min(1).max(500).optional()
+})
+export type ReviewAttachment = z.infer<typeof reviewAttachmentSchema>
+
+export const queuedSubmissionEntrySchema = z.object({
+  kind: z.literal('queued-submission'),
+  /** Stable across every replacement written for this Queued Submission. */
+  id: z.string().min(1),
+  at: z.string().datetime(),
+  submissionId: z.string().min(1).max(200),
+  text: z.string().min(1).max(100_000),
+  source: z.enum(['composer', 'suggested-response']),
+  harness: harnessIdSchema,
+  model: z.string().min(1).max(200),
+  effort: z.string().min(1).max(50).nullable(),
+  skill: skillNameSchema.nullable(),
+  permissionMode: permissionModeSchema,
+  reviewAttachments: z.array(reviewAttachmentSchema).max(50).default([]),
+  status: queuedSubmissionStatusSchema,
+  /** Explicit order among all non-terminal items. */
+  position: z.number().int().nonnegative()
+})
+export type QueuedSubmission = z.infer<typeof queuedSubmissionEntrySchema>
+
+export function isActiveQueuedSubmission(item: QueuedSubmission): boolean {
+  return item.status === 'pending' || item.status === 'claimed'
+}
+
+export const queueStateEntrySchema = z.object({
+  kind: z.literal('queue-state'),
+  id: z.literal('queue-state'),
+  at: z.string().datetime(),
+  paused: z.boolean()
+})
+
 export const conversationEntrySchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('message'),
@@ -442,7 +483,9 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
      */
     added: z.number().int().nonnegative().default(0),
     removed: z.number().int().nonnegative().default(0)
-  })
+  }),
+  queuedSubmissionEntrySchema,
+  queueStateEntrySchema
 ])
 export type ConversationEntry = z.infer<typeof conversationEntrySchema>
 
@@ -517,7 +560,14 @@ export const conversationSnapshotSchema = z.object({
    * Session status, so blocked lives on the Run and this is where the app
    * reads it from.
    */
-  pendingApprovalId: z.string().min(1).nullable().default(null)
+  pendingApprovalId: z.string().min(1).nullable().default(null),
+  queue: z
+    .object({
+      paused: z.boolean(),
+      /** Terminal items remain here so recovery can prove what happened. */
+      items: z.array(queuedSubmissionEntrySchema)
+    })
+    .default({ paused: true, items: [] })
 })
 export type ConversationSnapshot = z.infer<typeof conversationSnapshotSchema>
 
@@ -547,6 +597,37 @@ export const runRequestSchema = z.object({
   permissionMode: permissionModeSchema
 })
 export type RunRequest = z.infer<typeof runRequestSchema>
+
+export const enqueueQueuedSubmissionInputSchema = submitConversationMessageInputSchema
+  .merge(runRequestSchema)
+  .extend({ reviewAttachments: z.array(reviewAttachmentSchema).max(50).default([]) })
+export type EnqueueQueuedSubmissionInput = z.input<typeof enqueueQueuedSubmissionInputSchema>
+
+export const editQueuedSubmissionInputSchema = z.object({
+  sessionId: z.string().min(1),
+  submissionId: z.string().min(1).max(200),
+  text: z.string().min(1).max(100_000)
+})
+export type EditQueuedSubmissionInput = z.infer<typeof editQueuedSubmissionInputSchema>
+
+export const moveQueuedSubmissionInputSchema = z.object({
+  sessionId: z.string().min(1),
+  submissionId: z.string().min(1).max(200),
+  direction: z.enum(['earlier', 'later'])
+})
+export type MoveQueuedSubmissionInput = z.infer<typeof moveQueuedSubmissionInputSchema>
+
+export const queuedSubmissionIdentitySchema = z.object({
+  sessionId: z.string().min(1),
+  submissionId: z.string().min(1).max(200)
+})
+export type QueuedSubmissionIdentity = z.infer<typeof queuedSubmissionIdentitySchema>
+
+export const setConversationQueuePausedInputSchema = z.object({
+  sessionId: z.string().min(1),
+  paused: z.boolean()
+})
+export type SetConversationQueuePausedInput = z.infer<typeof setConversationQueuePausedInputSchema>
 
 /** The Renderer's one command for developing a Session through a Conversation. */
 export const developSessionInputSchema =

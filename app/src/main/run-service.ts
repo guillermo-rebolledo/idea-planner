@@ -18,7 +18,11 @@ import {
   MAX_APPROVAL_DETAIL,
   conversationSnapshotSchema,
   developSessionInputSchema,
+  editQueuedSubmissionInputSchema,
+  enqueueQueuedSubmissionInputSchema,
   harnessEventSchema,
+  moveQueuedSubmissionInputSchema,
+  queuedSubmissionIdentitySchema,
   redactCredentials,
   startingSubmissionId,
   unfinishedRunSchema,
@@ -30,6 +34,7 @@ import {
   type HarnessEvent,
   type HarnessFailureCategory,
   type RunRequest,
+  type QueuedSubmission,
   type UnfinishedRun
 } from '@shared/conversation'
 import { proposeStandingApproval, ruleText, type ProposedRule } from '@shared/approval'
@@ -52,6 +57,7 @@ import { diffSnapshots, snapshotCheckout, type CheckoutSnapshot } from './git'
 import { HARNESS_SPECS } from './readiness'
 import { ToolHost, type ApprovalRequest } from './tool-host'
 import type { RunProcessBroker } from './run-process-broker'
+import { QueueCoordinator } from './queue-coordinator'
 
 interface CorePort {
   send(command: CoreCommand): Promise<unknown>
@@ -148,6 +154,7 @@ interface RequestProposal {
 
 /** Coordinates durable Core acceptance with Main's native process authority. */
 export class RunService {
+  private readonly queueCoordinator: QueueCoordinator
   private readonly toolHosts = new Map<string, ToolHost>()
   /** The last failure a Run's Harness reported, used when the Run ends. */
   private readonly failures = new Map<string, HarnessFailureCategory>()
@@ -181,7 +188,59 @@ export class RunService {
    */
   private readonly baselines = new Map<string, CheckoutBaseline>()
 
-  constructor(private readonly deps: RunServiceDeps) {}
+  constructor(private readonly deps: RunServiceDeps) {
+    this.queueCoordinator = new QueueCoordinator({
+      core: deps.core,
+      start: (sessionId, item) => this.startQueued(sessionId, item),
+      pause: (sessionId) => this.setQueuePaused(sessionId, true)
+    })
+  }
+
+  private async startQueued(
+    sessionId: string,
+    item: QueuedSubmission
+  ): Promise<RunSnapshot & { recovered: boolean }> {
+    const prompt =
+      item.reviewAttachments.length === 0
+        ? item.text
+        : `${item.text}\n\nReview attachments:\n${item.reviewAttachments
+            .map((attachment) => `- ${attachment.path}`)
+            .join('\n')}`
+    const priorAttempts = (await this.list(sessionId)).filter(
+      (run) =>
+        run.submissionId === item.submissionId ||
+        run.submissionId.startsWith(`${item.submissionId}:attempt-`)
+    )
+    // Core lists newest first; reconciliation must compare the last attempt,
+    // not the original submission that an edited retry superseded.
+    const prior = priorAttempts[0]
+    const unchanged =
+      prior?.prompt === prompt &&
+      prior.configuration.harness === item.harness &&
+      prior.configuration.model === item.model &&
+      prior.configuration.effort === item.effort &&
+      prior.configuration.permissionMode === item.permissionMode &&
+      (prior.configuration.skill?.name ?? null) === item.skill
+    // A durable Run means the external launch may already have happened. An
+    // unchanged recovered claim is therefore reconciled, never launched a
+    // second time. Editing is the person's explicit request for different
+    // work, and receives a new attempt identity below.
+    if (prior && unchanged) return { ...prior, recovered: true }
+    const run = await this.start(
+      {
+        submissionId: item.submissionId,
+        sessionId,
+        prompt,
+        harness: item.harness,
+        model: item.model,
+        effort: item.effort,
+        ...(item.skill ? { skill: item.skill } : {}),
+        permissionMode: item.permissionMode
+      },
+      priorAttempts.length > 0
+    )
+    return { ...run, recovered: false }
+  }
 
   /**
    * Every Checkout snapshot still on disk when the app starts belongs to a Run
@@ -341,6 +400,59 @@ export class RunService {
     return await this.readConversation(input.sessionId)
   }
 
+  async enqueueQueuedSubmission(rawInput: unknown): Promise<ConversationSnapshot> {
+    const input = enqueueQueuedSubmissionInputSchema.parse(rawInput)
+    return conversationSnapshotSchema.parse(
+      await this.deps.core.send({ type: 'conversation/queue-enqueue', input })
+    )
+  }
+
+  async editQueuedSubmission(rawInput: unknown): Promise<ConversationSnapshot> {
+    const input = editQueuedSubmissionInputSchema.parse(rawInput)
+    return conversationSnapshotSchema.parse(
+      await this.deps.core.send({ type: 'conversation/queue-edit', input })
+    )
+  }
+
+  async moveQueuedSubmission(rawInput: unknown): Promise<ConversationSnapshot> {
+    const input = moveQueuedSubmissionInputSchema.parse(rawInput)
+    return conversationSnapshotSchema.parse(
+      await this.deps.core.send({ type: 'conversation/queue-move', input })
+    )
+  }
+
+  async cancelQueuedSubmission(rawInput: unknown): Promise<ConversationSnapshot> {
+    const input = queuedSubmissionIdentitySchema.parse(rawInput)
+    return conversationSnapshotSchema.parse(
+      await this.deps.core.send({ type: 'conversation/queue-cancel', input })
+    )
+  }
+
+  async pauseConversationQueue(sessionId: string): Promise<ConversationSnapshot> {
+    return conversationSnapshotSchema.parse(await this.setQueuePaused(sessionId, true))
+  }
+
+  async resumeConversationQueue(sessionId: string): Promise<ConversationSnapshot> {
+    await this.setQueuePaused(sessionId, false)
+    await this.queueCoordinator.drain(sessionId)
+    return await this.readConversation(sessionId)
+  }
+
+  private setQueuePaused(sessionId: string, paused: boolean): Promise<unknown> {
+    return this.deps.core.send({
+      type: 'conversation/queue-state',
+      input: { sessionId, paused }
+    })
+  }
+
+  async sendQueuedSubmissionNow(rawInput: unknown): Promise<ConversationSnapshot> {
+    const input = queuedSubmissionIdentitySchema.parse(rawInput)
+    const snapshot = await this.readConversation(input.sessionId)
+    if (snapshot.activeRunId) throw new Error('A Run is already active')
+    await this.deps.core.send({ type: 'conversation/queue-prioritize', input })
+    return await this.resumeConversationQueue(input.sessionId)
+  }
+
   /**
    * Reads the Conversation, reconciling a Run the app no longer supervises.
    * After a crash or a forced quit the durable history can still name an
@@ -383,7 +495,7 @@ export class RunService {
     return checkoutDirectory(session.projectRoot, session.checkout)
   }
 
-  async start(rawInput: StartRunInput): Promise<RunSnapshot> {
+  async start(rawInput: StartRunInput, retryTerminal = true): Promise<RunSnapshot> {
     const input = startRunInputSchema.parse(rawInput)
     const checkout = await this.checkoutFor(input.sessionId)
     const readiness = await this.deps.readiness.refresh(input.harness)
@@ -429,14 +541,30 @@ export class RunService {
           configuration
         }
       })
-    let accepted = runSnapshotSchema.parse(await accept(input.submissionId))
+    let accepted: RunSnapshot
+    try {
+      accepted = runSnapshotSchema.parse(await accept(input.submissionId))
+    } catch (error) {
+      if (
+        !retryTerminal ||
+        !(error instanceof Error) ||
+        !error.message.includes('Submission identity was already used')
+      ) {
+        throw error
+      }
+      accepted = await this.acceptRetry(input.submissionId, accept)
+    }
     // A resent submission whose Run already ended is a new attempt at the
     // same message. The message stays one message — the Conversation's
     // submission identity is untouched — but a Run that already failed is
     // not somewhere a retry can land, so each attempt takes its own durable
     // acceptance under a derived identity. This is what makes the recovery
     // card's "send that message again" actually contact a Harness.
-    for (let attempt = 2; TERMINAL_RUN_STATUSES.has(accepted.status) && attempt <= 20; attempt++) {
+    for (
+      let attempt = 2;
+      retryTerminal && TERMINAL_RUN_STATUSES.has(accepted.status) && attempt <= 20;
+      attempt++
+    ) {
       try {
         accepted = runSnapshotSchema.parse(
           await accept(`${input.submissionId}:attempt-${String(attempt)}`)
@@ -726,6 +854,21 @@ export class RunService {
     }
   }
 
+  private async acceptRetry(
+    submissionId: string,
+    accept: (submissionId: string) => Promise<unknown>
+  ): Promise<RunSnapshot> {
+    let lastError: unknown
+    for (let attempt = 2; attempt <= 20; attempt++) {
+      try {
+        return runSnapshotSchema.parse(await accept(`${submissionId}:attempt-${String(attempt)}`))
+      } catch (error) {
+        lastError = error
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('No Run attempt identity is available')
+  }
+
   async list(sessionId: string): Promise<RunSnapshot[]> {
     return runSnapshotSchema
       .array()
@@ -760,8 +903,17 @@ export class RunService {
     }
   }
 
-  stopAll(reason: 'core-crash' | 'quit' | 'update'): Promise<void> {
-    return this.deps.broker.stopAll(reason)
+  async stopAll(reason: 'core-crash' | 'quit' | 'update'): Promise<void> {
+    // Pause before asking native processes to end. An exit racing shutdown may
+    // otherwise look like a completed Run and drain a queue while Argos is
+    // closing. Core-crash is the one case where Core cannot be asked.
+    if (reason !== 'core-crash') {
+      const sessions = sessionSummarySchema
+        .array()
+        .parse(await this.deps.core.send({ type: 'session/list' }))
+      await Promise.all(sessions.map((session) => this.setQueuePaused(session.id, true)))
+    }
+    await this.deps.broker.stopAll(reason)
   }
 
   /**
@@ -1148,6 +1300,11 @@ export class RunService {
             ? { type: 'stopped' }
             : { type: 'failed', category: category ?? 'unknown', summary: explained }
     })
+    if (status === 'completed') {
+      void this.queueCoordinator.drain(run.sessionId)
+    } else {
+      await this.setQueuePaused(run.sessionId, true)
+    }
     return snapshot
   }
 

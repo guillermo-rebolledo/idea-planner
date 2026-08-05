@@ -41,6 +41,13 @@ export const IPC_CHANNELS = {
   openInEditor: 'editor:open',
   getConversation: 'conversation:get',
   developSession: 'conversation:develop',
+  enqueueQueuedSubmission: 'conversation:queue-enqueue',
+  editQueuedSubmission: 'conversation:queue-edit',
+  moveQueuedSubmission: 'conversation:queue-move',
+  cancelQueuedSubmission: 'conversation:queue-cancel',
+  pauseConversationQueue: 'conversation:queue-pause',
+  resumeConversationQueue: 'conversation:queue-resume',
+  sendQueuedSubmissionNow: 'conversation:queue-send-now',
   resolveApproval: 'conversation:resolve-approval',
   conversationEvent: 'conversation:event',
   openSessionRequest: 'session:open-request'

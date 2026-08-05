@@ -1,14 +1,23 @@
 import { z } from 'zod'
 import {
   codexLaunchSchema,
+  editQueuedSubmissionInputSchema,
+  enqueueQueuedSubmissionInputSchema,
   finalizeConversationRunInputSchema,
   harnessEventSchema,
+  moveQueuedSubmissionInputSchema,
+  queuedSubmissionIdentitySchema,
   recordCheckoutChangesInputSchema,
   runRequestSchema,
+  setConversationQueuePausedInputSchema,
   submitConversationMessageInputSchema,
   type ConversationSnapshot,
   type ConversationStreamEvent,
-  type DevelopSessionInput
+  type DevelopSessionInput,
+  type EditQueuedSubmissionInput,
+  type EnqueueQueuedSubmissionInput,
+  type MoveQueuedSubmissionInput,
+  type QueuedSubmissionIdentity
 } from './conversation'
 import {
   grantStandingApprovalInputSchema,
@@ -49,11 +58,12 @@ import {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 9: Queued Submissions and queue state are durable Conversation projections.
  * 8: the Conversation stream carries app-owned Run start and stop boundaries.
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 8
+export const CONTRACT_VERSION = 9
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -291,6 +301,27 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('conversation/get'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('conversation/submit'), input: submitConversationMessageInputSchema }),
   z.object({
+    type: z.literal('conversation/queue-enqueue'),
+    input: enqueueQueuedSubmissionInputSchema
+  }),
+  z.object({ type: z.literal('conversation/queue-edit'), input: editQueuedSubmissionInputSchema }),
+  z.object({ type: z.literal('conversation/queue-move'), input: moveQueuedSubmissionInputSchema }),
+  z.object({
+    type: z.literal('conversation/queue-prioritize'),
+    input: queuedSubmissionIdentitySchema
+  }),
+  z.object({ type: z.literal('conversation/queue-cancel'), input: queuedSubmissionIdentitySchema }),
+  z.object({
+    type: z.literal('conversation/queue-state'),
+    input: setConversationQueuePausedInputSchema
+  }),
+  z.object({ type: z.literal('conversation/queue-claim'), sessionId: z.string().min(1) }),
+  z.object({
+    type: z.literal('conversation/queue-release'),
+    input: queuedSubmissionIdentitySchema
+  }),
+  z.object({ type: z.literal('conversation/queue-sent'), input: queuedSubmissionIdentitySchema }),
+  z.object({
     type: z.literal('conversation/begin'),
     sessionId: z.string().min(1),
     runId: z.string().min(1),
@@ -452,6 +483,14 @@ export interface ShellApi {
    * survives even when the Run never reaches the Harness.
    */
   developSession(input: DevelopSessionInput): Promise<ConversationSnapshot>
+  /** Adds a captured submission to the Session-owned durable queue. */
+  enqueueQueuedSubmission(input: EnqueueQueuedSubmissionInput): Promise<ConversationSnapshot>
+  editQueuedSubmission(input: EditQueuedSubmissionInput): Promise<ConversationSnapshot>
+  moveQueuedSubmission(input: MoveQueuedSubmissionInput): Promise<ConversationSnapshot>
+  cancelQueuedSubmission(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
+  pauseConversationQueue(sessionId: string): Promise<ConversationSnapshot>
+  resumeConversationQueue(sessionId: string): Promise<ConversationSnapshot>
+  sendQueuedSubmissionNow(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
   /**
    * Answers the approval a Run is blocked on. Approving lets the agent
    * proceed; denying hands it the message and it carries on without.
