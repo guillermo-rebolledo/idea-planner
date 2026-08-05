@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -66,6 +66,66 @@ describe('Projects', () => {
     await core.addProject(projectRoot)
 
     await expect(makeCore().listProjects()).resolves.toMatchObject([{ root: projectRoot }])
+  })
+
+  it('reads timestamp-only Project state as legacy unbound trust', async () => {
+    await writeFile(
+      join(stateDir, 'projects.json'),
+      JSON.stringify([
+        {
+          root: projectRoot,
+          name: 'legacy',
+          addedAt: '2026-07-01T00:00:00.000Z',
+          skillsTrustedAt: '2026-07-02T00:00:00.000Z'
+        }
+      ])
+    )
+
+    await expect(core.listProjects()).resolves.toMatchObject([
+      {
+        skillsTrustedAt: '2026-07-02T00:00:00.000Z',
+        skillsTrustedDigest: null,
+        skillsTrustedManifest: []
+      }
+    ])
+
+    await expect(core.observeProjectSkills(projectRoot, null)).resolves.toMatchObject({
+      skillsTrustedAt: null,
+      skillsTrustedDigest: null,
+      skillsTrustedManifest: []
+    })
+  })
+
+  it('stores, invalidates, and revokes content-bound Project Skill trust atomically', async () => {
+    await core.addProject(projectRoot)
+    const manifest = [{ harness: 'claude' as const, name: 'tdd', digest: 'b'.repeat(64) }]
+
+    await core.setProjectSkillsTrusted(projectRoot, {
+      digest: 'a'.repeat(64),
+      manifest
+    })
+    await expect(core.listProjects()).resolves.toMatchObject([
+      {
+        skillsTrustedAt: '2026-07-31T12:00:01.000Z',
+        skillsTrustedDigest: 'a'.repeat(64),
+        skillsTrustedManifest: manifest
+      }
+    ])
+
+    await core.observeProjectSkills(projectRoot, 'c'.repeat(64))
+    await expect(core.listProjects()).resolves.toMatchObject([
+      {
+        skillsTrustedAt: null,
+        skillsTrustedDigest: 'a'.repeat(64),
+        skillsTrustedManifest: manifest
+      }
+    ])
+
+    await core.setProjectSkillsTrusted(projectRoot, null)
+    const stored = JSON.parse(await readFile(join(stateDir, 'projects.json'), 'utf8')) as unknown[]
+    expect(stored).toMatchObject([
+      { skillsTrustedAt: null, skillsTrustedDigest: null, skillsTrustedManifest: [] }
+    ])
   })
 
   it('rejects a root that is not an absolute path', async () => {

@@ -1,4 +1,19 @@
 import { z } from 'zod'
+import { harnessIdSchema } from './readiness'
+import { skillNameSchema } from './run'
+
+export const projectSkillDigestSchema = z.object({
+  harness: harnessIdSchema,
+  name: skillNameSchema,
+  digest: z.string().length(64)
+})
+export type ProjectSkillDigest = z.infer<typeof projectSkillDigestSchema>
+
+export const projectSkillsTrustSchema = z.object({
+  digest: z.string().length(64),
+  manifest: z.array(projectSkillDigestSchema).max(500)
+})
+export type ProjectSkillsTrust = z.infer<typeof projectSkillsTrustSchema>
 
 /**
  * A Project the user has added. The root is the path git resolved (ADR 0005),
@@ -15,7 +30,11 @@ export const projectSchema = z.object({
    * with write and command access, and one that arrived by `git clone` is text
    * from whoever wrote that repository.
    */
-  skillsTrustedAt: z.string().datetime().nullable().default(null)
+  skillsTrustedAt: z.string().datetime().nullable().default(null),
+  /** Digest of both supported Project Skill trees at the time trust was granted. */
+  skillsTrustedDigest: z.string().length(64).nullable().default(null),
+  /** Bounded per-Skill digests used to explain what invalidated trust. */
+  skillsTrustedManifest: z.array(projectSkillDigestSchema).max(500).default([])
 })
 export type Project = z.infer<typeof projectSchema>
 

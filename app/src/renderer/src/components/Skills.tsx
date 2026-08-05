@@ -15,13 +15,15 @@ import { PopoverHeading } from '@renderer/components/ui/chip-popover'
 export function useSkillCatalog(input: {
   projectRoot: string
   harness: HarnessId | null
+  /** Queue pausing can mean a queued Project Skill lost trust at its launch gate. */
+  refreshWhenQueuePaused?: boolean
 }): [SkillCatalog | null, (catalog: SkillCatalog) => void] {
   const [catalog, setCatalog] = useState<SkillCatalog | null>(null)
-  const { projectRoot, harness } = input
+  const { projectRoot, harness, refreshWhenQueuePaused } = input
   useEffect(() => {
     if (!harness || !projectRoot) return
     void window.shell.listSkills({ projectRoot, harness }).then(setCatalog, () => undefined)
-  }, [harness, projectRoot])
+  }, [harness, projectRoot, refreshWhenQueuePaused])
   return [catalog, setCatalog]
 }
 
