@@ -36,6 +36,10 @@ _Avoid_: Session, chat, transcript
 One user submission followed by agent work until the application is waiting for the user, completes, fails, or is stopped. A Run is configured with a Harness, model, reasoning effort, and Permission Mode.
 _Avoid_: Conversation, turn, Harness Thread
 
+**Queued Submission**:
+A durable, editable request waiting inside one Session while another Run is active. It captures the message and its Run configuration when queued, keeps a stable submission identity through edits and reordering, and contacts a Harness only when Main claims it after an explicit Resume or a completed Run.
+_Avoid_: Held message, draft, follow-up, pending prompt
+
 **Harness**:
 A locally installed CLI coding agent the app drives as a child process, such as Codex or Claude Code. The app never provides inference itself.
 _Avoid_: Provider, model, backend

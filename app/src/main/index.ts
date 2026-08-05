@@ -46,6 +46,10 @@ import {
   openInEditorInputSchema,
   conversationSnapshotSchema,
   developSessionInputSchema,
+  editQueuedSubmissionInputSchema,
+  enqueueQueuedSubmissionInputSchema,
+  moveQueuedSubmissionInputSchema,
+  queuedSubmissionIdentitySchema,
   SKILL_ATTRIBUTION,
   projectViewSchema,
   type BootState,
@@ -537,6 +541,33 @@ function registerIpc(): void {
   )
   handleInvoke(IPC_CHANNELS.developSession, developSessionInputSchema, async (input) =>
     conversationSnapshotSchema.parse(await runService.develop(input))
+  )
+  handleInvoke(
+    IPC_CHANNELS.enqueueQueuedSubmission,
+    enqueueQueuedSubmissionInputSchema,
+    async (input) =>
+      conversationSnapshotSchema.parse(await runService.enqueueQueuedSubmission(input))
+  )
+  handleInvoke(IPC_CHANNELS.editQueuedSubmission, editQueuedSubmissionInputSchema, async (input) =>
+    conversationSnapshotSchema.parse(await runService.editQueuedSubmission(input))
+  )
+  handleInvoke(IPC_CHANNELS.moveQueuedSubmission, moveQueuedSubmissionInputSchema, async (input) =>
+    conversationSnapshotSchema.parse(await runService.moveQueuedSubmission(input))
+  )
+  handleInvoke(IPC_CHANNELS.cancelQueuedSubmission, queuedSubmissionIdentitySchema, async (input) =>
+    conversationSnapshotSchema.parse(await runService.cancelQueuedSubmission(input))
+  )
+  handleInvoke(IPC_CHANNELS.pauseConversationQueue, z.string().min(1), async (sessionId) =>
+    conversationSnapshotSchema.parse(await runService.pauseConversationQueue(sessionId))
+  )
+  handleInvoke(IPC_CHANNELS.resumeConversationQueue, z.string().min(1), async (sessionId) =>
+    conversationSnapshotSchema.parse(await runService.resumeConversationQueue(sessionId))
+  )
+  handleInvoke(
+    IPC_CHANNELS.sendQueuedSubmissionNow,
+    queuedSubmissionIdentitySchema,
+    async (input) =>
+      conversationSnapshotSchema.parse(await runService.sendQueuedSubmissionNow(input))
   )
   handleInvoke(IPC_CHANNELS.resolveApproval, resolveApprovalInputSchema, async (input) =>
     conversationSnapshotSchema.parse(await runService.resolveApproval(input))

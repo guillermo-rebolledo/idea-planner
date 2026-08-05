@@ -26,9 +26,15 @@ import {
 } from '@shared/run'
 import type {
   ConversationSnapshot,
+  EditQueuedSubmissionInput,
+  EnqueueQueuedSubmissionInput,
   FinalizeConversationRunInput,
   HarnessStream,
+  MoveQueuedSubmissionInput,
+  QueuedSubmission,
+  QueuedSubmissionIdentity,
   RecordCheckoutChangesInput,
+  SetConversationQueuePausedInput,
   SubmitConversationMessageInput,
   UnfinishedRun
 } from '@shared/conversation'
@@ -93,6 +99,15 @@ export interface Core {
   recordRunEvent(input: RecordRunEventInput): Promise<RunSnapshot>
   getConversation(sessionId: string): Promise<ConversationSnapshot>
   submitConversationMessage(input: SubmitConversationMessageInput): Promise<ConversationSnapshot>
+  enqueueQueuedSubmission(input: EnqueueQueuedSubmissionInput): Promise<ConversationSnapshot>
+  editQueuedSubmission(input: EditQueuedSubmissionInput): Promise<ConversationSnapshot>
+  moveQueuedSubmission(input: MoveQueuedSubmissionInput): Promise<ConversationSnapshot>
+  prioritizeQueuedSubmission(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
+  cancelQueuedSubmission(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
+  setConversationQueuePaused(input: SetConversationQueuePausedInput): Promise<ConversationSnapshot>
+  claimQueuedSubmission(sessionId: string): Promise<QueuedSubmission | null>
+  releaseQueuedSubmission(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
+  markQueuedSubmissionSent(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
   beginConversationRun(input: BeginConversationRunInput): Promise<ConversationSnapshot>
   applyHarnessEvent(input: ApplyHarnessEventInput): Promise<void>
   openHarness(input: OpenHarnessInput): Promise<HarnessStream>
@@ -136,6 +151,31 @@ export interface CoreEffects {
   getConversation(sessionId: string): Effect.Effect<ConversationSnapshot, CoreError>
   submitConversationMessage(
     input: SubmitConversationMessageInput
+  ): Effect.Effect<ConversationSnapshot, CoreError>
+  enqueueQueuedSubmission(
+    input: EnqueueQueuedSubmissionInput
+  ): Effect.Effect<ConversationSnapshot, CoreError>
+  editQueuedSubmission(
+    input: EditQueuedSubmissionInput
+  ): Effect.Effect<ConversationSnapshot, CoreError>
+  moveQueuedSubmission(
+    input: MoveQueuedSubmissionInput
+  ): Effect.Effect<ConversationSnapshot, CoreError>
+  prioritizeQueuedSubmission(
+    input: QueuedSubmissionIdentity
+  ): Effect.Effect<ConversationSnapshot, CoreError>
+  cancelQueuedSubmission(
+    input: QueuedSubmissionIdentity
+  ): Effect.Effect<ConversationSnapshot, CoreError>
+  setConversationQueuePaused(
+    input: SetConversationQueuePausedInput
+  ): Effect.Effect<ConversationSnapshot, CoreError>
+  claimQueuedSubmission(sessionId: string): Effect.Effect<QueuedSubmission | null, CoreError>
+  releaseQueuedSubmission(
+    input: QueuedSubmissionIdentity
+  ): Effect.Effect<ConversationSnapshot, CoreError>
+  markQueuedSubmissionSent(
+    input: QueuedSubmissionIdentity
   ): Effect.Effect<ConversationSnapshot, CoreError>
   beginConversationRun(
     input: BeginConversationRunInput
@@ -545,6 +585,15 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     recordRunEvent,
     getConversation: (sessionId) => conversation.get(sessionId),
     submitConversationMessage: (input) => conversation.submit(input),
+    enqueueQueuedSubmission: (input) => conversation.enqueue(input),
+    editQueuedSubmission: (input) => conversation.editQueued(input),
+    moveQueuedSubmission: (input) => conversation.moveQueued(input),
+    prioritizeQueuedSubmission: (input) => conversation.prioritizeQueued(input),
+    cancelQueuedSubmission: (input) => conversation.cancelQueued(input),
+    setConversationQueuePaused: (input) => conversation.setQueuePaused(input),
+    claimQueuedSubmission: (sessionId) => conversation.claimQueued(sessionId),
+    releaseQueuedSubmission: (input) => conversation.releaseQueued(input),
+    markQueuedSubmissionSent: (input) => conversation.markQueuedSent(input),
     beginConversationRun: (input) => conversation.begin(input),
     applyHarnessEvent: (input) => conversation.apply(input),
     openHarness: (input) => conversation.open(input),
@@ -656,6 +705,15 @@ export function createCore(deps: CoreDeps = {}): Core {
     recordRunEvent: (input) => run(core.recordRunEvent(input)),
     getConversation: (sessionId) => run(core.getConversation(sessionId)),
     submitConversationMessage: (input) => run(core.submitConversationMessage(input)),
+    enqueueQueuedSubmission: (input) => run(core.enqueueQueuedSubmission(input)),
+    editQueuedSubmission: (input) => run(core.editQueuedSubmission(input)),
+    moveQueuedSubmission: (input) => run(core.moveQueuedSubmission(input)),
+    prioritizeQueuedSubmission: (input) => run(core.prioritizeQueuedSubmission(input)),
+    cancelQueuedSubmission: (input) => run(core.cancelQueuedSubmission(input)),
+    setConversationQueuePaused: (input) => run(core.setConversationQueuePaused(input)),
+    claimQueuedSubmission: (sessionId) => run(core.claimQueuedSubmission(sessionId)),
+    releaseQueuedSubmission: (input) => run(core.releaseQueuedSubmission(input)),
+    markQueuedSubmissionSent: (input) => run(core.markQueuedSubmissionSent(input)),
     beginConversationRun: (input) => run(core.beginConversationRun(input)),
     applyHarnessEvent: (input) => run(core.applyHarnessEvent(input)),
     openHarness: (input) => run(core.openHarness(input)),

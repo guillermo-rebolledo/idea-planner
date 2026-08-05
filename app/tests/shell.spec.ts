@@ -163,12 +163,15 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
     expect(exposure.electronType).toBe('undefined')
     expect(exposure.ipcRendererType).toBe('undefined')
     expect(exposure.shellKeys).toEqual([
+      'cancelQueuedSubmission',
       'chooseHarnessExecutable',
       'chooseProject',
       'clearHarnessExecutable',
       'confirmProject',
       'deleteSession',
       'developSession',
+      'editQueuedSubmission',
+      'enqueueQueuedSubmission',
       'getBootState',
       'getCheckoutFacts',
       'getConversation',
@@ -183,6 +186,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'listSessions',
       'listSkills',
       'listStandingApprovals',
+      'moveQueuedSubmission',
       'offerProject',
       'onConversationEvent',
       'onOpenSessionRequest',
@@ -191,12 +195,15 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'openExternalLink',
       'openInEditor',
       'pathForFile',
+      'pauseConversationQueue',
       'queryMailbox',
       'refreshReadiness',
       'removeProject',
       'renameSession',
       'resolveApproval',
+      'resumeConversationQueue',
       'revokeStandingApproval',
+      'sendQueuedSubmissionNow',
       'setLoginShellDiscovery',
       'setSessionArchived',
       'setSessionPinned',
@@ -251,6 +258,79 @@ test('a person starts a Session and it survives an application restart', async (
     await expect(page.getByRole('heading', { name: 'Offline recipe planner' })).toBeVisible()
   } finally {
     await secondRun.close()
+  }
+})
+
+test('Queued Submissions are durable and keyboard-editable', async () => {
+  const firstRun = await launchShell()
+  try {
+    const page = await firstRun.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Keep working while I queue messages')
+    const composer = page.getByLabel('Your message')
+    await composer.fill('First queued message')
+    await page.getByRole('button', { name: 'Add to queue' }).click()
+    const queue = page.getByRole('region', { name: 'Queued Submissions' })
+    await expect(queue.getByText('First queued message')).toBeVisible()
+    await page.evaluate(async () => {
+      const [session] = await window.shell.listSessions()
+      if (!session) throw new Error('Session missing')
+      await window.shell.enqueueQueuedSubmission({
+        sessionId: session.id,
+        submissionId: 'shell-queued-second',
+        text: 'Second queued message',
+        source: 'composer',
+        harness: 'claude',
+        model: 'default',
+        effort: null,
+        permissionMode: 'ask',
+        reviewAttachments: []
+      })
+    })
+    await page.reload()
+    await page
+      .getByRole('navigation', { name: 'Session inbox' })
+      .getByText('Keep working while I queue messages')
+      .click()
+
+    const refreshedQueue = page.getByRole('region', { name: 'Queued Submissions' })
+    await expect(refreshedQueue.getByText('Second queued message')).toBeVisible()
+    await refreshedQueue.getByRole('button', { name: 'Move Second queued message earlier' }).focus()
+    await page.keyboard.press('Enter')
+    await expect(refreshedQueue.getByRole('status')).toContainText('Moved earlier')
+    await refreshedQueue.getByRole('button', { name: 'Edit Second queued message' }).click()
+    await refreshedQueue.getByLabel('Edit queued message').fill('Edited queued message')
+    await refreshedQueue.getByRole('button', { name: 'Save queued message' }).click()
+    await expect(refreshedQueue.getByText('Edited queued message')).toBeVisible()
+  } finally {
+    await firstRun.close()
+  }
+
+  const restarted = await launchShell()
+  try {
+    const page = await restarted.firstWindow()
+    await page
+      .getByRole('navigation', { name: 'Session inbox' })
+      .getByText('Keep working while I queue messages')
+      .click()
+    const restartedQueue = await page.evaluate(async () => {
+      const [session] = await window.shell.listSessions()
+      if (!session) throw new Error('Session missing after restart')
+      return (await window.shell.getConversation(session.id)).queue
+    })
+    expect(restartedQueue.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ text: 'Edited queued message', status: 'pending' })
+      ])
+    )
+    const queue = page.getByRole('region', { name: 'Queued Submissions' })
+    await expect(queue.getByText('Edited queued message')).toBeVisible()
+    await expect(queue.getByRole('button', { name: 'Resume queue' })).toBeVisible()
+    await page.getByLabel('Your message').fill('A message added while paused')
+    await expect(page.getByRole('button', { name: 'Add to queue' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toHaveCount(0)
+  } finally {
+    await restarted.close()
   }
 })
 

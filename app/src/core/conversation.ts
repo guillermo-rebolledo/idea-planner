@@ -11,6 +11,13 @@ import {
   assistantMessageId,
   hasPlainOptions,
   redactCredentials,
+  editQueuedSubmissionInputSchema,
+  enqueueQueuedSubmissionInputSchema,
+  moveQueuedSubmissionInputSchema,
+  queuedSubmissionIdentitySchema,
+  queuedSubmissionEntrySchema,
+  isActiveQueuedSubmission,
+  setConversationQueuePausedInputSchema,
   type ChangedFile,
   type DiffHunk,
   submitConversationMessageInputSchema,
@@ -24,6 +31,12 @@ import {
   type HarnessStream,
   type HarnessUsage,
   type RecordCheckoutChangesInput,
+  type EditQueuedSubmissionInput,
+  type EnqueueQueuedSubmissionInput,
+  type MoveQueuedSubmissionInput,
+  type QueuedSubmission,
+  type QueuedSubmissionIdentity,
+  type SetConversationQueuePausedInput,
   type SuggestedResponse
 } from '@shared/conversation'
 import type { HarnessId } from '@shared/readiness'
@@ -171,6 +184,17 @@ export interface ConversationEffects {
    */
   state(sessionId: string): Effect.Effect<SessionState, CoreError>
   submit(input: unknown): Effect.Effect<ConversationSnapshot, CoreError>
+  enqueue(input: EnqueueQueuedSubmissionInput): Effect.Effect<ConversationSnapshot, CoreError>
+  editQueued(input: EditQueuedSubmissionInput): Effect.Effect<ConversationSnapshot, CoreError>
+  moveQueued(input: MoveQueuedSubmissionInput): Effect.Effect<ConversationSnapshot, CoreError>
+  prioritizeQueued(input: QueuedSubmissionIdentity): Effect.Effect<ConversationSnapshot, CoreError>
+  cancelQueued(input: QueuedSubmissionIdentity): Effect.Effect<ConversationSnapshot, CoreError>
+  setQueuePaused(
+    input: SetConversationQueuePausedInput
+  ): Effect.Effect<ConversationSnapshot, CoreError>
+  claimQueued(sessionId: string): Effect.Effect<QueuedSubmission | null, CoreError>
+  releaseQueued(input: QueuedSubmissionIdentity): Effect.Effect<ConversationSnapshot, CoreError>
+  markQueuedSent(input: QueuedSubmissionIdentity): Effect.Effect<ConversationSnapshot, CoreError>
   begin(input: BeginConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
   apply(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
   /**
@@ -218,6 +242,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
   // How much of a Run's protocol this app could not model. A Run that says
   // nothing else is the only evidence the person will ever get.
   const drift = Effect.runSync(Ref.make<ReadonlyMap<string, number>>(new Map()))
+  // Intentionally process-local. A new Core starts every non-empty queue paused,
+  // even when the last durable transition before shutdown was Resume.
+  const queuePauseOverrides = Effect.runSync(Ref.make<ReadonlyMap<string, boolean>>(new Map()))
   // One writer at a time: a streaming checkpoint must never interleave with a
   // submission or a finalize on the same journal.
   const writeLock = Effect.runSync(Effect.makeSemaphore(1))
@@ -246,10 +273,13 @@ export function createConversationEffects(options: ConversationOptions): Convers
       catch: () => new CoreError('IO_ERROR', 'The Conversation history could not be read')
     })
 
-  const append = (sessionDir: string, entry: ConversationEntry): Effect.Effect<void, CoreError> =>
+  const appendMany = (
+    sessionDir: string,
+    entries: ConversationEntry[]
+  ): Effect.Effect<void, CoreError> =>
     Effect.gen(function* () {
       const journal = join(sessionDir, JOURNAL)
-      const line = `${JSON.stringify(entry)}\n`
+      const text = entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n'
       // What the projection has to agree with to be usable: the journal as it
       // is *before* this entry. Read first, so what follows is one fold over
       // one entry rather than a reading of everything that ever happened.
@@ -258,7 +288,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       yield* Effect.tryPromise({
         try: async () => {
           await mkdir(sessionDir, { recursive: true, mode: 0o700 })
-          await appendFile(journal, line, 'utf8')
+          await appendFile(journal, text, 'utf8')
         },
         catch: () => new CoreError('IO_ERROR', 'The Conversation could not be saved')
       })
@@ -267,10 +297,13 @@ export function createConversationEffects(options: ConversationOptions): Convers
       // Being behind is seen and repaired; being ahead would be a status the
       // Conversation never said (ticket 12f).
       yield* writeState(sessionDir, {
-        ...advance(known, entry),
-        journalBytes: before + Buffer.byteLength(line, 'utf8')
+        ...entries.reduce(advance, known),
+        journalBytes: before + Buffer.byteLength(text, 'utf8')
       }).pipe(Effect.catchAll(() => Effect.void))
     })
+
+  const append = (sessionDir: string, entry: ConversationEntry): Effect.Effect<void, CoreError> =>
+    appendMany(sessionDir, [entry])
 
   /**
    * What this Session was doing when its journal was `bytes` long, from the
@@ -341,7 +374,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
     sessionId: string,
     sessionDir: string
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
-    readEntries(sessionDir).pipe(Effect.map((entries) => summarize(sessionId, entries)))
+    Effect.all([readEntries(sessionDir), Ref.get(queuePauseOverrides)]).pipe(
+      Effect.map(([entries, overrides]) => summarize(sessionId, entries, overrides.get(sessionId)))
+    )
 
   const state = (sessionId: string): Effect.Effect<SessionState, CoreError> =>
     sessionDirectory(sessionId).pipe(Effect.flatMap(readState))
@@ -377,7 +412,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 )
               )
             }
-            return summarize(input.sessionId, entries)
+            const paused = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId)
+            return summarize(input.sessionId, entries, paused)
           }
           const at = (yield* options.clock).toISOString()
           const entry = conversationEntrySchema.parse({
@@ -394,10 +430,384 @@ export function createConversationEffects(options: ConversationOptions): Convers
             plainOptions: false
           })
           yield* append(sessionDir, entry)
-          return summarize(input.sessionId, [...entries, entry])
+          const paused = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId)
+          return summarize(input.sessionId, [...entries, entry], paused)
         })
       )
     })
+
+  const queuedEntry = (
+    entries: ConversationEntry[],
+    submissionId: string
+  ): QueuedSubmission | undefined =>
+    entries.find(
+      (entry): entry is QueuedSubmission =>
+        entry.kind === 'queued-submission' && entry.submissionId === submissionId
+    )
+
+  const queueSnapshot = (
+    sessionId: string,
+    entries: ConversationEntry[]
+  ): Effect.Effect<ConversationSnapshot> =>
+    Ref.get(queuePauseOverrides).pipe(
+      Effect.map((overrides) => summarize(sessionId, entries, overrides.get(sessionId)))
+    )
+
+  const enqueue = (
+    rawInput: EnqueueQueuedSubmissionInput
+  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+    Effect.gen(function* () {
+      const parsed = enqueueQueuedSubmissionInputSchema.safeParse(rawInput)
+      if (!parsed.success) {
+        return yield* Effect.fail(
+          new CoreError(
+            'INVALID_INPUT',
+            parsed.error.issues[0]?.message ?? 'Invalid queued message'
+          )
+        )
+      }
+      const input = parsed.data
+      const sessionDir = yield* sessionDirectory(input.sessionId)
+      return yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const entries = yield* readEntries(sessionDir)
+          const existing = queuedEntry(entries, input.submissionId)
+          if (existing) {
+            const same =
+              existing.text === input.text &&
+              existing.harness === input.harness &&
+              existing.model === input.model &&
+              existing.effort === input.effort &&
+              existing.skill === (input.skill ?? null) &&
+              existing.permissionMode === input.permissionMode &&
+              existing.source === input.source &&
+              JSON.stringify(existing.reviewAttachments) === JSON.stringify(input.reviewAttachments)
+            if (!same) {
+              return yield* Effect.fail(
+                new CoreError(
+                  'INVALID_INPUT',
+                  'Submission identity was already used for different queued content'
+                )
+              )
+            }
+            return yield* queueSnapshot(input.sessionId, entries)
+          }
+          const active = entries.filter(
+            (entry): entry is QueuedSubmission =>
+              entry.kind === 'queued-submission' && isActiveQueuedSubmission(entry)
+          )
+          if (active.length >= 50) {
+            return yield* Effect.fail(
+              new CoreError('INVALID_INPUT', 'A Session may hold at most 50 queued submissions')
+            )
+          }
+          const at = (yield* options.clock).toISOString()
+          const pauseOverride = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId)
+          const entry = queuedSubmissionEntrySchema.parse({
+            kind: 'queued-submission',
+            id: `queued:${input.submissionId}`,
+            at,
+            submissionId: input.submissionId,
+            text: input.text,
+            source: input.source,
+            harness: input.harness,
+            model: input.model,
+            effort: input.effort,
+            skill: input.skill ?? null,
+            permissionMode: input.permissionMode,
+            reviewAttachments: input.reviewAttachments,
+            status: 'pending',
+            position: Math.max(-1, ...active.map((item) => item.position)) + 1
+          })
+          const additions: ConversationEntry[] = [entry]
+          if (pauseOverride === undefined) {
+            additions.push(
+              conversationEntrySchema.parse({
+                kind: 'queue-state',
+                id: 'queue-state',
+                at,
+                paused: false
+              })
+            )
+            yield* Ref.update(queuePauseOverrides, (current) =>
+              new Map(current).set(input.sessionId, false)
+            )
+          }
+          yield* appendMany(sessionDir, additions)
+          return summarize(
+            input.sessionId,
+            replaceEntries(entries, additions),
+            pauseOverride ?? false
+          )
+        })
+      )
+    })
+
+  const replaceQueued = <A>(
+    rawInput: A,
+    parse: (
+      input: A
+    ) =>
+      | { success: true; data: QueuedSubmissionIdentity & Record<string, unknown> }
+      | { success: false; error: { issues: { message: string }[] } },
+    change: (
+      item: QueuedSubmission,
+      input: QueuedSubmissionIdentity & Record<string, unknown>,
+      entries: ConversationEntry[]
+    ) => ConversationEntry[],
+    allowedStatuses: QueuedSubmission['status'][] = ['pending'],
+    claimedRequiresPaused = false,
+    pauseAfterChange = false
+  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+    Effect.gen(function* () {
+      const parsed = parse(rawInput)
+      if (!parsed.success) {
+        return yield* Effect.fail(
+          new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid queue change')
+        )
+      }
+      const input = parsed.data
+      const sessionDir = yield* sessionDirectory(input.sessionId)
+      return yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const entries = yield* readEntries(sessionDir)
+          const item = queuedEntry(entries, input.submissionId)
+          const paused = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId) ?? true
+          if (
+            !item ||
+            !allowedStatuses.includes(item.status) ||
+            (item.status === 'claimed' && claimedRequiresPaused && !paused)
+          ) {
+            return yield* Effect.fail(
+              new CoreError('INVALID_INPUT', 'Queued Submission is not editable')
+            )
+          }
+          const now = (yield* options.clock).toISOString()
+          const replacements = change(item, input, entries).map((entry) => ({ ...entry, at: now }))
+          const additions: ConversationEntry[] = [...replacements]
+          if (pauseAfterChange) {
+            additions.push(
+              conversationEntrySchema.parse({
+                kind: 'queue-state',
+                id: 'queue-state',
+                at: now,
+                paused: true
+              })
+            )
+            yield* Ref.update(queuePauseOverrides, (current) =>
+              new Map(current).set(input.sessionId, true)
+            )
+          }
+          yield* appendMany(sessionDir, additions)
+          return summarize(
+            input.sessionId,
+            replaceEntries(entries, additions),
+            pauseAfterChange ? true : paused
+          )
+        })
+      )
+    })
+
+  const editQueued = (
+    input: EditQueuedSubmissionInput
+  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+    replaceQueued(
+      input,
+      (value) => editQueuedSubmissionInputSchema.safeParse(value),
+      (item, value, entries) => {
+        const text = value['text'] as string
+        const admitted = entries.find((entry) => entry.id === `user:${item.submissionId}`)
+        return [
+          { ...item, text, status: 'pending' as const },
+          ...(admitted?.kind === 'message' && admitted.role === 'user'
+            ? [{ ...admitted, text }]
+            : [])
+        ]
+      },
+      ['pending', 'claimed'],
+      true,
+      true
+    )
+
+  const moveQueued = (
+    input: MoveQueuedSubmissionInput
+  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+    replaceQueued(
+      input,
+      (value) => moveQueuedSubmissionInputSchema.safeParse(value),
+      (item, value, entries) => {
+        const active = entries
+          .filter(
+            (entry): entry is QueuedSubmission =>
+              entry.kind === 'queued-submission' && isActiveQueuedSubmission(entry)
+          )
+          .sort((left, right) => left.position - right.position)
+        const index = active.findIndex((entry) => entry.id === item.id)
+        const offset = value['direction'] === 'earlier' ? -1 : 1
+        const sibling = active[index + offset]
+        return sibling
+          ? [
+              { ...item, position: sibling.position, status: 'pending' as const },
+              { ...sibling, position: item.position }
+            ]
+          : [{ ...item, status: 'pending' as const }]
+      },
+      ['pending', 'claimed'],
+      true
+    )
+
+  const prioritizeQueued = (
+    rawInput: QueuedSubmissionIdentity
+  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+    Effect.gen(function* () {
+      const input = queuedSubmissionIdentitySchema.parse(rawInput)
+      const sessionDir = yield* sessionDirectory(input.sessionId)
+      return yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const entries = yield* readEntries(sessionDir)
+          const active = entries
+            .filter(
+              (entry): entry is QueuedSubmission =>
+                entry.kind === 'queued-submission' && isActiveQueuedSubmission(entry)
+            )
+            .sort((left, right) => left.position - right.position)
+          const index = active.findIndex((item) => item.submissionId === input.submissionId)
+          const target = active[index]
+          const paused = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId) ?? true
+          if (!target || (target.status === 'claimed' && !paused)) {
+            return yield* Effect.fail(
+              new CoreError('INVALID_INPUT', 'Queued Submission cannot be sent now')
+            )
+          }
+          if (index === 0) return yield* queueSnapshot(input.sessionId, entries)
+          const at = (yield* options.clock).toISOString()
+          const replacements = active.slice(0, index).map((item) => ({
+            ...item,
+            at,
+            position: item.position + 1
+          }))
+          replacements.push({
+            ...target,
+            at,
+            position: active[0]?.position ?? 0,
+            status: 'pending'
+          })
+          yield* appendMany(sessionDir, replacements)
+          return yield* queueSnapshot(input.sessionId, replaceEntries(entries, replacements))
+        })
+      )
+    })
+
+  const cancelQueued = (
+    input: QueuedSubmissionIdentity
+  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+    replaceQueued(
+      input,
+      (value) => queuedSubmissionIdentitySchema.safeParse(value),
+      (item) => [{ ...item, status: 'cancelled' }],
+      ['pending', 'claimed'],
+      true
+    )
+
+  const setQueuePaused = (
+    rawInput: SetConversationQueuePausedInput
+  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+    Effect.gen(function* () {
+      const input = setConversationQueuePausedInputSchema.parse(rawInput)
+      const sessionDir = yield* sessionDirectory(input.sessionId)
+      return yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const entries = yield* readEntries(sessionDir)
+          const entry = conversationEntrySchema.parse({
+            kind: 'queue-state',
+            id: 'queue-state',
+            at: (yield* options.clock).toISOString(),
+            paused: input.paused
+          })
+          yield* append(sessionDir, entry)
+          yield* Ref.update(queuePauseOverrides, (current) =>
+            new Map(current).set(input.sessionId, input.paused)
+          )
+          return summarize(input.sessionId, replaceEntries(entries, [entry]), input.paused)
+        })
+      )
+    })
+
+  const claimQueued = (sessionId: string): Effect.Effect<QueuedSubmission | null, CoreError> =>
+    Effect.gen(function* () {
+      const sessionDir = yield* sessionDirectory(sessionId)
+      return yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const entries = yield* readEntries(sessionDir)
+          const paused = (yield* Ref.get(queuePauseOverrides)).get(sessionId) ?? true
+          if (paused || deriveState(entries, 0).activeRunId !== null) return null
+          const claimed = entries.find(
+            (entry): entry is QueuedSubmission =>
+              entry.kind === 'queued-submission' && entry.status === 'claimed'
+          )
+          const pending = entries
+            .filter(
+              (entry): entry is QueuedSubmission =>
+                entry.kind === 'queued-submission' && entry.status === 'pending'
+            )
+            .sort((left, right) => left.position - right.position)[0]
+          const item = claimed ?? pending
+          if (!item) return null
+          const messageId = `user:${item.submissionId}`
+          const message = entries.find((entry) => entry.id === messageId)
+          if (message?.kind === 'message' && message.text !== item.text) {
+            return yield* Effect.fail(
+              new CoreError(
+                'INVALID_INPUT',
+                'Submission identity was already used for different content'
+              )
+            )
+          }
+          const at = (yield* options.clock).toISOString()
+          const replacement = { ...item, at, status: 'claimed' as const }
+          const additions: ConversationEntry[] = [replacement]
+          if (!message) {
+            additions.push(
+              conversationEntrySchema.parse({
+                kind: 'message',
+                id: messageId,
+                at,
+                runId: null,
+                role: 'user',
+                text: item.text,
+                completeness: 'complete',
+                source: item.source,
+                submissionId: item.submissionId,
+                suggestedResponses: [],
+                plainOptions: false
+              })
+            )
+          }
+          yield* appendMany(sessionDir, additions)
+          return replacement
+        })
+      )
+    })
+
+  const markQueuedSent = (
+    input: QueuedSubmissionIdentity
+  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+    replaceQueued(
+      input,
+      (value) => queuedSubmissionIdentitySchema.safeParse(value),
+      (item) => [{ ...item, status: 'sent' }],
+      ['claimed']
+    )
+
+  const releaseQueued = (
+    input: QueuedSubmissionIdentity
+  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+    replaceQueued(
+      input,
+      (value) => queuedSubmissionIdentitySchema.safeParse(value),
+      (item) => [{ ...item, status: 'pending' }],
+      ['claimed']
+    )
 
   const begin = (
     input: BeginConversationRunInput
@@ -937,6 +1347,15 @@ export function createConversationEffects(options: ConversationOptions): Convers
     get,
     state,
     submit,
+    enqueue,
+    editQueued,
+    moveQueued,
+    prioritizeQueued,
+    cancelQueued,
+    setQueuePaused,
+    claimQueued,
+    releaseQueued,
+    markQueuedSent,
     begin,
     apply,
     open,
@@ -1069,7 +1488,20 @@ function tally(
   }
 }
 
-function summarize(sessionId: string, entries: ConversationEntry[]): ConversationSnapshot {
+function replaceEntries(
+  entries: ConversationEntry[],
+  replacements: ConversationEntry[]
+): ConversationEntry[] {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]))
+  for (const entry of replacements) byId.set(entry.id, entry)
+  return [...byId.values()]
+}
+
+function summarize(
+  sessionId: string,
+  entries: ConversationEntry[],
+  queuePausedOverride?: boolean
+): ConversationSnapshot {
   // What the Session is doing is one rule, and it lives with the projection
   // the inbox reads (ticket 12f). Stating it twice would be two answers to
   // one question, free to disagree.
@@ -1081,6 +1513,9 @@ function summarize(sessionId: string, entries: ConversationEntry[]): Conversatio
   // work has done to the Project, kept as it was reported rather than read
   // back off disk.
   const changed = new Map<string, ChangedFile>()
+  const queued = entries
+    .filter((entry): entry is QueuedSubmission => entry.kind === 'queued-submission')
+    .sort((left, right) => left.position - right.position || left.at.localeCompare(right.at))
   for (const entry of entries) {
     if (entry.kind === 'usage') {
       sessionUsage = addUsage(sessionUsage, entry.usage)
@@ -1091,7 +1526,13 @@ function summarize(sessionId: string, entries: ConversationEntry[]): Conversatio
   }
   return {
     sessionId,
-    entries: entries.filter((entry) => entry.kind !== 'usage' && entry.kind !== 'thread'),
+    entries: entries.filter(
+      (entry) =>
+        entry.kind !== 'usage' &&
+        entry.kind !== 'thread' &&
+        entry.kind !== 'queued-submission' &&
+        entry.kind !== 'queue-state'
+    ),
     usage: { run: latestRunUsage, session: sessionUsage },
     recovery: state.recovery,
     harnessThreads,
@@ -1101,6 +1542,10 @@ function summarize(sessionId: string, entries: ConversationEntry[]): Conversatio
     // The oldest is the one put to the person, so that answering it reveals
     // the next: a Harness may have several in flight, and picking the newest
     // would leave the ones behind it unanswerable.
-    pendingApprovalId: state.openApprovals[0] ?? null
+    pendingApprovalId: state.openApprovals[0] ?? null,
+    queue: {
+      paused: queued.some(isActiveQueuedSubmission) ? (queuePausedOverride ?? true) : true,
+      items: queued
+    }
   }
 }

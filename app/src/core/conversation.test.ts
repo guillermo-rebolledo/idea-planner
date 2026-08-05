@@ -161,6 +161,140 @@ describe('submitting to the Conversation', () => {
   })
 })
 
+describe('durable Queued Submissions', () => {
+  const queued = (submissionId: string, text: string) => ({
+    sessionId,
+    submissionId,
+    text,
+    source: 'composer' as const,
+    harness: 'codex' as const,
+    model: 'gpt-5-codex',
+    effort: 'medium',
+    skill: 'grilling',
+    permissionMode: 'ask' as const,
+    reviewAttachments: []
+  })
+
+  it('projects FIFO items from replacement entries and survives a Core restart', async () => {
+    await core.enqueueQueuedSubmission(queued('queued-1', 'First queued message'))
+    await core.enqueueQueuedSubmission(queued('queued-2', 'Second queued message'))
+    await core.moveQueuedSubmission({ sessionId, submissionId: 'queued-2', direction: 'earlier' })
+    await core.editQueuedSubmission({
+      sessionId,
+      submissionId: 'queued-2',
+      text: 'Edited second message'
+    })
+
+    core = makeCore()
+    const snapshot = await core.getConversation(sessionId)
+    expect(snapshot.queue.paused).toBe(true)
+    expect(snapshot.queue.items).toMatchObject([
+      { submissionId: 'queued-2', text: 'Edited second message', status: 'pending' },
+      { submissionId: 'queued-1', text: 'First queued message', status: 'pending' }
+    ])
+  })
+
+  it('atomically claims the FIFO item and admits its user message once', async () => {
+    await core.enqueueQueuedSubmission(queued('queued-1', 'First queued message'))
+    await core.enqueueQueuedSubmission(queued('queued-2', 'Second queued message'))
+    await core.setConversationQueuePaused({ sessionId, paused: false })
+
+    const first = await core.claimQueuedSubmission(sessionId)
+    const replay = await core.claimQueuedSubmission(sessionId)
+    const snapshot = await core.getConversation(sessionId)
+
+    expect(first).toMatchObject({ submissionId: 'queued-1', status: 'claimed' })
+    expect(replay).toMatchObject({ submissionId: 'queued-1', status: 'claimed' })
+    expect(
+      messages(snapshot.entries).filter((entry) => entry.submissionId === 'queued-1')
+    ).toHaveLength(1)
+    expect(snapshot.queue.items).toMatchObject([
+      { submissionId: 'queued-1', status: 'claimed' },
+      { submissionId: 'queued-2', status: 'pending' }
+    ])
+  })
+
+  it('prioritizes Send now atomically without disturbing the other FIFO positions', async () => {
+    await core.enqueueQueuedSubmission(queued('queued-1', 'First queued message'))
+    await core.enqueueQueuedSubmission(queued('queued-2', 'Second queued message'))
+    await core.enqueueQueuedSubmission(queued('queued-3', 'Third queued message'))
+
+    const snapshot = await core.prioritizeQueuedSubmission({
+      sessionId,
+      submissionId: 'queued-3'
+    })
+
+    expect(snapshot.queue.items.map((item) => item.submissionId)).toEqual([
+      'queued-3',
+      'queued-1',
+      'queued-2'
+    ])
+  })
+
+  it('releases a pre-launch claim so the item can be edited and claimed again', async () => {
+    await core.enqueueQueuedSubmission(queued('queued-1', 'Original queued message'))
+    await core.setConversationQueuePaused({ sessionId, paused: false })
+    await core.claimQueuedSubmission(sessionId)
+    await core.releaseQueuedSubmission({ sessionId, submissionId: 'queued-1' })
+    await core.editQueuedSubmission({
+      sessionId,
+      submissionId: 'queued-1',
+      text: 'Edited after launch failed'
+    })
+    await core.setConversationQueuePaused({ sessionId, paused: false })
+
+    const claimed = await core.claimQueuedSubmission(sessionId)
+    const snapshot = await core.getConversation(sessionId)
+    expect(claimed).toMatchObject({ text: 'Edited after launch failed', status: 'claimed' })
+    expect(
+      messages(snapshot.entries).filter((entry) => entry.submissionId === 'queued-1')
+    ).toMatchObject([{ text: 'Edited after launch failed' }])
+  })
+
+  it('lets a restarted paused queue edit and reorder a recovered claim', async () => {
+    await core.enqueueQueuedSubmission(queued('queued-1', 'Claimed before crash'))
+    await core.enqueueQueuedSubmission(queued('queued-2', 'Still pending'))
+    await core.setConversationQueuePaused({ sessionId, paused: false })
+    await core.claimQueuedSubmission(sessionId)
+
+    core = makeCore()
+    await core.editQueuedSubmission({
+      sessionId,
+      submissionId: 'queued-1',
+      text: 'Edited after restart'
+    })
+    const moved = await core.moveQueuedSubmission({
+      sessionId,
+      submissionId: 'queued-1',
+      direction: 'later'
+    })
+
+    expect(moved.queue.paused).toBe(true)
+    expect(moved.queue.items).toMatchObject([
+      { submissionId: 'queued-2', status: 'pending' },
+      { submissionId: 'queued-1', text: 'Edited after restart', status: 'pending' }
+    ])
+  })
+
+  it('keeps terminal replacements and enforces the fifty-item limit', async () => {
+    await Promise.all(
+      Array.from({ length: 50 }, (_, index) =>
+        core.enqueueQueuedSubmission(queued(`queued-${String(index)}`, `Message ${String(index)}`))
+      )
+    )
+    await expect(
+      core.enqueueQueuedSubmission(queued('queued-overflow', 'One too many'))
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+
+    await core.cancelQueuedSubmission({ sessionId, submissionId: 'queued-0' })
+    await core.enqueueQueuedSubmission(queued('queued-replacement', 'Replacement'))
+    const snapshot = await core.getConversation(sessionId)
+    expect(snapshot.queue.items.find((item) => item.submissionId === 'queued-0')).toMatchObject({
+      status: 'cancelled'
+    })
+  })
+})
+
 describe('streaming a Run into the Conversation', () => {
   beforeEach(async () => {
     await core.submitConversationMessage({

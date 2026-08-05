@@ -44,7 +44,8 @@ function conversation(
     harnessThreads: {},
     changedFiles: [],
     activeRunId,
-    pendingApprovalId: null
+    pendingApprovalId: null,
+    queue: { paused: true, items: [] }
   }
 }
 
