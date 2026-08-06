@@ -62,6 +62,10 @@ Conventions inside Core and Effect-native Main modules:
 - Failures travel in the typed error channel as `CoreError` (the contract
   error). Internal tagged errors are fine while a subsystem grows, but they
   must be mapped to `CoreError` before crossing the Core interface.
+- Main uses tagged domain errors inside operational Effects. Scope finalizers
+  cannot expose a typed error channel, so a finalizer converts a cleanup error
+  to a defect at that boundary; the enclosing promise facade still observes it
+  and preserves the existing supervision-failure behavior.
 - Injectable dependencies (clock, id generation, later: filesystem, SQLite,
   process spawning) are `Context.Tag` services provided via `Layer`, so tests
   swap them without monkey-patching.
@@ -87,7 +91,9 @@ Conventions inside Core and Effect-native Main modules:
 
 > **Superseded by the 2026-08-05 amendment.** Main retains native process
 > authority, but its product behavior and supervision are now Effect-native.
-> Promise conversion happens only at Electron callbacks and transport seams.
+> During the phased migration, a complete migrated slice may keep a temporary
+> promise facade to its unmigrated caller. The final architecture converts only
+> at Electron callbacks and transport seams.
 
 > **Partially superseded by [ADR 0003](./0003-harness-native-permissions.md).**
 > The model-visible tool surface described below was removed: `PlanningPolicy`
