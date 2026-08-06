@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { harnessIdSchema } from './readiness'
 import { skillNameSchema } from './run'
+import { projectSkillDigestSchema } from './project'
 
 /**
  * Skills: the methodologies a Run can be asked to work to. They are installed
@@ -37,7 +38,17 @@ export const skillCatalogSchema = z.object({
    */
   untrusted: z.array(skillSchema),
   /** Whether this Project's own Skills have been trusted. */
-  projectTrusted: z.boolean()
+  projectTrusted: z.boolean(),
+  /** Digest shown with the review and echoed by a trust command. */
+  reviewedDigest: z.string().length(64).nullable(),
+  /** Why Project Skills could not be observed safely. */
+  projectTrustError: z.enum(['unreadable', 'unsupported', 'cyclic', 'over-limit']).nullable(),
+  /** Difference from the last content-bound trust, when one exists. */
+  changes: z.object({
+    added: z.array(projectSkillDigestSchema.omit({ digest: true })),
+    removed: z.array(projectSkillDigestSchema.omit({ digest: true })),
+    changed: z.array(projectSkillDigestSchema.omit({ digest: true }))
+  })
 })
 export type SkillCatalog = z.infer<typeof skillCatalogSchema>
 
@@ -47,10 +58,18 @@ export const listSkillsInputSchema = z.object({
 })
 export type ListSkillsInput = z.infer<typeof listSkillsInputSchema>
 
-export const trustProjectSkillsInputSchema = z.object({
-  root: z.string().min(1),
-  /** Whose catalog to answer with: Skills live in per-Harness directories. */
-  harness: harnessIdSchema,
-  trusted: z.boolean()
-})
+export const trustProjectSkillsInputSchema = z
+  .object({
+    root: z.string().min(1),
+    /** Whose catalog to answer with: Skills live in per-Harness directories. */
+    harness: harnessIdSchema,
+    trusted: z.boolean(),
+    /** Required when granting; Main re-observes and refuses stale reviews. */
+    reviewedDigest: z.string().length(64).optional()
+  })
+  .superRefine((input, context) => {
+    if (input.trusted && input.reviewedDigest === undefined) {
+      context.addIssue({ code: 'custom', message: 'A reviewed Skill digest is required' })
+    }
+  })
 export type TrustProjectSkillsInput = z.infer<typeof trustProjectSkillsInputSchema>

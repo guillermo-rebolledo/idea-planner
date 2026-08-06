@@ -554,6 +554,50 @@ describe('Run service', () => {
     )
   })
 
+  it('does not contact a Harness when a Project Skill loses trust before launch', async () => {
+    const root = await readyClaudeRoot('run-skill-recheck-')
+    const projectRoot = join(root, 'a-project')
+    await mkdir(join(projectRoot, '.claude', 'skills', 'grilling'), { recursive: true })
+    await writeFile(join(projectRoot, '.claude', 'skills', 'grilling', 'SKILL.md'), '# Project')
+    const core = fakeCore(projectRoot)
+    const broker = fakeBroker()
+    let reads = 0
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: (requestedRoot, harness) => {
+        reads += 1
+        return discoverSkills({
+          homeDirectory: root,
+          projectRoot: requestedRoot,
+          harness,
+          projectTrusted: reads === 1
+        })
+      }
+    })
+
+    await expect(
+      service.start({
+        submissionId: 'submission-1',
+        sessionId: 'session',
+        prompt: 'Use the Project Skill',
+        harness: 'claude',
+        model: 'claude-sonnet-4-5',
+        effort: 'high',
+        skill: 'grilling',
+        permissionMode: 'auto'
+      })
+    ).rejects.toThrow('Project Skill trust changed')
+
+    expect(reads).toBe(2)
+    expect(broker.start).not.toHaveBeenCalled()
+  })
+
   it('starts a Session by answering the message that created it, in one Run', async () => {
     const root = await readyHarnessRoot('run-start-session-')
     const core = fakeCore(join(root, 'a-project'))
@@ -1059,6 +1103,80 @@ describe('Run service', () => {
     expect(core.commands.filter((command) => command === 'run/accept')).toHaveLength(0)
     expect(core.commands).toContain('conversation/queue-sent')
     expect(broker.start).not.toHaveBeenCalled()
+  })
+
+  it('retries a queued instruction after trust is restored instead of marking it sent', async () => {
+    const root = await readyClaudeRoot('run-service-trust-restored-')
+    const broker = fakeBroker()
+    const core = fakeCore(join(root, 'a-project'))
+    const original = core.send.getMockImplementation()
+    if (!original) throw new Error('Fake Core implementation missing')
+    const base = (await original({ type: 'run/accept' })) as RunSnapshot
+    const item: QueuedSubmission = {
+      kind: 'queued-submission',
+      id: 'queued:submission-1',
+      at: '2026-08-05T00:00:00.000Z',
+      submissionId: 'submission-1',
+      text: 'Rename the greeting',
+      source: 'composer',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'high',
+      skill: 'wayfinder',
+      permissionMode: 'auto',
+      reviewAttachments: [],
+      status: 'claimed',
+      position: 0
+    }
+    const trustFailure = {
+      ...base,
+      prompt: item.text,
+      status: 'failed' as const,
+      configuration: {
+        ...base.configuration,
+        harness: item.harness,
+        model: item.model,
+        effort: item.effort,
+        skill: { name: 'wayfinder', path: '/skills/wayfinder', hash: 'b'.repeat(64) }
+      },
+      activity: [
+        {
+          id: 'activity-trust',
+          at: '2026-08-05T00:00:00.000Z',
+          kind: 'error' as const,
+          summary: 'Project Skill trust changed before the Harness was contacted'
+        }
+      ]
+    }
+    let claims = 0
+    const acceptedSubmissions: string[] = []
+    core.send.mockImplementation(async (command: { type: string; input?: unknown }) => {
+      if (command.type === 'run/list') return [trustFailure]
+      if (command.type === 'conversation/queue-claim') {
+        claims += 1
+        return claims === 1 ? item : null
+      }
+      if (command.type === 'run/accept') {
+        const input = command.input as { submissionId: string }
+        acceptedSubmissions.push(input.submissionId)
+        if (input.submissionId === item.submissionId) {
+          throw new Error('Submission identity was already used')
+        }
+        return {
+          ...trustFailure,
+          submissionId: input.submissionId,
+          status: 'accepted',
+          activity: []
+        }
+      }
+      return await Promise.resolve(original(command) as unknown)
+    })
+    const service = new RunService({ ...claudeDeps(root, broker), core })
+
+    await service.resumeConversationQueue('session')
+
+    expect(acceptedSubmissions).toEqual(['submission-1', 'submission-1:attempt-2'])
+    expect(broker.start).toHaveBeenCalledTimes(1)
   })
 })
 

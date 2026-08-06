@@ -2,7 +2,13 @@ import { readFile, stat } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { Effect } from 'effect'
 import { CoreError } from '@shared/contract'
-import { projectDisplayName, projectSchema, type Project, type ProjectView } from '@shared/project'
+import {
+  projectDisplayName,
+  projectSchema,
+  type Project,
+  type ProjectSkillsTrust,
+  type ProjectView
+} from '@shared/project'
 import { writeJsonAtomic } from './atomic'
 
 const STORE_FILE = 'projects.json'
@@ -53,7 +59,9 @@ export class ProjectStore {
           root,
           name: projectDisplayName(root),
           addedAt: this.now().toISOString(),
-          skillsTrustedAt: null
+          skillsTrustedAt: null,
+          skillsTrustedDigest: null,
+          skillsTrustedManifest: []
         }
         yield* this.write([...projects, project])
         return yield* this.view(project)
@@ -66,7 +74,10 @@ export class ProjectStore {
    * the repository it came from can change under it: what was trusted was a
    * set of Skills the person read, not the repository forever.
    */
-  setSkillsTrusted(root: string, trusted: boolean): Effect.Effect<ProjectView, CoreError> {
+  setSkillsTrusted(
+    root: string,
+    trust: ProjectSkillsTrust | null
+  ): Effect.Effect<ProjectView, CoreError> {
     return this.writeLock.withPermits(1)(
       Effect.gen(this, function* () {
         const projects = yield* this.read()
@@ -78,8 +89,34 @@ export class ProjectStore {
         }
         const updated: Project = {
           ...project,
-          skillsTrustedAt: trusted ? this.now().toISOString() : null
+          skillsTrustedAt: trust ? this.now().toISOString() : null,
+          skillsTrustedDigest: trust?.digest ?? null,
+          skillsTrustedManifest: trust?.manifest ?? []
         }
+        yield* this.write(projects.map((entry) => (entry === project ? updated : entry)))
+        return yield* this.view(updated)
+      })
+    )
+  }
+
+  /** Core owns whether one Main-observed digest still satisfies stored trust. */
+  observeSkills(root: string, digest: string | null): Effect.Effect<ProjectView, CoreError> {
+    return this.writeLock.withPermits(1)(
+      Effect.gen(this, function* () {
+        const projects = yield* this.read()
+        const project = projects.find((entry) => entry.root === root)
+        if (!project) {
+          return yield* Effect.fail(
+            new CoreError('INVALID_INPUT', 'That Project has not been added')
+          )
+        }
+        if (
+          project.skillsTrustedAt === null ||
+          (digest !== null && project.skillsTrustedDigest === digest)
+        ) {
+          return yield* this.view(project)
+        }
+        const updated = { ...project, skillsTrustedAt: null }
         yield* this.write(projects.map((entry) => (entry === project ? updated : entry)))
         return yield* this.view(updated)
       })

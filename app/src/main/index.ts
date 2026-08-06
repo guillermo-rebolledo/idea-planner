@@ -67,7 +67,12 @@ import {
   refreshReadinessInputSchema
 } from '@shared/readiness'
 import { PRODUCT_NAME, stateDirectory } from './identity'
-import { discoverSkills } from './skills'
+import {
+  confirmProjectSkillsTrust,
+  diffProjectSkillManifests,
+  discoverSkills,
+  observeProjectSkills
+} from './skills'
 import { CoreClient } from './core-client'
 import {
   createWorktree,
@@ -274,11 +279,16 @@ function registerIpc(): void {
   )
 
   handleInvoke(IPC_CHANNELS.trustProjectSkills, trustProjectSkillsInputSchema, async (input) => {
+    let trust = null
+    if (input.trusted) {
+      if (!input.reviewedDigest) throw new Error('A reviewed Skill digest is required')
+      trust = await confirmProjectSkillsTrust(input.root, input.reviewedDigest)
+    }
     const project = projectViewSchema.parse(
       await coreClient.send({
         type: 'project/trust-skills',
         root: input.root,
-        trusted: input.trusted
+        trust
       })
     )
     return skillCatalogSchema.parse(await skillsFor(project.root, input.harness))
@@ -621,15 +631,46 @@ async function skillsFor(projectRoot: string, harness: HarnessId): Promise<Skill
   // The same home readiness probes, so a test that installs Skills where it
   // says it did finds them there.
   const projects = projectViewSchema.array().parse(await coreClient.send({ type: 'project/list' }))
-  return discoverSkills({
-    homeDirectory: harnessHomeDirectory(),
-    projectRoot,
-    harness,
-    // A Project the app does not have is not one whose Skills are trusted:
-    // `undefined !== null` would have quietly said otherwise.
-    projectTrusted:
-      projects.find((project) => project.root === projectRoot)?.skillsTrustedAt != null
-  })
+  const project = projects.find((entry) => entry.root === projectRoot)
+  const observed = await observeProjectSkills(projectRoot)
+  const checkedProject = project
+    ? projectViewSchema.parse(
+        await coreClient.send({
+          type: 'project/observe-skills',
+          root: projectRoot,
+          digest: observed.status === 'ok' ? observed.digest : null
+        })
+      )
+    : undefined
+  if (observed.status === 'error') {
+    return {
+      ...(await discoverSkills({
+        homeDirectory: harnessHomeDirectory(),
+        projectRoot,
+        harness,
+        projectTrusted: false
+      })),
+      reviewedDigest: null,
+      projectTrustError: observed.reason
+    }
+  }
+  const projectTrusted =
+    checkedProject?.skillsTrustedAt != null &&
+    checkedProject.skillsTrustedDigest === observed.digest
+  const changes = diffProjectSkillManifests(
+    checkedProject?.skillsTrustedManifest ?? [],
+    observed.manifest
+  )
+  return {
+    ...(await discoverSkills({
+      homeDirectory: harnessHomeDirectory(),
+      projectRoot,
+      harness,
+      projectTrusted
+    })),
+    reviewedDigest: observed.digest,
+    changes: projectTrusted ? { added: [], removed: [], changed: [] } : changes
+  }
 }
 
 /**

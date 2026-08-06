@@ -38,7 +38,7 @@ import type {
   SubmitConversationMessageInput,
   UnfinishedRun
 } from '@shared/conversation'
-import type { ProjectView } from '@shared/project'
+import type { ProjectSkillsTrust, ProjectView } from '@shared/project'
 import type { HarnessId } from '@shared/readiness'
 import {
   grantStandingApprovalInputSchema,
@@ -85,7 +85,8 @@ export interface Core {
   addProject(root: string): Promise<ProjectView>
   listProjects(): Promise<ProjectView[]>
   removeProject(root: string): Promise<void>
-  setProjectSkillsTrusted(root: string, trusted: boolean): Promise<ProjectView>
+  setProjectSkillsTrusted(root: string, trust: ProjectSkillsTrust | null): Promise<ProjectView>
+  observeProjectSkills(root: string, digest: string | null): Promise<ProjectView>
   grantStandingApproval(input: GrantStandingApprovalInput): Promise<StandingApproval>
   listStandingApprovals(projectRoot: string): Promise<StandingApproval[]>
   standingApprovalRules(projectRoot: string, harness: HarnessId): Promise<string[]>
@@ -134,7 +135,11 @@ export interface CoreEffects {
   addProject(root: string): Effect.Effect<ProjectView, CoreError>
   listProjects(): Effect.Effect<ProjectView[], CoreError>
   removeProject(root: string): Effect.Effect<void, CoreError>
-  setProjectSkillsTrusted(root: string, trusted: boolean): Effect.Effect<ProjectView, CoreError>
+  setProjectSkillsTrusted(
+    root: string,
+    trust: ProjectSkillsTrust | null
+  ): Effect.Effect<ProjectView, CoreError>
+  observeProjectSkills(root: string, digest: string | null): Effect.Effect<ProjectView, CoreError>
   grantStandingApproval(
     input: GrantStandingApprovalInput
   ): Effect.Effect<StandingApproval, CoreError>
@@ -564,7 +569,8 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     // is part of what removing it forgets.
     removeProject: (root) =>
       projects.remove(root).pipe(Effect.flatMap(() => approvals.forgetProject(root))),
-    setProjectSkillsTrusted: (root, trusted) => projects.setSkillsTrusted(root, trusted),
+    setProjectSkillsTrusted: (root, trust) => projects.setSkillsTrusted(root, trust),
+    observeProjectSkills: (root, digest) => projects.observeSkills(root, digest),
     grantStandingApproval,
     listStandingApprovals: (projectRoot) => approvals.list(projectRoot),
     standingApprovalRules: (projectRoot, harness) => approvals.rules(projectRoot, harness),
@@ -690,7 +696,8 @@ export function createCore(deps: CoreDeps = {}): Core {
     addProject: (root) => run(core.addProject(root)),
     listProjects: () => run(core.listProjects()),
     removeProject: (root) => run(core.removeProject(root)),
-    setProjectSkillsTrusted: (root, trusted) => run(core.setProjectSkillsTrusted(root, trusted)),
+    setProjectSkillsTrusted: (root, trust) => run(core.setProjectSkillsTrusted(root, trust)),
+    observeProjectSkills: (root, digest) => run(core.observeProjectSkills(root, digest)),
     grantStandingApproval: (input) => run(core.grantStandingApproval(input)),
     listStandingApprovals: (projectRoot) => run(core.listStandingApprovals(projectRoot)),
     standingApprovalRules: (projectRoot, harness) =>

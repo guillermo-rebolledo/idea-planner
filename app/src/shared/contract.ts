@@ -29,7 +29,7 @@ import type { ListSkillsInput, SkillCatalog, TrustProjectSkillsInput } from './s
 import type { ModelCatalog } from './model'
 import { harnessIdSchema } from './readiness'
 import type { ChooseExecutableResult, HarnessId, ReadinessSnapshot } from './readiness'
-import type { ChooseProjectResult, ProjectView } from './project'
+import { projectSkillsTrustSchema, type ChooseProjectResult, type ProjectView } from './project'
 import {
   checkoutRequestSchema,
   checkoutSchema,
@@ -59,13 +59,14 @@ import {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
- * 10: Checkout facts include the currently observed Checkout State.
+ * 11: Checkout facts include the currently observed Checkout State.
+ * 10: Project-wide Skill trust is bound to a reviewed content digest.
  * 9: Queued Submissions and queue state are durable Conversation projections.
  * 8: the Conversation stream carries app-owned Run start and stop boundaries.
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 10
+export const CONTRACT_VERSION = 11
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -289,7 +290,12 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('project/trust-skills'),
     root: z.string().min(1),
-    trusted: z.boolean()
+    trust: projectSkillsTrustSchema.nullable()
+  }),
+  z.object({
+    type: z.literal('project/observe-skills'),
+    root: z.string().min(1),
+    digest: z.string().length(64).nullable()
   }),
   z.object({ type: z.literal('approval/grant'), input: grantStandingApprovalInputSchema }),
   z.object({ type: z.literal('approval/list'), projectRoot: z.string().min(1) }),

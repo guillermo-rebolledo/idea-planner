@@ -111,6 +111,14 @@ const TERMINAL_RUN_STATUSES = new Set<RunSnapshot['status']>([
   'supervision-failed'
 ])
 
+const PROJECT_SKILL_TRUST_FAILURE = 'Project Skill trust changed before the Harness was contacted'
+
+class ProjectSkillTrustChanged extends Error {
+  constructor() {
+    super(PROJECT_SKILL_TRUST_FAILURE)
+  }
+}
+
 /** App-owned state holding what a Run's Checkout looked like before it ran. */
 const SNAPSHOTS = 'checkout-snapshots'
 
@@ -233,7 +241,10 @@ export class RunService {
     // unchanged recovered claim is therefore reconciled, never launched a
     // second time. Editing is the person's explicit request for different
     // work, and receives a new attempt identity below.
-    if (prior && unchanged) return { ...prior, recovered: true }
+    const stoppedBeforeHarness = prior?.activity.some(
+      (activity) => activity.summary === PROJECT_SKILL_TRUST_FAILURE
+    )
+    if (prior && unchanged && !stoppedBeforeHarness) return { ...prior, recovered: true }
     const run = await this.start(
       {
         submissionId: item.submissionId,
@@ -761,6 +772,16 @@ export class RunService {
         }),
         { mode: 0o600 }
       ).catch(() => undefined)
+      if (skill && input.skill) {
+        const currentSkill = await this.resolveSkill(input.skill, checkout, input.harness).catch(
+          () => {
+            throw new ProjectSkillTrustChanged()
+          }
+        )
+        if (currentSkill.path !== skill.path || currentSkill.hash !== skill.hash) {
+          throw new ProjectSkillTrustChanged()
+        }
+      }
       // Observed at the last responsible moment rather than inherited from
       // the title bar: a Git operation can begin while this Run is prepared.
       const checkoutState = await observeCheckoutState(checkout)
@@ -863,7 +884,9 @@ export class RunService {
       await toolHost.close().catch(() => undefined)
       await rm(socketDirectory, { recursive: true, force: true })
       this.toolHosts.delete(accepted.id)
-      if (!(error instanceof Error && error.message.includes('changed after durable'))) {
+      if (error instanceof ProjectSkillTrustChanged) {
+        await this.conclude(accepted, 'failed', 'error', PROJECT_SKILL_TRUST_FAILURE)
+      } else if (!(error instanceof Error && error.message.includes('changed after durable'))) {
         await this.conclude(accepted, 'failed', 'error', 'The Harness process could not start')
       }
       throw error
