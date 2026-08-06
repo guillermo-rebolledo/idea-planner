@@ -130,7 +130,7 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       changedFiles: [],
       activeRunId: null,
       pendingApprovalId: null,
-      queue: { paused: true, items: [] }
+      queue: { paused: true, items: [], outcome: null }
     },
     standingRules: [],
     unfinished: []
@@ -173,6 +173,9 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       return Promise.resolve({ events: state.events, outgoing: [] })
     }
     if (command.type === 'conversation/unfinished') return Promise.resolve(state.unfinished)
+    if (command.type === 'conversation/queue-launch-observed') {
+      return Promise.resolve({ continueDraining: false })
+    }
     if (command.type === 'run/lifecycle-open') {
       return Promise.resolve({ run, conversation: state.conversation })
     }
@@ -1088,10 +1091,10 @@ describe('Run service', () => {
 
     await service.stopAll('quit')
 
-    const pauseIndex = core.commands.indexOf('conversation/queue-state')
+    const pauseIndex = core.commands.indexOf('conversation/queue-change')
     expect(pauseIndex).toBeGreaterThanOrEqual(0)
     expect(broker.stopAll).toHaveBeenCalledWith('quit')
-    expect(core.commands.at(pauseIndex)).toBe('conversation/queue-state')
+    expect(core.commands.at(pauseIndex)).toBe('conversation/queue-change')
   })
 
   it('does not create a retry attempt when a claimed queue item recovers a terminal Run', async () => {
@@ -1153,12 +1156,10 @@ describe('Run service', () => {
       prompt: item.text,
       status: 'failed' as const
     }
-    let claims = 0
     core.send.mockImplementation(async (command: { type: string }): Promise<unknown> => {
       if (command.type === 'run/list') return [newest, { ...base, status: 'failed' }]
-      if (command.type === 'conversation/queue-claim') {
-        claims += 1
-        return claims === 1 ? item : null
+      if (command.type === 'conversation/queue-next') {
+        return null
       }
       return await Promise.resolve(original(command) as unknown)
     })
@@ -1167,7 +1168,7 @@ describe('Run service', () => {
     await service.resumeConversationQueue('session')
 
     expect(core.commands.filter((command) => command === 'run/lifecycle-open')).toHaveLength(0)
-    expect(core.commands).toContain('conversation/queue-sent')
+    expect(core.commands).not.toContain('conversation/queue-launch-observed')
     expect(broker.start).not.toHaveBeenCalled()
   })
 
@@ -1218,9 +1219,16 @@ describe('Run service', () => {
     const acceptedSubmissions: string[] = []
     core.send.mockImplementation(async (command: { type: string; input?: unknown }) => {
       if (command.type === 'run/list') return [trustFailure]
-      if (command.type === 'conversation/queue-claim') {
+      if (command.type === 'conversation/queue-next') {
         claims += 1
-        return claims === 1 ? item : null
+        return claims === 1
+          ? {
+              sessionId: 'session',
+              item,
+              runSubmissionId: 'submission-1:attempt-2',
+              prompt: item.text
+            }
+          : null
       }
       if (command.type === 'run/lifecycle-open') {
         const input = command.input as { submissionId: string }
@@ -1244,7 +1252,7 @@ describe('Run service', () => {
 
     await service.resumeConversationQueue('session')
 
-    expect(acceptedSubmissions).toEqual(['submission-1', 'submission-1:attempt-2'])
+    expect(acceptedSubmissions).toEqual(['submission-1:attempt-2'])
     expect(broker.start).toHaveBeenCalledTimes(1)
   })
 })

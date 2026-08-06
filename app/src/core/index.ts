@@ -116,24 +116,12 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.getConversation(command.sessionId)
     case 'conversation/submit':
       return core.submitConversationMessage(command.input)
-    case 'conversation/queue-enqueue':
-      return core.enqueueQueuedSubmission(command.input)
-    case 'conversation/queue-edit':
-      return core.editQueuedSubmission(command.input)
-    case 'conversation/queue-move':
-      return core.moveQueuedSubmission(command.input)
-    case 'conversation/queue-prioritize':
-      return core.prioritizeQueuedSubmission(command.input)
-    case 'conversation/queue-cancel':
-      return core.cancelQueuedSubmission(command.input)
-    case 'conversation/queue-state':
-      return core.setConversationQueuePaused(command.input)
-    case 'conversation/queue-claim':
-      return core.claimQueuedSubmission(command.sessionId)
-    case 'conversation/queue-release':
-      return core.releaseQueuedSubmission(command.input)
-    case 'conversation/queue-sent':
-      return core.markQueuedSubmissionSent(command.input)
+    case 'conversation/queue-change':
+      return core.changeQueuedSubmissions(command.input)
+    case 'conversation/queue-next':
+      return core.nextQueuedSubmission(command.sessionId)
+    case 'conversation/queue-launch-observed':
+      return core.observeQueuedSubmissionLaunch(command.input)
     case 'conversation/begin':
       return core.beginConversationRun({
         sessionId: command.sessionId,

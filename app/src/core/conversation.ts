@@ -16,6 +16,7 @@ import {
   moveQueuedSubmissionInputSchema,
   queuedSubmissionIdentitySchema,
   queuedSubmissionEntrySchema,
+  queueOutcomeEntrySchema,
   isActiveQueuedSubmission,
   setConversationQueuePausedInputSchema,
   type ChangedFile,
@@ -36,6 +37,9 @@ import {
   type MoveQueuedSubmissionInput,
   type QueuedSubmission,
   type QueuedSubmissionIdentity,
+  type QueuedSubmissionDispositionObservation,
+  type QueuedSubmissionLaunchResult,
+  type QueueOutcome,
   type SetConversationQueuePausedInput,
   type SuggestedResponse
 } from '@shared/conversation'
@@ -193,8 +197,9 @@ export interface ConversationEffects {
     input: SetConversationQueuePausedInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
   claimQueued(sessionId: string): Effect.Effect<QueuedSubmission | null, CoreError>
-  releaseQueued(input: QueuedSubmissionIdentity): Effect.Effect<ConversationSnapshot, CoreError>
-  markQueuedSent(input: QueuedSubmissionIdentity): Effect.Effect<ConversationSnapshot, CoreError>
+  observeQueuedLaunch(
+    input: QueuedSubmissionDispositionObservation
+  ): Effect.Effect<QueuedSubmissionLaunchResult, CoreError>
   begin(input: BeginConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
   apply(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
   /**
@@ -445,6 +450,19 @@ export function createConversationEffects(options: ConversationOptions): Convers
         entry.kind === 'queued-submission' && entry.submissionId === submissionId
     )
 
+  const queueOutcome = (
+    type: QueueOutcome['type'],
+    submissionId: string | null,
+    at: string
+  ): ConversationEntry =>
+    queueOutcomeEntrySchema.parse({
+      kind: 'queue-outcome',
+      id: 'queue-outcome',
+      at,
+      type,
+      submissionId
+    })
+
   const queueSnapshot = (
     sessionId: string,
     entries: ConversationEntry[]
@@ -519,7 +537,10 @@ export function createConversationEffects(options: ConversationOptions): Convers
             status: 'pending',
             position: Math.max(-1, ...active.map((item) => item.position)) + 1
           })
-          const additions: ConversationEntry[] = [entry]
+          const additions: ConversationEntry[] = [
+            entry,
+            queueOutcome('enqueued', input.submissionId, at)
+          ]
           if (pauseOverride === undefined) {
             additions.push(
               conversationEntrySchema.parse({
@@ -555,6 +576,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       input: QueuedSubmissionIdentity & Record<string, unknown>,
       entries: ConversationEntry[]
     ) => ConversationEntry[],
+    outcome: QueueOutcome['type'],
     allowedStatuses: QueuedSubmission['status'][] = ['pending'],
     claimedRequiresPaused = false,
     pauseAfterChange = false
@@ -584,7 +606,10 @@ export function createConversationEffects(options: ConversationOptions): Convers
           }
           const now = (yield* options.clock).toISOString()
           const replacements = change(item, input, entries).map((entry) => ({ ...entry, at: now }))
-          const additions: ConversationEntry[] = [...replacements]
+          const additions: ConversationEntry[] = [
+            ...replacements,
+            queueOutcome(outcome, input.submissionId, now)
+          ]
           if (pauseAfterChange) {
             additions.push(
               conversationEntrySchema.parse({
@@ -624,6 +649,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             : [])
         ]
       },
+      'edited',
       ['pending', 'claimed'],
       true,
       true
@@ -652,6 +678,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             ]
           : [{ ...item, status: 'pending' as const }]
       },
+      input.direction === 'earlier' ? 'moved-earlier' : 'moved-later',
       ['pending', 'claimed'],
       true
     )
@@ -674,12 +701,15 @@ export function createConversationEffects(options: ConversationOptions): Convers
           const index = active.findIndex((item) => item.submissionId === input.submissionId)
           const target = active[index]
           const paused = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId) ?? true
-          if (!target || (target.status === 'claimed' && !paused)) {
+          if (
+            !target ||
+            deriveState(entries, 0).activeRunId !== null ||
+            (target.status === 'claimed' && !paused)
+          ) {
             return yield* Effect.fail(
               new CoreError('INVALID_INPUT', 'Queued Submission cannot be sent now')
             )
           }
-          if (index === 0) return yield* queueSnapshot(input.sessionId, entries)
           const at = (yield* options.clock).toISOString()
           const replacements = active.slice(0, index).map((item) => ({
             ...item,
@@ -692,8 +722,21 @@ export function createConversationEffects(options: ConversationOptions): Convers
             position: active[0]?.position ?? 0,
             status: 'pending'
           })
-          yield* appendMany(sessionDir, replacements)
-          return yield* queueSnapshot(input.sessionId, replaceEntries(entries, replacements))
+          const additions: ConversationEntry[] = [
+            ...replacements,
+            conversationEntrySchema.parse({
+              kind: 'queue-state',
+              id: 'queue-state',
+              at,
+              paused: false
+            }),
+            queueOutcome('prioritized', input.submissionId, at)
+          ]
+          yield* appendMany(sessionDir, additions)
+          yield* Ref.update(queuePauseOverrides, (current) =>
+            new Map(current).set(input.sessionId, false)
+          )
+          return summarize(input.sessionId, replaceEntries(entries, additions), false)
         })
       )
     })
@@ -705,6 +748,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       input,
       (value) => queuedSubmissionIdentitySchema.safeParse(value),
       (item) => [{ ...item, status: 'cancelled' }],
+      'cancelled',
       ['pending', 'claimed'],
       true
     )
@@ -724,11 +768,12 @@ export function createConversationEffects(options: ConversationOptions): Convers
             at: (yield* options.clock).toISOString(),
             paused: input.paused
           })
-          yield* append(sessionDir, entry)
+          const outcome = queueOutcome(input.paused ? 'paused' : 'resumed', null, entry.at)
+          yield* appendMany(sessionDir, [entry, outcome])
           yield* Ref.update(queuePauseOverrides, (current) =>
             new Map(current).set(input.sessionId, input.paused)
           )
-          return summarize(input.sessionId, replaceEntries(entries, [entry]), input.paused)
+          return summarize(input.sessionId, replaceEntries(entries, [entry, outcome]), input.paused)
         })
       )
     })
@@ -789,25 +834,29 @@ export function createConversationEffects(options: ConversationOptions): Convers
       )
     })
 
-  const markQueuedSent = (
-    input: QueuedSubmissionIdentity
-  ): Effect.Effect<ConversationSnapshot, CoreError> =>
-    replaceQueued(
-      input,
-      (value) => queuedSubmissionIdentitySchema.safeParse(value),
-      (item) => [{ ...item, status: 'sent' }],
-      ['claimed']
-    )
-
-  const releaseQueued = (
-    input: QueuedSubmissionIdentity
-  ): Effect.Effect<ConversationSnapshot, CoreError> =>
-    replaceQueued(
-      input,
-      (value) => queuedSubmissionIdentitySchema.safeParse(value),
-      (item) => [{ ...item, status: 'pending' }],
-      ['claimed']
-    )
+  const observeQueuedLaunch = (
+    input: QueuedSubmissionDispositionObservation
+  ): Effect.Effect<QueuedSubmissionLaunchResult, CoreError> => {
+    const transition =
+      input.outcome === 'not-started'
+        ? replaceQueued(
+            input,
+            (value) => queuedSubmissionIdentitySchema.safeParse(value),
+            (item) => [{ ...item, status: 'pending' }],
+            'launch-paused',
+            ['claimed'],
+            false,
+            true
+          )
+        : replaceQueued(
+            input,
+            (value) => queuedSubmissionIdentitySchema.safeParse(value),
+            (item) => [{ ...item, status: 'sent' }],
+            input.outcome === 'reconciled' ? 'launch-reconciled' : 'launch-started',
+            ['claimed']
+          )
+    return transition.pipe(Effect.map(() => ({ continueDraining: input.outcome === 'reconciled' })))
+  }
 
   const begin = (
     input: BeginConversationRunInput
@@ -1454,8 +1503,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
     cancelQueued,
     setQueuePaused,
     claimQueued,
-    releaseQueued,
-    markQueuedSent,
+    observeQueuedLaunch,
     begin,
     apply,
     open,
@@ -1616,6 +1664,9 @@ function summarize(
   const queued = entries
     .filter((entry): entry is QueuedSubmission => entry.kind === 'queued-submission')
     .sort((left, right) => left.position - right.position || left.at.localeCompare(right.at))
+  const active = queued.filter(isActiveQueuedSubmission)
+  const paused = active.length > 0 ? (queuePausedOverride ?? true) : true
+  const outcome = entries.findLast((entry) => entry.kind === 'queue-outcome')
   for (const entry of entries) {
     if (entry.kind === 'usage') {
       sessionUsage = addUsage(sessionUsage, entry.usage)
@@ -1631,7 +1682,8 @@ function summarize(
         entry.kind !== 'usage' &&
         entry.kind !== 'thread' &&
         entry.kind !== 'queued-submission' &&
-        entry.kind !== 'queue-state'
+        entry.kind !== 'queue-state' &&
+        entry.kind !== 'queue-outcome'
     ),
     usage: { run: latestRunUsage, session: sessionUsage },
     recovery: state.recovery,
@@ -1644,8 +1696,25 @@ function summarize(
     // would leave the ones behind it unanswerable.
     pendingApprovalId: state.openApprovals[0] ?? null,
     queue: {
-      paused: queued.some(isActiveQueuedSubmission) ? (queuePausedOverride ?? true) : true,
-      items: queued
+      paused,
+      items: queued.map((item) => {
+        const activeIndex = active.findIndex((candidate) => candidate.id === item.id)
+        const editable = item.status === 'pending' || (item.status === 'claimed' && paused)
+        return {
+          ...item,
+          controls: {
+            edit: editable,
+            moveEarlier: editable && activeIndex > 0,
+            moveLater: editable && activeIndex >= 0 && activeIndex < active.length - 1,
+            cancel: editable,
+            sendNow: editable && state.activeRunId === null
+          }
+        }
+      }),
+      outcome:
+        outcome?.kind === 'queue-outcome'
+          ? { type: outcome.type, submissionId: outcome.submissionId }
+          : null
     }
   }
 }

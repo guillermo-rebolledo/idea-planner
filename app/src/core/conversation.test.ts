@@ -2,7 +2,18 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { ConversationEntry, DiffHunk, HarnessEvent } from '@shared/conversation'
+import type {
+  ConversationEntry,
+  ConversationSnapshot,
+  DiffHunk,
+  EditQueuedSubmissionInput,
+  EnqueueQueuedSubmissionInput,
+  HarnessEvent,
+  MoveQueuedSubmissionInput,
+  QueuedSubmission,
+  QueuedSubmissionIdentity,
+  SetConversationQueuePausedInput
+} from '@shared/conversation'
 import { createCore, type Core } from './core'
 
 /**
@@ -13,21 +24,53 @@ import { createCore, type Core } from './core'
 
 let stateDir: string
 let projectRoot: string
-let core: Core
+type QueueTestCore = Core & {
+  enqueueQueuedSubmission(input: EnqueueQueuedSubmissionInput): Promise<ConversationSnapshot>
+  editQueuedSubmission(input: EditQueuedSubmissionInput): Promise<ConversationSnapshot>
+  moveQueuedSubmission(input: MoveQueuedSubmissionInput): Promise<ConversationSnapshot>
+  prioritizeQueuedSubmission(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
+  cancelQueuedSubmission(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
+  setConversationQueuePaused(input: SetConversationQueuePausedInput): Promise<ConversationSnapshot>
+  claimQueuedSubmission(sessionId: string): Promise<QueuedSubmission | null>
+}
+
+let core: QueueTestCore
 let sessionId: string
 
 /** Every Session in these tests is started by this message. */
 const STARTING_MESSAGE = 'Offline receipts'
 
-function makeCore(): Core {
+function makeCore(): QueueTestCore {
   let tick = 0
-  return createCore({
+  const result = createCore({
     stateDirectory: stateDir,
     now: () => new Date(Date.UTC(2026, 6, 31, 12, 0, tick++)),
     randomId: (() => {
       let n = 0
       return () => `test-id-${String(++n).padStart(4, '0')}`
     })()
+  })
+  return Object.assign(result, {
+    enqueueQueuedSubmission: (input: EnqueueQueuedSubmissionInput) =>
+      result.changeQueuedSubmissions({
+        type: 'enqueue',
+        input: { ...input, reviewAttachments: input.reviewAttachments ?? [] }
+      }),
+    editQueuedSubmission: (input: EditQueuedSubmissionInput) =>
+      result.changeQueuedSubmissions({ type: 'edit', input }),
+    moveQueuedSubmission: (input: MoveQueuedSubmissionInput) =>
+      result.changeQueuedSubmissions({ type: 'move', input }),
+    prioritizeQueuedSubmission: (input: QueuedSubmissionIdentity) =>
+      result.changeQueuedSubmissions({ type: 'send-now', input }),
+    cancelQueuedSubmission: (input: QueuedSubmissionIdentity) =>
+      result.changeQueuedSubmissions({ type: 'cancel', input }),
+    setConversationQueuePaused: (input: SetConversationQueuePausedInput) =>
+      result.changeQueuedSubmissions({
+        type: input.paused ? 'pause' : 'resume',
+        sessionId: input.sessionId
+      }),
+    claimQueuedSubmission: (queuedSessionId: string) =>
+      result.nextQueuedSubmission(queuedSessionId).then((plan) => plan?.item ?? null)
   })
 }
 
@@ -189,9 +232,23 @@ describe('durable Queued Submissions', () => {
     const snapshot = await core.getConversation(sessionId)
     expect(snapshot.queue.paused).toBe(true)
     expect(snapshot.queue.items).toMatchObject([
-      { submissionId: 'queued-2', text: 'Edited second message', status: 'pending' },
-      { submissionId: 'queued-1', text: 'First queued message', status: 'pending' }
+      {
+        submissionId: 'queued-2',
+        text: 'Edited second message',
+        status: 'pending',
+        controls: { edit: true, moveEarlier: false, moveLater: true, cancel: true }
+      },
+      {
+        submissionId: 'queued-1',
+        text: 'First queued message',
+        status: 'pending',
+        controls: { edit: true, moveEarlier: true, moveLater: false, cancel: true }
+      }
     ])
+    expect(snapshot.queue.outcome).toMatchObject({
+      type: 'edited',
+      submissionId: 'queued-2'
+    })
   })
 
   it('atomically claims the FIFO item and admits its user message once', async () => {
@@ -209,7 +266,11 @@ describe('durable Queued Submissions', () => {
       messages(snapshot.entries).filter((entry) => entry.submissionId === 'queued-1')
     ).toHaveLength(1)
     expect(snapshot.queue.items).toMatchObject([
-      { submissionId: 'queued-1', status: 'claimed' },
+      {
+        submissionId: 'queued-1',
+        status: 'claimed',
+        controls: { edit: false, moveEarlier: false, moveLater: false, cancel: false }
+      },
       { submissionId: 'queued-2', status: 'pending' }
     ])
   })
@@ -231,11 +292,15 @@ describe('durable Queued Submissions', () => {
     ])
   })
 
-  it('releases a pre-launch claim so the item can be edited and claimed again', async () => {
+  it('makes a pre-launch failure editable and claimable again', async () => {
     await core.enqueueQueuedSubmission(queued('queued-1', 'Original queued message'))
     await core.setConversationQueuePaused({ sessionId, paused: false })
     await core.claimQueuedSubmission(sessionId)
-    await core.releaseQueuedSubmission({ sessionId, submissionId: 'queued-1' })
+    await core.observeQueuedSubmissionLaunch({
+      sessionId,
+      submissionId: 'queued-1',
+      outcome: 'not-started'
+    })
     await core.editQueuedSubmission({
       sessionId,
       submissionId: 'queued-1',
@@ -249,6 +314,120 @@ describe('durable Queued Submissions', () => {
     expect(
       messages(snapshot.entries).filter((entry) => entry.submissionId === 'queued-1')
     ).toMatchObject([{ text: 'Edited after launch failed' }])
+  })
+
+  it('owns the durable disposition after Main reports that no Harness started', async () => {
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queued('queued-1', 'Try this when ready')
+    })
+    await core.changeQueuedSubmissions({ type: 'resume', sessionId })
+    await core.nextQueuedSubmission(sessionId)
+
+    const result = await core.observeQueuedSubmissionLaunch({
+      sessionId,
+      submissionId: 'queued-1',
+      outcome: 'not-started'
+    })
+    const snapshot = await core.getConversation(sessionId)
+
+    expect(result).toEqual({ continueDraining: false })
+    expect(snapshot.queue).toMatchObject({
+      paused: true,
+      outcome: { type: 'launch-paused', submissionId: 'queued-1' },
+      items: [
+        {
+          submissionId: 'queued-1',
+          status: 'pending',
+          controls: { edit: true, cancel: true, sendNow: true }
+        }
+      ]
+    })
+  })
+
+  it('reconciles an unchanged durable attempt before Main can contact a Harness again', async () => {
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queued('queued-1', 'Already contacted')
+    })
+    await core.changeQueuedSubmissions({ type: 'resume', sessionId })
+    const plan = await core.nextQueuedSubmission(sessionId)
+    if (!plan) throw new Error('Queued launch plan missing')
+    await core.acceptRun({
+      submissionId: plan.runSubmissionId,
+      sessionId,
+      prompt: plan.prompt,
+      configuration: {
+        harness: 'codex',
+        executable: '/usr/local/bin/codex',
+        executableHash: 'a'.repeat(64),
+        harnessVersion: 'codex-cli 0.146.0',
+        model: 'gpt-5-codex',
+        effort: 'medium',
+        skill: {
+          name: 'grilling',
+          path: '/home/.agents/skills/grilling',
+          hash: 'b'.repeat(64)
+        },
+        environment: {},
+        checkout: projectRoot,
+        permissionMode: 'ask'
+      }
+    })
+
+    await expect(core.nextQueuedSubmission(sessionId)).resolves.toBeNull()
+    expect((await core.getConversation(sessionId)).queue.outcome).toEqual({
+      type: 'launch-reconciled',
+      submissionId: 'queued-1'
+    })
+  })
+
+  it('edits a recoverable claim into one new attempt without duplicating its user message', async () => {
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queued('queued-1', 'Original queued message')
+    })
+    await core.changeQueuedSubmissions({ type: 'resume', sessionId })
+    const original = await core.nextQueuedSubmission(sessionId)
+    if (!original) throw new Error('Original launch plan missing')
+    await core.acceptRun({
+      submissionId: original.runSubmissionId,
+      sessionId,
+      prompt: original.prompt,
+      configuration: {
+        harness: 'codex',
+        executable: '/usr/local/bin/codex',
+        executableHash: 'a'.repeat(64),
+        harnessVersion: 'codex-cli 0.146.0',
+        model: 'gpt-5-codex',
+        effort: 'medium',
+        skill: {
+          name: 'grilling',
+          path: '/home/.agents/skills/grilling',
+          hash: 'b'.repeat(64)
+        },
+        environment: {},
+        checkout: projectRoot,
+        permissionMode: 'ask'
+      }
+    })
+
+    core = makeCore()
+    await core.changeQueuedSubmissions({
+      type: 'edit',
+      input: { sessionId, submissionId: 'queued-1', text: 'Edited after recovery' }
+    })
+    await core.changeQueuedSubmissions({ type: 'resume', sessionId })
+    const retry = await core.nextQueuedSubmission(sessionId)
+    const snapshot = await core.getConversation(sessionId)
+
+    expect(retry).toMatchObject({
+      runSubmissionId: 'queued-1:attempt-2',
+      prompt: 'Edited after recovery'
+    })
+    expect(
+      messages(snapshot.entries).filter((entry) => entry.submissionId === 'queued-1')
+    ).toMatchObject([{ text: 'Edited after recovery' }])
   })
 
   it('lets a restarted paused queue edit and reorder a recovered claim', async () => {

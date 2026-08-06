@@ -1,4 +1,7 @@
 import { z } from 'zod'
+
+export const PROJECT_SKILL_TRUST_FAILURE =
+  'Project Skill trust changed before the Harness was contacted'
 import { harnessIdSchema } from './readiness'
 
 /**

@@ -342,9 +342,14 @@ test('Queued Submissions are durable and keyboard-editable', async () => {
     })
     expect(restartedQueue.items).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ text: 'Edited queued message', status: 'pending' })
+        expect.objectContaining({
+          text: 'Edited queued message',
+          status: 'pending',
+          controls: expect.objectContaining({ edit: true, cancel: true })
+        })
       ])
     )
+    expect(restartedQueue.outcome).toMatchObject({ type: 'paused' })
     const queue = page.getByRole('region', { name: 'Queued Submissions' })
     await expect(queue.getByText('Edited queued message')).toBeVisible()
     await expect(queue.getByRole('button', { name: 'Resume queue' })).toBeVisible()
