@@ -31,7 +31,7 @@ import {
   type HarnessEvent,
   type HarnessFailureCategory,
   type RunRequest,
-  type QueuedSubmission,
+  type QueuedSubmissionLaunchPlan,
   type UnfinishedRun
 } from '@shared/conversation'
 import { proposeStandingApproval, ruleText } from '@shared/approval'
@@ -39,6 +39,7 @@ import {
   resolveApprovalInputSchema,
   runSnapshotSchema,
   startRunInputSchema,
+  PROJECT_SKILL_TRUST_FAILURE,
   type PermissionMode,
   type ResolveApprovalInput,
   type RunActivityKind,
@@ -117,8 +118,6 @@ const TERMINAL_RUN_STATUSES = new Set<RunSnapshot['status']>([
   'policy-violation',
   'supervision-failed'
 ])
-
-const PROJECT_SKILL_TRUST_FAILURE = 'Project Skill trust changed before the Harness was contacted'
 
 class ProjectSkillTrustChanged extends Error {
   constructor() {
@@ -211,8 +210,8 @@ export class RunService {
   constructor(private readonly deps: RunServiceDeps) {
     this.queueCoordinator = new QueueCoordinator({
       core: deps.core,
-      start: (sessionId, item) => this.startQueued(sessionId, item),
-      pause: (sessionId) => this.setQueuePaused(sessionId, true)
+      start: (plan) => this.startQueued(plan),
+      runEffect: (effect) => this.runEffect(effect)
     })
   }
 
@@ -235,53 +234,22 @@ export class RunService {
     return this.deps.runEffect ? this.deps.runEffect(effect) : Effect.runPromise(effect)
   }
 
-  private async startQueued(
-    sessionId: string,
-    item: QueuedSubmission
-  ): Promise<RunSnapshot & { recovered: boolean }> {
-    const prompt =
-      item.reviewAttachments.length === 0
-        ? item.text
-        : `${item.text}\n\nReview attachments:\n${item.reviewAttachments
-            .map((attachment) => `- ${attachment.path}`)
-            .join('\n')}`
-    const priorAttempts = (await this.list(sessionId)).filter(
-      (run) =>
-        run.submissionId === item.submissionId ||
-        run.submissionId.startsWith(`${item.submissionId}:attempt-`)
-    )
-    // Core lists newest first; reconciliation must compare the last attempt,
-    // not the original submission that an edited retry superseded.
-    const prior = priorAttempts[0]
-    const unchanged =
-      prior?.prompt === prompt &&
-      prior.configuration.harness === item.harness &&
-      prior.configuration.model === item.model &&
-      prior.configuration.effort === item.effort &&
-      prior.configuration.permissionMode === item.permissionMode &&
-      (prior.configuration.skill?.name ?? null) === item.skill
-    // A durable Run means the external launch may already have happened. An
-    // unchanged recovered claim is therefore reconciled, never launched a
-    // second time. Editing is the person's explicit request for different
-    // work, and receives a new attempt identity below.
-    const stoppedBeforeHarness = prior?.activity.some(
-      (activity) => activity.summary === PROJECT_SKILL_TRUST_FAILURE
-    )
-    if (prior && unchanged && !stoppedBeforeHarness) return { ...prior, recovered: true }
-    const run = await this.start(
+  private startQueued(plan: QueuedSubmissionLaunchPlan): Promise<RunSnapshot> {
+    const item = plan.item
+    return this.start(
       {
         submissionId: item.submissionId,
-        sessionId,
-        prompt,
+        sessionId: plan.sessionId,
+        prompt: plan.prompt,
         harness: item.harness,
         model: item.model,
         effort: item.effort,
         ...(item.skill ? { skill: item.skill } : {}),
         permissionMode: item.permissionMode
       },
-      priorAttempts.length > 0
+      false,
+      plan.runSubmissionId
     )
-    return { ...run, recovered: false }
   }
 
   /**
@@ -474,28 +442,40 @@ export class RunService {
   async enqueueQueuedSubmission(rawInput: unknown): Promise<ConversationSnapshot> {
     const input = enqueueQueuedSubmissionInputSchema.parse(rawInput)
     return conversationSnapshotSchema.parse(
-      await this.deps.core.send({ type: 'conversation/queue-enqueue', input })
+      await this.deps.core.send({
+        type: 'conversation/queue-change',
+        input: { type: 'enqueue', input }
+      })
     )
   }
 
   async editQueuedSubmission(rawInput: unknown): Promise<ConversationSnapshot> {
     const input = editQueuedSubmissionInputSchema.parse(rawInput)
     return conversationSnapshotSchema.parse(
-      await this.deps.core.send({ type: 'conversation/queue-edit', input })
+      await this.deps.core.send({
+        type: 'conversation/queue-change',
+        input: { type: 'edit', input }
+      })
     )
   }
 
   async moveQueuedSubmission(rawInput: unknown): Promise<ConversationSnapshot> {
     const input = moveQueuedSubmissionInputSchema.parse(rawInput)
     return conversationSnapshotSchema.parse(
-      await this.deps.core.send({ type: 'conversation/queue-move', input })
+      await this.deps.core.send({
+        type: 'conversation/queue-change',
+        input: { type: 'move', input }
+      })
     )
   }
 
   async cancelQueuedSubmission(rawInput: unknown): Promise<ConversationSnapshot> {
     const input = queuedSubmissionIdentitySchema.parse(rawInput)
     return conversationSnapshotSchema.parse(
-      await this.deps.core.send({ type: 'conversation/queue-cancel', input })
+      await this.deps.core.send({
+        type: 'conversation/queue-change',
+        input: { type: 'cancel', input }
+      })
     )
   }
 
@@ -511,17 +491,19 @@ export class RunService {
 
   private setQueuePaused(sessionId: string, paused: boolean): Promise<unknown> {
     return this.deps.core.send({
-      type: 'conversation/queue-state',
-      input: { sessionId, paused }
+      type: 'conversation/queue-change',
+      input: { type: paused ? 'pause' : 'resume', sessionId }
     })
   }
 
   async sendQueuedSubmissionNow(rawInput: unknown): Promise<ConversationSnapshot> {
     const input = queuedSubmissionIdentitySchema.parse(rawInput)
-    const snapshot = await this.readConversation(input.sessionId)
-    if (snapshot.activeRunId) throw new Error('A Run is already active')
-    await this.deps.core.send({ type: 'conversation/queue-prioritize', input })
-    return await this.resumeConversationQueue(input.sessionId)
+    await this.deps.core.send({
+      type: 'conversation/queue-change',
+      input: { type: 'send-now', input }
+    })
+    await this.queueCoordinator.drain(input.sessionId)
+    return await this.readConversation(input.sessionId)
   }
 
   /**
@@ -575,7 +557,11 @@ export class RunService {
     return checkoutDirectory(session.projectRoot, session.checkout)
   }
 
-  async start(rawInput: StartRunInput, retryTerminal = true): Promise<RunSnapshot> {
+  async start(
+    rawInput: StartRunInput,
+    retryTerminal = true,
+    runSubmissionId?: string
+  ): Promise<RunSnapshot> {
     const input = startRunInputSchema.parse(rawInput)
     const adapter = this.adapter(input.harness)
     const checkout = await this.checkoutFor(input.sessionId)
@@ -648,7 +634,9 @@ export class RunService {
       })
     let accepted: RunSnapshot
     try {
-      accepted = openRunLifecycleResultSchema.parse(await accept(input.submissionId)).run
+      accepted = openRunLifecycleResultSchema.parse(
+        await accept(runSubmissionId ?? input.submissionId)
+      ).run
     } catch (error) {
       if (
         !retryTerminal ||

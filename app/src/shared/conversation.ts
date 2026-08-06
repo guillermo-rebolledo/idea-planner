@@ -310,6 +310,20 @@ export const queuedSubmissionEntrySchema = z.object({
 })
 export type QueuedSubmission = z.infer<typeof queuedSubmissionEntrySchema>
 
+export const queuedSubmissionControlsSchema = z.object({
+  edit: z.boolean(),
+  moveEarlier: z.boolean(),
+  moveLater: z.boolean(),
+  cancel: z.boolean(),
+  sendNow: z.boolean()
+})
+
+export const queuedSubmissionViewSchema = queuedSubmissionEntrySchema.extend({
+  /** Durable policy projected by Core; Renderer never re-decides eligibility. */
+  controls: queuedSubmissionControlsSchema
+})
+export type QueuedSubmissionView = z.infer<typeof queuedSubmissionViewSchema>
+
 export function isActiveQueuedSubmission(item: QueuedSubmission): boolean {
   return item.status === 'pending' || item.status === 'claimed'
 }
@@ -320,6 +334,29 @@ export const queueStateEntrySchema = z.object({
   at: z.string().datetime(),
   paused: z.boolean()
 })
+
+export const queueOutcomeTypeSchema = z.enum([
+  'enqueued',
+  'edited',
+  'moved-earlier',
+  'moved-later',
+  'cancelled',
+  'paused',
+  'resumed',
+  'prioritized',
+  'launch-started',
+  'launch-reconciled',
+  'launch-paused'
+])
+
+export const queueOutcomeEntrySchema = z.object({
+  kind: z.literal('queue-outcome'),
+  id: z.literal('queue-outcome'),
+  at: z.string().datetime(),
+  type: queueOutcomeTypeSchema,
+  submissionId: z.string().min(1).max(200).nullable()
+})
+export type QueueOutcome = Pick<z.infer<typeof queueOutcomeEntrySchema>, 'type' | 'submissionId'>
 
 export const conversationEntrySchema = z.discriminatedUnion('kind', [
   z.object({
@@ -497,7 +534,8 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     removed: z.number().int().nonnegative().default(0)
   }),
   queuedSubmissionEntrySchema,
-  queueStateEntrySchema
+  queueStateEntrySchema,
+  queueOutcomeEntrySchema
 ])
 export type ConversationEntry = z.infer<typeof conversationEntrySchema>
 
@@ -577,9 +615,14 @@ export const conversationSnapshotSchema = z.object({
     .object({
       paused: z.boolean(),
       /** Terminal items remain here so recovery can prove what happened. */
-      items: z.array(queuedSubmissionEntrySchema)
+      items: z.array(queuedSubmissionViewSchema),
+      /** Latest durable queue result, suitable for announcements. */
+      outcome: queueOutcomeEntrySchema
+        .pick({ type: true, submissionId: true })
+        .nullable()
+        .default(null)
     })
-    .default({ paused: true, items: [] })
+    .default({ paused: true, items: [], outcome: null })
 })
 export type ConversationSnapshot = z.infer<typeof conversationSnapshotSchema>
 
@@ -640,6 +683,46 @@ export const setConversationQueuePausedInputSchema = z.object({
   paused: z.boolean()
 })
 export type SetConversationQueuePausedInput = z.infer<typeof setConversationQueuePausedInputSchema>
+
+export const queuedSubmissionLaunchObservationSchema = queuedSubmissionIdentitySchema.extend({
+  outcome: z.enum(['started', 'not-started'])
+})
+export type QueuedSubmissionLaunchObservation = z.infer<
+  typeof queuedSubmissionLaunchObservationSchema
+>
+
+export const queuedSubmissionDispositionObservationSchema = queuedSubmissionIdentitySchema.extend({
+  outcome: z.enum(['started', 'reconciled', 'not-started'])
+})
+export type QueuedSubmissionDispositionObservation = z.infer<
+  typeof queuedSubmissionDispositionObservationSchema
+>
+
+export const queuedSubmissionLaunchResultSchema = z.object({
+  continueDraining: z.boolean()
+})
+export type QueuedSubmissionLaunchResult = z.infer<typeof queuedSubmissionLaunchResultSchema>
+
+export const queuedSubmissionLaunchPlanSchema = z.object({
+  sessionId: z.string().min(1),
+  item: queuedSubmissionEntrySchema,
+  /** Stable Run identity selected by Core; may be a derived retry identity. */
+  runSubmissionId: z.string().min(1).max(200),
+  /** Exact Harness prompt, including durable review attachments. */
+  prompt: z.string().min(1)
+})
+export type QueuedSubmissionLaunchPlan = z.infer<typeof queuedSubmissionLaunchPlanSchema>
+
+export const queuedSubmissionChangeSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('enqueue'), input: enqueueQueuedSubmissionInputSchema }),
+  z.object({ type: z.literal('edit'), input: editQueuedSubmissionInputSchema }),
+  z.object({ type: z.literal('move'), input: moveQueuedSubmissionInputSchema }),
+  z.object({ type: z.literal('cancel'), input: queuedSubmissionIdentitySchema }),
+  z.object({ type: z.literal('pause'), sessionId: z.string().min(1) }),
+  z.object({ type: z.literal('resume'), sessionId: z.string().min(1) }),
+  z.object({ type: z.literal('send-now'), input: queuedSubmissionIdentitySchema })
+])
+export type QueuedSubmissionChange = z.infer<typeof queuedSubmissionChangeSchema>
 
 /** The Renderer's one command for developing a Session through a Conversation. */
 export const developSessionInputSchema =

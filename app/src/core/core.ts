@@ -26,16 +26,14 @@ import {
 } from '@shared/run'
 import type {
   ConversationSnapshot,
-  EditQueuedSubmissionInput,
-  EnqueueQueuedSubmissionInput,
   FinalizeConversationRunInput,
   HarnessStream,
   HarnessFailureCategory,
-  MoveQueuedSubmissionInput,
-  QueuedSubmission,
-  QueuedSubmissionIdentity,
+  QueuedSubmissionChange,
+  QueuedSubmissionLaunchObservation,
+  QueuedSubmissionLaunchPlan,
+  QueuedSubmissionLaunchResult,
   RecordCheckoutChangesInput,
-  SetConversationQueuePausedInput,
   SubmitConversationMessageInput,
   UnfinishedRun
 } from '@shared/conversation'
@@ -72,6 +70,7 @@ import {
   type IngestHarnessOutputInput,
   type OpenHarnessInput
 } from './conversation'
+import { createQueuedSubmissionLifecycle } from './queued-submission-lifecycle'
 
 export interface CoreDeps {
   now?: () => Date
@@ -114,15 +113,11 @@ export interface Core {
   recordRunEvent(input: RecordRunEventInput): Promise<RunSnapshot>
   getConversation(sessionId: string): Promise<ConversationSnapshot>
   submitConversationMessage(input: SubmitConversationMessageInput): Promise<ConversationSnapshot>
-  enqueueQueuedSubmission(input: EnqueueQueuedSubmissionInput): Promise<ConversationSnapshot>
-  editQueuedSubmission(input: EditQueuedSubmissionInput): Promise<ConversationSnapshot>
-  moveQueuedSubmission(input: MoveQueuedSubmissionInput): Promise<ConversationSnapshot>
-  prioritizeQueuedSubmission(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
-  cancelQueuedSubmission(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
-  setConversationQueuePaused(input: SetConversationQueuePausedInput): Promise<ConversationSnapshot>
-  claimQueuedSubmission(sessionId: string): Promise<QueuedSubmission | null>
-  releaseQueuedSubmission(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
-  markQueuedSubmissionSent(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
+  changeQueuedSubmissions(input: QueuedSubmissionChange): Promise<ConversationSnapshot>
+  nextQueuedSubmission(sessionId: string): Promise<QueuedSubmissionLaunchPlan | null>
+  observeQueuedSubmissionLaunch(
+    input: QueuedSubmissionLaunchObservation
+  ): Promise<QueuedSubmissionLaunchResult>
   beginConversationRun(input: BeginConversationRunInput): Promise<ConversationSnapshot>
   applyHarnessEvent(input: ApplyHarnessEventInput): Promise<void>
   openHarness(input: OpenHarnessInput): Promise<HarnessStream>
@@ -175,31 +170,15 @@ export interface CoreEffects {
   submitConversationMessage(
     input: SubmitConversationMessageInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
-  enqueueQueuedSubmission(
-    input: EnqueueQueuedSubmissionInput
+  changeQueuedSubmissions(
+    input: QueuedSubmissionChange
   ): Effect.Effect<ConversationSnapshot, CoreError>
-  editQueuedSubmission(
-    input: EditQueuedSubmissionInput
-  ): Effect.Effect<ConversationSnapshot, CoreError>
-  moveQueuedSubmission(
-    input: MoveQueuedSubmissionInput
-  ): Effect.Effect<ConversationSnapshot, CoreError>
-  prioritizeQueuedSubmission(
-    input: QueuedSubmissionIdentity
-  ): Effect.Effect<ConversationSnapshot, CoreError>
-  cancelQueuedSubmission(
-    input: QueuedSubmissionIdentity
-  ): Effect.Effect<ConversationSnapshot, CoreError>
-  setConversationQueuePaused(
-    input: SetConversationQueuePausedInput
-  ): Effect.Effect<ConversationSnapshot, CoreError>
-  claimQueuedSubmission(sessionId: string): Effect.Effect<QueuedSubmission | null, CoreError>
-  releaseQueuedSubmission(
-    input: QueuedSubmissionIdentity
-  ): Effect.Effect<ConversationSnapshot, CoreError>
-  markQueuedSubmissionSent(
-    input: QueuedSubmissionIdentity
-  ): Effect.Effect<ConversationSnapshot, CoreError>
+  nextQueuedSubmission(
+    sessionId: string
+  ): Effect.Effect<QueuedSubmissionLaunchPlan | null, CoreError>
+  observeQueuedSubmissionLaunch(
+    input: QueuedSubmissionLaunchObservation
+  ): Effect.Effect<QueuedSubmissionLaunchResult, CoreError>
   beginConversationRun(
     input: BeginConversationRunInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
@@ -247,6 +226,10 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     checkoutFor: (sessionId) =>
       sessions.get(sessionId).pipe(Effect.map((s) => checkoutDirectory(s.projectRoot, s.checkout))),
     clock: Effect.sync(now)
+  })
+  const queuedSubmissions = createQueuedSubmissionLifecycle({
+    conversation,
+    runs: (sessionId) => listRuns(sessionId)
   })
   // Serializes durable Run writes, so a read-modify-write cannot interleave.
   const writeLock = Effect.runSync(Effect.makeSemaphore(1))
@@ -337,7 +320,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
           const ending = terminal.get(run.id)
           return Effect.gen(function* () {
             if (ending?.queueDisposition === 'pause') {
-              yield* conversation.setQueuePaused({ sessionId, paused: true })
+              yield* queuedSubmissions.change({ type: 'pause', sessionId })
             }
             yield* recordRunEvent({
               sessionId,
@@ -805,15 +788,9 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     recordRunEvent,
     getConversation: (sessionId) => conversation.get(sessionId),
     submitConversationMessage: (input) => conversation.submit(input),
-    enqueueQueuedSubmission: (input) => conversation.enqueue(input),
-    editQueuedSubmission: (input) => conversation.editQueued(input),
-    moveQueuedSubmission: (input) => conversation.moveQueued(input),
-    prioritizeQueuedSubmission: (input) => conversation.prioritizeQueued(input),
-    cancelQueuedSubmission: (input) => conversation.cancelQueued(input),
-    setConversationQueuePaused: (input) => conversation.setQueuePaused(input),
-    claimQueuedSubmission: (sessionId) => conversation.claimQueued(sessionId),
-    releaseQueuedSubmission: (input) => conversation.releaseQueued(input),
-    markQueuedSubmissionSent: (input) => conversation.markQueuedSent(input),
+    changeQueuedSubmissions: (input) => queuedSubmissions.change(input),
+    nextQueuedSubmission: (sessionId) => queuedSubmissions.next(sessionId),
+    observeQueuedSubmissionLaunch: (input) => queuedSubmissions.observeLaunch(input),
     beginConversationRun: (input) => conversation.begin(input),
     applyHarnessEvent: (input) => conversation.apply(input),
     openHarness: (input) => conversation.open(input),
@@ -957,15 +934,9 @@ export function createCore(deps: CoreDeps = {}): Core {
     recordRunEvent: (input) => run(core.recordRunEvent(input)),
     getConversation: (sessionId) => run(core.getConversation(sessionId)),
     submitConversationMessage: (input) => run(core.submitConversationMessage(input)),
-    enqueueQueuedSubmission: (input) => run(core.enqueueQueuedSubmission(input)),
-    editQueuedSubmission: (input) => run(core.editQueuedSubmission(input)),
-    moveQueuedSubmission: (input) => run(core.moveQueuedSubmission(input)),
-    prioritizeQueuedSubmission: (input) => run(core.prioritizeQueuedSubmission(input)),
-    cancelQueuedSubmission: (input) => run(core.cancelQueuedSubmission(input)),
-    setConversationQueuePaused: (input) => run(core.setConversationQueuePaused(input)),
-    claimQueuedSubmission: (sessionId) => run(core.claimQueuedSubmission(sessionId)),
-    releaseQueuedSubmission: (input) => run(core.releaseQueuedSubmission(input)),
-    markQueuedSubmissionSent: (input) => run(core.markQueuedSubmissionSent(input)),
+    changeQueuedSubmissions: (input) => run(core.changeQueuedSubmissions(input)),
+    nextQueuedSubmission: (sessionId) => run(core.nextQueuedSubmission(sessionId)),
+    observeQueuedSubmissionLaunch: (input) => run(core.observeQueuedSubmissionLaunch(input)),
     beginConversationRun: (input) => run(core.beginConversationRun(input)),
     applyHarnessEvent: (input) => run(core.applyHarnessEvent(input)),
     openHarness: (input) => run(core.openHarness(input)),

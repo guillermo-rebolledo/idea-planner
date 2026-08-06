@@ -33,6 +33,7 @@ import {
   type ConversationStreamEvent,
   type DiffHunk,
   type PermissionMode,
+  type QueueOutcome,
   type ReviewAttachment,
   type RunSnapshot,
   type SessionSummary,
@@ -159,6 +160,21 @@ const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
 }
 
 const NO_CONVERSATION_ENTRIES: ConversationEntry[] = []
+
+const QUEUE_ANNOUNCEMENT: Partial<Record<QueueOutcome['type'], string>> = {
+  enqueued: 'Queued Submission added',
+  edited: 'Queued Submission edited; queue paused',
+  'moved-earlier': 'Moved earlier',
+  'moved-later': 'Moved later',
+  cancelled: 'Queued Submission cancelled',
+  paused: 'Queue paused',
+  resumed: 'Queue resumed',
+  prioritized: 'Queued Submission prioritized'
+}
+
+function durableQueueAnnouncement(outcome: QueueOutcome | null): string {
+  return outcome ? (QUEUE_ANNOUNCEMENT[outcome.type] ?? '') : ''
+}
 
 /**
  * Recovery is a choice for the latest unresolved turn, not permanent history.
@@ -968,9 +984,7 @@ export function Conversation({
                       .then(
                         (next) => {
                           adoptSnapshot(next)
-                          setQueueAnnouncement(
-                            snapshot.queue.paused ? 'Queue resumed' : 'Queue paused'
-                          )
+                          setQueueAnnouncement(durableQueueAnnouncement(next.queue.outcome))
                         },
                         () => setError('The queue state could not be changed.')
                       )
@@ -1006,7 +1020,7 @@ export function Conversation({
                               .then((next) => {
                                 adoptSnapshot(next)
                                 setEditingQueuedId(null)
-                                setQueueAnnouncement('Queued Submission edited; queue paused')
+                                setQueueAnnouncement(durableQueueAnnouncement(next.queue.outcome))
                                 window.requestAnimationFrame(() =>
                                   document.getElementById(`edit-${item.submissionId}`)?.focus()
                                 )
@@ -1052,11 +1066,7 @@ export function Conversation({
                               size="icon"
                               variant="ghost"
                               aria-label={`Move ${item.text} earlier`}
-                              disabled={
-                                busy ||
-                                index === 0 ||
-                                (item.status === 'claimed' && !snapshot.queue.paused)
-                              }
+                              disabled={busy || !item.controls.moveEarlier}
                               onClick={() => {
                                 setBusy(true)
                                 void window.shell
@@ -1067,7 +1077,9 @@ export function Conversation({
                                   })
                                   .then((next) => {
                                     adoptSnapshot(next)
-                                    setQueueAnnouncement('Moved earlier')
+                                    setQueueAnnouncement(
+                                      durableQueueAnnouncement(next.queue.outcome)
+                                    )
                                   })
                                   .finally(() => setBusy(false))
                               }}
@@ -1079,11 +1091,7 @@ export function Conversation({
                               size="icon"
                               variant="ghost"
                               aria-label={`Move ${item.text} later`}
-                              disabled={
-                                busy ||
-                                index === active.length - 1 ||
-                                (item.status === 'claimed' && !snapshot.queue.paused)
-                              }
+                              disabled={busy || !item.controls.moveLater}
                               onClick={() => {
                                 setBusy(true)
                                 void window.shell
@@ -1094,7 +1102,9 @@ export function Conversation({
                                   })
                                   .then((next) => {
                                     adoptSnapshot(next)
-                                    setQueueAnnouncement('Moved later')
+                                    setQueueAnnouncement(
+                                      durableQueueAnnouncement(next.queue.outcome)
+                                    )
                                   })
                                   .finally(() => setBusy(false))
                               }}
@@ -1107,9 +1117,7 @@ export function Conversation({
                               size="icon"
                               variant="ghost"
                               aria-label={`Edit ${item.text}`}
-                              disabled={
-                                busy || (item.status === 'claimed' && !snapshot.queue.paused)
-                              }
+                              disabled={busy || !item.controls.edit}
                               onClick={() => {
                                 setQueuedEdit(item.text)
                                 setEditingQueuedId(item.submissionId)
@@ -1122,9 +1130,7 @@ export function Conversation({
                               size="icon"
                               variant="ghost"
                               aria-label={`Cancel ${item.text}`}
-                              disabled={
-                                busy || (item.status === 'claimed' && !snapshot.queue.paused)
-                              }
+                              disabled={busy || !item.controls.cancel}
                               onClick={() => {
                                 const focusId =
                                   active[index + 1]?.submissionId ?? active[index - 1]?.submissionId
@@ -1136,7 +1142,9 @@ export function Conversation({
                                   })
                                   .then((next) => {
                                     adoptSnapshot(next)
-                                    setQueueAnnouncement('Queued Submission cancelled')
+                                    setQueueAnnouncement(
+                                      durableQueueAnnouncement(next.queue.outcome)
+                                    )
                                     window.requestAnimationFrame(() => {
                                       if (focusId)
                                         document.getElementById(`edit-${focusId}`)?.focus()
@@ -1152,7 +1160,7 @@ export function Conversation({
                               type="button"
                               size="sm"
                               variant="ghost"
-                              disabled={busy || activeRunId !== null}
+                              disabled={busy || !item.controls.sendNow}
                               onClick={() => {
                                 setBusy(true)
                                 void window.shell
@@ -1160,7 +1168,12 @@ export function Conversation({
                                     sessionId,
                                     submissionId: item.submissionId
                                   })
-                                  .then(adoptSnapshot)
+                                  .then((next) => {
+                                    adoptSnapshot(next)
+                                    setQueueAnnouncement(
+                                      durableQueueAnnouncement(next.queue.outcome)
+                                    )
+                                  })
                                   .finally(() => setBusy(false))
                               }}
                             >
@@ -1211,7 +1224,7 @@ export function Conversation({
                     if (reviewAttachmentInputRef.current) {
                       reviewAttachmentInputRef.current.value = ''
                     }
-                    setQueueAnnouncement('Queued Submission added')
+                    setQueueAnnouncement(durableQueueAnnouncement(next.queue.outcome))
                   })
                   .catch(() => setError('That message could not be added to the queue.'))
                   .finally(() => setBusy(false))
@@ -1951,6 +1964,7 @@ function groupEntries(entries: ConversationEntry[]): ConversationItem[] {
       case 'thread':
       case 'queued-submission':
       case 'queue-state':
+      case 'queue-outcome':
         break
     }
   }

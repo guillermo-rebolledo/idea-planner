@@ -45,7 +45,7 @@ function conversation(
     changedFiles: [],
     activeRunId,
     pendingApprovalId: null,
-    queue: { paused: true, items: [] }
+    queue: { paused: true, items: [], outcome: null }
   }
 }
 

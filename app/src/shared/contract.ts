@@ -1,15 +1,12 @@
 import { z } from 'zod'
 import {
   codexLaunchSchema,
-  editQueuedSubmissionInputSchema,
-  enqueueQueuedSubmissionInputSchema,
   finalizeConversationRunInputSchema,
   harnessEventSchema,
-  moveQueuedSubmissionInputSchema,
-  queuedSubmissionIdentitySchema,
+  queuedSubmissionChangeSchema,
+  queuedSubmissionLaunchObservationSchema,
   recordCheckoutChangesInputSchema,
   runRequestSchema,
-  setConversationQueuePausedInputSchema,
   submitConversationMessageInputSchema,
   type ConversationSnapshot,
   type ConversationStreamEvent,
@@ -352,27 +349,12 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('run/event'), input: recordRunEventInputSchema }),
   z.object({ type: z.literal('conversation/get'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('conversation/submit'), input: submitConversationMessageInputSchema }),
+  z.object({ type: z.literal('conversation/queue-change'), input: queuedSubmissionChangeSchema }),
+  z.object({ type: z.literal('conversation/queue-next'), sessionId: z.string().min(1) }),
   z.object({
-    type: z.literal('conversation/queue-enqueue'),
-    input: enqueueQueuedSubmissionInputSchema
+    type: z.literal('conversation/queue-launch-observed'),
+    input: queuedSubmissionLaunchObservationSchema
   }),
-  z.object({ type: z.literal('conversation/queue-edit'), input: editQueuedSubmissionInputSchema }),
-  z.object({ type: z.literal('conversation/queue-move'), input: moveQueuedSubmissionInputSchema }),
-  z.object({
-    type: z.literal('conversation/queue-prioritize'),
-    input: queuedSubmissionIdentitySchema
-  }),
-  z.object({ type: z.literal('conversation/queue-cancel'), input: queuedSubmissionIdentitySchema }),
-  z.object({
-    type: z.literal('conversation/queue-state'),
-    input: setConversationQueuePausedInputSchema
-  }),
-  z.object({ type: z.literal('conversation/queue-claim'), sessionId: z.string().min(1) }),
-  z.object({
-    type: z.literal('conversation/queue-release'),
-    input: queuedSubmissionIdentitySchema
-  }),
-  z.object({ type: z.literal('conversation/queue-sent'), input: queuedSubmissionIdentitySchema }),
   z.object({
     type: z.literal('conversation/begin'),
     sessionId: z.string().min(1),

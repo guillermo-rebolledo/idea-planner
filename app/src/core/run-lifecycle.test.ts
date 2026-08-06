@@ -83,16 +83,19 @@ describe('durable Run lifecycle', () => {
 
   it('completes Run, Conversation, Checkout observation, and queue decision durably', async () => {
     const session = await core.startSession({ projectRoot, message: 'Start here' })
-    await core.enqueueQueuedSubmission({
-      sessionId: session.id,
-      submissionId: 'submission-queued',
-      text: 'Continue with the next task',
-      source: 'composer',
-      harness: 'codex',
-      model: 'gpt-5',
-      effort: 'high',
-      permissionMode: 'ask',
-      reviewAttachments: []
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: {
+        sessionId: session.id,
+        submissionId: 'submission-queued',
+        text: 'Continue with the next task',
+        source: 'composer',
+        harness: 'codex',
+        model: 'gpt-5',
+        effort: 'high',
+        permissionMode: 'ask',
+        reviewAttachments: []
+      }
     })
     const opened = await core.openRunLifecycle(opening(session.id))
     await core.recordRunEvent({
@@ -169,16 +172,19 @@ describe('durable Run lifecycle', () => {
     'concludes %s through one durable ending and pauses the queue',
     async (status, kind, summary) => {
       const session = await core.startSession({ projectRoot, message: 'Start here' })
-      await core.enqueueQueuedSubmission({
-        sessionId: session.id,
-        submissionId: 'submission-queued',
-        text: 'Continue with the next task',
-        source: 'composer',
-        harness: 'codex',
-        model: 'gpt-5',
-        effort: 'high',
-        permissionMode: 'ask',
-        reviewAttachments: []
+      await core.changeQueuedSubmissions({
+        type: 'enqueue',
+        input: {
+          sessionId: session.id,
+          submissionId: 'submission-queued',
+          text: 'Continue with the next task',
+          source: 'composer',
+          harness: 'codex',
+          model: 'gpt-5',
+          effort: 'high',
+          permissionMode: 'ask',
+          reviewAttachments: []
+        }
       })
       const opened = await core.openRunLifecycle(opening(session.id))
       await core.recordRunEvent({
@@ -229,18 +235,21 @@ describe('durable Run lifecycle', () => {
 
   it('repairs every derived terminal outcome from its canonical boundary after restart', async () => {
     const session = await core.startSession({ projectRoot, message: 'Start here' })
-    await core.enqueueQueuedSubmission({
-      sessionId: session.id,
-      submissionId: 'submission-queued',
-      text: 'Continue with the next task',
-      source: 'composer',
-      harness: 'codex',
-      model: 'gpt-5',
-      effort: 'high',
-      permissionMode: 'ask',
-      reviewAttachments: []
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: {
+        sessionId: session.id,
+        submissionId: 'submission-queued',
+        text: 'Continue with the next task',
+        source: 'composer',
+        harness: 'codex',
+        model: 'gpt-5',
+        effort: 'high',
+        permissionMode: 'ask',
+        reviewAttachments: []
+      }
     })
-    await core.setConversationQueuePaused({ sessionId: session.id, paused: false })
+    await core.changeQueuedSubmissions({ type: 'resume', sessionId: session.id })
     const opened = await core.openRunLifecycle(opening(session.id))
     await core.recordRunEvent({
       sessionId: session.id,
@@ -315,7 +324,7 @@ describe('durable Run lifecycle', () => {
       checkoutObservation: 'unavailable',
       queueDisposition: 'advance'
     })
-    await core.setConversationQueuePaused({ sessionId: session.id, paused: true })
+    await core.changeQueuedSubmissions({ type: 'pause', sessionId: session.id })
 
     const repaired = await core.completeRunLifecycle(input)
 
