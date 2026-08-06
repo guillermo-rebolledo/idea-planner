@@ -22,11 +22,11 @@ import globals from 'globals'
  * so no lint rule ever fights the formatter.
  */
 
-/** Effect is confined to the Core process — see docs/adr/0001-adopt-effect-in-core.md. */
-const noEffectOutsideCore = {
+/** Effect stays behind transport and presentation seams — see ADR 0001. */
+const noEffectAtTransportOrUi = {
   name: 'effect',
   message:
-    'Effect is confined to the Core process (docs/adr/0001-adopt-effect-in-core.md). Keep this module promise-based, or amend the ADR first.'
+    'Effect is confined to Core and Main product behavior (docs/adr/0001-adopt-effect-in-core.md). Keep shared contracts, Preload, and Renderer Effect-free.'
 }
 
 const noNodeInSandbox = {
@@ -112,12 +112,12 @@ export default tseslint.config(
     languageOptions: { globals: globals.node }
   },
 
-  // Main and Preload stay promise-based under ADR 0001.
+  // Preload is a transport adapter and stays promise-based under ADR 0001.
   {
     name: 'app/effect-boundary',
-    files: ['app/src/{main,preload}/**/*.ts'],
+    files: ['app/src/preload/**/*.ts'],
     rules: {
-      '@typescript-eslint/no-restricted-imports': ['error', { paths: [noEffectOutsideCore] }]
+      '@typescript-eslint/no-restricted-imports': ['error', { paths: [noEffectAtTransportOrUi] }]
     }
   },
 
@@ -129,7 +129,7 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
-        { paths: [noEffectOutsideCore], patterns: [noNodeInSandbox] }
+        { paths: [noEffectAtTransportOrUi], patterns: [noNodeInSandbox] }
       ]
     }
   },

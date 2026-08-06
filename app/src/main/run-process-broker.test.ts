@@ -1,7 +1,11 @@
 import { EventEmitter } from 'node:events'
 import type { SpawnOptionsWithoutStdio } from 'node:child_process'
 import { describe, expect, it, vi } from 'vitest'
-import { RunProcessBroker, type SpawnedProcess } from './run-process-broker'
+import {
+  createMainEffectRuntime,
+  RunProcessBroker,
+  type SpawnedProcess
+} from './run-process-broker'
 
 function fakeProcess(pid = 4242): SpawnedProcess & EventEmitter {
   const child = new EventEmitter() as SpawnedProcess & EventEmitter
@@ -12,6 +16,43 @@ function fakeProcess(pid = 4242): SpawnedProcess & EventEmitter {
 }
 
 describe('Run process broker', () => {
+  it('releases a live Run when the Main Effect runtime ends', async () => {
+    const child = fakeProcess()
+    const killProcessGroup = vi.fn()
+    const waitForGroupExit = vi.fn().mockResolvedValue(undefined)
+    const cleanupRunDirectory = vi.fn().mockResolvedValue(undefined)
+    const clearMonitor = vi.fn()
+    const onBeforeCleanup = vi.fn().mockResolvedValue(undefined)
+    const runtime = createMainEffectRuntime({
+      spawn: () => child,
+      killProcessGroup,
+      waitForGroupExit,
+      cleanupRunDirectory,
+      countProcessGroupMembers: vi.fn().mockResolvedValue(1),
+      setMonitor: vi.fn(() => ({ id: 'monitor-1' })),
+      clearMonitor
+    })
+    const broker = new RunProcessBroker(runtime)
+
+    await broker.start({
+      id: 'run-1',
+      executable: '/opt/codex',
+      args: [],
+      workingDirectory: '/work',
+      runDirectory: '/private/run-1',
+      environment: {},
+      onBeforeCleanup
+    })
+    await runtime.dispose()
+
+    expect(killProcessGroup).toHaveBeenCalledWith(4242, 'SIGTERM')
+    expect(waitForGroupExit).toHaveBeenCalledWith(4242)
+    expect(clearMonitor).toHaveBeenCalledWith({ id: 'monitor-1' })
+    expect(onBeforeCleanup).toHaveBeenCalledOnce()
+    expect(cleanupRunDirectory).toHaveBeenCalledWith('/private/run-1')
+    expect(broker.activeRunIds()).toEqual([])
+  })
+
   it('launches without a shell in a private directory and reduced-priority process group', async () => {
     const child = fakeProcess()
     const spawn = vi.fn(

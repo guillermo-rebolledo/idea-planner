@@ -88,7 +88,7 @@ import { discoverModels } from './models'
 import { HARNESS_SPECS, readinessLinkHosts } from './readiness'
 import { ReadinessService } from './readiness-service'
 import { SettingsStore } from './settings'
-import { RunProcessBroker } from './run-process-broker'
+import { createMainEffectRuntime, RunProcessBroker } from './run-process-broker'
 import { RunService } from './run-service'
 
 /**
@@ -132,6 +132,10 @@ let runService: RunService
 let shutdownStarted = false
 let quitPromptOpen = false
 let servicesReady = false
+
+// One scoped runtime owns Main product behavior for exactly this Electron
+// process. Its child Run scopes are released before the process may exit.
+const mainEffectRuntime = createMainEffectRuntime()
 
 const coreClient = new CoreClient(
   () => app.getPath('userData'),
@@ -845,7 +849,7 @@ void app.whenReady().then(() => {
   })
   runService = new RunService({
     core: coreClient,
-    broker: new RunProcessBroker(),
+    broker: new RunProcessBroker(mainEffectRuntime),
     readiness,
     homeDirectory: app.getPath('home'),
     privateRoot: join(app.getPath('userData'), 'runs'),
@@ -940,6 +944,7 @@ async function beginSafeShutdown(): Promise<void> {
   shutdownStarted = true
   await runService
     .stopAll('quit')
+    .then(() => mainEffectRuntime.dispose())
     .then(() => {
       coreClient.stop()
       app.exit(0)
