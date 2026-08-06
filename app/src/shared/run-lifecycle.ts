@@ -34,6 +34,7 @@ export const terminalRunStatusSchema = z.enum([
   'policy-violation',
   'supervision-failed'
 ])
+export type TerminalRunStatus = z.infer<typeof terminalRunStatusSchema>
 
 export const checkoutObservationSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('observed'), changes: z.array(checkoutChangeSchema).max(500) }),
@@ -41,14 +42,42 @@ export const checkoutObservationSchema = z.discriminatedUnion('status', [
 ])
 export type CheckoutObservation = z.infer<typeof checkoutObservationSchema>
 
+/** Native terminal facts Main can observe; Core maps them to product state. */
+export const terminalRunObservationSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('harness-completed'),
+    kind: runActivityKindSchema,
+    summary: z.string().min(1).max(500)
+  }),
+  z.object({
+    type: z.literal('harness-failed'),
+    kind: runActivityKindSchema,
+    summary: z.string().min(1).max(500),
+    category: harnessFailureCategorySchema.nullable()
+  }),
+  z.object({
+    type: z.literal('person-stopped'),
+    kind: runActivityKindSchema,
+    summary: z.string().min(1).max(500)
+  }),
+  z.object({
+    type: z.literal('policy-violation'),
+    kind: runActivityKindSchema,
+    summary: z.string().min(1).max(500)
+  }),
+  z.object({
+    type: z.literal('supervision-failed'),
+    kind: runActivityKindSchema,
+    summary: z.string().min(1).max(500)
+  })
+])
+export type TerminalRunObservation = z.infer<typeof terminalRunObservationSchema>
+
 /** Main's one terminal observation; Core owns every product-state consequence. */
 export const completeRunLifecycleInputSchema = z.object({
   sessionId: z.string().min(1),
   runId: z.string().min(1),
-  status: terminalRunStatusSchema,
-  kind: runActivityKindSchema,
-  summary: z.string().min(1).max(500),
-  category: harnessFailureCategorySchema.nullable(),
+  observation: terminalRunObservationSchema,
   checkoutObservation: checkoutObservationSchema
 })
 export type CompleteRunLifecycleInput = z.infer<typeof completeRunLifecycleInputSchema>

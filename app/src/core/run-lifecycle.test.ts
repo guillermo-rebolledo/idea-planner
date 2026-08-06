@@ -113,10 +113,11 @@ describe('durable Run lifecycle', () => {
     const input = {
       sessionId: session.id,
       runId: opened.run.id,
-      status: 'completed' as const,
-      kind: 'lifecycle' as const,
-      summary: 'Harness completed the turn',
-      category: null,
+      observation: {
+        type: 'harness-completed' as const,
+        kind: 'lifecycle' as const,
+        summary: 'Harness completed the turn'
+      },
       checkoutObservation: {
         status: 'observed' as const,
         changes: [
@@ -152,12 +153,94 @@ describe('durable Run lifecycle', () => {
     )
     expect(endingIndex).toBeLessThan(checkoutIndex)
     await expect(
-      core.completeRunLifecycle({ ...input, summary: 'A contradictory duplicate' })
+      core.completeRunLifecycle({
+        ...input,
+        observation: { ...input.observation, summary: 'A contradictory duplicate' }
+      })
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
   })
 
+  it.each([
+    ['failed', 'error', 'Harness process failed'],
+    ['stopped', 'lifecycle', 'The person stopped the Harness'],
+    ['policy-violation', 'blocked', 'Run stopped by policy'],
+    ['supervision-failed', 'error', 'Native supervision failed']
+  ] as const)(
+    'concludes %s through one durable ending and pauses the queue',
+    async (status, kind, summary) => {
+      const session = await core.startSession({ projectRoot, message: 'Start here' })
+      await core.enqueueQueuedSubmission({
+        sessionId: session.id,
+        submissionId: 'submission-queued',
+        text: 'Continue with the next task',
+        source: 'composer',
+        harness: 'codex',
+        model: 'gpt-5',
+        effort: 'high',
+        permissionMode: 'ask',
+        reviewAttachments: []
+      })
+      const opened = await core.openRunLifecycle(opening(session.id))
+      await core.recordRunEvent({
+        sessionId: session.id,
+        runId: opened.run.id,
+        status: 'starting',
+        kind: 'lifecycle',
+        summary: 'Starting the Harness'
+      })
+      await core.recordRunEvent({
+        sessionId: session.id,
+        runId: opened.run.id,
+        status: 'running',
+        kind: 'lifecycle',
+        summary: 'Harness process running'
+      })
+      const input = {
+        sessionId: session.id,
+        runId: opened.run.id,
+        observation:
+          status === 'failed'
+            ? ({ type: 'harness-failed', kind, summary, category: 'process-crash' } as const)
+            : status === 'stopped'
+              ? ({ type: 'person-stopped', kind, summary } as const)
+              : ({ type: status, kind, summary } as const),
+        checkoutObservation: { status: 'unavailable' as const }
+      }
+
+      const concluded = await core.completeRunLifecycle(input)
+      const duplicate = await core.completeRunLifecycle(input)
+
+      expect(duplicate).toEqual(concluded)
+      expect(concluded.run.status).toBe(status)
+      expect(concluded.queueDisposition).toBe('pause')
+      expect(concluded.conversation.queue.paused).toBe(true)
+      expect(
+        concluded.conversation.entries.filter(
+          (entry) => entry.kind === 'boundary' && entry.id === `boundary:${opened.run.id}:ended`
+        )
+      ).toHaveLength(1)
+      expect(
+        concluded.conversation.entries.find(
+          (entry) => entry.kind === 'boundary' && entry.id === `boundary:${opened.run.id}:ended`
+        )
+      ).toMatchObject({ checkoutObservation: 'unavailable', terminalOutcome: status })
+    }
+  )
+
   it('repairs every derived terminal outcome from its canonical boundary after restart', async () => {
     const session = await core.startSession({ projectRoot, message: 'Start here' })
+    await core.enqueueQueuedSubmission({
+      sessionId: session.id,
+      submissionId: 'submission-queued',
+      text: 'Continue with the next task',
+      source: 'composer',
+      harness: 'codex',
+      model: 'gpt-5',
+      effort: 'high',
+      permissionMode: 'ask',
+      reviewAttachments: []
+    })
+    await core.setConversationQueuePaused({ sessionId: session.id, paused: false })
     const opened = await core.openRunLifecycle(opening(session.id))
     await core.recordRunEvent({
       sessionId: session.id,
@@ -176,17 +259,22 @@ describe('durable Run lifecycle', () => {
     await core.finalizeConversationRun({
       sessionId: session.id,
       runId: opened.run.id,
-      outcome: 'stopped',
+      outcome: 'policy-violation',
       category: null,
-      summary: 'The person stopped the Harness',
+      summary: 'Run stopped by policy',
       transitionFingerprint: 'f'.repeat(64),
       checkoutObservation: 'unavailable',
-      queueDisposition: 'pause'
+      queueDisposition: 'pause',
+      terminalActivityKind: 'blocked'
     })
 
     expect((await core.listRuns(session.id))[0]?.status).toBe('running')
     await expect(core.listUnfinishedRuns()).resolves.toEqual([])
-    expect((await core.listRuns(session.id))[0]?.status).toBe('stopped')
+    const repaired = (await core.listRuns(session.id))[0]
+    expect(repaired?.status).toBe('policy-violation')
+    expect(repaired?.activity.some((event) => event.kind === 'blocked')).toBe(true)
+    expect(repaired?.activity.at(-1)?.summary).toBe('Run stopped by policy')
+    expect((await core.getConversation(session.id)).queue.paused).toBe(true)
   })
 
   it('returns the original durable queue decision when completion repairs its Run projection', async () => {
@@ -209,10 +297,11 @@ describe('durable Run lifecycle', () => {
     const input = {
       sessionId: session.id,
       runId: opened.run.id,
-      status: 'completed' as const,
-      kind: 'lifecycle' as const,
-      summary: 'Harness completed the turn',
-      category: null,
+      observation: {
+        type: 'harness-completed' as const,
+        kind: 'lifecycle' as const,
+        summary: 'Harness completed the turn'
+      },
       checkoutObservation: { status: 'unavailable' as const }
     }
     const fingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex')
@@ -221,7 +310,7 @@ describe('durable Run lifecycle', () => {
       runId: opened.run.id,
       outcome: 'completed',
       category: null,
-      summary: input.summary,
+      summary: input.observation.summary,
       transitionFingerprint: fingerprint,
       checkoutObservation: 'unavailable',
       queueDisposition: 'advance'
