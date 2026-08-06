@@ -55,10 +55,10 @@ listed in the config. A new source directory must be added to
 Two `no-restricted-imports` rules encode decisions that are otherwise easy to
 erode. Treat a violation as a design question, not a lint annoyance:
 
-- **Effect stays in Core.** `src/main` and `src/preload` may not import
-  `effect` (ADR `docs/adr/0001-adopt-effect-in-core.md`). Extending Effect to
-  Main's supervision modules is an open decision recorded in that ADR — amend
-  it before changing the rule.
+- **Effect stays behind product-behavior seams.** Core and Main product behavior
+  may import `effect`; `src/preload`, `src/shared`, and `src/renderer` may not
+  (ADR `docs/adr/0001-adopt-effect-in-core.md`). Effect values must be unwrapped
+  before Electron callbacks, IPC, shared contracts, or presentation state.
 - **The sandbox holds.** `src/renderer` and `src/shared` may not import
   `node:*` or `electron`. Renderer capabilities go through the Preload surface
   declared in `@shared/contract`.

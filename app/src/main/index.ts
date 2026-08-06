@@ -91,7 +91,7 @@ import { discoverModels } from './models'
 import { HARNESS_SPECS, readinessLinkHosts } from './readiness'
 import { ReadinessService } from './readiness-service'
 import { SettingsStore } from './settings'
-import { RunProcessBroker } from './run-process-broker'
+import { createMainEffectRuntime, RunProcessBroker } from './run-process-broker'
 import { RunService } from './run-service'
 import { bootstrapWorktree } from './worktree-bootstrap'
 
@@ -113,6 +113,7 @@ let chosenProjectCount = 0
 const testReadinessPath = process.env['APP_TEST_READINESS_PATH']
 const testReadinessHome = process.env['APP_TEST_READINESS_HOME']
 const testChooseExecutable = process.env['APP_TEST_CHOOSE_EXECUTABLE']
+const testBackground = !app.isPackaged && process.env['APP_TEST_BACKGROUND'] === '1'
 const devServerUrl = process.env['ELECTRON_RENDERER_URL']
 
 // Who the app says it is, before anything reads it: the menu bar, the About
@@ -121,6 +122,9 @@ const devServerUrl = process.env['ELECTRON_RENDERER_URL']
 // cannot orphan a person's history (ADR 0002).
 app.setName(PRODUCT_NAME)
 app.setAboutPanelOptions({ applicationName: PRODUCT_NAME, applicationVersion: app.getVersion() })
+// Shell acceptance tests exercise the real app without taking over the
+// person's desktop. Accessory apps do not appear in the Dock or menu bar.
+if (testBackground && process.platform === 'darwin') app.setActivationPolicy('accessory')
 // A test run substitutes the application-support root rather than the state
 // directory itself, so it is never the app installed on this machine that a
 // suite reads or writes, and the derivation is exercised rather than bypassed.
@@ -145,6 +149,10 @@ interface PendingWorktreeBootstrap {
 
 /** Kept only while the launch surface is offering Retry or Continue. */
 const pendingWorktreeBootstraps = new Map<string, PendingWorktreeBootstrap>()
+
+// One scoped runtime owns Main product behavior for exactly this Electron
+// process. Its child Run scopes are released before the process may exit.
+const mainEffectRuntime = createMainEffectRuntime()
 
 const coreClient = new CoreClient(
   () => app.getPath('userData'),
@@ -866,6 +874,7 @@ function createWindow(): void {
     minWidth: 840,
     minHeight: 560,
     show: false,
+    skipTaskbar: testBackground,
     titleBarStyle: 'hiddenInset',
     // Centered in the 44px title bar every surface draws (h-11): the macOS
     // buttons are 12px tall, so (44 − 12) / 2 from the top.
@@ -898,7 +907,9 @@ function createWindow(): void {
     if (undo) window.webContents.send(IPC_CHANNELS.undoShortcut)
   })
 
-  window.on('ready-to-show', () => window.show())
+  window.on('ready-to-show', () => {
+    if (!testBackground) window.show()
+  })
   window.on('close', (event) => {
     if (shutdownStarted) return
     event.preventDefault()
@@ -925,7 +936,7 @@ void app.whenReady().then(() => {
   })
   runService = new RunService({
     core: coreClient,
-    broker: new RunProcessBroker(),
+    broker: new RunProcessBroker(mainEffectRuntime),
     readiness,
     homeDirectory: app.getPath('home'),
     privateRoot: join(app.getPath('userData'), 'runs'),
@@ -1004,8 +1015,10 @@ function requestQuit(): void {
     settings.get().warnBeforeQuitWithActiveRuns
   ) {
     if (!mainWindow || mainWindow.isDestroyed()) return
-    mainWindow.show()
-    mainWindow.focus()
+    if (!testBackground) {
+      mainWindow.show()
+      mainWindow.focus()
+    }
     if (!quitPromptOpen) {
       quitPromptOpen = true
       mainWindow.webContents.send(IPC_CHANNELS.quitRequested, activeRunCount)
@@ -1020,6 +1033,7 @@ async function beginSafeShutdown(): Promise<void> {
   shutdownStarted = true
   await runService
     .stopAll('quit')
+    .then(() => mainEffectRuntime.dispose())
     .then(() => {
       coreClient.stop()
       app.exit(0)
