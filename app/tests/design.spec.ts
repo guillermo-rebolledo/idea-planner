@@ -1,10 +1,9 @@
 import { readFileSync } from 'node:fs'
-import { execFile } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { promisify } from 'node:util'
 import { _electron as electron, expect, test, type ElectronApplication } from '@playwright/test'
+import { testGit as git } from '../src/main/git-test-support'
 
 /**
  * The visual identity, in the running app.
@@ -53,7 +52,7 @@ test.beforeEach(async () => {
     readinessHomeDir: await mkdtemp(join(tmpdir(), 'app-design-home-')),
     projectDir: await mkdtemp(join(tmpdir(), 'app-design-project-'))
   }
-  await promisify(execFile)('git', ['init', '--quiet'], { cwd: sandbox.projectDir })
+  await git('git', ['init', '--quiet'], { cwd: sandbox.projectDir })
   // The app refuses to open without a Harness that can run a Session, and
   // every test here is about what is on screen past that gate.
   await writeFile(

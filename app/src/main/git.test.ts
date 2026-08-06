@@ -1,8 +1,6 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { promisify } from 'node:util'
-import { execFile } from 'node:child_process'
+import { isAbsolute, join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   createWorktree,
@@ -10,9 +8,11 @@ import {
   diffSnapshots,
   initRepository,
   listBranches,
+  observeCheckoutState,
   resolveProjectRoot,
   snapshotCheckout
 } from './git'
+import { conflictingRepository as prepareConflict, testGit as git } from './git-test-support'
 
 let root: string
 
@@ -24,13 +24,109 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-const git = promisify(execFile)
-
 /** What git itself calls the root, which on macOS is not the path we passed. */
 async function toplevel(cwd: string): Promise<string> {
   const { stdout } = await git('git', ['rev-parse', '--show-toplevel'], { cwd })
   return stdout.trim()
 }
+
+/** A repository whose two branches change the same file differently. */
+async function conflictingRepository(filename = 'conflict.txt'): Promise<void> {
+  await prepareConflict(root, filename)
+}
+
+async function attempt(cwd: string, args: string[]): Promise<void> {
+  await git('git', args, { cwd }).catch(() => undefined)
+}
+
+describe('observing Checkout State', () => {
+  it('distinguishes missing git, a plain folder, and an unsafe nested Checkout', async () => {
+    await expect(observeCheckoutState(root, { pathEnv: '' })).resolves.toEqual({
+      status: 'git-unavailable'
+    })
+    await expect(observeCheckoutState(root)).resolves.toEqual({ status: 'not-a-repository' })
+
+    await git('git', ['init', '--quiet'], { cwd: root })
+    const nested = join(root, 'nested')
+    await mkdir(nested)
+    await expect(observeCheckoutState(nested)).resolves.toEqual({
+      status: 'observed',
+      state: 'unsafe-root'
+    })
+  })
+
+  it('observes clean branches, detached HEAD, and linked worktrees', async () => {
+    await git('git', ['init', '--quiet', '--initial-branch=main'], { cwd: root })
+    await writeFile(join(root, 'tracked.txt'), 'base\n')
+    await commitAll(root, 'base')
+    await expect(observeCheckoutState(root)).resolves.toEqual({
+      status: 'observed',
+      state: 'clean'
+    })
+
+    await git('git', ['checkout', '--quiet', '--detach'], { cwd: root })
+    await expect(observeCheckoutState(root)).resolves.toEqual({
+      status: 'observed',
+      state: 'clean'
+    })
+
+    const linked = await mkdtemp(join(tmpdir(), 'git-state-worktree-'))
+    await rm(linked, { recursive: true, force: true })
+    await git('git', ['worktree', 'add', '--quiet', '-b', 'linked', linked], { cwd: root })
+    await expect(observeCheckoutState(linked)).resolves.toEqual({
+      status: 'observed',
+      state: 'clean'
+    })
+    await git('git', ['worktree', 'remove', '--force', linked], { cwd: root })
+  })
+
+  it.each([
+    ['merge', ['merge', 'side']],
+    ['rebase', ['rebase', 'side']],
+    ['cherry-pick', ['cherry-pick', 'side']],
+    ['revert', ['revert', 'side']]
+  ] as const)('names an active %s operation', async (state, command) => {
+    await conflictingRepository()
+    let operation: string[] = [...command]
+    if (state === 'cherry-pick' || state === 'revert') {
+      const { stdout } = await git('git', ['rev-parse', 'side'], { cwd: root })
+      operation = [command[0], stdout.trim()]
+    }
+    await attempt(root, operation)
+
+    await expect(observeCheckoutState(root)).resolves.toEqual({ status: 'observed', state })
+  })
+
+  it('distinguishes an active squash merge from the harmless message it leaves behind', async () => {
+    await conflictingRepository()
+    await attempt(root, ['merge', '--squash', 'side'])
+    await expect(observeCheckoutState(root)).resolves.toEqual({
+      status: 'observed',
+      state: 'squash-merge'
+    })
+
+    await git('git', ['add', '-A'], { cwd: root })
+    await expect(observeCheckoutState(root)).resolves.toEqual({
+      status: 'observed',
+      state: 'clean'
+    })
+  })
+
+  it('detects unresolved entries through an unusual NUL-sensitive filename', async () => {
+    const filename = 'line\nbreak\tand space.txt'
+    await conflictingRepository(filename)
+    await attempt(root, ['merge', 'side'])
+    const { stdout: marker } = await git('git', ['rev-parse', '--git-path', 'MERGE_HEAD'], {
+      cwd: root
+    })
+    await unlink(isAbsolute(marker.trim()) ? marker.trim() : resolve(root, marker.trim()))
+
+    await expect(observeCheckoutState(root)).resolves.toEqual({
+      status: 'observed',
+      state: 'unresolved-index'
+    })
+  })
+})
 
 /** One commit of everything, with the identity a bare test machine lacks. */
 async function commitAll(cwd: string, message: string): Promise<void> {
@@ -137,6 +233,21 @@ describe('initialising a repository', () => {
   it('reports a missing git binary rather than claiming it initialised anything', async () => {
     await expect(initRepository(root, { pathEnv: '' })).resolves.toEqual({
       status: 'git-unavailable'
+    })
+  })
+
+  it('blocks an unsafe nested root instead of creating a repository inside a repository', async () => {
+    await git('git', ['init', '--quiet'], { cwd: root })
+    const nested = join(root, 'nested')
+    await mkdir(nested)
+
+    await expect(initRepository(nested)).resolves.toEqual({
+      status: 'blocked',
+      state: 'unsafe-root'
+    })
+    await expect(resolveProjectRoot(nested)).resolves.toEqual({
+      status: 'resolved',
+      root: await toplevel(root)
     })
   })
 })
@@ -308,8 +419,28 @@ describe('snapshotting a Checkout', () => {
 
   it('says so rather than failing when the Checkout is not a repository', async () => {
     const plain = await mkdtemp(join(tmpdir(), 'git-plain-'))
-    await expect(snapshotCheckout(plain, appOwned)).resolves.toEqual({ status: 'unavailable' })
+    await expect(snapshotCheckout(plain, appOwned)).resolves.toEqual({
+      status: 'skipped',
+      reason: 'not-a-repository'
+    })
     await rm(plain, { recursive: true, force: true })
+  })
+
+  it('snapshots during an active operation without touching its real index', async () => {
+    const { stdout: branch } = await git('git', ['branch', '--show-current'], { cwd: root })
+    await git('git', ['checkout', '--quiet', '-b', 'side'], { cwd: root })
+    await writeFile(join(root, 'tracked.ts'), 'side\n')
+    await commitAll(root, 'side')
+    await git('git', ['checkout', '--quiet', branch.trim()], { cwd: root })
+    await writeFile(join(root, 'tracked.ts'), 'main\n')
+    await commitAll(root, 'main')
+    await attempt(root, ['merge', 'side'])
+    const { stdout: indexBefore } = await git('git', ['ls-files', '--stage', '-z'], { cwd: root })
+
+    await expect(snapshotCheckout(root, appOwned)).resolves.toMatchObject({ status: 'taken' })
+
+    const { stdout: indexAfter } = await git('git', ['ls-files', '--stage', '-z'], { cwd: root })
+    expect(indexAfter).toBe(indexBefore)
   })
 })
 
@@ -336,6 +467,29 @@ describe('listing branches for an isolated checkout base', () => {
 })
 
 describe('creating an isolated checkout', () => {
+  it('returns a typed unsafe-root block before touching repository state', async () => {
+    await git('git', ['init', '--quiet', '-b', 'trunk'], { cwd: root })
+    await writeFile(join(root, 'a.txt'), 'a\n')
+    await commitAll(root, 'first')
+    const nested = join(root, 'nested')
+    const home = await mkdtemp(join(tmpdir(), 'git-worktrees-'))
+    await mkdir(nested)
+    const { stdout: indexBefore } = await git('git', ['ls-files', '--stage', '-z'], { cwd: root })
+
+    await expect(
+      createWorktree({
+        projectRoot: nested,
+        worktreesDirectory: home,
+        branch: 'must-not-exist',
+        baseBranch: 'trunk'
+      })
+    ).resolves.toEqual({ status: 'blocked', state: 'unsafe-root' })
+
+    const { stdout: indexAfter } = await git('git', ['ls-files', '--stage', '-z'], { cwd: root })
+    expect(indexAfter).toBe(indexBefore)
+    await rm(home, { recursive: true, force: true })
+  })
+
   it('adds a linked worktree on a new branch cut from the chosen base', async () => {
     await git('git', ['init', '--quiet', '-b', 'trunk'], { cwd: root })
     await writeFile(join(root, 'a.txt'), 'a\n')
@@ -389,5 +543,45 @@ describe('creating an isolated checkout', () => {
 
     expect(created.status).toBe('failed')
     await rm(home, { recursive: true, force: true })
+  })
+
+  it('creates from a named base during a merge without touching the working tree or index', async () => {
+    await conflictingRepository()
+    await attempt(root, ['merge', 'side'])
+    const home = await mkdtemp(join(tmpdir(), 'git-worktrees-'))
+    const { stdout: statusBefore } = await git('git', ['status', '--porcelain=v1', '-z'], {
+      cwd: root
+    })
+    const { stdout: indexBefore } = await git('git', ['ls-files', '--stage', '-z'], { cwd: root })
+
+    await expect(
+      createWorktree({
+        projectRoot: root,
+        worktreesDirectory: home,
+        branch: 'during-merge',
+        baseBranch: 'main'
+      })
+    ).resolves.toMatchObject({ status: 'created', branch: 'during-merge' })
+
+    const { stdout: statusAfter } = await git('git', ['status', '--porcelain=v1', '-z'], {
+      cwd: root
+    })
+    const { stdout: indexAfter } = await git('git', ['ls-files', '--stage', '-z'], { cwd: root })
+    expect(statusAfter).toBe(statusBefore)
+    expect(indexAfter).toBe(indexBefore)
+    await rm(home, { recursive: true, force: true })
+  })
+
+  it('keeps missing Git and a non-repository as distinct outcomes', async () => {
+    const input = {
+      projectRoot: root,
+      worktreesDirectory: join(root, 'worktrees'),
+      branch: 'new',
+      baseBranch: 'main'
+    }
+    await expect(createWorktree(input)).resolves.toEqual({ status: 'not-a-repository' })
+    await expect(createWorktree(input, { pathEnv: '' })).resolves.toEqual({
+      status: 'git-unavailable'
+    })
   })
 })

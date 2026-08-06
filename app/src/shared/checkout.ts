@@ -17,6 +17,31 @@ export const checkoutSchema = z.discriminatedUnion('kind', [
 ])
 export type Checkout = z.infer<typeof checkoutSchema>
 
+/**
+ * What Git is doing in a Checkout right now. This is observed state, never
+ * stored: both the person and an agent can begin or finish an operation from
+ * outside the app.
+ */
+export const checkoutStateSchema = z.enum([
+  'clean',
+  'merge',
+  'rebase',
+  'squash-merge',
+  'cherry-pick',
+  'revert',
+  'unresolved-index',
+  'unsafe-root'
+])
+export type CheckoutState = z.infer<typeof checkoutStateSchema>
+
+/** Git discovery failures stay distinct from a successfully observed state. */
+export const checkoutStateObservationSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('observed'), state: checkoutStateSchema }),
+  z.object({ status: z.literal('git-unavailable') }),
+  z.object({ status: z.literal('not-a-repository') })
+])
+export type CheckoutStateObservation = z.infer<typeof checkoutStateObservationSchema>
+
 /** The default when a Session is started without saying: the working copy. */
 export const LOCAL_CHECKOUT: Checkout = { kind: 'local' }
 
@@ -76,6 +101,8 @@ export const checkoutFactsSchema = z.object({
   /** The absolute directory the Checkout names. */
   path: z.string().min(1),
   /** The branch the Checkout is on, or null when detached or unreadable. */
-  branch: z.string().min(1).nullable()
+  branch: z.string().min(1).nullable(),
+  /** The operation Git is performing, or why Git could not be observed. */
+  state: checkoutStateObservationSchema
 })
 export type CheckoutFacts = z.infer<typeof checkoutFactsSchema>

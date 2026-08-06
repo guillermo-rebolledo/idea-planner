@@ -25,7 +25,7 @@ import type {
   MailboxSnapshot,
   SessionStatus,
   SessionSummary,
-  StartSessionResult,
+  StartedSessionResult,
   ThemePreference,
   ThemeState
 } from '@shared/contract'
@@ -434,7 +434,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     })
   }, [undoArchive])
 
-  function handleStarted({ session, runStarted }: StartSessionResult): void {
+  function handleStarted({ session, runStarted }: StartedSessionResult): void {
     void refreshSessionStructure(effectiveQuery)
     openSession(session)
     // Sending starts the work, so the announcement says whether it did. A

@@ -1,9 +1,8 @@
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises'
-import { execFile } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { basename, delimiter, join } from 'node:path'
-import { promisify } from 'node:util'
 import { _electron as electron, expect, test, type ElectronApplication } from '@playwright/test'
+import { testGit as git } from '../src/main/git-test-support'
 
 /**
  * Packaged-shell acceptance tests: the built app is launched for real and
@@ -63,7 +62,7 @@ test.beforeEach(async () => {
   }
   // Every test needs somewhere to work, and only git can make a folder a
   // Project (ADR 0005).
-  await promisify(execFile)('git', ['init', '--quiet'], { cwd: sandbox.projectDir })
+  await git('git', ['init', '--quiet'], { cwd: sandbox.projectDir })
   // And a Harness that can run a Session, because the app refuses to open
   // without one. The launch gate has its own test; every other test is about
   // what happens past it.
@@ -763,7 +762,7 @@ test('the sidebar groups by Project, and status is a dot that never moves a row'
   await installFakeHarness('claude', BUSY_CLAUDE_FAKE)
   // A second Project, because the sidebar spans repositories: every Project
   // is its own group with its Sessions nested underneath.
-  await promisify(execFile)('git', ['init', '--quiet'], { cwd: sandbox.plainDir })
+  await git('git', ['init', '--quiet'], { cwd: sandbox.plainDir })
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
@@ -966,7 +965,6 @@ test('a change nobody reported is still listed, and says nobody reported it', as
 })
 
 test('the title bar states where a Session works — Local, or an isolated Worktree', async () => {
-  const git = promisify(execFile)
   const gitc = (args: string[]): Promise<unknown> =>
     git('git', ['-c', 'user.email=a@b', '-c', 'user.name=t', ...args], {
       cwd: sandbox.projectDir
