@@ -40,6 +40,7 @@ async function launchShell(options: { quitWarning?: boolean } = {}): Promise<Ele
     env: {
       ...process.env,
       APP_TEST_APP_DATA: sandbox.appDataDir,
+      APP_TEST_BACKGROUND: '1',
       APP_TEST_READINESS_PATH: sandbox.readinessBinDir,
       APP_TEST_READINESS_HOME: sandbox.readinessHomeDir,
       ...(options.quitWarning ? { APP_TEST_QUIT_WARNING: '1' } : {}),
@@ -128,11 +129,15 @@ test('the app is Argos to the person and to macOS, and keeps its state under its
       // has (14b).
       name: electronApp.getName(),
       windowTitle: BrowserWindow.getAllWindows()[0]?.getTitle(),
+      windowVisible: BrowserWindow.getAllWindows()[0]?.isVisible(),
+      windowFocused: BrowserWindow.getAllWindows()[0]?.isFocused(),
       stateDirectory: electronApp.getPath('userData')
     }))
 
     expect(identity.name).toBe('Argos')
     expect(identity.windowTitle).toBe('Argos')
+    expect(identity.windowVisible).toBe(false)
+    expect(identity.windowFocused).toBe(false)
     expect(await page.title()).toBe('Argos')
     // Keyed by the identifier, which is fixed, rather than by the name, which
     // is a display string: renaming the product must not lose a history.
@@ -266,6 +271,9 @@ test('a person starts a Session and it survives an application restart', async (
 })
 
 test('Queued Submissions are durable and keyboard-editable', async () => {
+  // This test needs a genuinely active Run. The default readiness fake exits
+  // quickly so unrelated shell tests do not have to stop it explicitly.
+  await installFakeHarness('claude', ACTIVE_CLAUDE_FAKE)
   const firstRun = await launchShell()
   try {
     const page = await firstRun.firstWindow()
@@ -1404,6 +1412,13 @@ const READY_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
   -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
 esac`
+
+const ACTIVE_CLAUDE_FAKE = `case "$1" in
+  --version) echo "2.1.220 (Claude Code)"; exit 0;;
+esac
+echo '{"type":"system","subtype":"init"}'
+trap 'exit 0' TERM INT
+while :; do /bin/sleep 1; done`
 
 test('readiness reports Codex and Claude independently, with safe repair and re-check', async () => {
   const app = await launchShell()
