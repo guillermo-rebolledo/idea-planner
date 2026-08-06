@@ -816,6 +816,27 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
+          const entries = yield* readEntries(sessionDir)
+          const existing = entries.find((entry) => entry.id === `boundary:${input.runId}:started`)
+          if (existing) {
+            if (
+              existing.kind !== 'boundary' ||
+              existing.submissionId !== input.submissionId ||
+              existing.harness !== input.harness ||
+              existing.skill !== input.skill ||
+              existing.model !== input.model ||
+              Boolean(existing.restorationNote) !== Boolean(input.restorationNote) ||
+              existing.askedPermissionMode !== input.askedPermissionMode
+            ) {
+              return yield* Effect.fail(
+                new CoreError(
+                  'INVALID_INPUT',
+                  'Run opening identity was reused with different data'
+                )
+              )
+            }
+            return yield* snapshot(input.sessionId, sessionDir)
+          }
           const at = (yield* options.clock).toISOString()
           const entry = conversationEntrySchema.parse({
             kind: 'boundary',
@@ -1168,6 +1189,40 @@ export function createConversationEffects(options: ConversationOptions): Convers
    * same change, described better, and recording it twice would double what
    * the panel says the Run did.
    */
+  const projectCheckoutChanges = (
+    files: RecordCheckoutChangesInput['files'],
+    existing: ConversationEntry[],
+    runId: string,
+    checkout: string,
+    at: Date
+  ): ConversationEntry[] => {
+    const already = existing.filter(
+      (entry) => entry.kind === 'file-change' && entry.runId === runId
+    )
+    const accounted = new Set(
+      already.map((entry) => (entry.kind === 'file-change' ? entry.path : ''))
+    )
+    let ordinal = already.length
+    return files.flatMap((file) => {
+      const described = describeChange(file.path, parseGitPatch(file.diff), checkout)
+      if (accounted.has(described.path)) return []
+      accounted.add(described.path)
+      ordinal += 1
+      return [
+        conversationEntrySchema.parse({
+          kind: 'file-change',
+          id: `file-change:${runId}:${ordinal}`,
+          at: at.toISOString(),
+          runId,
+          source: 'checkout',
+          changeKind: file.changeKind,
+          ...described,
+          shortened: described.shortened || file.diff === ''
+        })
+      ]
+    })
+  }
+
   const recordCheckoutChanges = (
     input: RecordCheckoutChangesInput
   ): Effect.Effect<void, CoreError> =>
@@ -1177,35 +1232,16 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const checkout = yield* options.checkoutFor(input.sessionId)
       yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const already = (yield* readEntries(sessionDir)).filter(
-            (entry) => entry.kind === 'file-change' && entry.runId === input.runId
-          )
-          const accounted = new Set(
-            already.map((entry) => (entry.kind === 'file-change' ? entry.path : ''))
-          )
-          let ordinal = already.length
+          const existing = yield* readEntries(sessionDir)
           const now = yield* options.clock
-          for (const file of input.files) {
-            const described = describeChange(file.path, parseGitPatch(file.diff), checkout)
-            if (accounted.has(described.path)) continue
-            ordinal += 1
-            yield* append(
-              sessionDir,
-              conversationEntrySchema.parse({
-                kind: 'file-change',
-                id: `file-change:${input.runId}:${ordinal}`,
-                at: now.toISOString(),
-                runId: input.runId,
-                source: 'checkout',
-                changeKind: file.changeKind,
-                ...described,
-                // A change git listed but whose patch could not be read is not
-                // a change with no text in it: the lines exist, and nothing
-                // here has them.
-                shortened: described.shortened || file.diff === ''
-              })
-            )
-          }
+          const additions = projectCheckoutChanges(
+            input.files,
+            existing,
+            input.runId,
+            checkout,
+            now
+          )
+          if (additions.length) yield* appendMany(sessionDir, additions)
         })
       )
     })
@@ -1225,6 +1261,35 @@ export function createConversationEffects(options: ConversationOptions): Convers
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
           const now = yield* options.clock
+          const before = yield* readEntries(sessionDir)
+          const existingEnd = before.find((entry) => entry.id === `boundary:${input.runId}:ended`)
+          if (existingEnd) {
+            if (
+              input.transitionFingerprint !== undefined &&
+              (existingEnd.kind !== 'boundary' ||
+                existingEnd.transitionFingerprint !== input.transitionFingerprint)
+            ) {
+              return yield* Effect.fail(
+                new CoreError(
+                  'INVALID_INPUT',
+                  'Run completion identity was reused with different data'
+                )
+              )
+            }
+            if (input.checkoutChanges?.length) {
+              const checkout = yield* options.checkoutFor(input.sessionId)
+              const missing = projectCheckoutChanges(
+                input.checkoutChanges,
+                before,
+                input.runId,
+                checkout,
+                now
+              )
+              if (missing.length) yield* appendMany(sessionDir, missing)
+            }
+            yield* forgetRun(input.runId)
+            return yield* snapshot(input.sessionId, sessionDir)
+          }
           // Every message this Run left open is settled the same way: complete
           // if the Run completed, otherwise labelled partial.
           for (const state of open) {
@@ -1258,24 +1323,56 @@ export function createConversationEffects(options: ConversationOptions): Convers
             producedAssistantText ||
             entries.some((entry) => entry.kind === 'usage' && entry.runId === input.runId)
           const unmodelled = (yield* Ref.get(drift)).get(input.runId) ?? 0
-          yield* append(
-            sessionDir,
-            conversationEntrySchema.parse({
-              kind: 'boundary',
-              id: `boundary:${input.runId}:ended`,
-              at: now.toISOString(),
-              runId: input.runId,
-              boundary: BOUNDARY_FOR_OUTCOME[input.outcome],
-              summary: redactCredentials(input.summary).slice(0, 500),
-              submissionId,
-              recovery: describeRecovery(input, {
-                contacted,
-                producedAssistantText,
-                unmodelled,
-                submissionId
-              })
-            })
+          const terminal = conversationEntrySchema.parse({
+            kind: 'boundary',
+            id: `boundary:${input.runId}:ended`,
+            at: now.toISOString(),
+            runId: input.runId,
+            boundary: BOUNDARY_FOR_OUTCOME[input.outcome],
+            summary: redactCredentials(input.summary).slice(0, 500),
+            submissionId,
+            recovery: describeRecovery(input, {
+              contacted,
+              producedAssistantText,
+              unmodelled,
+              submissionId
+            }),
+            ...(input.transitionFingerprint
+              ? { transitionFingerprint: input.transitionFingerprint }
+              : {}),
+            ...(input.checkoutObservation
+              ? { checkoutObservation: input.checkoutObservation }
+              : {}),
+            ...(input.queueDisposition ? { queueDisposition: input.queueDisposition } : {}),
+            terminalOutcome: input.outcome
+          })
+          const checkout = yield* options.checkoutFor(input.sessionId)
+          const checkoutAdditions = projectCheckoutChanges(
+            input.checkoutChanges ?? [],
+            entries,
+            input.runId,
+            checkout,
+            now
           )
+          // The fingerprinted ending comes first. A torn append can therefore
+          // only be repaired by a retry carrying the exact same transition.
+          const additions: ConversationEntry[] = [terminal, ...checkoutAdditions]
+          if (input.queuePaused !== undefined) {
+            additions.push(
+              conversationEntrySchema.parse({
+                kind: 'queue-state',
+                id: 'queue-state',
+                at: now.toISOString(),
+                paused: input.queuePaused
+              })
+            )
+          }
+          yield* appendMany(sessionDir, additions)
+          if (input.queuePaused !== undefined) {
+            yield* Ref.update(queuePauseOverrides, (current) =>
+              new Map(current).set(input.sessionId, input.queuePaused ?? true)
+            )
+          }
           yield* forgetRun(input.runId)
           return yield* snapshot(input.sessionId, sessionDir)
         })

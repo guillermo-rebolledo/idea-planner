@@ -356,7 +356,17 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     askedPermissionMode: z.string().min(1).max(100).optional(),
     /** The submission that started this Run, so a resend stays idempotent. */
     submissionId: z.string().min(1).nullable().default(null),
-    recovery: conversationRecoverySchema.nullable().default(null)
+    recovery: conversationRecoverySchema.nullable().default(null),
+    /** Stable identity of a deep lifecycle ending; absent on earlier journals. */
+    transitionFingerprint: z.string().length(64).optional(),
+    /** Whether Main could compare the Checkout before this ending was committed. */
+    checkoutObservation: z.enum(['observed', 'unavailable']).optional(),
+    /** Core's durable decision about what completion permits Main to launch next. */
+    queueDisposition: z.enum(['advance', 'pause']).optional(),
+    /** Exact terminal Run projection, so every outcome can be repaired after a crash. */
+    terminalOutcome: z
+      .enum(['completed', 'stopped', 'failed', 'policy-violation', 'supervision-failed'])
+      .optional()
   }),
   z.object({
     kind: z.literal('usage'),
@@ -649,7 +659,14 @@ export const finalizeConversationRunInputSchema = z.object({
   runId: z.string().min(1),
   outcome: z.enum(['completed', 'stopped', 'failed', 'policy-violation', 'supervision-failed']),
   category: harnessFailureCategorySchema.nullable(),
-  summary: z.string().min(1).max(500)
+  summary: z.string().min(1).max(500),
+  /** Present for the deep lifecycle, where queue disposition is part of the ending. */
+  queuePaused: z.boolean().optional(),
+  transitionFingerprint: z.string().length(64).optional(),
+  checkoutObservation: z.enum(['observed', 'unavailable']).optional(),
+  queueDisposition: z.enum(['advance', 'pause']).optional(),
+  /** Checkout facts committed under the same transition identity as the ending. */
+  checkoutChanges: z.array(checkoutChangeSchema).max(500).optional()
 })
 export type FinalizeConversationRunInput = z.infer<typeof finalizeConversationRunInputSchema>
 

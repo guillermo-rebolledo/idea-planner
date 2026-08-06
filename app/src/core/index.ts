@@ -104,6 +104,10 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.deleteSession(command.sessionId)
     case 'run/accept':
       return core.acceptRun(command.input)
+    case 'run/lifecycle-open':
+      return core.openRunLifecycle(command.input)
+    case 'run/lifecycle-complete':
+      return core.completeRunLifecycle(command.input)
     case 'run/list':
       return core.listRuns(command.sessionId)
     case 'run/event':

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readdir, readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import { Cause, Context, Effect, Exit, Layer } from 'effect'
+import { Cause, Context, Effect, Exit, Layer, Ref } from 'effect'
 import { z } from 'zod'
 import {
   checkoutDirectory,
@@ -40,6 +40,15 @@ import type {
 } from '@shared/conversation'
 import type { ProjectSkillsTrust, ProjectView } from '@shared/project'
 import type { HarnessId } from '@shared/readiness'
+import {
+  completeRunLifecycleInputSchema,
+  lifecycleSkill,
+  openRunLifecycleInputSchema,
+  type CompleteRunLifecycleInput,
+  type CompleteRunLifecycleResult,
+  type OpenRunLifecycleInput,
+  type OpenRunLifecycleResult
+} from '@shared/run-lifecycle'
 import {
   grantStandingApprovalInputSchema,
   type GrantStandingApprovalInput,
@@ -95,6 +104,8 @@ export interface Core {
   setSessionPinned(sessionId: string, pinned: boolean): Promise<SessionSummary>
   setSessionArchived(sessionId: string, archived: boolean): Promise<SessionSummary>
   renameSession(sessionId: string, title: string): Promise<SessionSummary>
+  openRunLifecycle(input: OpenRunLifecycleInput): Promise<OpenRunLifecycleResult>
+  completeRunLifecycle(input: CompleteRunLifecycleInput): Promise<CompleteRunLifecycleResult>
   acceptRun(input: AcceptRunInput): Promise<RunSnapshot>
   listRuns(sessionId: string): Promise<RunSnapshot[]>
   recordRunEvent(input: RecordRunEventInput): Promise<RunSnapshot>
@@ -150,6 +161,10 @@ export interface CoreEffects {
   setSessionPinned(sessionId: string, pinned: boolean): Effect.Effect<SessionSummary, CoreError>
   setSessionArchived(sessionId: string, archived: boolean): Effect.Effect<SessionSummary, CoreError>
   renameSession(sessionId: string, title: string): Effect.Effect<SessionSummary, CoreError>
+  openRunLifecycle(input: OpenRunLifecycleInput): Effect.Effect<OpenRunLifecycleResult, CoreError>
+  completeRunLifecycle(
+    input: CompleteRunLifecycleInput
+  ): Effect.Effect<CompleteRunLifecycleResult, CoreError>
   acceptRun(input: AcceptRunInput): Effect.Effect<RunSnapshot, CoreError>
   listRuns(sessionId: string): Effect.Effect<RunSnapshot[], CoreError>
   recordRunEvent(input: RecordRunEventInput): Effect.Effect<RunSnapshot, CoreError>
@@ -284,13 +299,56 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
    * nothing closed them, so they read as working when nothing is working —
    * and the Session goes on saying so until somebody develops it again.
    */
+  function repairTerminalRuns(sessionId: string): Effect.Effect<void, CoreError> {
+    return Effect.gen(function* () {
+      const durableConversation = yield* conversation.get(sessionId)
+      const terminal = new Map(
+        durableConversation.entries.flatMap((entry) =>
+          entry.kind === 'boundary' &&
+          entry.id.endsWith(':ended') &&
+          entry.transitionFingerprint !== undefined
+            ? [
+                [
+                  entry.runId,
+                  {
+                    status:
+                      entry.terminalOutcome ??
+                      (entry.boundary === 'run-completed'
+                        ? 'completed'
+                        : entry.boundary === 'run-stopped'
+                          ? 'stopped'
+                          : 'failed'),
+                    summary: entry.summary
+                  }
+                ] as const
+              ]
+            : []
+        )
+      )
+      const runs = yield* listRuns(sessionId)
+      yield* Effect.forEach(
+        runs.filter((run) => !TERMINAL_RUN_STATUSES.has(run.status) && terminal.has(run.id)),
+        (run) =>
+          recordRunEvent({
+            sessionId,
+            runId: run.id,
+            status: terminal.get(run.id)?.status ?? 'failed',
+            kind: 'lifecycle',
+            summary: terminal.get(run.id)?.summary ?? 'Harness ended the turn'
+          }),
+        { discard: true }
+      )
+    })
+  }
+
   const listUnfinishedRuns = (): Effect.Effect<UnfinishedRun[], CoreError> =>
     Effect.gen(function* () {
       const all = yield* sessions.list()
       const open = yield* Effect.forEach(
         all,
         (session) =>
-          conversation.state(session.id).pipe(
+          repairTerminalRuns(session.id).pipe(
+            Effect.flatMap(() => conversation.state(session.id)),
             Effect.map((state): UnfinishedRun | null =>
               state.activeRunId === null
                 ? null
@@ -368,7 +426,13 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       }
     })
 
-  const acceptRun = (rawInput: AcceptRunInput): Effect.Effect<RunSnapshot, CoreError> =>
+  const acceptRunInternal = (
+    rawInput: AcceptRunInput,
+    options: {
+      runId?: string
+      beforeDerivedWrite?: (run: RunSnapshot) => Effect.Effect<void, CoreError>
+    } = {}
+  ): Effect.Effect<RunSnapshot, CoreError> =>
     provide(
       writeLock.withPermits(1)(
         Effect.gen(function* () {
@@ -419,17 +483,21 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
             const current = yield* Effect.promise(() =>
               readFile(join(runsDir, `${acceptedRun.id}.json`), 'utf8').catch(() => null)
             )
-            if (current === null) return acceptedRun
-            return yield* Effect.try({
-              try: () => runSnapshotSchema.parse(JSON.parse(current)),
-              catch: () => new CoreError('IO_ERROR', 'Durable Run state is unreadable')
-            })
+            const durableRun =
+              current === null
+                ? acceptedRun
+                : yield* Effect.try({
+                    try: () => runSnapshotSchema.parse(JSON.parse(current)),
+                    catch: () => new CoreError('IO_ERROR', 'Durable Run state is unreadable')
+                  })
+            if (options.beforeDerivedWrite) yield* options.beforeDerivedWrite(durableRun)
+            return durableRun
           }
           const clock = yield* SessionClock
           const ids = yield* IdGenerator
           const timestamp = clock.now().toISOString()
           const run: RunSnapshot = {
-            id: ids.nextId(),
+            id: options.runId ?? ids.nextId(),
             submissionId: input.submissionId,
             sessionId: input.sessionId,
             prompt: input.prompt,
@@ -446,6 +514,10 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
               }
             ]
           }
+          // A deep lifecycle writes its canonical Conversation fact here,
+          // before either derived Run file. Replaying the stable Run id repairs
+          // a crash after that journal append without adding another boundary.
+          if (options.beforeDerivedWrite) yield* options.beforeDerivedWrite(run)
           // The Run record lands before the submission that names it, so a
           // torn write can leave a Run nothing points at, never a submission
           // pointing at a Run that was never written.
@@ -455,6 +527,9 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
         })
       )
     )
+
+  const acceptRun = (rawInput: AcceptRunInput): Effect.Effect<RunSnapshot, CoreError> =>
+    acceptRunInternal(rawInput)
 
   const listRuns = (sessionId: string): Effect.Effect<RunSnapshot[], CoreError> =>
     sessions.directoryFor(sessionId).pipe(
@@ -476,6 +551,128 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
         })
       )
     )
+
+  const openRunLifecycle = (
+    rawInput: OpenRunLifecycleInput
+  ): Effect.Effect<OpenRunLifecycleResult, CoreError> =>
+    Effect.gen(function* () {
+      const parsed = openRunLifecycleInputSchema.safeParse(rawInput)
+      if (!parsed.success) {
+        return yield* Effect.fail(
+          new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid Run opening')
+        )
+      }
+      const input = parsed.data
+      const conversationSnapshot = yield* Ref.make<ConversationSnapshot | null>(null)
+      const stableRunId = `run-${createHash('sha256')
+        .update(`${input.sessionId}\0${input.submissionId}`)
+        .digest('hex')}`
+      const run = yield* acceptRunInternal(input, {
+        runId: stableRunId,
+        beforeDerivedWrite: (openingRun) =>
+          conversation
+            .begin({
+              sessionId: input.sessionId,
+              runId: openingRun.id,
+              submissionId: input.conversationSubmissionId ?? input.submissionId,
+              harness: input.configuration.harness,
+              skill: lifecycleSkill(input),
+              model: input.configuration.model,
+              restorationNote: input.restorationNote,
+              askedPermissionMode: input.askedPermissionMode
+            })
+            .pipe(Effect.flatMap((snapshot) => Ref.set(conversationSnapshot, snapshot)))
+      })
+      const durableConversation = yield* Ref.get(conversationSnapshot)
+      if (!durableConversation) {
+        return yield* Effect.fail(new CoreError('IO_ERROR', 'Run opening was not made durable'))
+      }
+      return { run, conversation: durableConversation }
+    })
+
+  const completeRunLifecycle = (
+    rawInput: CompleteRunLifecycleInput
+  ): Effect.Effect<CompleteRunLifecycleResult, CoreError> =>
+    Effect.gen(function* () {
+      const parsed = completeRunLifecycleInputSchema.safeParse(rawInput)
+      if (!parsed.success) {
+        return yield* Effect.fail(
+          new CoreError(
+            'INVALID_INPUT',
+            parsed.error.issues[0]?.message ?? 'Invalid Run completion'
+          )
+        )
+      }
+      const input = parsed.data
+      const transitionFingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex')
+      const current = (yield* listRuns(input.sessionId)).find((run) => run.id === input.runId)
+      if (!current)
+        return yield* Effect.fail(new CoreError('RUN_NOT_FOUND', 'The Run was not found'))
+      if (TERMINAL_RUN_STATUSES.has(current.status)) {
+        if (current.status !== input.status) {
+          return yield* Effect.fail(
+            new CoreError('INVALID_INPUT', 'Run completion identity was reused with a new outcome')
+          )
+        }
+        const durableConversation = yield* conversation.get(input.sessionId)
+        const ending = durableConversation.entries.find(
+          (entry) => entry.kind === 'boundary' && entry.id === `boundary:${input.runId}:ended`
+        )
+        if (
+          ending?.kind !== 'boundary' ||
+          ending.transitionFingerprint !== transitionFingerprint ||
+          ending.queueDisposition === undefined
+        ) {
+          return yield* Effect.fail(
+            new CoreError('INVALID_INPUT', 'Run completion identity was reused with different data')
+          )
+        }
+        return {
+          run: current,
+          conversation: durableConversation,
+          queueDisposition: ending.queueDisposition
+        }
+      }
+      const beforeTerminal = yield* conversation.get(input.sessionId)
+      const queueDisposition =
+        input.status === 'completed' && !beforeTerminal.queue.paused ? 'advance' : 'pause'
+      const conversationSnapshot = yield* conversation.finalize({
+        sessionId: input.sessionId,
+        runId: input.runId,
+        outcome: input.status,
+        category: input.status === 'failed' ? input.category : null,
+        summary: input.summary,
+        transitionFingerprint,
+        checkoutObservation: input.checkoutObservation.status,
+        queueDisposition,
+        checkoutChanges:
+          input.checkoutObservation.status === 'observed'
+            ? input.checkoutObservation.changes
+            : undefined,
+        ...(input.status === 'completed' ? {} : { queuePaused: true })
+      })
+      const durableEnding = conversationSnapshot.entries.find(
+        (entry) => entry.kind === 'boundary' && entry.id === `boundary:${input.runId}:ended`
+      )
+      if (durableEnding?.kind !== 'boundary' || durableEnding.queueDisposition === undefined) {
+        return yield* Effect.fail(new CoreError('IO_ERROR', 'Run completion was not made durable'))
+      }
+      const run =
+        current.status === input.status
+          ? current
+          : yield* recordRunEvent({
+              sessionId: input.sessionId,
+              runId: input.runId,
+              status: input.status,
+              kind: input.kind,
+              summary: input.summary
+            })
+      return {
+        run,
+        conversation: conversationSnapshot,
+        queueDisposition: durableEnding.queueDisposition
+      }
+    })
 
   /**
    * A permission granted for one Project, for good. The Project must be one
@@ -587,6 +784,8 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
         ? Effect.fail(new CoreError('INVALID_INPUT', 'A Session title cannot be empty'))
         : sessions.update(sessionId, { title: trimmed })
     },
+    openRunLifecycle,
+    completeRunLifecycle,
     acceptRun,
     listRuns,
     recordRunEvent,
@@ -667,6 +866,14 @@ function groupByProject(
   }
 }
 
+const TERMINAL_RUN_STATUSES = new Set<RunStatus>([
+  'completed',
+  'failed',
+  'stopped',
+  'policy-violation',
+  'supervision-failed'
+])
+
 const RUN_STATUS_TRANSITIONS: Record<RunStatus, readonly RunStatus[]> = {
   accepted: ['starting', 'failed', 'supervision-failed'],
   starting: ['running', 'failed', 'stopped', 'policy-violation', 'supervision-failed'],
@@ -708,6 +915,8 @@ export function createCore(deps: CoreDeps = {}): Core {
     setSessionPinned: (sessionId, pinned) => run(core.setSessionPinned(sessionId, pinned)),
     setSessionArchived: (sessionId, archived) => run(core.setSessionArchived(sessionId, archived)),
     renameSession: (sessionId, title) => run(core.renameSession(sessionId, title)),
+    openRunLifecycle: (input) => run(core.openRunLifecycle(input)),
+    completeRunLifecycle: (input) => run(core.completeRunLifecycle(input)),
     acceptRun: (input) => run(core.acceptRun(input)),
     listRuns: (sessionId) => run(core.listRuns(sessionId)),
     recordRunEvent: (input) => run(core.recordRunEvent(input)),

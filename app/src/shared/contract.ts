@@ -39,6 +39,7 @@ import {
   type CheckoutFacts,
   worktreeBootstrapResultSchema
 } from './checkout'
+import { completeRunLifecycleInputSchema, openRunLifecycleInputSchema } from './run-lifecycle'
 import type { EditorCatalog, OpenInEditorInput } from './editor'
 import {
   acceptRunInputSchema,
@@ -60,6 +61,7 @@ import {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 14: deep Run lifecycle opening and terminal observations cross the boundary.
  * 13: isolated Checkout bootstrap results and retry/continue cross the boundary.
  * 12: the window can answer Main's active-Run quit warning.
  * 11: Checkout facts include the currently observed Checkout State.
@@ -69,7 +71,7 @@ import {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 13
+export const CONTRACT_VERSION = 14
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -344,6 +346,8 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('session/rename'), input: renameSessionInputSchema }),
   z.object({ type: z.literal('session/delete'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('run/accept'), input: acceptRunInputSchema }),
+  z.object({ type: z.literal('run/lifecycle-open'), input: openRunLifecycleInputSchema }),
+  z.object({ type: z.literal('run/lifecycle-complete'), input: completeRunLifecycleInputSchema }),
   z.object({ type: z.literal('run/list'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('run/event'), input: recordRunEventInputSchema }),
   z.object({ type: z.literal('conversation/get'), sessionId: z.string().min(1) }),

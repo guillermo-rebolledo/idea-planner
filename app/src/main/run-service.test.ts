@@ -197,8 +197,19 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       return Promise.resolve({ events: state.events, outgoing: [] })
     }
     if (command.type === 'conversation/unfinished') return Promise.resolve(state.unfinished)
+    if (command.type === 'run/lifecycle-open') {
+      return Promise.resolve({ run, conversation: state.conversation })
+    }
+    if (command.type === 'run/lifecycle-complete') {
+      const input = command as { input?: { status?: RunSnapshot['status'] } }
+      const completed = { ...run, status: input.input?.status ?? 'failed' }
+      return Promise.resolve({
+        run: completed,
+        conversation: state.conversation,
+        queueDisposition: completed.status === 'completed' ? 'advance' : 'pause'
+      })
+    }
     if (command.type.startsWith('conversation/')) return Promise.resolve(state.conversation)
-    if (command.type === 'run/accept') return Promise.resolve(run)
     return Promise.resolve({ ...run, status: 'running' })
   })
   return state
@@ -441,7 +452,7 @@ describe('Run service', () => {
             activeRunId: null
           })
         }
-        if (command.type === 'run/accept') {
+        if (command.type === 'run/lifecycle-open') {
           const input = command.input as Omit<
             RunSnapshot,
             'id' | 'status' | 'acceptedAt' | 'updatedAt' | 'activity'
@@ -455,10 +466,29 @@ describe('Run service', () => {
             activity: []
           }
         }
-        return Promise.resolve({
+        const next = {
           ...accepted,
-          status: command.type === 'run/accept' ? 'accepted' : 'starting'
-        })
+          status:
+            command.type === 'run/lifecycle-open' ? ('accepted' as const) : ('starting' as const)
+        }
+        return Promise.resolve(
+          command.type === 'run/lifecycle-open'
+            ? {
+                run: next,
+                conversation: {
+                  sessionId: 'session',
+                  entries: [],
+                  usage: { run: null, session: emptyUsage() },
+                  recovery: null,
+                  harnessThreads: {},
+                  changedFiles: [],
+                  activeRunId: next.id,
+                  pendingApprovalId: null,
+                  queue: { paused: true, items: [] }
+                }
+              }
+            : next
+        )
       })
     }
     const broker = {
@@ -505,8 +535,10 @@ describe('Run service', () => {
       skill: 'grilling',
       permissionMode: 'auto'
     })
-    expect(order.indexOf('run/accept')).toBeLessThan(order.indexOf('harness/start'))
-    const accept = core.send.mock.calls.find(([command]) => command.type === 'run/accept')?.[0]
+    expect(order.indexOf('run/lifecycle-open')).toBeLessThan(order.indexOf('harness/start'))
+    const accept = core.send.mock.calls.find(
+      ([command]) => command.type === 'run/lifecycle-open'
+    )?.[0]
     expect(accept).toBeDefined()
     const acceptance = accept as { input: { configuration: unknown } }
     const configuration = runConfigurationSchema.parse(acceptance.input.configuration)
@@ -523,7 +555,7 @@ describe('Run service', () => {
     }
   })
 
-  it('accepts the message durably, then records the Run boundary, then contacts the Harness', async () => {
+  it('opens the durable lifecycle once before contacting the Harness', async () => {
     const root = await readyHarnessRoot('run-develop-')
     const core = fakeCore(join(root, 'a-project'))
     const service = new RunService({
@@ -547,12 +579,7 @@ describe('Run service', () => {
       effort: 'medium',
       permissionMode: 'auto'
     })
-    expect(core.commands.indexOf('conversation/submit')).toBeLessThan(
-      core.commands.indexOf('run/accept')
-    )
-    expect(core.commands.indexOf('run/accept')).toBeLessThan(
-      core.commands.indexOf('conversation/begin')
-    )
+    expect(core.commands.filter((command) => command === 'run/lifecycle-open')).toHaveLength(1)
   })
 
   it('does not contact a Harness when a Project Skill loses trust before launch', async () => {
@@ -828,7 +855,13 @@ describe('Run service', () => {
     })
     // And it is said only once Core has written it, so a listener that reacts
     // by re-reading finds the ending already durable.
-    expect(core.commands).toContain('conversation/finalize')
+    expect(core.commands).toContain('run/lifecycle-complete')
+    const terminal = (
+      core.send.mock.calls as [
+        { type: string; input?: { checkoutObservation?: { status?: string } } }
+      ][]
+    ).find(([command]) => command.type === 'run/lifecycle-complete')?.[0]
+    expect(terminal?.input?.checkoutObservation).toEqual({ status: 'unavailable' })
   })
 
   it('keeps a correctness-critical protocol failure failed even when Claude exits zero', async () => {
@@ -875,12 +908,12 @@ describe('Run service', () => {
     broker.launch?.onExit?.(0, null)
     await vi.waitFor(() => {
       const terminal = (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
-        .filter(([command]) => command.type === 'run/event')
+        .filter(([command]) => command.type === 'run/lifecycle-complete')
         .at(-1)?.[0].input
       expect(terminal?.status).toBe('failed')
     })
     expect(streamed.filter(({ event }) => event.type === 'failed')).toHaveLength(1)
-    expect(core.commands).toContain('conversation/finalize')
+    expect(core.commands).toContain('run/lifecycle-complete')
   })
 
   it('keeps the message and offers recovery when the Harness is never contacted', async () => {
@@ -917,7 +950,7 @@ describe('Run service', () => {
       effort: 'medium',
       permissionMode: 'auto'
     })
-    expect(core.commands).toContain('conversation/finalize')
+    expect(core.commands).toContain('run/lifecycle-complete')
     expect(snapshot.recovery).toMatchObject({
       category: 'uncertain-submission',
       resumableSubmissionId: 'submission-1'
@@ -1003,7 +1036,7 @@ describe('Run service', () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
     await broker.launch?.onBeforeCleanup?.()
     const finalize = (core.send.mock.calls as [{ type: string; input?: unknown }][]).find(
-      ([command]) => command.type === 'conversation/finalize'
+      ([command]) => command.type === 'run/lifecycle-complete'
     )?.[0].input as { summary: string } | undefined
     expect(finalize?.summary).toContain('Operation not permitted')
   })
@@ -1063,13 +1096,16 @@ describe('Run service', () => {
     const core = fakeCore(join(root, 'a-project'))
     const original = core.send.getMockImplementation()
     if (!original) throw new Error('Fake Core implementation missing')
-    const accepted = (await original({ type: 'run/accept' })) as RunSnapshot
+    const accepted = ((await original({ type: 'run/lifecycle-open' })) as { run: RunSnapshot }).run
     core.commands.length = 0
     let acceptCalls = 0
     core.send.mockImplementation(async (command: { type: string }): Promise<unknown> => {
-      if (command.type === 'run/accept') {
+      if (command.type === 'run/lifecycle-open') {
         acceptCalls += 1
-        return { ...accepted, status: 'failed' }
+        return {
+          run: { ...accepted, status: 'failed' },
+          conversation: core.conversation
+        }
       }
       return await Promise.resolve(original(command) as unknown)
     })
@@ -1088,7 +1124,7 @@ describe('Run service', () => {
     const core = fakeCore(join(root, 'a-project'))
     const original = core.send.getMockImplementation()
     if (!original) throw new Error('Fake Core implementation missing')
-    const base = (await original({ type: 'run/accept' })) as RunSnapshot
+    const base = ((await original({ type: 'run/lifecycle-open' })) as { run: RunSnapshot }).run
     core.commands.length = 0
     const item: QueuedSubmission = {
       kind: 'queued-submission',
@@ -1126,7 +1162,7 @@ describe('Run service', () => {
 
     await service.resumeConversationQueue('session')
 
-    expect(core.commands.filter((command) => command === 'run/accept')).toHaveLength(0)
+    expect(core.commands.filter((command) => command === 'run/lifecycle-open')).toHaveLength(0)
     expect(core.commands).toContain('conversation/queue-sent')
     expect(broker.start).not.toHaveBeenCalled()
   })
@@ -1137,7 +1173,7 @@ describe('Run service', () => {
     const core = fakeCore(join(root, 'a-project'))
     const original = core.send.getMockImplementation()
     if (!original) throw new Error('Fake Core implementation missing')
-    const base = (await original({ type: 'run/accept' })) as RunSnapshot
+    const base = ((await original({ type: 'run/lifecycle-open' })) as { run: RunSnapshot }).run
     const item: QueuedSubmission = {
       kind: 'queued-submission',
       id: 'queued:submission-1',
@@ -1182,17 +1218,20 @@ describe('Run service', () => {
         claims += 1
         return claims === 1 ? item : null
       }
-      if (command.type === 'run/accept') {
+      if (command.type === 'run/lifecycle-open') {
         const input = command.input as { submissionId: string }
         acceptedSubmissions.push(input.submissionId)
         if (input.submissionId === item.submissionId) {
           throw new Error('Submission identity was already used')
         }
         return {
-          ...trustFailure,
-          submissionId: input.submissionId,
-          status: 'accepted',
-          activity: []
+          run: {
+            ...trustFailure,
+            submissionId: input.submissionId,
+            status: 'accepted',
+            activity: []
+          },
+          conversation: core.conversation
         }
       }
       return await Promise.resolve(original(command) as unknown)
@@ -1409,7 +1448,7 @@ describe('Codex on the app-server protocol', () => {
         return Promise.resolve({ events: [], outgoing: ['{"id":2,"method":"thread/start"}'] })
       }
       if (command.type.startsWith('conversation/')) return Promise.resolve(core.conversation)
-      return Promise.resolve({
+      const snapshot: RunSnapshot = {
         id: 'run-codex',
         submissionId: 'submission-1',
         sessionId: 'session',
@@ -1426,11 +1465,16 @@ describe('Codex on the app-server protocol', () => {
           checkout: join(root, 'a-project'),
           permissionMode: 'auto'
         }),
-        status: command.type === 'run/accept' ? 'accepted' : 'running',
+        status: command.type === 'run/lifecycle-open' ? 'accepted' : 'running',
         acceptedAt: '2026-07-31T12:00:00.000Z',
         updatedAt: '2026-07-31T12:00:00.000Z',
         activity: []
-      })
+      }
+      return Promise.resolve(
+        command.type === 'run/lifecycle-open'
+          ? { run: snapshot, conversation: core.conversation }
+          : snapshot
+      )
     })
     const service = new RunService(codexDeps(root, broker, core))
 
@@ -1460,7 +1504,7 @@ describe('Codex on the app-server protocol', () => {
 
     await vi.waitFor(() => {
       const terminal = (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
-        .filter(([command]) => command.type === 'run/event')
+        .filter(([command]) => command.type === 'run/lifecycle-complete')
         .at(-1)?.[0].input
       expect(terminal?.status).toBe('completed')
     })
@@ -1483,11 +1527,12 @@ describe('Codex on the app-server protocol', () => {
     }) => Promise<unknown>
     core.send.mockImplementation(async (command: { type: string; input?: unknown }) => {
       const answer = await baseSend(command as { type: string })
-      if (command.type !== 'run/accept') return answer
+      if (command.type !== 'run/lifecycle-open') return answer
       const submissionId = (command.input as { submissionId: string }).submissionId
+      const opened = answer as { run: RunSnapshot; conversation: ConversationSnapshot }
       return submissionId === 'submission-1'
-        ? { ...(answer as object), status: 'failed' }
-        : { ...(answer as object), id: 'run-retry', submissionId }
+        ? { ...opened, run: { ...opened.run, status: 'failed' } }
+        : { ...opened, run: { ...opened.run, id: 'run-retry', submissionId } }
     })
     const service = new RunService(codexDeps(root, broker, core))
 
@@ -1498,15 +1543,15 @@ describe('Codex on the app-server protocol', () => {
     const accepts = (
       core.send.mock.calls as [{ type: string; input?: { submissionId?: string } }][]
     )
-      .filter(([command]) => command.type === 'run/accept')
+      .filter(([command]) => command.type === 'run/lifecycle-open')
       .map(([command]) => command.input?.submissionId)
     expect(accepts).toEqual(['submission-1', 'submission-1:attempt-2'])
     // The Conversation's submission identity stays the original, so the
     // message is never duplicated and recovery keeps offering the same id.
-    const begin = (core.send.mock.calls as [{ type: string; submissionId?: string }][]).find(
-      ([command]) => command.type === 'conversation/begin'
-    )?.[0]
-    expect(begin?.submissionId).toBe('submission-1')
+    const begin = (
+      core.send.mock.calls as [{ type: string; input?: { conversationSubmissionId?: string } }][]
+    ).find(([command]) => command.type === 'run/lifecycle-open')?.[0]
+    expect(begin?.input?.conversationSubmissionId).toBe('submission-1')
   })
 
   it('ends the Run when Codex reports failure, instead of working forever', async () => {
@@ -1535,14 +1580,14 @@ describe('Codex on the app-server protocol', () => {
     // guidance and the inbox stops saying the agent is working.
     await vi.waitFor(() => {
       const terminal = (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
-        .filter(([command]) => command.type === 'run/event')
+        .filter(([command]) => command.type === 'run/lifecycle-complete')
         .at(-1)?.[0].input
       expect(terminal?.status).toBe('failed')
     })
     const finalize = (
-      core.send.mock.calls as [{ type: string; input?: { outcome?: string; summary?: string } }][]
-    ).find(([command]) => command.type === 'conversation/finalize')?.[0].input
-    expect(finalize?.outcome).toBe('failed')
+      core.send.mock.calls as [{ type: string; input?: { status?: string; summary?: string } }][]
+    ).find(([command]) => command.type === 'run/lifecycle-complete')?.[0].input
+    expect(finalize?.status).toBe('failed')
     expect(finalize?.summary).toContain('no rollout found')
     // And the process is stopped rather than left waiting for a turn nobody
     // will ask for.
@@ -1580,7 +1625,7 @@ describe('Codex on the app-server protocol', () => {
         return Promise.resolve({ events: [], outgoing: [] })
       }
       if (command.type.startsWith('conversation/')) return Promise.resolve(core.conversation)
-      return Promise.resolve({
+      const snapshot: RunSnapshot = {
         id: 'run-codex-stop',
         submissionId: 'submission-1',
         sessionId: 'session',
@@ -1597,11 +1642,16 @@ describe('Codex on the app-server protocol', () => {
           checkout: join(root, 'a-project'),
           permissionMode: 'auto'
         }),
-        status: command.type === 'run/accept' ? 'accepted' : 'running',
+        status: command.type === 'run/lifecycle-open' ? 'accepted' : 'running',
         acceptedAt: '2026-07-31T12:00:00.000Z',
         updatedAt: '2026-07-31T12:00:00.000Z',
         activity: []
-      })
+      }
+      return Promise.resolve(
+        command.type === 'run/lifecycle-open'
+          ? { run: snapshot, conversation: core.conversation }
+          : snapshot
+      )
     })
     // The Harness ends its own turn, so the Run is already gone when asked.
     broker.activeRunIds.mockReturnValue([])
@@ -1750,7 +1800,7 @@ describe('Ask mode', () => {
     await broker.launch?.onBeforeCleanup?.()
 
     expect(JSON.parse(await answer)).toMatchObject({ behavior: 'deny' })
-    expect(core.commands).toContain('conversation/finalize')
+    expect(core.commands).toContain('run/lifecycle-complete')
     await expect(
       service.resolveApproval({
         sessionId: 'session',
@@ -1993,7 +2043,11 @@ describe('Ask mode', () => {
 /** The latest Run status this service asked Core to record. */
 function latestStatus(core: FakeCore): string | undefined {
   return (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
-    .filter(([command]) => command.type === 'run/event' && command.input?.status !== undefined)
+    .filter(
+      ([command]) =>
+        (command.type === 'run/event' || command.type === 'run/lifecycle-complete') &&
+        command.input?.status !== undefined
+    )
     .at(-1)?.[0].input?.status
 }
 
@@ -2120,9 +2174,9 @@ describe('a Run nobody closed', () => {
     await service.recoverUnfinishedWork()
 
     const finalized = deps.core.send.mock.calls
-      .map(([command]) => command as { type: string; input?: { runId?: string; outcome?: string } })
-      .find((command) => command.type === 'conversation/finalize')
-    expect(finalized?.input).toMatchObject({ runId: 'run-open', outcome: 'failed' })
+      .map(([command]) => command as { type: string; input?: { runId?: string; status?: string } })
+      .find((command) => command.type === 'run/lifecycle-complete')
+    expect(finalized?.input).toMatchObject({ runId: 'run-open', status: 'failed' })
   })
 
   it('leaves a Run this process just accepted alone, before the broker knows it', async () => {
@@ -2142,7 +2196,7 @@ describe('a Run nobody closed', () => {
 
     await service.start(startInput())
 
-    expect(deps.core.commands).not.toContain('conversation/finalize')
+    expect(deps.core.commands).not.toContain('run/lifecycle-complete')
   })
 
   it('leaves a Run the broker is still running alone', async () => {
@@ -2155,6 +2209,6 @@ describe('a Run nobody closed', () => {
     const service = new RunService(deps)
     await service.recoverUnfinishedWork()
 
-    expect(deps.core.commands).not.toContain('conversation/finalize')
+    expect(deps.core.commands).not.toContain('run/lifecycle-complete')
   })
 })
