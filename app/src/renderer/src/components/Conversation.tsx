@@ -58,6 +58,13 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport
 } from '@renderer/components/ui/message-scroller'
+import { displayCommand } from '@shared/command'
+import { TurnRail, type TurnStep, type TurnSummary } from '@renderer/components/TurnRail'
+import {
+  ToolResult,
+  ToolResultOutput,
+  type ToolResultStatus
+} from '@renderer/components/ui/tool-result'
 import {
   ChosenSkillNote,
   offeredSkill,
@@ -503,6 +510,7 @@ export function Conversation({
 
   const durableEntries = snapshot?.entries ?? NO_CONVERSATION_ENTRIES
   const items = useMemo(() => groupEntries(durableEntries), [durableEntries])
+  const turns = useMemo(() => summarizeTurns(items), [items])
   const recoverable = currentRecovery(durableEntries, snapshot?.recovery ?? null)
   const displayedRecovery = recoverable?.key === dismissedRecoveryKey ? null : (recoverable ?? null)
 
@@ -568,7 +576,12 @@ export function Conversation({
         defaultScrollPosition="last-anchor"
         scrollPreviousItemPeek={56}
       >
-        <MessageScroller className="min-h-0 flex-1">
+        <MessageScroller className="@container/transcript min-h-0 flex-1">
+          {/* The turns of this Conversation, in the gutter the centered
+              transcript leaves free. It is only drawn where that gutter
+              actually exists — narrower than this the rail would be standing
+              on the prose it is a map of. */}
+          <TurnRail turns={turns} />
           {activeRunId && (
             <div className="absolute end-4 top-3 z-10">
               <Button size="sm" variant="secondary" onClick={stop}>
@@ -1401,7 +1414,7 @@ function RunWorkingIndicator({
     (live?.changes ?? []).at(-1) ??
     steps.flatMap((step) => (step.kind === 'file-change' ? [step] : [])).at(-1)
   const current = runningCommand
-    ? runningCommand.command
+    ? displayCommand(runningCommand.command)
     : lastWrite
       ? `Wrote ${lastWrite.path}`
       : 'Working…'
@@ -1577,6 +1590,8 @@ function RunOutcome({
   const [expanded, setExpanded] = useState(false)
 
   const changes = steps.flatMap((step) => (step.kind === 'file-change' ? [step] : []))
+  /** What this list still holds, now that commands have their own rows. */
+  const fileSteps = steps.filter((step) => step.kind !== 'command')
   const reads = steps.filter((step) => step.kind === 'read').length
   const edited = new Set(changes.map((step) => step.path))
   const commandCount = steps.filter((step) => step.kind === 'command').length
@@ -1658,16 +1673,22 @@ function RunOutcome({
       <div className="mt-2 pt-1" aria-label="Run activity">
         {steps.length > 0 ? (
           <>
+            {/* Commands are not listed here: they have their own openable rows
+                above, where what they printed is also readable. This stays the
+                file record — what was read, and what was written — so a Run
+                that only ran commands has a summary and nothing to open. */}
             <button
               type="button"
-              aria-expanded={expanded}
+              aria-expanded={fileSteps.length > 0 ? expanded : undefined}
+              disabled={fileSteps.length === 0}
               onClick={() => setExpanded(!expanded)}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40 disabled:hover:bg-transparent"
             >
               <ChevronRight
                 aria-hidden="true"
                 className={cn(
                   'size-3 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none',
+                  fileSteps.length === 0 && 'invisible',
                   expanded && 'rotate-90'
                 )}
               />
@@ -1678,9 +1699,9 @@ function RunOutcome({
                 </span>
               )}
             </button>
-            {expanded && (
-              <ol className="border-t border-border py-1" aria-label="Run steps">
-                {steps.map((step) => (
+            {expanded && fileSteps.length > 0 && (
+              <ol className="border-t border-border py-1" aria-label="Files this Run touched">
+                {fileSteps.map((step) => (
                   <StepRow key={step.id} step={step} onOpenFile={onOpenFile} />
                 ))}
               </ol>
@@ -1694,6 +1715,62 @@ function RunOutcome({
       </div>
     </section>
   )
+}
+
+/**
+ * The Run's tool calls: every command it ran, one openable line each.
+ *
+ * Commands are the only step that answers with something — a read and an edit
+ * are already whole in their own line, and the Files panel is the one diff
+ * surface — so they are the only step this surface takes. What a command
+ * printed was durable all along and had nowhere to be read; here it is, one
+ * click from the line that ran it, and closed until then.
+ */
+function ToolCalls({ steps }: { steps: StepEntry[] }): React.JSX.Element | null {
+  const commands = steps.flatMap((step) => (step.kind === 'command' ? [step] : []))
+  if (commands.length === 0) return null
+
+  return (
+    <section aria-label="Tool calls" className="flex flex-col">
+      {commands.map((step) => (
+        <ToolResult
+          key={step.id}
+          title={displayCommand(step.command)}
+          status={commandStatus(step)}
+          meta={commandMeta(step)}
+          copyText={step.output}
+        >
+          {step.output.trim() === '' ? (
+            <p className="text-2xs text-muted-foreground">It printed nothing.</p>
+          ) : (
+            <ToolResultOutput>{step.output}</ToolResultOutput>
+          )}
+        </ToolResult>
+      ))}
+    </section>
+  )
+}
+
+type CommandEntry = Extract<ConversationEntry, { kind: 'command' }>
+
+/** How a command went, in the four states the row can draw. */
+function commandStatus(step: CommandEntry): ToolResultStatus {
+  if (step.running) return 'running'
+  if (step.interrupted) return 'cancelled'
+  return step.failed ? 'error' : 'success'
+}
+
+/**
+ * What it cost, and what it answered when that is worth saying. A duration of
+ * zero is not a measurement — it is a Harness that reported nothing — so it is
+ * left off rather than printed as a time the command did not take.
+ */
+function commandMeta(step: CommandEntry): string | undefined {
+  const parts = [
+    step.exitCode !== null && step.exitCode !== 0 ? `exit ${String(step.exitCode)}` : null,
+    step.durationMs !== null && step.durationMs > 0 ? formatDuration(step.durationMs) : null
+  ].filter((part) => part !== null)
+  return parts.length > 0 ? parts.join(' · ') : undefined
 }
 
 /**
@@ -1735,7 +1812,7 @@ function StepRow({
     return (
       <li className="flex items-center gap-2 px-3 py-1 font-mono text-xs text-muted-foreground">
         {step.running ? <Spinner /> : <Terminal aria-hidden="true" className="size-3 shrink-0" />}
-        <span className="min-w-0 flex-1 truncate select-text">{step.command}</span>
+        <span className="min-w-0 flex-1 truncate select-text">{displayCommand(step.command)}</span>
         {step.interrupted ? (
           <span className="shrink-0">interrupted</span>
         ) : !step.running && step.exitCode !== null ? (
@@ -1880,12 +1957,119 @@ function groupEntries(entries: ConversationEntry[]): ConversationItem[] {
   return items
 }
 
+/**
+ * The transcript folded once more, into the turns the Turn Rail draws: a user
+ * message, and everything that answered it before the next one. A turn is the
+ * unit someone remembers a Conversation in — "when I asked it to fix the
+ * tests" — which is why the rail counts turns and not entries.
+ *
+ * Anything before the first user message belongs to no turn and is skipped:
+ * the rail is a way back to something the person said, and there is nothing
+ * there to go back to.
+ */
+function summarizeTurns(items: ConversationItem[]): TurnSummary[] {
+  const turns: TurnSummary[] = []
+  for (const item of items) {
+    if (item.type === 'user') {
+      turns.push({
+        id: item.entry.id,
+        ordinal: turns.length + 1,
+        prompt: previewText(item.entry.text),
+        reply: '',
+        steps: [],
+        stepCount: 0,
+        approvals: 0,
+        status: null
+      })
+      continue
+    }
+    const turn = turns.at(-1)
+    if (turn === undefined || item.type === 'note') continue
+    if (item.type === 'assistant') {
+      if (turn.reply === '') turn.reply = previewText(item.entry.text)
+      continue
+    }
+    if (turn.reply === '') turn.reply = previewText(item.messages.map((m) => m.text).join('\n'))
+    turn.stepCount += item.steps.length
+    turn.approvals += item.approvals.length
+    turn.steps = turn.steps.concat(item.steps.map(stepLine)).slice(0, TURN_STEP_LIMIT)
+    turn.status = worseStatus(turn.status, runStatus(item))
+  }
+  return turns
+}
+
+/** Enough steps to fill the card, and no more work spent on the ones past it. */
+const TURN_STEP_LIMIT = 4
+
+/** One step as a single line of the card. */
+function stepLine(step: StepEntry): TurnStep {
+  if (step.kind === 'read')
+    return { id: step.id, kind: 'read', text: `Read ${fileName(step.path)}` }
+  if (step.kind === 'command')
+    return { id: step.id, kind: 'command', text: displayCommand(step.command) }
+  return {
+    id: step.id,
+    kind: 'file-change',
+    text: `${CHANGE_LABEL[step.changeKind]} ${fileName(step.path)}`
+  }
+}
+
+/** How a Run ended, in the four words the rail has for it. */
+function runStatus(group: RunGroup): NonNullable<TurnSummary['status']> {
+  if (group.ended === null) return 'running'
+  if (group.ended.boundary === 'run-failed') return 'failed'
+  if (group.ended.boundary === 'run-stopped') return 'stopped'
+  return 'done'
+}
+
+/**
+ * A turn can hold more than one Run, and the tick can only say one thing. It
+ * says the thing that still wants an answer: what is happening now, then what
+ * went wrong, then what was called off, and only then that it is finished.
+ */
+const STATUS_URGENCY: Record<NonNullable<TurnSummary['status']>, number> = {
+  running: 3,
+  failed: 2,
+  stopped: 1,
+  done: 0
+}
+
+function worseStatus(
+  left: TurnSummary['status'],
+  right: NonNullable<TurnSummary['status']>
+): NonNullable<TurnSummary['status']> {
+  if (left === null) return right
+  return STATUS_URGENCY[right] > STATUS_URGENCY[left] ? right : left
+}
+
+/**
+ * Prose reduced to something that survives being clamped to two lines: the
+ * markdown punctuation dropped, every run of whitespace closed up, and a
+ * generous cut so nothing downstream has to carry a whole reply around.
+ */
+function previewText(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/[#*`>_[\]]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 280)
+}
+
 /** The Run's Permission Mode, in the product's own words. */
 const MODE_LABEL: Record<PermissionMode, string> = { ask: 'Ask', auto: 'Full access' }
 
-/** `8.2s`, `22s`, `3m 05s` — the precision worth reading at each scale. */
+/**
+ * `34ms`, `8.2s`, `22s`, `3m 05s` — the precision worth reading at each scale.
+ *
+ * Below a second it is stated in milliseconds. A `git log` takes tens of
+ * milliseconds, and rounding that to `0.0s` reports a command that took no
+ * time at all, which is both wrong and the one reading a duration must never
+ * give.
+ */
 function formatDuration(ms: number): string {
   const seconds = Math.max(0, ms) / 1_000
+  if (seconds < 1) return `${String(Math.max(0, Math.round(ms)))}ms`
   if (seconds < 10) return `${seconds.toFixed(1)}s`
   if (seconds < 60) return `${String(Math.round(seconds))}s`
   const minutes = Math.floor(seconds / 60)
@@ -2057,6 +2241,10 @@ function RunSection({
             partial={message.partial}
           />
         ))}
+      {/* What the Run ran, in the order it ran it, and what each one printed
+          for anyone who asks. It sits under the prose that announced it and
+          above the line saying what is happening now. */}
+      <ToolCalls steps={group.steps} />
       {/* In flight: one pulsing line about the current step. At rest: only
           changed files or an interrupted Run need an outcome surface. */}
       {active && !waiting && (

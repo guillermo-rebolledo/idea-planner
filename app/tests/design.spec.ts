@@ -76,6 +76,10 @@ async function launchShell(): Promise<ElectronApplication> {
     env: {
       ...process.env,
       APP_TEST_APP_DATA: sandbox.appDataDir,
+      // Nothing here needs a painted window, and a suite that takes the
+      // desktop over is a suite nobody runs while they are working. Same
+      // background launch every other acceptance suite uses.
+      APP_TEST_BACKGROUND: '1',
       APP_TEST_READINESS_PATH: sandbox.readinessBinDir,
       APP_TEST_READINESS_HOME: sandbox.readinessHomeDir,
       APP_TEST_CHOOSE_PROJECT_DIRS: sandbox.projectDir
