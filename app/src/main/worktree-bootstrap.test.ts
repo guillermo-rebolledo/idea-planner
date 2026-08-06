@@ -46,7 +46,11 @@ describe('bootstrapping an isolated Checkout', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(result).toEqual({ outcome: 'copied', copied: ['.env.local'], skipped: [] })
+    expect(result).toEqual({
+      outcome: 'partial',
+      copied: ['.env.local'],
+      skipped: [{ path: '.env.tracked', reason: 'tracked' }]
+    })
     await expect(readFile(join(checkoutRoot, '.env.local'), 'utf8')).resolves.toBe('local secret\n')
     await expect(readFile(join(checkoutRoot, '.env.tracked'), 'utf8')).rejects.toMatchObject({
       code: 'ENOENT'
@@ -58,14 +62,21 @@ describe('bootstrapping an isolated Checkout', () => {
     await writeFile(join(projectRoot, '.env.local'), 'fallback\n')
     await mkdir(join(projectRoot, 'config'), { recursive: true })
     await writeFile(join(projectRoot, 'config', 'local.json'), '{"local":true}\n')
-    await writeFile(join(projectRoot, '.worktreeinclude'), 'config/**\n.env.tracked\n')
+    await writeFile(join(projectRoot, 'config', 'tracked.json'), '{"tracked":true}\n')
+    await git('git', ['add', '--force', 'config/tracked.json'], { cwd: projectRoot })
+    await mkdir(join(projectRoot, 'public'), { recursive: true })
+    await writeFile(join(projectRoot, 'public', 'local.json'), '{"public":true}\n')
+    await writeFile(join(projectRoot, '.worktreeinclude'), 'config/**\npublic/**\n')
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
     expect(result).toEqual({
       outcome: 'partial',
       copied: ['config/local.json'],
-      skipped: [{ path: '.env.tracked', reason: 'tracked' }]
+      skipped: [
+        { path: 'config/tracked.json', reason: 'tracked' },
+        { path: 'public/local.json', reason: 'not-ignored' }
+      ]
     })
     await expect(readFile(join(checkoutRoot, 'config', 'local.json'), 'utf8')).resolves.toBe(
       '{"local":true}\n'
@@ -73,7 +84,14 @@ describe('bootstrapping an isolated Checkout', () => {
     await expect(readFile(join(checkoutRoot, '.env.local'), 'utf8')).rejects.toMatchObject({
       code: 'ENOENT'
     })
-    await expect(readFile(join(checkoutRoot, '.env.tracked'), 'utf8')).rejects.toMatchObject({
+    await expect(
+      readFile(join(checkoutRoot, 'config', 'tracked.json'), 'utf8')
+    ).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+    await expect(
+      readFile(join(checkoutRoot, 'public', 'local.json'), 'utf8')
+    ).rejects.toMatchObject({
       code: 'ENOENT'
     })
   })
@@ -83,7 +101,7 @@ describe('bootstrapping an isolated Checkout', () => {
     await mkdir(join(projectRoot, 'local', '日本語'), { recursive: true })
     await writeFile(join(projectRoot, 'local', '日本語', 'keep.env'), 'keep\n')
     await writeFile(join(projectRoot, 'local', '日本語', 'skip.env'), 'skip\n')
-    await writeFile(join(projectRoot, '.worktreeinclude'), 'local/**\n!local/日本語/skip.env\n')
+    await writeFile(join(projectRoot, '.worktreeinclude'), '!local/日本語/skip.env\nlocal/**\n')
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 

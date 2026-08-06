@@ -1,8 +1,12 @@
 import { execFile } from 'node:child_process'
 import { constants } from 'node:fs'
-import { lstat, mkdir, open, readFile, realpath } from 'node:fs/promises'
+import { lstat, mkdir, open, readFile, realpath, unlink } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
-import type { WorktreeBootstrapResult, WorktreeBootstrapSkipReason } from '@shared/checkout'
+import {
+  buildWorktreeBootstrapResult,
+  type WorktreeBootstrapResult,
+  type WorktreeBootstrapSkipReason
+} from '@shared/checkout'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
@@ -13,10 +17,6 @@ interface BootstrapInput {
   checkoutRoot: string
   /** Restricts a retry to the paths that failed previously. */
   paths?: string[]
-}
-
-interface BootstrapOptions {
-  pathEnv?: string
 }
 
 interface PatternSet {
@@ -30,10 +30,7 @@ interface PatternSet {
  * Git owns both candidate matching and ignored-file decisions; filesystem
  * checks then narrow that answer to contained regular files.
  */
-export async function bootstrapWorktree(
-  input: BootstrapInput,
-  options: BootstrapOptions = {}
-): Promise<WorktreeBootstrapResult> {
+export async function bootstrapWorktree(input: BootstrapInput): Promise<WorktreeBootstrapResult> {
   const patterns = input.paths
     ? {
         pathspecs: input.paths.map((path) => `:(top,literal)${path}`),
@@ -49,25 +46,28 @@ export async function bootstrapWorktree(
   try {
     candidates = [
       ...new Set([
-        ...(await listCandidates(input.projectRoot, patterns.pathspecs, options)),
+        ...(await listCandidates(input.projectRoot, patterns.pathspecs)),
         ...patterns.literals
       ])
     ]
   } catch {
-    return finish([], [...skipped, { path: '.worktreeinclude', reason: 'copy-failed' }])
+    return buildWorktreeBootstrapResult(
+      [],
+      [...skipped, { path: '.worktreeinclude', reason: 'copy-failed' }]
+    )
   }
 
   const copied: string[] = []
   const projectReal = await realpath(input.projectRoot)
   const checkoutReal = await realpath(input.checkoutRoot)
   for (const path of candidates) {
-    const reason = await copyCandidate({ ...input, path, projectReal, checkoutReal }, options)
+    const reason = await copyCandidate({ ...input, path, projectReal, checkoutReal })
     if (reason) skipped.push({ path, reason })
     else copied.push(path)
   }
   copied.sort(comparePaths)
   skipped.sort((left, right) => comparePaths(left.path, right.path))
-  return finish(copied, skipped)
+  return buildWorktreeBootstrapResult(copied, skipped)
 }
 
 async function readPatterns(projectRoot: string): Promise<PatternSet> {
@@ -107,16 +107,12 @@ function validPattern(pattern: string): boolean {
   return !pattern.split('/').some((part) => part === '..')
 }
 
-async function listCandidates(
-  projectRoot: string,
-  pathspecs: string[],
-  options: BootstrapOptions
-): Promise<string[]> {
+async function listCandidates(projectRoot: string, pathspecs: string[]): Promise<string[]> {
   if (pathspecs.length === 0) return []
   const { stdout } = await run(
     'git',
-    ['ls-files', '--others', '--ignored', '--exclude-standard', '-z', '--', ...pathspecs],
-    { cwd: projectRoot, env: environment(options), timeout: TIMEOUT_MS }
+    ['ls-files', '--cached', '--others', '-z', '--', ...pathspecs],
+    { cwd: projectRoot, timeout: TIMEOUT_MS }
   )
   return stdout.split('\0').filter(Boolean)
 }
@@ -126,12 +122,11 @@ async function copyCandidate(
     path: string
     projectReal: string
     checkoutReal: string
-  },
-  options: BootstrapOptions
+  }
 ): Promise<WorktreeBootstrapSkipReason | null> {
   if (!validRelativePath(input.path)) return 'invalid-path'
-  if (await isTracked(input.projectRoot, input.path, options)) return 'tracked'
-  if (!(await isIgnored(input.projectRoot, input.path, options))) return 'not-ignored'
+  if (await isTracked(input.projectRoot, input.path)) return 'tracked'
+  if (!(await isIgnored(input.projectRoot, input.path))) return 'not-ignored'
 
   const source = join(input.projectReal, input.path)
   const destination = join(input.checkoutReal, input.path)
@@ -147,6 +142,7 @@ async function copyCandidate(
   if (!sourceReal || !containedBy(input.projectReal, sourceReal)) return 'invalid-path'
 
   const parent = join(input.checkoutReal, ...input.path.split('/').slice(0, -1))
+  let destinationCreated = false
   try {
     await mkdir(parent, { recursive: true, mode: 0o700 })
     const parentReal = await realpath(parent)
@@ -161,12 +157,14 @@ async function copyCandidate(
         constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
         latest.mode & 0o777
       )
+      destinationCreated = true
       await copyFileContents(sourceFile, destinationFile, latest.size)
     } finally {
       await Promise.allSettled([sourceFile.close(), destinationFile?.close()])
     }
     return null
   } catch (error) {
+    if (destinationCreated) await unlink(destination).catch(() => undefined)
     return errorReason(error, 'copy-failed')
   }
 }
@@ -185,7 +183,7 @@ async function copyFileContents(
       Math.min(buffer.length, size - readPosition),
       readPosition
     )
-    if (bytesRead === 0) return
+    if (bytesRead === 0) throw new Error('Source changed while being copied')
     let written = 0
     while (written < bytesRead) {
       const result = await destination.write(buffer, written, bytesRead - written)
@@ -204,28 +202,18 @@ function validRelativePath(path: string): boolean {
   )
 }
 
-async function isTracked(
-  projectRoot: string,
-  path: string,
-  options: BootstrapOptions
-): Promise<boolean> {
+async function isTracked(projectRoot: string, path: string): Promise<boolean> {
   const { stdout } = await run('git', ['ls-files', '--cached', '-z', '--', path], {
     cwd: projectRoot,
-    env: environment(options),
     timeout: TIMEOUT_MS
   })
   return stdout.length > 0
 }
 
-async function isIgnored(
-  projectRoot: string,
-  path: string,
-  options: BootstrapOptions
-): Promise<boolean> {
+async function isIgnored(projectRoot: string, path: string): Promise<boolean> {
   try {
     await run('git', ['check-ignore', '--quiet', '--no-index', '--', path], {
       cwd: projectRoot,
-      env: environment(options),
       timeout: TIMEOUT_MS
     })
     return true
@@ -251,26 +239,6 @@ function errorReason(
   return fallback
 }
 
-function finish(
-  copied: string[],
-  skipped: WorktreeBootstrapResult['skipped']
-): WorktreeBootstrapResult {
-  return {
-    outcome:
-      skipped.length === 0 && copied.length > 0
-        ? 'copied'
-        : copied.length > 0
-          ? 'partial'
-          : 'skipped',
-    copied,
-    skipped
-  }
-}
-
 function comparePaths(left: string, right: string): number {
   return left.localeCompare(right, 'en')
-}
-
-function environment(options: BootstrapOptions): NodeJS.ProcessEnv {
-  return options.pathEnv === undefined ? process.env : { ...process.env, PATH: options.pathEnv }
 }

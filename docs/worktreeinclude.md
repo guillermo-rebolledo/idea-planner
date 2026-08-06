@@ -7,7 +7,8 @@ The file uses a deliberately small Git pathspec glob grammar:
 
 - one Project-root-relative pattern per line;
 - empty lines and lines beginning with `#` are comments;
-- a leading `!` excludes a pattern selected by an earlier positive pattern;
+- a leading `!` excludes its matches from all positive patterns; exclusion order does not override
+  later positive patterns;
 - a leading `/` is accepted as an explicit Project-root anchor;
 - `*`, `?`, character classes such as `[ab]`, and `**` use Git's `glob` pathspec rules;
 - backslash escaping is not supported; and

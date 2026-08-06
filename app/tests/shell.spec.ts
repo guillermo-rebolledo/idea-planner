@@ -276,6 +276,7 @@ test('a person starts a Session and it survives an application restart', async (
 })
 
 test('Queued Submissions are durable and keyboard-editable', async () => {
+  await installFakeHarness('claude', LONG_RUNNING_CLAUDE_FAKE)
   const firstRun = await launchShell()
   try {
     const page = await firstRun.firstWindow()
@@ -1482,6 +1483,11 @@ esac
 exit 1`
 
 const READY_CLAUDE_FAKE = `case "$1" in
+  --version) echo "2.1.220 (Claude Code)"; exit 0;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+esac`
+
+const LONG_RUNNING_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
   -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 60;;
 esac`

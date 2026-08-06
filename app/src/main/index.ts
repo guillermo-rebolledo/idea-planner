@@ -38,6 +38,7 @@ import {
   startRunInputSchema,
   stopRunInputSchema,
   branchListSchema,
+  buildWorktreeBootstrapResult,
   checkoutDirectory,
   checkoutFactsSchema,
   isolatedBranchName,
@@ -723,16 +724,7 @@ function mergeBootstrapResults(
     ...previous.skipped.filter((entry) => !retriedPaths.has(entry.path)),
     ...retry.skipped
   ].sort((left, right) => left.path.localeCompare(right.path, 'en'))
-  return {
-    outcome:
-      skipped.length === 0 && copied.length > 0
-        ? 'copied'
-        : copied.length > 0
-          ? 'partial'
-          : 'skipped',
-    copied,
-    skipped
-  }
+  return buildWorktreeBootstrapResult(copied, skipped)
 }
 
 /**

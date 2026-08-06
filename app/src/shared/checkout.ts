@@ -42,6 +42,23 @@ export const worktreeBootstrapResultSchema = z.object({
 })
 export type WorktreeBootstrapResult = z.infer<typeof worktreeBootstrapResultSchema>
 
+/** Derives the aggregate outcome from the per-file results in one place. */
+export function buildWorktreeBootstrapResult(
+  copied: string[],
+  skipped: WorktreeBootstrapResult['skipped']
+): WorktreeBootstrapResult {
+  return {
+    outcome:
+      skipped.length === 0 && copied.length > 0
+        ? 'copied'
+        : copied.length > 0
+          ? 'partial'
+          : 'skipped',
+    copied,
+    skipped
+  }
+}
+
 /**
  * What Git is doing in a Checkout right now. This is observed state, never
  * stored: both the person and an agent can begin or finish an operation from
