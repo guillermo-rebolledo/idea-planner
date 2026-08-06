@@ -3,7 +3,12 @@ import { join } from 'node:path'
 import { Effect } from 'effect'
 import { z } from 'zod'
 import { CoreError } from '@shared/contract'
-import { sessionSummarySchema, type Checkout, type SessionSummary } from '@shared/contract'
+import {
+  sessionSummarySchema,
+  type Checkout,
+  type SessionSummary,
+  type WorktreeBootstrapResult
+} from '@shared/contract'
 import { writeJsonAtomic } from './atomic'
 
 const SESSIONS_DIR = 'sessions'
@@ -37,6 +42,7 @@ export class SessionStore {
   start(input: {
     projectRoot: string
     checkout: Checkout
+    worktreeBootstrap: WorktreeBootstrapResult | null
     title: string
   }): Effect.Effect<SessionSummary, CoreError> {
     return this.writeLock.withPermits(1)(
@@ -46,6 +52,7 @@ export class SessionStore {
           id: this.nextId(),
           projectRoot: input.projectRoot,
           checkout: input.checkout,
+          worktreeBootstrap: input.worktreeBootstrap,
           title: input.title,
           createdAt: created,
           updatedAt: created,

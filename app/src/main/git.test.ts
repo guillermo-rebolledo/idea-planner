@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, unlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -493,7 +493,9 @@ describe('creating an isolated checkout', () => {
   it('adds a linked worktree on a new branch cut from the chosen base', async () => {
     await git('git', ['init', '--quiet', '-b', 'trunk'], { cwd: root })
     await writeFile(join(root, 'a.txt'), 'a\n')
+    await writeFile(join(root, '.gitignore'), '.env*\n')
     await commitAll(root, 'first')
+    await writeFile(join(root, '.env.local'), 'checkout-only\n')
     const home = await mkdtemp(join(tmpdir(), 'git-worktrees-'))
 
     const created = await createWorktree({
@@ -505,6 +507,10 @@ describe('creating an isolated checkout', () => {
 
     if (created.status !== 'created') throw new Error('expected a worktree')
     expect(await currentBranch(created.path)).toBe('fix-location-crash')
+    expect(created.bootstrap).toEqual({ outcome: 'copied', copied: ['.env.local'], skipped: [] })
+    await expect(readFile(join(created.path, '.env.local'), 'utf8')).resolves.toBe(
+      'checkout-only\n'
+    )
     // The person's own copy never moves.
     expect(await currentBranch(root)).toBe('trunk')
     await rm(home, { recursive: true, force: true })

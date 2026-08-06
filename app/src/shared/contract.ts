@@ -36,7 +36,8 @@ import {
   checkoutStateSchema,
   LOCAL_CHECKOUT,
   type BranchList,
-  type CheckoutFacts
+  type CheckoutFacts,
+  worktreeBootstrapResultSchema
 } from './checkout'
 import type { EditorCatalog, OpenInEditorInput } from './editor'
 import {
@@ -59,6 +60,7 @@ import {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 13: isolated Checkout bootstrap results and retry/continue cross the boundary.
  * 12: the window can answer Main's active-Run quit warning.
  * 11: Checkout facts include the currently observed Checkout State.
  * 10: Project-wide Skill trust is bound to a reviewed content digest.
@@ -67,7 +69,7 @@ import {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 12
+export const CONTRACT_VERSION = 13
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -80,6 +82,8 @@ export const sessionSummarySchema = z.object({
    * all working copies, which is exactly what the default says.
    */
   checkout: checkoutSchema.default(LOCAL_CHECKOUT),
+  /** Filenames and outcomes from preparing an isolated Checkout; never contents. */
+  worktreeBootstrap: worktreeBootstrapResultSchema.nullable().default(null),
   title: z.string().min(1),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -187,7 +191,9 @@ export const startSessionInputSchema = z.object({
    */
   message: z.string().min(1).max(100_000),
   /** Where the Session works. Absent means the Project's working copy. */
-  checkout: checkoutSchema.default(LOCAL_CHECKOUT)
+  checkout: checkoutSchema.default(LOCAL_CHECKOUT),
+  /** Main's result from preparing an isolated Checkout, when one was created. */
+  worktreeBootstrap: worktreeBootstrapResultSchema.nullable().default(null)
 })
 /** The caller's side of the schema, so an omitted checkout stays omittable. */
 export type StartSessionInput = z.input<typeof startSessionInputSchema>
@@ -223,8 +229,19 @@ export const startedSessionResultSchema = z.object({
 })
 export type StartedSessionResult = z.infer<typeof startedSessionResultSchema>
 
+export const resumeWorktreeBootstrapInputSchema = z.object({
+  token: z.string().uuid(),
+  decision: z.enum(['retry', 'continue'])
+})
+export type ResumeWorktreeBootstrapInput = z.infer<typeof resumeWorktreeBootstrapInputSchema>
+
 export const startSessionResultSchema = z.discriminatedUnion('status', [
   startedSessionResultSchema,
+  z.object({
+    status: z.literal('bootstrap-incomplete'),
+    token: z.string().uuid(),
+    result: worktreeBootstrapResultSchema
+  }),
   z.object({
     status: z.literal('blocked'),
     action: z.literal('create-worktree'),
@@ -474,6 +491,8 @@ export interface ShellApi {
    * worktree and branch are created before the Session is.
    */
   startSession(input: StartSessionRequest): Promise<StartSessionResult>
+  /** Retries eligible files, or keeps the Checkout as-is and starts the Session. */
+  resumeWorktreeBootstrap(input: ResumeWorktreeBootstrapInput): Promise<StartSessionResult>
   listSessions(): Promise<SessionSummary[]>
   /** Ids whose record could not be read, so the loss can be shown rather than inferred. */
   listDamagedSessions(): Promise<string[]>

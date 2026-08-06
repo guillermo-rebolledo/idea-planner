@@ -1,5 +1,5 @@
 import { basename, delimiter, dirname, join } from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import {
   BrowserWindow,
@@ -42,6 +42,7 @@ import {
   checkoutFactsSchema,
   isolatedBranchName,
   startSessionRequestSchema,
+  resumeWorktreeBootstrapInputSchema,
   editorCatalogSchema,
   openInEditorInputSchema,
   conversationSnapshotSchema,
@@ -59,6 +60,7 @@ import {
   quitRequestResponseSchema,
   type ThemeState
 } from '@shared/contract'
+import type { StartSessionRequest, WorktreeBootstrapResult } from '@shared/contract'
 import { WINDOW_BACKGROUND } from '@shared/theme'
 import {
   chooseExecutableResultSchema,
@@ -90,6 +92,7 @@ import { ReadinessService } from './readiness-service'
 import { SettingsStore } from './settings'
 import { RunProcessBroker } from './run-process-broker'
 import { RunService } from './run-service'
+import { bootstrapWorktree } from './worktree-bootstrap'
 
 /**
  * Thin privileged Main process: window lifecycle, native dialogs and theme,
@@ -132,6 +135,15 @@ let runService: RunService
 let shutdownStarted = false
 let quitPromptOpen = false
 let servicesReady = false
+
+interface PendingWorktreeBootstrap {
+  request: StartSessionRequest
+  path: string
+  result: WorktreeBootstrapResult
+}
+
+/** Kept only while the launch surface is offering Retry or Continue. */
+const pendingWorktreeBootstraps = new Map<string, PendingWorktreeBootstrap>()
 
 const coreClient = new CoreClient(
   () => app.getPath('userData'),
@@ -357,6 +369,7 @@ function registerIpc(): void {
     // worktree is created here, on a branch derived from the message, and
     // Core only ever stores a directory that is really there.
     let checkout: Checkout
+    let worktreeBootstrap: WorktreeBootstrapResult | null = null
     if (request.checkout.kind === 'isolated') {
       const created = await createWorktree({
         projectRoot: request.projectRoot,
@@ -390,6 +403,20 @@ function registerIpc(): void {
         })
       }
       checkout = { kind: 'worktree', path: created.path }
+      worktreeBootstrap = created.bootstrap
+      if (created.bootstrap.skipped.length > 0) {
+        const token = randomUUID()
+        pendingWorktreeBootstraps.set(token, {
+          request,
+          path: created.path,
+          result: created.bootstrap
+        })
+        return startSessionResultSchema.parse({
+          status: 'bootstrap-incomplete',
+          token,
+          result: created.bootstrap
+        })
+      }
     } else {
       checkout = request.checkout
     }
@@ -398,11 +425,50 @@ function registerIpc(): void {
     // first Run, not a Session that sits there unanswered.
     return startSessionResultSchema.parse(
       await runService.startSession({
-        input: startSessionInputSchema.parse({ ...request, checkout }),
+        input: startSessionInputSchema.parse({ ...request, checkout, worktreeBootstrap }),
         run: request.run
       })
     )
   })
+
+  handleInvoke(
+    IPC_CHANNELS.resumeWorktreeBootstrap,
+    resumeWorktreeBootstrapInputSchema,
+    async (input) => {
+      const pending = pendingWorktreeBootstraps.get(input.token)
+      if (!pending) throw new Error('That Checkout is no longer waiting for a bootstrap decision')
+      if (input.decision === 'retry') {
+        const retryable = pending.result.skipped
+          .filter((entry) => entry.reason !== 'invalid-path')
+          .map((entry) => entry.path)
+        const retried = await bootstrapWorktree({
+          projectRoot: pending.request.projectRoot,
+          checkoutRoot: pending.path,
+          paths: retryable
+        })
+        pending.result = mergeBootstrapResults(pending.result, retried)
+        if (pending.result.skipped.length > 0) {
+          return startSessionResultSchema.parse({
+            status: 'bootstrap-incomplete',
+            token: input.token,
+            result: pending.result
+          })
+        }
+      }
+      pendingWorktreeBootstraps.delete(input.token)
+      return startSessionResultSchema.parse(
+        await runService.startSession({
+          input: startSessionInputSchema.parse({
+            projectRoot: pending.request.projectRoot,
+            message: pending.request.message,
+            checkout: { kind: 'worktree', path: pending.path },
+            worktreeBootstrap: pending.result
+          }),
+          run: pending.request.run
+        })
+      )
+    }
+  )
 
   handleInvoke(IPC_CHANNELS.listBranches, z.string().min(1), async (projectRoot) =>
     branchListSchema.parse(await listBranches(projectRoot))
@@ -645,6 +711,28 @@ function registerIpc(): void {
 function worktreesDirectoryName(projectRoot: string): string {
   const digest = createHash('sha256').update(projectRoot).digest('hex').slice(0, 12)
   return `${basename(projectRoot)}-${digest}`
+}
+
+function mergeBootstrapResults(
+  previous: WorktreeBootstrapResult,
+  retry: WorktreeBootstrapResult
+): WorktreeBootstrapResult {
+  const copied = [...new Set([...previous.copied, ...retry.copied])].sort()
+  const retriedPaths = new Set([...retry.copied, ...retry.skipped.map((entry) => entry.path)])
+  const skipped = [
+    ...previous.skipped.filter((entry) => !retriedPaths.has(entry.path)),
+    ...retry.skipped
+  ].sort((left, right) => left.path.localeCompare(right.path, 'en'))
+  return {
+    outcome:
+      skipped.length === 0 && copied.length > 0
+        ? 'copied'
+        : copied.length > 0
+          ? 'partial'
+          : 'skipped',
+    copied,
+    skipped
+  }
 }
 
 /**

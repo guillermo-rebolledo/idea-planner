@@ -2,8 +2,13 @@ import { execFile } from 'node:child_process'
 import { access, mkdir, realpath } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { ChangeKind } from '@shared/conversation'
-import type { CheckoutState, CheckoutStateObservation } from '@shared/checkout'
+import type {
+  CheckoutState,
+  CheckoutStateObservation,
+  WorktreeBootstrapResult
+} from '@shared/checkout'
 import { promisify } from 'node:util'
+import { bootstrapWorktree } from './worktree-bootstrap'
 
 const run = promisify(execFile)
 
@@ -216,7 +221,12 @@ export async function listBranches(
 }
 
 export type WorktreeCreation =
-  | { status: 'created'; path: string; branch: string }
+  | {
+      status: 'created'
+      path: string
+      branch: string
+      bootstrap: WorktreeBootstrapResult
+    }
   | { status: 'blocked'; state: CheckoutState }
   | { status: 'git-unavailable' }
   | { status: 'not-a-repository' }
@@ -256,7 +266,15 @@ export async function createWorktree(
         env: environment(options),
         timeout: TIMEOUT_MS
       })
-      return { status: 'created', path, branch }
+      const bootstrap = await bootstrapWorktree({
+        projectRoot: input.projectRoot,
+        checkoutRoot: path
+      }).catch((): WorktreeBootstrapResult => ({
+        outcome: 'skipped',
+        copied: [],
+        skipped: [{ path: '.worktreeinclude', reason: 'copy-failed' }]
+      }))
+      return { status: 'created', path, branch, bootstrap }
     } catch (error) {
       failure = error instanceof Error ? error.message : failure
       // Only a taken name is worth retrying under a different one; a missing

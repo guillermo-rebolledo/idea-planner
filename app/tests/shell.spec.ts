@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, delimiter, join } from 'node:path'
 import { _electron as electron, expect, test, type ElectronApplication } from '@playwright/test'
@@ -111,7 +111,16 @@ async function chooseSkill(page: Page, name: string): Promise<void> {
 /** A Session is started by sending a message; its title comes from it. */
 async function startSession(page: Page, message: string): Promise<void> {
   await page.getByRole('button', { name: 'New Session', exact: true }).click()
-  await page.getByRole('form', { name: 'New chat' }).getByLabel('Message').fill(message)
+  const composer = page.getByRole('form', { name: 'New chat' })
+  // A visible model means this helper will start a Run, not only persist the
+  // Session while readiness and the asynchronous model catalog are racing on
+  // first launch. Synchronise the test at the same focus refresh the UI uses.
+  await page.evaluate(async () => {
+    await window.shell.refreshReadiness()
+    window.dispatchEvent(new Event('focus'))
+  })
+  await expect(composer.getByRole('combobox', { name: 'Model' })).toBeVisible()
+  await composer.getByLabel('Message').fill(message)
   await page.getByRole('button', { name: 'Send' }).click()
   await expect(page.getByRole('heading', { name: message })).toBeVisible()
 }
@@ -205,6 +214,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'resolveApproval',
       'respondToQuitRequest',
       'resumeConversationQueue',
+      'resumeWorktreeBootstrap',
       'revokeStandingApproval',
       'sendQueuedSubmissionNow',
       'setLoginShellDiscovery',
@@ -1049,9 +1059,11 @@ test('the title bar states where a Session works — Local, or an isolated Workt
   // A commit and a named branch, so the branch chip has something
   // deterministic to state, and a real worktree beside the working copy.
   await writeFile(join(sandbox.projectDir, 'app.ts'), 'export const app = true\n')
+  await writeFile(join(sandbox.projectDir, '.gitignore'), '.env*\n')
   await gitc(['add', '-A'])
   await gitc(['commit', '--quiet', '-m', 'init'])
   await gitc(['checkout', '--quiet', '-b', 'trunk'])
+  await writeFile(join(sandbox.projectDir, '.env.local'), 'checkout-only\n')
   const app = await launchShell()
   try {
     const page = await app.firstWindow()
@@ -1109,6 +1121,31 @@ test('the title bar states where a Session works — Local, or an isolated Workt
     await chips.click()
     await expect(card.getByText(/worktrees/)).toBeVisible()
     await expect(card.getByText('working copy')).toHaveCount(0)
+    const { stdout: worktrees } = await git('git', ['worktree', 'list', '--porcelain'], {
+      cwd: sandbox.projectDir
+    })
+    const isolatedPath = worktrees
+      .split('\n')
+      .filter((line) => line.startsWith('worktree '))
+      .map((line) => line.slice('worktree '.length))
+      .find((path) => path !== sandbox.projectDir)
+    expect(isolatedPath).toBeDefined()
+    await expect(readFile(join(isolatedPath ?? '', '.env.local'), 'utf8')).resolves.toBe(
+      'checkout-only\n'
+    )
+    const sessionRecords = (await readdir(sandbox.appDataDir, { recursive: true })).filter(
+      (path) => basename(path) === 'session.json'
+    )
+    const records = await Promise.all(
+      sessionRecords.map((path) => readFile(join(sandbox.appDataDir, path), 'utf8'))
+    )
+    const stored = records.find((record) => record.includes('fix-the-location-crash'))
+    expect(stored).toBeTruthy()
+    const storedSession = JSON.parse(stored ?? '{}') as {
+      worktreeBootstrap?: { copied?: string[] }
+    }
+    expect(storedSession.worktreeBootstrap?.copied).toEqual(['.env.local'])
+    expect(stored).not.toContain('checkout-only')
     // The person's own copy never moved.
     const { stdout } = await git('git', ['symbolic-ref', '--short', 'HEAD'], {
       cwd: sandbox.projectDir
@@ -1116,6 +1153,50 @@ test('the title bar states where a Session works — Local, or an isolated Workt
     expect(stdout.trim()).toBe('trunk')
   } finally {
     await app.close()
+  }
+})
+
+test('a partial Checkout bootstrap keeps the Worktree and offers accessible recovery', async () => {
+  const gitc = (args: string[]): Promise<unknown> =>
+    git('git', ['-c', 'user.email=a@b', '-c', 'user.name=t', ...args], {
+      cwd: sandbox.projectDir
+    })
+  await writeFile(join(sandbox.projectDir, '.gitignore'), '.env*\n')
+  await writeFile(join(sandbox.projectDir, 'app.ts'), 'export const app = true\n')
+  await gitc(['add', '-A'])
+  await gitc(['commit', '--quiet', '-m', 'init'])
+  await writeFile(join(sandbox.projectDir, '.env.local'), 'copied\n')
+  await writeFile(join(sandbox.projectDir, '.env.private'), 'private\n')
+  await chmod(join(sandbox.projectDir, '.env.private'), 0o000)
+
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await page.getByRole('button', { name: 'New Session', exact: true }).click()
+    const composer = page.getByRole('form', { name: 'New chat' })
+    await composer.getByLabel('Message').fill('Keep the partial Checkout')
+    await composer.getByRole('button', { name: 'Checkout' }).click()
+    await page.getByRole('radio', { name: 'Isolated' }).click()
+    await page.keyboard.press('Escape')
+    await composer.getByRole('button', { name: 'Send' }).click()
+
+    const recovery = composer.getByRole('region', {
+      name: 'Some local files could not be copied'
+    })
+    await expect(recovery.getByText('.env.local')).toBeVisible()
+    await expect(recovery.getByText(/\.env\.private.*permission denied/)).toBeVisible()
+    await expect(recovery.getByRole('button', { name: 'Retry copying' })).toBeVisible()
+    await recovery.getByRole('button', { name: 'Continue without files' }).click()
+    await expect(page.getByRole('heading', { name: 'Keep the partial Checkout' })).toBeVisible()
+
+    const { stdout } = await git('git', ['worktree', 'list', '--porcelain'], {
+      cwd: sandbox.projectDir
+    })
+    expect(stdout.match(/^worktree /gm)).toHaveLength(2)
+  } finally {
+    await app.close()
+    await chmod(join(sandbox.projectDir, '.env.private'), 0o600)
   }
 })
 
@@ -1402,7 +1483,7 @@ exit 1`
 
 const READY_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
-  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 60;;
 esac`
 
 test('readiness reports Codex and Claude independently, with safe repair and re-check', async () => {
