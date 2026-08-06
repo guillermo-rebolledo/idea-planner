@@ -201,8 +201,9 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       return Promise.resolve({ run, conversation: state.conversation })
     }
     if (command.type === 'run/lifecycle-complete') {
-      const input = command as { input?: { status?: RunSnapshot['status'] } }
-      const completed = { ...run, status: input.input?.status ?? 'failed' }
+      const input = command as { input?: { observation?: { type?: string } } }
+      const completed = { ...run, status: statusForObservation(input.input?.observation?.type) }
+      state.conversation = { ...state.conversation, activeRunId: null }
       return Promise.resolve({
         run: completed,
         conversation: state.conversation,
@@ -864,6 +865,34 @@ describe('Run service', () => {
     expect(terminal?.input?.checkoutObservation).toEqual({ status: 'unavailable' })
   })
 
+  it('publishes the terminal outcome Core confirmed, not the one Main proposed', async () => {
+    const root = await readyHarnessRoot('run-core-outcome-')
+    const core = fakeCore(join(root, 'a-project'))
+    const send = core.send.getMockImplementation() as (command: {
+      type: string
+    }) => Promise<unknown>
+    core.send.mockImplementation(async (command: { type: string }) => {
+      const result = await send(command)
+      if (command.type !== 'run/lifecycle-complete') return result
+      const completed = result as { run: RunSnapshot; conversation: ConversationSnapshot }
+      return { ...completed, run: { ...completed.run, status: 'stopped' } }
+    })
+    const broker = fakeBroker()
+    const streamed: ConversationStreamEvent[] = []
+    const service = new RunService({
+      ...claudeDeps(root, broker),
+      core,
+      onConversationEvent: (event) => streamed.push(event)
+    })
+    await service.start({ ...startInput(), skill: 'grilling' })
+
+    broker.launch?.onExit?.(0, null)
+
+    await vi.waitFor(() => {
+      expect(streamed.at(-1)?.event).toEqual({ type: 'stopped' })
+    })
+  })
+
   it('keeps a correctness-critical protocol failure failed even when Claude exits zero', async () => {
     const root = await readyClaudeRoot('run-protocol-failure-')
     const core = fakeCore(join(root, 'a-project'))
@@ -907,10 +936,12 @@ describe('Run service', () => {
     broker.launch?.onOutput?.('stdout', '{"type":"system","subtype":"future"}\n')
     broker.launch?.onExit?.(0, null)
     await vi.waitFor(() => {
-      const terminal = (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
+      const terminal = (
+        core.send.mock.calls as [{ type: string; input?: { observation?: { type?: string } } }][]
+      )
         .filter(([command]) => command.type === 'run/lifecycle-complete')
         .at(-1)?.[0].input
-      expect(terminal?.status).toBe('failed')
+      expect(terminal?.observation?.type).toBe('harness-failed')
     })
     expect(streamed.filter(({ event }) => event.type === 'failed')).toHaveLength(1)
     expect(core.commands).toContain('run/lifecycle-complete')
@@ -972,14 +1003,15 @@ describe('Run service', () => {
       skills: fakeSkills(root)
     })
     await service.conversation('session')
-    const finalize = (core.send.mock.calls as [{ type: string; input?: unknown }][]).find(
-      ([command]) => command.type === 'conversation/finalize'
+    const terminal = (core.send.mock.calls as [{ type: string; input?: unknown }][]).find(
+      ([command]) => command.type === 'run/lifecycle-complete'
     )?.[0].input
-    expect(finalize).toMatchObject({
+    expect(terminal).toMatchObject({
       runId: 'run-from-a-previous-session',
-      outcome: 'failed',
-      category: 'process-crash'
+      observation: { type: 'harness-failed' },
+      checkoutObservation: { status: 'unavailable' }
     })
+    expect(core.commands).not.toContain('conversation/finalize')
   })
 
   it('does not report its own Run as crashed while the Harness process is still starting', async () => {
@@ -1037,8 +1069,8 @@ describe('Run service', () => {
     await broker.launch?.onBeforeCleanup?.()
     const finalize = (core.send.mock.calls as [{ type: string; input?: unknown }][]).find(
       ([command]) => command.type === 'run/lifecycle-complete'
-    )?.[0].input as { summary: string } | undefined
-    expect(finalize?.summary).toContain('Operation not permitted')
+    )?.[0].input as { observation?: { summary?: string } } | undefined
+    expect(finalize?.observation?.summary).toContain('Operation not permitted')
   })
 
   it('surfaces an unready Harness as an error rather than false recovery state', async () => {
@@ -1503,10 +1535,12 @@ describe('Codex on the app-server protocol', () => {
     broker.launch?.onOutput?.('stdout', '{"method":"turn/completed","params":{}}\n')
 
     await vi.waitFor(() => {
-      const terminal = (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
+      const terminal = (
+        core.send.mock.calls as [{ type: string; input?: { observation?: { type?: string } } }][]
+      )
         .filter(([command]) => command.type === 'run/lifecycle-complete')
         .at(-1)?.[0].input
-      expect(terminal?.status).toBe('completed')
+      expect(terminal?.observation?.type).toBe('harness-completed')
     })
     // And the process is stopped rather than left waiting for a turn nobody
     // will ask for. Stopping through the broker suppresses the exit path, so
@@ -1579,16 +1613,20 @@ describe('Codex on the app-server protocol', () => {
     // The Run concludes as failed — the Conversation gets its recovery
     // guidance and the inbox stops saying the agent is working.
     await vi.waitFor(() => {
-      const terminal = (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
+      const terminal = (
+        core.send.mock.calls as [{ type: string; input?: { observation?: { type?: string } } }][]
+      )
         .filter(([command]) => command.type === 'run/lifecycle-complete')
         .at(-1)?.[0].input
-      expect(terminal?.status).toBe('failed')
+      expect(terminal?.observation?.type).toBe('harness-failed')
     })
     const finalize = (
-      core.send.mock.calls as [{ type: string; input?: { status?: string; summary?: string } }][]
+      core.send.mock.calls as [
+        { type: string; input?: { observation?: { type?: string; summary?: string } } }
+      ][]
     ).find(([command]) => command.type === 'run/lifecycle-complete')?.[0].input
-    expect(finalize?.status).toBe('failed')
-    expect(finalize?.summary).toContain('no rollout found')
+    expect(finalize?.observation?.type).toBe('harness-failed')
+    expect(finalize?.observation?.summary).toContain('no rollout found')
     // And the process is stopped rather than left waiting for a turn nobody
     // will ask for.
     expect(broker.stop).toHaveBeenCalledWith(expect.any(String), 'quit')
@@ -2042,13 +2080,31 @@ describe('Ask mode', () => {
 
 /** The latest Run status this service asked Core to record. */
 function latestStatus(core: FakeCore): string | undefined {
-  return (core.send.mock.calls as [{ type: string; input?: { status?: string } }][])
-    .filter(
-      ([command]) =>
-        (command.type === 'run/event' || command.type === 'run/lifecycle-complete') &&
-        command.input?.status !== undefined
-    )
-    .at(-1)?.[0].input?.status
+  const command = (
+    core.send.mock.calls as [
+      { type: string; input?: { status?: string; observation?: { type?: string } } }
+    ][]
+  )
+    .filter(([value]) => value.type === 'run/event' || value.type === 'run/lifecycle-complete')
+    .at(-1)?.[0]
+  return command?.input?.status ?? statusForObservation(command?.input?.observation?.type)
+}
+
+function statusForObservation(type: string | undefined): RunSnapshot['status'] {
+  switch (type) {
+    case 'harness-completed':
+      return 'completed'
+    case 'person-stopped':
+      return 'stopped'
+    case 'policy-violation':
+      return 'policy-violation'
+    case 'supervision-failed':
+      return 'supervision-failed'
+    case 'harness-failed':
+    case undefined:
+    default:
+      return 'failed'
+  }
 }
 
 /** The event of that type this service applied to the Conversation. */
@@ -2133,19 +2189,29 @@ describe('a Run the app never got to finish', () => {
       JSON.stringify({ sessionId: 'session', runId: 'run-abandoned', checkout, snapshot })
     )
     await writeFile(join(checkout, 'tracked.ts'), 'changed by the agent\n')
+    deps.core.unfinished = [{ sessionId: 'session', runId: 'run-abandoned' }]
 
     const service = new RunService(deps)
     await service.recoverUnfinishedWork()
 
-    expect(deps.core.commands).toContain('conversation/checkout-changes')
-    const recorded = deps.core.send.mock.calls
+    const terminal = deps.core.send.mock.calls
       .map(
         ([command]) =>
-          command as { type: string; input?: { runId?: string; files?: { path: string }[] } }
+          command as {
+            type: string
+            input?: {
+              runId?: string
+              checkoutObservation?: { status: string; changes?: { path: string }[] }
+            }
+          }
       )
-      .find((command) => command.type === 'conversation/checkout-changes')
-    expect(recorded?.input?.runId).toBe('run-abandoned')
-    expect(recorded?.input?.files?.map((file) => file.path)).toEqual(['tracked.ts'])
+      .find((command) => command.type === 'run/lifecycle-complete')
+    expect(terminal?.input?.runId).toBe('run-abandoned')
+    expect(terminal?.input?.checkoutObservation).toMatchObject({ status: 'observed' })
+    expect(terminal?.input?.checkoutObservation?.changes?.map((file) => file.path)).toEqual([
+      'tracked.ts'
+    ])
+    expect(deps.core.commands).not.toContain('conversation/checkout-changes')
     await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([])
   })
 
@@ -2162,6 +2228,59 @@ describe('a Run the app never got to finish', () => {
     expect(deps.core.commands).not.toContain('conversation/checkout-changes')
     await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([])
   })
+
+  it('keeps Checkout evidence when Core cannot confirm the recovered ending', async () => {
+    const root = await readyClaudeRoot('run-service-recovery-failed-')
+    const checkout = await project(root)
+    const deps = claudeDeps(root, fakeBroker())
+    const abandoned = join(deps.privateRoot, 'checkout-snapshots', 'run-key')
+    const snapshot = await snapshotCheckout(checkout, abandoned)
+    await writeFile(
+      join(abandoned, 'baseline.json'),
+      JSON.stringify({ sessionId: 'session', runId: 'run-abandoned', checkout, snapshot })
+    )
+    deps.core.unfinished = [{ sessionId: 'session', runId: 'run-abandoned' }]
+    const send = deps.core.send.getMockImplementation() as (command: {
+      type: string
+    }) => Promise<unknown>
+    deps.core.send.mockImplementation((command: { type: string }) =>
+      command.type === 'run/lifecycle-complete'
+        ? Promise.reject(new Error('Core unavailable'))
+        : send(command)
+    )
+
+    await new RunService(deps).recoverUnfinishedWork()
+
+    await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([
+      'run-key'
+    ])
+  })
+
+  it('keeps Checkout evidence when Core cannot list recovery work', async () => {
+    const root = await readyClaudeRoot('run-service-recovery-query-failed-')
+    const checkout = await project(root)
+    const deps = claudeDeps(root, fakeBroker())
+    const abandoned = join(deps.privateRoot, 'checkout-snapshots', 'run-key')
+    const snapshot = await snapshotCheckout(checkout, abandoned)
+    await writeFile(
+      join(abandoned, 'baseline.json'),
+      JSON.stringify({ sessionId: 'session', runId: 'run-abandoned', checkout, snapshot })
+    )
+    const send = deps.core.send.getMockImplementation() as (command: {
+      type: string
+    }) => Promise<unknown>
+    deps.core.send.mockImplementation((command: { type: string }) =>
+      command.type === 'conversation/unfinished'
+        ? Promise.reject(new Error('Core unavailable'))
+        : send(command)
+    )
+
+    await expect(new RunService(deps).recoverUnfinishedWork()).rejects.toThrow('Core unavailable')
+
+    await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([
+      'run-key'
+    ])
+  })
 })
 
 describe('a Run nobody closed', () => {
@@ -2174,9 +2293,29 @@ describe('a Run nobody closed', () => {
     await service.recoverUnfinishedWork()
 
     const finalized = deps.core.send.mock.calls
-      .map(([command]) => command as { type: string; input?: { runId?: string; status?: string } })
+      .map(
+        ([command]) =>
+          command as { type: string; input?: { runId?: string; observation?: { type?: string } } }
+      )
       .find((command) => command.type === 'run/lifecycle-complete')
-    expect(finalized?.input).toMatchObject({ runId: 'run-open', status: 'failed' })
+    expect(finalized?.input).toMatchObject({
+      runId: 'run-open',
+      observation: { type: 'harness-failed' }
+    })
+  })
+
+  it('lets startup recovery own the terminal observation when a window reads concurrently', async () => {
+    const root = await readyClaudeRoot('run-service-recovery-race-')
+    const deps = claudeDeps(root, fakeBroker())
+    deps.core.unfinished = [{ sessionId: 'session', runId: 'run-open' }]
+    deps.core.conversation = { ...deps.core.conversation, activeRunId: 'run-open' }
+    const service = new RunService(deps)
+
+    await Promise.all([service.recoverUnfinishedWork(), service.conversation('session')])
+
+    expect(
+      deps.core.commands.filter((command) => command === 'run/lifecycle-complete')
+    ).toHaveLength(1)
   })
 
   it('leaves a Run this process just accepted alone, before the broker knows it', async () => {

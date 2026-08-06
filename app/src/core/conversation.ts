@@ -1344,7 +1344,10 @@ export function createConversationEffects(options: ConversationOptions): Convers
               ? { checkoutObservation: input.checkoutObservation }
               : {}),
             ...(input.queueDisposition ? { queueDisposition: input.queueDisposition } : {}),
-            terminalOutcome: input.outcome
+            terminalOutcome: input.outcome,
+            ...(input.terminalActivityKind
+              ? { terminalActivityKind: input.terminalActivityKind }
+              : {})
           })
           const checkout = yield* options.checkoutFor(input.sessionId)
           const checkoutAdditions = projectCheckoutChanges(

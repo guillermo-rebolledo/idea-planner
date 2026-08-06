@@ -30,6 +30,7 @@ import type {
   EnqueueQueuedSubmissionInput,
   FinalizeConversationRunInput,
   HarnessStream,
+  HarnessFailureCategory,
   MoveQueuedSubmissionInput,
   QueuedSubmission,
   QueuedSubmissionIdentity,
@@ -47,7 +48,9 @@ import {
   type CompleteRunLifecycleInput,
   type CompleteRunLifecycleResult,
   type OpenRunLifecycleInput,
-  type OpenRunLifecycleResult
+  type OpenRunLifecycleResult,
+  type TerminalRunStatus,
+  type TerminalRunObservation
 } from '@shared/run-lifecycle'
 import {
   grantStandingApprovalInputSchema,
@@ -318,7 +321,9 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
                         : entry.boundary === 'run-stopped'
                           ? 'stopped'
                           : 'failed'),
-                    summary: entry.summary
+                    summary: entry.summary,
+                    queueDisposition: entry.queueDisposition,
+                    kind: entry.terminalActivityKind ?? 'lifecycle'
                   }
                 ] as const
               ]
@@ -328,14 +333,21 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       const runs = yield* listRuns(sessionId)
       yield* Effect.forEach(
         runs.filter((run) => !TERMINAL_RUN_STATUSES.has(run.status) && terminal.has(run.id)),
-        (run) =>
-          recordRunEvent({
-            sessionId,
-            runId: run.id,
-            status: terminal.get(run.id)?.status ?? 'failed',
-            kind: 'lifecycle',
-            summary: terminal.get(run.id)?.summary ?? 'Harness ended the turn'
-          }),
+        (run) => {
+          const ending = terminal.get(run.id)
+          return Effect.gen(function* () {
+            if (ending?.queueDisposition === 'pause') {
+              yield* conversation.setQueuePaused({ sessionId, paused: true })
+            }
+            yield* recordRunEvent({
+              sessionId,
+              runId: run.id,
+              status: ending?.status ?? 'failed',
+              kind: ending?.kind ?? 'lifecycle',
+              summary: ending?.summary ?? 'Harness ended the turn'
+            })
+          })
+        },
         { discard: true }
       )
     })
@@ -604,12 +616,13 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
         )
       }
       const input = parsed.data
+      const terminal = decideTerminalObservation(input.observation)
       const transitionFingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex')
       const current = (yield* listRuns(input.sessionId)).find((run) => run.id === input.runId)
       if (!current)
         return yield* Effect.fail(new CoreError('RUN_NOT_FOUND', 'The Run was not found'))
       if (TERMINAL_RUN_STATUSES.has(current.status)) {
-        if (current.status !== input.status) {
+        if (current.status !== terminal.status) {
           return yield* Effect.fail(
             new CoreError('INVALID_INPUT', 'Run completion identity was reused with a new outcome')
           )
@@ -635,13 +648,14 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       }
       const beforeTerminal = yield* conversation.get(input.sessionId)
       const queueDisposition =
-        input.status === 'completed' && !beforeTerminal.queue.paused ? 'advance' : 'pause'
+        terminal.status === 'completed' && !beforeTerminal.queue.paused ? 'advance' : 'pause'
       const conversationSnapshot = yield* conversation.finalize({
         sessionId: input.sessionId,
         runId: input.runId,
-        outcome: input.status,
-        category: input.status === 'failed' ? input.category : null,
-        summary: input.summary,
+        outcome: terminal.status,
+        category: terminal.category,
+        summary: terminal.summary,
+        terminalActivityKind: terminal.kind,
         transitionFingerprint,
         checkoutObservation: input.checkoutObservation.status,
         queueDisposition,
@@ -649,7 +663,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
           input.checkoutObservation.status === 'observed'
             ? input.checkoutObservation.changes
             : undefined,
-        ...(input.status === 'completed' ? {} : { queuePaused: true })
+        ...(terminal.status === 'completed' ? {} : { queuePaused: true })
       })
       const durableEnding = conversationSnapshot.entries.find(
         (entry) => entry.kind === 'boundary' && entry.id === `boundary:${input.runId}:ended`
@@ -658,14 +672,14 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
         return yield* Effect.fail(new CoreError('IO_ERROR', 'Run completion was not made durable'))
       }
       const run =
-        current.status === input.status
+        current.status === terminal.status
           ? current
           : yield* recordRunEvent({
               sessionId: input.sessionId,
               runId: input.runId,
-              status: input.status,
-              kind: input.kind,
-              summary: input.summary
+              status: terminal.status,
+              kind: terminal.kind,
+              summary: terminal.summary
             })
       return {
         run,
@@ -884,6 +898,27 @@ const RUN_STATUS_TRANSITIONS: Record<RunStatus, readonly RunStatus[]> = {
   stopped: ['supervision-failed'],
   'policy-violation': ['supervision-failed'],
   'supervision-failed': []
+}
+
+/** Product meaning stays in Core even though Main observes the native cause. */
+function decideTerminalObservation(observation: TerminalRunObservation): {
+  status: TerminalRunStatus
+  kind: RecordRunEventInput['kind']
+  summary: string
+  category: HarnessFailureCategory | null
+} {
+  switch (observation.type) {
+    case 'harness-completed':
+      return { ...observation, status: 'completed', category: null }
+    case 'harness-failed':
+      return { ...observation, status: 'failed' }
+    case 'person-stopped':
+      return { ...observation, status: 'stopped', category: null }
+    case 'policy-violation':
+      return { ...observation, status: 'policy-violation', category: null }
+    case 'supervision-failed':
+      return { ...observation, status: 'supervision-failed', category: null }
+  }
 }
 
 export function createCore(deps: CoreDeps = {}): Core {

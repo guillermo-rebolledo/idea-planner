@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { proposedRuleSchema } from './approval'
 import { harnessIdSchema } from './readiness'
-import { permissionModeSchema, skillNameSchema } from './run'
+import { permissionModeSchema, runActivityKindSchema, skillNameSchema } from './run'
 
 /**
  * The Conversation is the Session's one permanent, user-visible history, and
@@ -366,7 +366,9 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     /** Exact terminal Run projection, so every outcome can be repaired after a crash. */
     terminalOutcome: z
       .enum(['completed', 'stopped', 'failed', 'policy-violation', 'supervision-failed'])
-      .optional()
+      .optional(),
+    /** Exact terminal activity projection, so restart does not rewrite its meaning. */
+    terminalActivityKind: runActivityKindSchema.optional()
   }),
   z.object({
     kind: z.literal('usage'),
@@ -665,6 +667,7 @@ export const finalizeConversationRunInputSchema = z.object({
   transitionFingerprint: z.string().length(64).optional(),
   checkoutObservation: z.enum(['observed', 'unavailable']).optional(),
   queueDisposition: z.enum(['advance', 'pause']).optional(),
+  terminalActivityKind: runActivityKindSchema.optional(),
   /** Checkout facts committed under the same transition identity as the ending. */
   checkoutChanges: z.array(checkoutChangeSchema).max(500).optional()
 })

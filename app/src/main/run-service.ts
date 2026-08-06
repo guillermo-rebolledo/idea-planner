@@ -55,7 +55,8 @@ import type { HarnessId } from '@shared/readiness'
 import {
   completeRunLifecycleResultSchema,
   openRunLifecycleResultSchema,
-  type CheckoutObservation
+  type CheckoutObservation,
+  type TerminalRunObservation
 } from '@shared/run-lifecycle'
 import type { SkillCatalog } from '@shared/skill'
 import { diffSnapshots, observeCheckoutState, snapshotCheckout, type CheckoutSnapshot } from './git'
@@ -277,8 +278,13 @@ export class RunService {
    * crash and reopening the app lands in that Run.
    */
   async recoverUnfinishedWork(): Promise<void> {
-    this.recovering ??= this.recoverAll()
-    await this.recovering
+    const recovery = (this.recovering ??= this.recoverAll())
+    try {
+      await recovery
+    } catch (error) {
+      if (this.recovering === recovery) this.recovering = undefined
+      throw error
+    }
   }
 
   private recovering?: Promise<void>
@@ -289,8 +295,9 @@ export class RunService {
   }
 
   private async recoverAll(): Promise<void> {
-    await this.compareAbandonedSnapshots()
-    await this.closeUnfinishedRuns()
+    const open = await this.unfinishedRuns()
+    await this.closeUnfinishedRuns(open)
+    await this.discardUnclaimedSnapshots(new Set(open.map((run) => run.runId)))
   }
 
   /**
@@ -302,16 +309,17 @@ export class RunService {
    * A Run this process is genuinely running is never touched: the broker is
    * asked, because it is the one that knows.
    */
-  private async closeUnfinishedRuns(): Promise<void> {
-    const open = await this.unfinishedRuns().catch(() => [])
+  private async closeUnfinishedRuns(open: UnfinishedRun[]): Promise<void> {
     const running = new Set([...this.deps.broker.activeRunIds(), ...this.mine])
     for (const run of open) {
       if (running.has(run.runId)) continue
+      const baseline = await this.abandonedBaseline(run.runId)
       await this.conclude(
         { id: run.runId, sessionId: run.sessionId },
         'failed',
         'error',
-        'The app closed while this Run was working'
+        'The app closed while this Run was working',
+        baseline
       ).catch(() => undefined)
     }
   }
@@ -322,22 +330,35 @@ export class RunService {
       .parse(await this.deps.core.send({ type: 'conversation/unfinished' }))
   }
 
-  private async compareAbandonedSnapshots(): Promise<void> {
+  private async abandonedBaseline(runId: string): Promise<CheckoutBaseline | undefined> {
     const root = join(this.deps.privateRoot, SNAPSHOTS)
     const abandoned = await readdir(root, { withFileTypes: true }).catch(() => [])
     for (const entry of abandoned) {
       if (!entry.isDirectory()) continue
       const directory = join(root, entry.name)
       const baseline = await readBaseline(directory)
-      // A snapshot this cannot read is a snapshot nobody can use. It goes,
-      // rather than being kept forever in the hope of an answer.
-      if (baseline) {
-        await this.compareAndRecord(
-          { id: baseline.runId, sessionId: baseline.sessionId },
-          { checkout: baseline.checkout, directory, snapshot: baseline.snapshot }
-        ).catch(() => undefined)
+      if (baseline?.runId === runId) {
+        return {
+          checkout: baseline.checkout,
+          directory,
+          snapshot: baseline.snapshot
+        }
       }
-      await rm(directory, { recursive: true, force: true })
+    }
+    return undefined
+  }
+
+  /** Removes only evidence Core says cannot belong to an unfinished Run. */
+  private async discardUnclaimedSnapshots(unfinished: ReadonlySet<string>): Promise<void> {
+    const root = join(this.deps.privateRoot, SNAPSHOTS)
+    const abandoned = await readdir(root, { withFileTypes: true }).catch(() => [])
+    for (const entry of abandoned) {
+      if (!entry.isDirectory()) continue
+      const directory = join(root, entry.name)
+      const baseline = await readBaseline(directory)
+      if (!baseline || !unfinished.has(baseline.runId)) {
+        await rm(directory, { recursive: true, force: true })
+      }
     }
   }
 
@@ -492,6 +513,10 @@ export class RunService {
    * Session, so it is closed as interrupted and offered back for resending.
    */
   async conversation(sessionId: string): Promise<ConversationSnapshot> {
+    // Startup recovery owns terminal observations from the previous process.
+    // Waiting here prevents a window read from racing it with a second,
+    // necessarily less informed observation after the baseline was consumed.
+    if (this.recovering) await this.recovering
     const snapshot = await this.readConversation(sessionId)
     // Acceptance makes the Run ours before the broker can register its
     // process. A refresh in that launch window must not mistake it for an
@@ -503,16 +528,14 @@ export class RunService {
     ) {
       return snapshot
     }
-    await this.deps.core.send({
-      type: 'conversation/finalize',
-      input: {
-        sessionId,
-        runId: snapshot.activeRunId,
-        outcome: 'failed',
-        category: 'process-crash',
-        summary: 'The app stopped supervising this Run before it answered'
-      }
-    })
+    const baseline = await this.abandonedBaseline(snapshot.activeRunId)
+    await this.conclude(
+      { id: snapshot.activeRunId, sessionId },
+      'failed',
+      'error',
+      'The app stopped supervising this Run before it answered',
+      baseline
+    )
     return await this.readConversation(sessionId)
   }
 
@@ -1313,33 +1336,38 @@ export class RunService {
     run: Pick<RunSnapshot, 'id' | 'sessionId'>,
     status: 'completed' | 'stopped' | 'failed' | 'policy-violation' | 'supervision-failed',
     kind: RunActivityKind,
-    summary: string
+    summary: string,
+    recoveredBaseline?: CheckoutBaseline
   ): Promise<RunSnapshot> {
     this.mine.delete(run.id)
     const category = this.failures.get(run.id) ?? null
     const diagnostic = this.diagnostics.get(run.id)
-    this.failures.delete(run.id)
-    this.diagnostics.delete(run.id)
-    this.proposals.delete(run.id)
     // A bare "it failed" helps nobody. When the Harness said nothing the app
     // could categorize, its own last diagnostic line is the explanation.
     const explained =
       status === 'failed' && category === null && diagnostic ? `${summary}: ${diagnostic}` : summary
-    const checkoutObservation = await this.observeUnreportedChanges(run)
+    const baseline = recoveredBaseline ?? this.baselines.get(run.id)
+    const checkoutObservation = await this.observeUnreportedChanges(run, baseline)
     const terminal = completeRunLifecycleResultSchema.parse(
       await this.deps.core.send({
         type: 'run/lifecycle-complete',
         input: {
           sessionId: run.sessionId,
           runId: run.id,
-          status,
-          kind,
-          summary: explained,
-          category: status === 'failed' ? category : null,
+          observation: terminalObservation(status, kind, explained, category),
           checkoutObservation
         }
       })
     )
+    this.failures.delete(run.id)
+    this.diagnostics.delete(run.id)
+    this.proposals.delete(run.id)
+    if (baseline) {
+      if (this.baselines.get(run.id)?.directory === baseline.directory) {
+        this.baselines.delete(run.id)
+      }
+      await rm(baseline.directory, { recursive: true, force: true })
+    }
     // Said out loud, after Core has written it: a Run ending is the one
     // lifecycle event nothing else reports. The Conversation re-reads itself
     // while a Run is in flight and would find out anyway, but every other
@@ -1350,9 +1378,9 @@ export class RunService {
       sessionId: run.sessionId,
       runId: run.id,
       event:
-        status === 'completed'
+        terminal.run.status === 'completed'
           ? { type: 'completed' }
-          : status === 'stopped'
+          : terminal.run.status === 'stopped'
             ? { type: 'stopped' }
             : { type: 'failed', category: category ?? 'unknown', summary: explained }
     })
@@ -1370,38 +1398,18 @@ export class RunService {
    * not a failure and never ends a Run differently.
    */
   private async observeUnreportedChanges(
-    run: Pick<RunSnapshot, 'id' | 'sessionId'>
+    run: Pick<RunSnapshot, 'id' | 'sessionId'>,
+    baseline: CheckoutBaseline | undefined
   ): Promise<CheckoutObservation> {
-    const baseline = this.baselines.get(run.id)
-    this.baselines.delete(run.id)
-    if (baseline?.snapshot.status !== 'taken') return { status: 'unavailable' }
+    if (!baseline) return { status: 'unavailable' }
     try {
+      if (baseline.snapshot.status !== 'taken') return { status: 'unavailable' }
       return { status: 'observed', changes: await this.compareCheckout(run, baseline) }
     } catch {
       // A comparison that cannot be made leaves the reported record alone;
       // Core still receives an honest terminal observation with no inferred changes.
       return { status: 'unavailable' }
-    } finally {
-      // The snapshot's objects have done their job; what they described is in
-      // the Conversation now.
-      await rm(baseline.directory, { recursive: true, force: true })
     }
-  }
-
-  /** The comparison itself, made when a Run ends or when one is found unfinished. */
-  private async compareAndRecord(
-    run: Pick<RunSnapshot, 'id' | 'sessionId'>,
-    baseline: CheckoutBaseline
-  ): Promise<void> {
-    const changes = await this.compareCheckout(run, baseline)
-    if (changes.length === 0) return
-    // Recording the same comparison twice is safe: Core keeps only paths this
-    // Run has not already accounted for, so a replay after a crash between
-    // this and the cleanup adds nothing.
-    await this.deps.core.send({
-      type: 'conversation/checkout-changes',
-      input: { sessionId: run.sessionId, runId: run.id, files: changes }
-    })
   }
 
   private async compareCheckout(
@@ -1604,6 +1612,26 @@ export class RunService {
         'Harness process cleanup could not be verified'
       )
     }
+  }
+}
+
+function terminalObservation(
+  status: 'completed' | 'stopped' | 'failed' | 'policy-violation' | 'supervision-failed',
+  kind: RunActivityKind,
+  summary: string,
+  category: HarnessFailureCategory | null
+): TerminalRunObservation {
+  switch (status) {
+    case 'completed':
+      return { type: 'harness-completed', kind, summary }
+    case 'failed':
+      return { type: 'harness-failed', kind, summary, category }
+    case 'stopped':
+      return { type: 'person-stopped', kind, summary }
+    case 'policy-violation':
+      return { type: 'policy-violation', kind, summary }
+    case 'supervision-failed':
+      return { type: 'supervision-failed', kind, summary }
   }
 }
 
