@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import type {
   CheckoutFacts,
+  CheckoutStateObservation,
   DetectedEditor,
   EditorCatalog,
   EditorId,
@@ -66,6 +67,22 @@ const EDITOR_ICON: Record<EditorId, LucideIcon> = {
 
 const CHIP_CLASS =
   'flex h-6 items-center gap-1.5 rounded-md border border-border px-2 text-xs text-muted-foreground'
+
+function checkoutStateText(observation: CheckoutStateObservation): string {
+  if (observation.status === 'git-unavailable') return 'Git unavailable'
+  if (observation.status === 'not-a-repository') return 'Not a Git repository'
+  const labels = {
+    clean: 'Clean',
+    merge: 'Merge in progress',
+    rebase: 'Rebase in progress',
+    'squash-merge': 'Squash merge in progress',
+    'cherry-pick': 'Cherry-pick in progress',
+    revert: 'Revert in progress',
+    'unresolved-index': 'Unresolved index',
+    'unsafe-root': 'Unsafe Checkout root'
+  } as const
+  return labels[observation.state]
+}
 
 export function WhereAmI({
   session,
@@ -155,6 +172,12 @@ export function WhereAmI({
           >
             {isWorktree ? 'Worktree' : 'Local'}
           </span>
+          {facts !== null &&
+            (facts.state.status !== 'observed' || facts.state.state !== 'clean') && (
+              <span className={cn(CHIP_CLASS, 'text-notice-foreground')}>
+                {checkoutStateText(facts.state)}
+              </span>
+            )}
         </PopoverTrigger>
         <PopoverContent align="end" className="w-72">
           <ProjectCard
@@ -321,6 +344,12 @@ function ProjectCard({
           <GitBranch aria-hidden="true" className="size-3.5 text-muted-foreground" />
           <span className="font-mono">{facts?.branch ?? 'no branch'}</span>
         </div>
+        {facts !== null && (
+          <div className={cn(ROW_CLASS, 'hover:bg-transparent')}>
+            <span className="text-muted-foreground">Checkout State</span>
+            <span className="ml-auto text-right">{checkoutStateText(facts.state)}</span>
+          </div>
+        )}
       </div>
       <div className="border-t border-border p-1.5">
         <Menu>

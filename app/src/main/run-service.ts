@@ -9,9 +9,10 @@ import {
   checkoutDirectory,
   sessionSummarySchema,
   startSessionInputSchema,
+  type CheckoutStateObservation,
   type CoreCommand,
   type StartSessionInput,
-  type StartSessionResult
+  type StartedSessionResult
 } from '@shared/contract'
 import {
   HARNESS_DEFAULT_MODEL,
@@ -53,7 +54,7 @@ import {
 } from '@shared/run'
 import type { HarnessId } from '@shared/readiness'
 import type { SkillCatalog } from '@shared/skill'
-import { diffSnapshots, snapshotCheckout, type CheckoutSnapshot } from './git'
+import { diffSnapshots, observeCheckoutState, snapshotCheckout, type CheckoutSnapshot } from './git'
 import { HARNESS_SPECS } from './readiness'
 import { ToolHost, type ApprovalRequest } from './tool-host'
 import type { RunProcessBroker } from './run-process-broker'
@@ -115,6 +116,13 @@ const SNAPSHOTS = 'checkout-snapshots'
 
 /** What a snapshot is of, kept with it so a restart can still read it. */
 const BASELINE = 'baseline.json'
+
+/** A short, path-free fact prepended to a Run only when Git is not clean. */
+function withCheckoutStateContext(prompt: string, observation: CheckoutStateObservation): string {
+  return observation.status === 'observed' && observation.state !== 'clean'
+    ? `Checkout State: ${observation.state}\n\n${prompt}`
+    : prompt
+}
 
 const baselineFileSchema = z.object({
   sessionId: z.string().min(1),
@@ -332,13 +340,13 @@ export class RunService {
   async startSession(request: {
     input: StartSessionInput
     run: RunRequest | undefined
-  }): Promise<StartSessionResult> {
+  }): Promise<StartedSessionResult> {
     const input = startSessionInputSchema.parse(request.input)
     const session = sessionSummarySchema.parse(
       await this.deps.core.send({ type: 'session/start', input })
     )
     const run = request.run
-    if (!run) return { session, runStarted: false }
+    if (!run) return { status: 'started', session, runStarted: false }
     const snapshot = await this.develop({
       sessionId: session.id,
       submissionId: startingSubmissionId(session.id),
@@ -350,7 +358,11 @@ export class RunService {
     // Conversation itself explains — which it does by offering recovery — and
     // throws when it is not. Either way the question here is the same: is this
     // Session working on the message it was created with.
-    return { session, runStarted: snapshot !== null && snapshot.recovery === null }
+    return {
+      status: 'started',
+      session,
+      runStarted: snapshot !== null && snapshot.recovery === null
+    }
   }
 
   /**
@@ -715,35 +727,6 @@ export class RunService {
         )
         throw new Error('Harness executable changed after durable Run acceptance')
       }
-      const running = await this.record(accepted, 'running', 'lifecycle', 'Harness process running')
-      // Codex says nothing until it is spoken to, so its Adapter is opened
-      // before the process is started and its opening frame written the moment
-      // it is. Claude is opened the same way and is owed nothing.
-      const opening = harnessStreamSchema.parse(
-        await this.deps.core.send({
-          type: 'harness/open',
-          runId: accepted.id,
-          harness: input.harness,
-          ...(input.harness === 'codex'
-            ? {
-                launch: {
-                  cwd: checkout,
-                  approvalPolicy: CODEX_APPROVAL_POLICIES[input.permissionMode],
-                  sandbox: CODEX_SANDBOXES[input.permissionMode],
-                  ...(input.model === HARNESS_DEFAULT_MODEL ? {} : { model: input.model }),
-                  effort: input.effort,
-                  developerInstructions: skill
-                    ? await readFile(join(skill.path, 'SKILL.md'), 'utf8')
-                    : '',
-                  prompt: restoreFromHistory
-                    ? `${input.prompt}\n\nDeterministic handoff from the Conversation so far:\n${handoff}`
-                    : input.prompt,
-                  ...(threadCompatible && savedThread ? { resumeThreadId: savedThread } : {})
-                }
-              }
-            : {})
-        })
-      )
       const harnessEnvironment =
         input.harness === 'claude'
           ? {
@@ -778,11 +761,44 @@ export class RunService {
         }),
         { mode: 0o600 }
       ).catch(() => undefined)
+      // Observed at the last responsible moment rather than inherited from
+      // the title bar: a Git operation can begin while this Run is prepared.
+      const checkoutState = await observeCheckoutState(checkout)
+      const runPrompt = withCheckoutStateContext(input.prompt, checkoutState)
+      const running = await this.record(accepted, 'running', 'lifecycle', 'Harness process running')
+      // Codex says nothing until it is spoken to, so its Adapter is opened
+      // before the process is started and its opening frame written the moment
+      // it is. Claude is opened the same way and is owed nothing.
+      const opening = harnessStreamSchema.parse(
+        await this.deps.core.send({
+          type: 'harness/open',
+          runId: accepted.id,
+          harness: input.harness,
+          ...(input.harness === 'codex'
+            ? {
+                launch: {
+                  cwd: checkout,
+                  approvalPolicy: CODEX_APPROVAL_POLICIES[input.permissionMode],
+                  sandbox: CODEX_SANDBOXES[input.permissionMode],
+                  ...(input.model === HARNESS_DEFAULT_MODEL ? {} : { model: input.model }),
+                  effort: input.effort,
+                  developerInstructions: skill
+                    ? await readFile(join(skill.path, 'SKILL.md'), 'utf8')
+                    : '',
+                  prompt: restoreFromHistory
+                    ? `${runPrompt}\n\nDeterministic handoff from the Conversation so far:\n${handoff}`
+                    : runPrompt,
+                  ...(threadCompatible && savedThread ? { resumeThreadId: savedThread } : {})
+                }
+              }
+            : {})
+        })
+      )
       await this.deps.broker.start({
         id: accepted.id,
         executable: harness.executablePath,
         args: harnessArguments(
-          input,
+          { ...input, prompt: runPrompt },
           runDirectory,
           restoreFromHistory ? handoff : undefined,
           threadCompatible ? savedThread : undefined

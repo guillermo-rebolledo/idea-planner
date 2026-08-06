@@ -18,6 +18,10 @@ _Avoid_: Idea, task, thread, chat
 The directory a Session operates on — either the **primary checkout**, the Project's own working directory edited in place, or an **isolated checkout**, a linked git worktree created for the Session from a chosen base branch. On screen the two variants read **Local** and **Worktree** (title-bar cluster and Project card, design spec 2a/2b), and the contract spells them `local` / `worktree`; "worktree" stays out of prose that means a Checkout in general. One deliberate asymmetry: in the New Session picker the chip reads **Worktree** while the popover option it opens reads **Isolated** — the chip names what you get, the option names what you are asking for, each per the design spec's wording for its surface.
 _Avoid_: Working Directory, workspace, sandbox
 
+**Checkout State**:
+The Git operation observed in a Checkout right now: **Clean**, **Merge in progress**, **Rebase in progress**, **Squash merge in progress**, **Cherry-pick in progress**, **Revert in progress**, **Unresolved index**, or **Unsafe Checkout root**. It is advisory context for a Run, so an agent can finish an operation already underway; an app action that requires a stable tree is blocked and names the exact state. Missing Git and a folder that is not a repository are observation failures, not Checkout States, and stay distinct in typed outcomes.
+_Avoid_: Git status, busy, dirty
+
 **Archive**:
 Setting a Session aside while keeping everything it owns. An archived Session leaves the inbox but is restorable at any time; archiving says "not now", never "gone".
 _Avoid_: Delete, hide, close

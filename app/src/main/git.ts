@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process'
-import { mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { access, mkdir, realpath } from 'node:fs/promises'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { ChangeKind } from '@shared/conversation'
+import type { CheckoutState, CheckoutStateObservation } from '@shared/checkout'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
@@ -14,11 +15,93 @@ export type ProjectRootResolution =
   | { status: 'not-a-repository' }
   | { status: 'git-unavailable' }
 
-export type RepositoryInit = { status: 'initialized' } | { status: 'git-unavailable' }
+export type RepositoryInit =
+  | { status: 'initialized' }
+  | { status: 'git-unavailable' }
+  | { status: 'blocked'; state: CheckoutState }
 
 interface GitOptions {
   /** Overrides `PATH` for the probe. An empty string is a machine with no git. */
   pathEnv?: string
+}
+
+/**
+ * Observes the Checkout through Git's own paths. In particular, `.git` is not
+ * assumed to be a directory: linked worktrees and submodules make it a file.
+ */
+export async function observeCheckoutState(
+  checkout: string,
+  options: GitOptions = {}
+): Promise<CheckoutStateObservation> {
+  const resolution = await resolveProjectRoot(checkout, options)
+  if (resolution.status !== 'resolved') return resolution
+
+  try {
+    const [claimed, repository] = await Promise.all([realpath(checkout), realpath(resolution.root)])
+    const fromRepository = relative(repository, claimed)
+    if (
+      fromRepository !== '' &&
+      fromRepository !== '..' &&
+      !fromRepository.startsWith(`..${sep}`)
+    ) {
+      return { status: 'observed', state: 'unsafe-root' }
+    }
+
+    const [rebaseMerge, rebaseApply, cherryPick, revert, merge, squash, unresolved] =
+      await Promise.all([
+        markerExists(checkout, 'rebase-merge', options),
+        markerExists(checkout, 'rebase-apply', options),
+        markerExists(checkout, 'CHERRY_PICK_HEAD', options),
+        markerExists(checkout, 'REVERT_HEAD', options),
+        markerExists(checkout, 'MERGE_HEAD', options),
+        markerExists(checkout, 'SQUASH_MSG', options),
+        hasUnresolvedEntries(checkout, options)
+      ])
+
+    let state: CheckoutState = 'clean'
+    if (rebaseMerge || rebaseApply) state = 'rebase'
+    else if (cherryPick) state = 'cherry-pick'
+    else if (revert) state = 'revert'
+    else if (squash && unresolved) state = 'squash-merge'
+    else if (merge) state = 'merge'
+    else if (unresolved) state = 'unresolved-index'
+    return { status: 'observed', state }
+  } catch {
+    return (await isGitMissing(options))
+      ? { status: 'git-unavailable' }
+      : { status: 'not-a-repository' }
+  }
+}
+
+async function markerExists(
+  checkout: string,
+  marker: string,
+  options: GitOptions
+): Promise<boolean> {
+  const { stdout } = await run(
+    'git',
+    ['rev-parse', '--path-format=absolute', '--git-path', marker],
+    {
+      cwd: checkout,
+      env: environment(options),
+      timeout: TIMEOUT_MS
+    }
+  )
+  const path = stdout.trim()
+  return access(isAbsolute(path) ? path : resolve(checkout, path)).then(
+    () => true,
+    () => false
+  )
+}
+
+/** `-z` keeps every possible filename opaque; only the presence of a record matters. */
+async function hasUnresolvedEntries(checkout: string, options: GitOptions): Promise<boolean> {
+  const { stdout } = await run('git', ['ls-files', '--unmerged', '-z'], {
+    cwd: checkout,
+    env: environment(options),
+    timeout: TIMEOUT_MS
+  })
+  return stdout.length > 0
 }
 
 /**
@@ -57,6 +140,11 @@ export async function initRepository(
   path: string,
   options: GitOptions = {}
 ): Promise<RepositoryInit> {
+  const observation = await observeCheckoutState(path, options)
+  if (observation.status === 'git-unavailable') return observation
+  if (observation.status === 'observed' && observation.state === 'unsafe-root') {
+    return { status: 'blocked', state: observation.state }
+  }
   try {
     await run('git', ['init', '--quiet'], {
       cwd: path,
@@ -128,7 +216,11 @@ export async function listBranches(
 }
 
 export type WorktreeCreation =
-  { status: 'created'; path: string; branch: string } | { status: 'failed'; message: string }
+  | { status: 'created'; path: string; branch: string }
+  | { status: 'blocked'; state: CheckoutState }
+  | { status: 'git-unavailable' }
+  | { status: 'not-a-repository' }
+  | { status: 'failed'; message: string }
 
 /**
  * Creates a Session's isolated checkout: a linked worktree on a new branch
@@ -147,11 +239,17 @@ export async function createWorktree(
   },
   options: GitOptions = {}
 ): Promise<WorktreeCreation> {
+  const observation = await observeCheckoutState(input.projectRoot, options)
+  if (observation.status !== 'observed') return observation
+  if (observation.state === 'unsafe-root') return { status: 'blocked', state: observation.state }
   await mkdir(input.worktreesDirectory, { recursive: true })
   let failure = 'The worktree could not be created'
   for (let attempt = 0; attempt < 20; attempt++) {
     const branch = attempt === 0 ? input.branch : `${input.branch}-${String(attempt + 1)}`
     const path = join(input.worktreesDirectory, branch)
+    const latest = await observeCheckoutState(input.projectRoot, options)
+    if (latest.status !== 'observed') return latest
+    if (latest.state === 'unsafe-root') return { status: 'blocked', state: latest.state }
     try {
       await run('git', ['worktree', 'add', '--quiet', '-b', branch, path, input.baseBranch], {
         cwd: input.projectRoot,
@@ -171,11 +269,14 @@ export async function createWorktree(
 
 /**
  * A snapshot of a Checkout: the tree git would write if everything in the
- * working directory were staged. `unavailable` is not a failure — a Checkout
- * that is not a repository, or a machine with no git, simply has no snapshot,
- * and a Run must not fail over it.
+ * working directory were staged. A skipped snapshot names why it was skipped:
+ * a missing Git, a non-repository, or a Checkout State that makes reading a
+ * stable tree unsafe. A Run must not fail over any of them.
  */
-export type CheckoutSnapshot = { status: 'taken'; tree: string } | { status: 'unavailable' }
+export type CheckoutSnapshot =
+  | { status: 'taken'; tree: string }
+  | { status: 'skipped'; reason: 'git-unavailable' | 'not-a-repository' }
+  | { status: 'skipped'; reason: 'checkout-state'; state: CheckoutState }
 
 /** One file that changed between two snapshots, and how. */
 export interface SnapshotChange {
@@ -214,9 +315,23 @@ export async function snapshotCheckout(
   appOwnedDirectory: string,
   options: GitOptions = {}
 ): Promise<CheckoutSnapshot> {
+  const observation = await observeCheckoutState(checkout, options)
+  if (observation.status !== 'observed') {
+    return { status: 'skipped', reason: observation.status }
+  }
+  if (observation.state === 'unsafe-root') {
+    return { status: 'skipped', reason: 'checkout-state', state: observation.state }
+  }
   try {
     const env = await snapshotEnvironment(checkout, appOwnedDirectory, options)
     await mkdir(join(appOwnedDirectory, OBJECTS), { recursive: true })
+    const latest = await observeCheckoutState(checkout, options)
+    if (latest.status !== 'observed') {
+      return { status: 'skipped', reason: latest.status }
+    }
+    if (latest.state === 'unsafe-root') {
+      return { status: 'skipped', reason: 'checkout-state', state: latest.state }
+    }
     // Staged into our index, never theirs. `-A` is what makes a file the agent
     // created count, and what makes one it deleted count as gone.
     await run('git', ['add', '-A'], { cwd: checkout, env, timeout: TIMEOUT_MS })
@@ -226,15 +341,17 @@ export async function snapshotCheckout(
       timeout: TIMEOUT_MS
     })
     const tree = stdout.trim()
-    return tree ? { status: 'taken', tree } : { status: 'unavailable' }
+    return tree ? { status: 'taken', tree } : { status: 'skipped', reason: 'not-a-repository' }
   } catch {
-    return { status: 'unavailable' }
+    return (await isGitMissing(options))
+      ? { status: 'skipped', reason: 'git-unavailable' }
+      : { status: 'skipped', reason: 'not-a-repository' }
   }
 }
 
 /**
  * What changed between two snapshots of one Checkout. Either snapshot being
- * unavailable means the question cannot be answered, which is reported as
+ * skipped means the question cannot be answered, which is reported as
  * nothing having been observed rather than as nothing having happened.
  */
 export async function diffSnapshots(

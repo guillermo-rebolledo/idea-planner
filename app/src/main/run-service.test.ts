@@ -8,11 +8,9 @@ import {
   symlink,
   writeFile
 } from 'node:fs/promises'
-import { execFile } from 'node:child_process'
 import { createConnection, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   emptyUsage,
@@ -25,11 +23,11 @@ import { LOCAL_CHECKOUT, startingSubmissionId, type SessionSummary } from '@shar
 import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
 import type { RunLaunch } from './run-process-broker'
 import { snapshotCheckout } from './git'
+import { conflictingRepository, testGit as git } from './git-test-support'
 import { RunService } from './run-service'
 import { discoverSkills } from './skills'
 
 const temporaryDirectories: string[] = []
-
 /** A ready Codex install with the verified Grill Me Skill in place. */
 async function readyHarnessRoot(prefix: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix))
@@ -1097,6 +1095,26 @@ describe('Claude launch', () => {
     // asserting it is gone by name would pass again if it came back reworded.
     expect((broker.launch?.args ?? []).at(-1)).toBe('/wayfinder Rename the greeting')
   })
+
+  it.each(['merge', 'rebase'] as const)(
+    'starts during a %s and prefixes its exact Checkout State without a path',
+    async (operation) => {
+      const root = await readyClaudeRoot(`run-claude-${operation}-`)
+      const checkout = join(root, 'a-project')
+      await mkdir(checkout)
+      await conflictingRepository(checkout)
+      await git('git', [operation, 'side'], { cwd: checkout }).catch(() => undefined)
+      const broker = fakeBroker()
+      const service = new RunService(claudeDeps(root, broker))
+
+      await service.develop(developInput())
+
+      const prompt = (broker.launch?.args ?? []).at(-1) ?? ''
+      expect(prompt).toBe(`/wayfinder Checkout State: ${operation}\n\nRename the greeting`)
+      expect(prompt).not.toContain(checkout)
+      expect(broker.start).toHaveBeenCalledOnce()
+    }
+  )
 })
 
 describe('staged settings', () => {
@@ -1893,7 +1911,6 @@ describe('a Run the app never got to finish', () => {
   async function project(root: string): Promise<string> {
     const checkout = join(root, 'a-project')
     await mkdir(checkout, { recursive: true })
-    const git = promisify(execFile)
     await git('git', ['init', '--quiet'], { cwd: checkout })
     await writeFile(join(checkout, 'tracked.ts'), 'a\n')
     await git('git', ['add', '-A'], { cwd: checkout })

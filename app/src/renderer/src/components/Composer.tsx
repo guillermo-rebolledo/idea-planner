@@ -6,7 +6,7 @@ import {
   type PermissionMode,
   type RunRequest,
   type SessionSummary,
-  type StartSessionResult
+  type StartedSessionResult
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { CheckoutPicker } from '@renderer/components/CheckoutPicker'
@@ -32,7 +32,7 @@ import { cn } from '@renderer/lib/utils'
 interface ComposerProps {
   /** Pre-selects a Project, as the button on a Project row does. */
   boundProjectRoot?: string
-  onStarted: (started: StartSessionResult) => void
+  onStarted: (started: StartedSessionResult) => void
   /** Opens a Session that already exists, as the “Continue” starter does. */
   onOpenSession: (session: SessionSummary) => void
 }
@@ -179,14 +179,29 @@ export function Composer({
         }
       : undefined
     try {
-      onStarted(
-        await window.shell.startSession({
-          projectRoot,
-          message: message.trim(),
-          checkout,
-          ...(run ? { run } : {})
-        })
-      )
+      const result = await window.shell.startSession({
+        projectRoot,
+        message: message.trim(),
+        checkout,
+        ...(run ? { run } : {})
+      })
+      if (result.status === 'blocked') {
+        setError(`The isolated Checkout is blocked by Checkout State: ${result.state}.`)
+        return
+      }
+      if (result.status === 'refused') {
+        setError(
+          result.reason === 'git-unavailable'
+            ? 'Git is unavailable, so the isolated Checkout could not be created.'
+            : 'That Project is no longer a Git repository.'
+        )
+        return
+      }
+      if (result.status === 'failed') {
+        setError(result.message)
+        return
+      }
+      onStarted(result)
     } catch {
       if (!disposedRef.current) setError('That Session could not be started.')
     } finally {

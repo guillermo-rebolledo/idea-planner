@@ -74,6 +74,7 @@ import {
   currentBranch,
   initRepository,
   listBranches,
+  observeCheckoutState,
   resolveProjectRoot
 } from './git'
 import { detectEditors, openInEditor } from './editors'
@@ -310,6 +311,13 @@ function registerIpc(): void {
       if (initialized.status === 'git-unavailable') {
         return { status: 'refused', reason: 'git-unavailable', path }
       }
+      if (initialized.status === 'blocked') {
+        const resolution = await resolveProjectRoot(path)
+        if (resolution.status === 'resolved') {
+          return { status: 'confirm-root', chosen: path, root: resolution.root }
+        }
+        return { status: 'refused', reason: resolution.status, path }
+      }
       // No root to confirm: git was just told to start a Project at the exact
       // folder the person named, so the root can only be that folder.
       const resolution = await resolveProjectRoot(path)
@@ -347,7 +355,25 @@ function registerIpc(): void {
         baseBranch: request.checkout.baseBranch
       })
       if (created.status !== 'created') {
-        throw new Error(`The isolated checkout could not be created: ${created.message}`)
+        if (created.status === 'blocked') {
+          return startSessionResultSchema.parse({
+            status: 'blocked',
+            action: 'create-worktree',
+            state: created.state
+          })
+        }
+        if (created.status === 'git-unavailable' || created.status === 'not-a-repository') {
+          return startSessionResultSchema.parse({
+            status: 'refused',
+            action: 'create-worktree',
+            reason: created.status
+          })
+        }
+        return startSessionResultSchema.parse({
+          status: 'failed',
+          action: 'create-worktree',
+          message: created.message
+        })
       }
       checkout = { kind: 'worktree', path: created.path }
     } else {
@@ -511,7 +537,8 @@ function registerIpc(): void {
     return checkoutFactsSchema.parse({
       checkout: session.checkout,
       path,
-      branch: await currentBranch(path)
+      branch: await currentBranch(path),
+      state: await observeCheckoutState(path)
     })
   })
 

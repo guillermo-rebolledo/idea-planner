@@ -33,6 +33,7 @@ import type { ChooseProjectResult, ProjectView } from './project'
 import {
   checkoutRequestSchema,
   checkoutSchema,
+  checkoutStateSchema,
   LOCAL_CHECKOUT,
   type BranchList,
   type CheckoutFacts
@@ -58,12 +59,13 @@ import {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 10: Checkout facts include the currently observed Checkout State.
  * 9: Queued Submissions and queue state are durable Conversation projections.
  * 8: the Conversation stream carries app-owned Run start and stop boundaries.
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 9
+export const CONTRACT_VERSION = 10
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -207,17 +209,36 @@ export const startSessionRequestSchema = startSessionInputSchema.extend({
 export type StartSessionRequest = z.input<typeof startSessionRequestSchema>
 
 /**
- * What sending on the launch screen produced. The Run is reported separately
- * from the Session because the two can part ways: the message is durable the
- * moment the Session exists, so a Run that never started leaves a real Session
- * holding a real message — and saying so is the difference between a Session
- * that is quietly doing nothing and one the person knows to send again.
+ * What sending on the launch screen produced. A local Session reports its Run
+ * separately because the two can part ways. An isolated Checkout is settled
+ * first, so a precise typed refusal can return before a Session exists.
  */
-export const startSessionResultSchema = z.object({
+export const startedSessionResultSchema = z.object({
+  status: z.literal('started'),
   session: sessionSummarySchema,
   /** False when no Run was asked for, and when the one asked for failed. */
   runStarted: z.boolean()
 })
+export type StartedSessionResult = z.infer<typeof startedSessionResultSchema>
+
+export const startSessionResultSchema = z.discriminatedUnion('status', [
+  startedSessionResultSchema,
+  z.object({
+    status: z.literal('blocked'),
+    action: z.literal('create-worktree'),
+    state: checkoutStateSchema
+  }),
+  z.object({
+    status: z.literal('refused'),
+    action: z.literal('create-worktree'),
+    reason: z.enum(['git-unavailable', 'not-a-repository'])
+  }),
+  z.object({
+    status: z.literal('failed'),
+    action: z.literal('create-worktree'),
+    message: z.string().min(1).max(500)
+  })
+])
 export type StartSessionResult = z.infer<typeof startSessionResultSchema>
 
 export const themePreferenceSchema = z.enum(['system', 'light', 'dark'])
