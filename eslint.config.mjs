@@ -24,7 +24,7 @@ import globals from 'globals'
 
 /** Effect stays behind transport and presentation seams — see ADR 0001. */
 const noEffectAtTransportOrUi = {
-  name: 'effect',
+  group: ['effect', 'effect/*'],
   message:
     'Effect is confined to Core and Main product behavior (docs/adr/0001-adopt-effect-in-core.md). Keep shared contracts, Preload, and Renderer Effect-free.'
 }
@@ -112,12 +112,17 @@ export default tseslint.config(
     languageOptions: { globals: globals.node }
   },
 
-  // Preload is a transport adapter and stays promise-based under ADR 0001.
+  // Electron, IPC, and Preload adapters stay promise-based under ADR 0001.
   {
     name: 'app/effect-boundary',
-    files: ['app/src/preload/**/*.ts'],
+    files: [
+      'app/src/preload/**/*.ts',
+      'app/src/main/index.ts',
+      'app/src/main/core-client.ts',
+      'app/src/main/mcp-proxy.ts'
+    ],
     rules: {
-      '@typescript-eslint/no-restricted-imports': ['error', { paths: [noEffectAtTransportOrUi] }]
+      '@typescript-eslint/no-restricted-imports': ['error', { patterns: [noEffectAtTransportOrUi] }]
     }
   },
 
@@ -129,7 +134,7 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
-        { paths: [noEffectAtTransportOrUi], patterns: [noNodeInSandbox] }
+        { patterns: [noEffectAtTransportOrUi, noNodeInSandbox] }
       ]
     }
   },

@@ -3,6 +3,7 @@ import type { SpawnOptionsWithoutStdio } from 'node:child_process'
 import { describe, expect, it, vi } from 'vitest'
 import {
   createMainEffectRuntime,
+  nativeRunLayer,
   RunProcessBroker,
   type SpawnedProcess
 } from './run-process-broker'
@@ -23,15 +24,17 @@ describe('Run process broker', () => {
     const cleanupRunDirectory = vi.fn().mockResolvedValue(undefined)
     const clearMonitor = vi.fn()
     const onBeforeCleanup = vi.fn().mockResolvedValue(undefined)
-    const runtime = createMainEffectRuntime({
-      spawn: () => child,
-      killProcessGroup,
-      waitForGroupExit,
-      cleanupRunDirectory,
-      countProcessGroupMembers: vi.fn().mockResolvedValue(1),
-      setMonitor: vi.fn(() => ({ id: 'monitor-1' })),
-      clearMonitor
-    })
+    const runtime = createMainEffectRuntime(
+      nativeRunLayer({
+        spawn: () => child,
+        killProcessGroup,
+        waitForGroupExit,
+        cleanupRunDirectory,
+        countProcessGroupMembers: vi.fn().mockResolvedValue(1),
+        setMonitor: vi.fn(() => ({ id: 'monitor-1' })),
+        clearMonitor
+      })
+    )
     const broker = new RunProcessBroker(runtime)
 
     await broker.start({

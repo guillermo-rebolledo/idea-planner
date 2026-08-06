@@ -27,19 +27,23 @@ injection — exactly the shape of the upcoming Run supervision work.
 
 ## Decision
 
-Use Effect for all non-UI product behavior in the **Core utility process** and
-**Main**. Durable Run state, Conversation journals, Run lifecycle, Harness
-adapters, queue coordination, and native supervision are Effect-native.
+Use Effect as the target architecture for non-UI product behavior in the
+**Core utility process** and **Main**. Core is Effect-native today; Main is
+migrated in complete behavior slices so commands, events, and persisted state
+remain compatible throughout the program. Durable Run state, Conversation
+journals, Run lifecycle, Harness adapters, queue coordination, and native
+supervision move into Effect as their slices land.
 
 Effect stays behind the application's transport and presentation seams:
 
 - Core is Effect end-to-end: `core.ts` exposes an Effect-native surface
   consumed by the utility-process entry (`app/src/core/index.ts`), which runs
   each request in its own fiber keyed by request id.
-- Main product behavior is Effect-native. Native process operations are
-  represented as injected Effect services; resource lifetime, interruption,
-  cleanup, and failures remain in the Effect model until Main reaches an
-  Electron callback or IPC seam.
+- Main's first slice is `RunProcessBroker` resource lifetime: native process
+  operations are represented as an injected Effect layer, and each Run is a
+  child Scope of one Electron-lifetime runtime. Its existing promise facade to
+  `RunService` remains temporarily behavior-compatible while later slices move
+  that caller into Effect.
 - The Core process seam and Electron IPC seam stay promise-based. Dispatchers
   use `runPromiseExit` at those edges and speak plain validated messages.
 - The shared IPC contract (`app/src/shared/contract.ts`) stays **zod**. Effect
@@ -53,7 +57,7 @@ This containment is enforced, not just documented: architecture rules permit
 `effect` in Core and Main product behavior and forbid it from Preload, shared
 contracts, and the Renderer.
 
-Conventions inside Core and Main product behavior:
+Conventions inside Core and Effect-native Main modules:
 
 - Failures travel in the typed error channel as `CoreError` (the contract
   error). Internal tagged errors are fine while a subsystem grows, but they
@@ -61,8 +65,10 @@ Conventions inside Core and Main product behavior:
 - Injectable dependencies (clock, id generation, later: filesystem, SQLite,
   process spawning) are `Context.Tag` services provided via `Layer`, so tests
   swap them without monkey-patching.
-- Mutable state lives in `Ref`; mutual exclusion uses `Effect.Semaphore`
-  instead of hand-rolled promise queues.
+- Mutable state owned by an Effect-native slice lives in `Ref`; mutual
+  exclusion uses `Effect.Semaphore` instead of hand-rolled promise queues.
+  A compatibility facade may retain existing observable state until the slice
+  that owns it migrates, but new resource lifetime belongs to Scope.
 
 ## Consequences
 

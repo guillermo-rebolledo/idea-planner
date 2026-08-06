@@ -52,7 +52,10 @@ export interface NativeRunServices {
   clearMonitor: (monitor: unknown) => void
 }
 
-type BrokerDeps = Pick<NativeRunServices, 'spawn' | 'killProcessGroup' | 'waitForGroupExit'> &
+export type NativeRunOverrides = Pick<
+  NativeRunServices,
+  'spawn' | 'killProcessGroup' | 'waitForGroupExit'
+> &
   Partial<Omit<NativeRunServices, 'spawn' | 'killProcessGroup' | 'waitForGroupExit'>>
 
 interface ActiveRun {
@@ -97,7 +100,15 @@ const defaultDeps: NativeRunServices = {
   clearMonitor: (monitor) => clearInterval(monitor as NodeJS.Timeout)
 }
 
-class NativeRun extends Context.Tag('main/NativeRun')<NativeRun, NativeRunServices>() {}
+export class NativeRun extends Context.Tag('main/NativeRun')<NativeRun, NativeRunServices>() {}
+
+class RunSupervisionError extends Error {
+  readonly _tag = 'RunSupervisionError'
+
+  constructor(message: string, cause: unknown) {
+    super(message, { cause })
+  }
+}
 
 interface RunScopeOwnerService {
   fork(): Effect.Effect<Scope.CloseableScope>
@@ -128,18 +139,25 @@ export class MainEffectRuntime {
   }
 }
 
-/** Builds Main's live runtime, or a test runtime whose native layer is replaced. */
-export function createMainEffectRuntime(overrides: BrokerDeps = defaultDeps): MainEffectRuntime {
+/** A replaceable native layer: production defaults or deterministic test services. */
+export function nativeRunLayer(
+  overrides: NativeRunOverrides = defaultDeps
+): Layer.Layer<NativeRun> {
   const native: NativeRunServices = { ...defaultDeps, ...overrides }
+  return Layer.succeed(NativeRun, native)
+}
+
+/** Builds Main's runtime from the native layer selected at composition time. */
+export function createMainEffectRuntime(
+  native: Layer.Layer<NativeRun> = nativeRunLayer()
+): MainEffectRuntime {
   const scopes = Layer.scoped(
     RunScopeOwner,
     Effect.map(Effect.scope, (root) => ({
       fork: () => Scope.fork(root, ExecutionStrategy.sequential)
     }))
   )
-  return new MainEffectRuntime(
-    ManagedRuntime.make(Layer.merge(Layer.succeed(NativeRun, native), scopes))
-  )
+  return new MainEffectRuntime(ManagedRuntime.make(Layer.merge(native, scopes)))
 }
 
 /** Owns exactly one detached OS process group for each active Run. */
@@ -148,11 +166,11 @@ export class RunProcessBroker {
   private supervisionFailed = false
   private readonly runtime: MainEffectRuntime
 
-  constructor(runtimeOrDeps: MainEffectRuntime | BrokerDeps = defaultDeps) {
+  constructor(runtimeOrDeps: MainEffectRuntime | NativeRunOverrides = defaultDeps) {
     this.runtime =
       runtimeOrDeps instanceof MainEffectRuntime
         ? runtimeOrDeps
-        : createMainEffectRuntime(runtimeOrDeps)
+        : createMainEffectRuntime(nativeRunLayer(runtimeOrDeps))
   }
 
   start(launch: RunLaunch): Promise<void> {
@@ -164,7 +182,11 @@ export class RunProcessBroker {
     if (this.active.has(launch.id)) return Promise.resolve()
     const acquire = (native: NativeRunServices, scope: Scope.CloseableScope) =>
       Effect.acquireRelease(
-        Effect.sync(() => this.launch(native, scope, launch)),
+        Effect.try({
+          try: () => this.launch(native, scope, launch),
+          catch: (cause) =>
+            new RunSupervisionError('The Harness process could not be started', cause)
+        }),
         (active) => this.release(native, active)
       )
     const observe = (entry: ActiveRun): void => this.observe(entry)
@@ -224,8 +246,8 @@ export class RunProcessBroker {
         const native = yield* NativeRun
         return yield* Effect.tryPromise({
           try: () => native.countProcessGroupMembers(entry.pid),
-          catch: (error) => error
-        }).pipe(Effect.catchIf(isMissingProcessGroup, () => Effect.succeed(0)))
+          catch: (cause) => new RunSupervisionError('Could not inspect the process group', cause)
+        }).pipe(Effect.catchIf(isMissingProcessGroupError, () => Effect.succeed(0)))
       })
     )
     if (count <= 16) return
@@ -296,17 +318,17 @@ export class RunProcessBroker {
       this.clearMonitor(entry.launch.id)
       yield* Effect.tryPromise({
         try: () => this.terminateAndVerify(native, entry.pid),
-        catch: (error) => error
+        catch: (cause) => new RunSupervisionError('Could not stop the process group', cause)
       })
       if (entry.launch.onBeforeCleanup) {
         yield* Effect.tryPromise({
           try: entry.launch.onBeforeCleanup,
-          catch: (error) => error
+          catch: (cause) => new RunSupervisionError('Could not close the Run capability', cause)
         })
       }
       yield* Effect.tryPromise({
         try: () => native.cleanupRunDirectory(entry.runDirectory),
-        catch: (error) => error
+        catch: (cause) => new RunSupervisionError('Could not remove the Run directory', cause)
       })
       this.active.delete(entry.launch.id)
     }).pipe(Effect.orDie)
@@ -372,4 +394,8 @@ function isMissingProcessGroup(error: unknown): boolean {
     'code' in error &&
     (error.code === 1 || error.code === 'ESRCH')
   )
+}
+
+function isMissingProcessGroupError(error: RunSupervisionError): boolean {
+  return isMissingProcessGroup(error.cause)
 }
