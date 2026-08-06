@@ -301,7 +301,7 @@ export class ToolHost {
       // Deliberately off the serial queue and outside the wall limit: this call
       // is waiting on a person, and the sixty seconds that bound a tool call
       // are not how long somebody is allowed to think.
-      void this.approve(socket, request.id, parsed.data.arguments)
+      void this.approve(socket, request.id, parsed.data.arguments).catch(() => undefined)
       return
     }
     await this.options.callbacks.onActivity('output', `Tool call started: ${parsed.data.name}`)

@@ -11,6 +11,7 @@ import { Button } from '@renderer/components/ui/button'
 import { LaunchGate } from '@renderer/components/LaunchGate'
 import { Onboarding } from '@renderer/components/Onboarding'
 import { Mailbox } from '@renderer/components/Mailbox'
+import { QuitWarning } from '@renderer/components/QuitWarning'
 
 type BootPhase =
   | { phase: 'loading' }
@@ -71,16 +72,15 @@ export default function App(): React.JSX.Element {
     [adoptTheme]
   )
 
+  let content: React.JSX.Element
   if (bootPhase.phase === 'loading') {
-    return (
+    content = (
       <div className="flex h-full items-center justify-center" role="status" aria-live="polite">
         <p className="text-muted-foreground">Starting up…</p>
       </div>
     )
-  }
-
-  if (bootPhase.phase === 'mismatched') {
-    return (
+  } else if (bootPhase.phase === 'mismatched') {
+    content = (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-8" role="alert">
         <p className="text-foreground">This window and the app behind it are different builds.</p>
         <p className="max-w-md text-center text-xs text-muted-foreground">
@@ -89,10 +89,8 @@ export default function App(): React.JSX.Element {
         </p>
       </div>
     )
-  }
-
-  if (bootPhase.phase === 'failed') {
-    return (
+  } else if (bootPhase.phase === 'failed') {
+    content = (
       <div className="flex h-full flex-col items-center justify-center gap-3" role="alert">
         <p className="text-foreground">{bootPhase.message}</p>
         <Button variant="secondary" onClick={() => void loadBootState()}>
@@ -100,23 +98,26 @@ export default function App(): React.JSX.Element {
         </Button>
       </div>
     )
-  }
-
-  // The gate comes before everything else, including onboarding: adding a
-  // Project is the second question, and asking it first would walk somebody
-  // through setup for an app that cannot do anything at the end of it.
-  if (readiness !== null && harnessesReadyForASession(readiness).length === 0) {
-    return <LaunchGate snapshot={readiness} onContinue={setReadiness} />
-  }
-
-  if (projects.length === 0) {
-    return <Onboarding onComplete={setProjects} />
+  } else if (readiness !== null && harnessesReadyForASession(readiness).length === 0) {
+    // The gate comes before everything else, including onboarding: adding a
+    // Project is the second question, and asking it first would walk somebody
+    // through setup for an app that cannot do anything at the end of it.
+    content = <LaunchGate snapshot={readiness} onContinue={setReadiness} />
+  } else if (projects.length === 0) {
+    content = <Onboarding onComplete={setProjects} />
+  } else {
+    content = (
+      <Mailbox
+        theme={theme}
+        onThemePreferenceChange={(preference) => void changeThemePreference(preference)}
+      />
+    )
   }
 
   return (
-    <Mailbox
-      theme={theme}
-      onThemePreferenceChange={(preference) => void changeThemePreference(preference)}
-    />
+    <>
+      {content}
+      <QuitWarning />
+    </>
   )
 }

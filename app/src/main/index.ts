@@ -56,6 +56,7 @@ import {
   type Checkout,
   type ChooseProjectResult,
   type ConversationStreamEvent,
+  quitRequestResponseSchema,
   type ThemeState
 } from '@shared/contract'
 import { WINDOW_BACKGROUND } from '@shared/theme'
@@ -128,6 +129,9 @@ let mainWindow: BrowserWindow | null = null
 let settings: SettingsStore
 let readiness: ReadinessService
 let runService: RunService
+let shutdownStarted = false
+let quitPromptOpen = false
+let servicesReady = false
 
 const coreClient = new CoreClient(
   () => app.getPath('userData'),
@@ -455,6 +459,26 @@ function registerIpc(): void {
     settings.update({ themePreference: preference })
     nativeTheme.themeSource = preference
     return themeState()
+  })
+
+  handleInvoke(
+    IPC_CHANNELS.getQuitWarningPreference,
+    z.undefined(),
+    () => settings.get().warnBeforeQuitWithActiveRuns
+  )
+
+  handleInvoke(IPC_CHANNELS.setQuitWarningPreference, z.boolean(), (enabled) => {
+    settings.update({ warnBeforeQuitWithActiveRuns: enabled })
+    return enabled
+  })
+
+  handleInvoke(IPC_CHANNELS.respondToQuitRequest, quitRequestResponseSchema, async (response) => {
+    quitPromptOpen = false
+    if (response === 'keep-working') return
+    if (response === 'always-quit') {
+      settings.update({ warnBeforeQuitWithActiveRuns: false })
+    }
+    await beginSafeShutdown()
   })
 
   handleInvoke(IPC_CHANNELS.getReadiness, z.undefined(), async () =>
@@ -795,6 +819,11 @@ function createWindow(): void {
   })
 
   window.on('ready-to-show', () => window.show())
+  window.on('close', (event) => {
+    if (shutdownStarted) return
+    event.preventDefault()
+    requestQuit()
+  })
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
   })
@@ -831,6 +860,7 @@ void app.whenReady().then(() => {
       void notifyWhileAway(event).catch(() => undefined)
     }
   })
+  servicesReady = true
 
   // A Run the app never got to finish still has a record of what it changed
   // waiting to be compared (12e), and a Conversation that still has it open
@@ -864,15 +894,51 @@ void app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  app.quit()
+  requestQuit()
 })
 
-let shutdownStarted = false
 app.on('before-quit', (event) => {
   if (shutdownStarted) return
   event.preventDefault()
+  requestQuit()
+})
+
+// Ctrl+C in `pnpm dev` already says to stop. Skip the product warning, but use
+// the same verified process-group cleanup as every other exit path.
+process.on('SIGINT', () => void beginSafeShutdown())
+
+function requestQuit(): void {
+  if (shutdownStarted) return
+  if (!servicesReady) {
+    app.exit(0)
+    return
+  }
+  const activeRunCount = runService.activeRunCount()
+  // Shell acceptance tests close their app in `finally`; individual warning
+  // tests opt in so teardown never becomes an unanswered product prompt.
+  const warningEnabledInThisProcess =
+    !testAppData || app.isPackaged || process.env['APP_TEST_QUIT_WARNING'] === '1'
+  if (
+    activeRunCount > 0 &&
+    warningEnabledInThisProcess &&
+    settings.get().warnBeforeQuitWithActiveRuns
+  ) {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.show()
+    mainWindow.focus()
+    if (!quitPromptOpen) {
+      quitPromptOpen = true
+      mainWindow.webContents.send(IPC_CHANNELS.quitRequested, activeRunCount)
+    }
+    return
+  }
+  void beginSafeShutdown()
+}
+
+async function beginSafeShutdown(): Promise<void> {
+  if (shutdownStarted) return
   shutdownStarted = true
-  void runService
+  await runService
     .stopAll('quit')
     .then(() => {
       coreClient.stop()
@@ -889,4 +955,4 @@ app.on('before-quit', (event) => {
         buttons: ['Keep app open']
       })
     })
-})
+}

@@ -279,6 +279,11 @@ export class RunService {
 
   private recovering?: Promise<void>
 
+  /** Runs this app process is still responsible for, including one being prepared. */
+  activeRunCount(): number {
+    return new Set([...this.deps.broker.activeRunIds(), ...this.mine]).size
+  }
+
   private async recoverAll(): Promise<void> {
     await this.compareAbandonedSnapshots()
     await this.closeUnfinishedRuns()
@@ -484,7 +489,14 @@ export class RunService {
    */
   async conversation(sessionId: string): Promise<ConversationSnapshot> {
     const snapshot = await this.readConversation(sessionId)
-    if (!snapshot.activeRunId || this.deps.broker.activeRunIds().includes(snapshot.activeRunId)) {
+    // Acceptance makes the Run ours before the broker can register its
+    // process. A refresh in that launch window must not mistake it for an
+    // abandoned Run from an earlier app process.
+    if (
+      !snapshot.activeRunId ||
+      this.mine.has(snapshot.activeRunId) ||
+      this.deps.broker.activeRunIds().includes(snapshot.activeRunId)
+    ) {
       return snapshot
     }
     await this.deps.core.send({
@@ -707,10 +719,10 @@ export class RunService {
               () => undefined
             ),
           onStop: (summary) => {
-            void this.stopForPolicy(accepted, summary)
+            void this.stopForPolicy(accepted, summary).catch(() => undefined)
           },
           onChoices: (question, options) => {
-            void this.offerChoices(accepted, question, options)
+            void this.offerChoices(accepted, question, options).catch(() => undefined)
           },
           onApproval: (request) => this.requestApproval(accepted, checkout, input.harness, request)
         }
@@ -846,24 +858,26 @@ export class RunService {
           const summary = sanitize(text, checkout).trim()
           if (!summary) return
           this.diagnostics.set(accepted.id, summary)
-          void this.record(accepted, undefined, 'output', summary)
+          void this.record(accepted, undefined, 'output', summary).catch(() => undefined)
         },
         onExit: (code, signal) => {
-          void (this.pendingIngest.get(accepted.id) ?? Promise.resolve()).then(() => {
-            this.pendingIngest.delete(accepted.id)
-            const stopped = signal === 'SIGTERM' || signal === 'SIGKILL'
-            const harnessFailed = this.failures.has(accepted.id)
-            return this.conclude(
-              accepted,
-              stopped ? 'stopped' : code === 0 && !harnessFailed ? 'completed' : 'failed',
-              code === 0 && !harnessFailed ? 'lifecycle' : 'error',
-              stopped
-                ? 'Harness process stopped'
-                : code === 0 && !harnessFailed
-                  ? 'Harness process completed'
-                  : 'Harness process failed'
-            )
-          })
+          void (this.pendingIngest.get(accepted.id) ?? Promise.resolve())
+            .then(() => {
+              this.pendingIngest.delete(accepted.id)
+              const stopped = signal === 'SIGTERM' || signal === 'SIGKILL'
+              const harnessFailed = this.failures.has(accepted.id)
+              return this.conclude(
+                accepted,
+                stopped ? 'stopped' : code === 0 && !harnessFailed ? 'completed' : 'failed',
+                code === 0 && !harnessFailed ? 'lifecycle' : 'error',
+                stopped
+                  ? 'Harness process stopped'
+                  : code === 0 && !harnessFailed
+                    ? 'Harness process completed'
+                    : 'Harness process failed'
+              )
+            })
+            .catch(() => undefined)
         },
         onSupervisionFailure: () => {
           void this.conclude(
@@ -871,10 +885,12 @@ export class RunService {
             'supervision-failed',
             'error',
             'Harness process cleanup could not be verified'
-          )
+          ).catch(() => undefined)
         },
         onLimitViolation: (summary) => {
-          void this.conclude(accepted, 'policy-violation', 'blocked', summary)
+          void this.conclude(accepted, 'policy-violation', 'blocked', summary).catch(
+            () => undefined
+          )
         }
       })
       // Now that there is a process to speak to, it is spoken to.
@@ -1340,7 +1356,7 @@ export class RunService {
             : { type: 'failed', category: category ?? 'unknown', summary: explained }
     })
     if (status === 'completed') {
-      void this.queueCoordinator.drain(run.sessionId)
+      void this.queueCoordinator.drain(run.sessionId).catch(() => undefined)
     } else {
       await this.setQueuePaused(run.sessionId, true)
     }

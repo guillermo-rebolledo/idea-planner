@@ -32,6 +32,11 @@ const api: ShellApi = {
   deleteSession: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.deleteSession, sessionId),
   setThemePreference: (preference) =>
     ipcRenderer.invoke(IPC_CHANNELS.setThemePreference, preference),
+  getQuitWarningPreference: () => ipcRenderer.invoke(IPC_CHANNELS.getQuitWarningPreference),
+  setQuitWarningPreference: (enabled) =>
+    ipcRenderer.invoke(IPC_CHANNELS.setQuitWarningPreference, enabled),
+  respondToQuitRequest: (response) =>
+    ipcRenderer.invoke(IPC_CHANNELS.respondToQuitRequest, response),
   getReadiness: () => ipcRenderer.invoke(IPC_CHANNELS.getReadiness),
   refreshReadiness: (harness) => ipcRenderer.invoke(IPC_CHANNELS.refreshReadiness, { harness }),
   chooseHarnessExecutable: (harness) =>
@@ -72,6 +77,13 @@ const api: ShellApi = {
     const subscription = (_event: unknown, theme: ThemeState): void => listener(theme)
     ipcRenderer.on(IPC_CHANNELS.themeChanged, subscription)
     return () => ipcRenderer.off(IPC_CHANNELS.themeChanged, subscription)
+  },
+  onQuitRequested: (listener) => {
+    const subscription = (_event: unknown, activeRunCount: number): void => {
+      if (Number.isInteger(activeRunCount) && activeRunCount > 0) listener(activeRunCount)
+    }
+    ipcRenderer.on(IPC_CHANNELS.quitRequested, subscription)
+    return () => ipcRenderer.off(IPC_CHANNELS.quitRequested, subscription)
   },
   onUndoShortcut: (listener) => {
     const subscription = (): void => listener()
