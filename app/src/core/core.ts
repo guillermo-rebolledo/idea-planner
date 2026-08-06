@@ -254,6 +254,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       const session = yield* sessions.start({
         projectRoot: input.projectRoot,
         checkout: input.checkout,
+        worktreeBootstrap: input.worktreeBootstrap,
         title: suggestSessionTitle(input.message)
       })
       // The message is what created the Session, so a Session that exists

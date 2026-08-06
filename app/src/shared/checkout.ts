@@ -17,6 +17,48 @@ export const checkoutSchema = z.discriminatedUnion('kind', [
 ])
 export type Checkout = z.infer<typeof checkoutSchema>
 
+export const worktreeBootstrapSkipReasonSchema = z.enum([
+  'invalid-path',
+  'missing',
+  'tracked',
+  'not-ignored',
+  'symlink',
+  'not-regular',
+  'permission-denied',
+  'destination-exists',
+  'copy-failed'
+])
+export type WorktreeBootstrapSkipReason = z.infer<typeof worktreeBootstrapSkipReasonSchema>
+
+/**
+ * The filenames considered while preparing an isolated Checkout. Contents
+ * never cross this boundary: only Project-relative names and typed outcomes
+ * are durable or visible to the Renderer.
+ */
+export const worktreeBootstrapResultSchema = z.object({
+  outcome: z.enum(['copied', 'partial', 'skipped']),
+  copied: z.array(z.string().min(1)),
+  skipped: z.array(z.object({ path: z.string().min(1), reason: worktreeBootstrapSkipReasonSchema }))
+})
+export type WorktreeBootstrapResult = z.infer<typeof worktreeBootstrapResultSchema>
+
+/** Derives the aggregate outcome from the per-file results in one place. */
+export function buildWorktreeBootstrapResult(
+  copied: string[],
+  skipped: WorktreeBootstrapResult['skipped']
+): WorktreeBootstrapResult {
+  return {
+    outcome:
+      skipped.length === 0 && copied.length > 0
+        ? 'copied'
+        : copied.length > 0
+          ? 'partial'
+          : 'skipped',
+    copied,
+    skipped
+  }
+}
+
 /**
  * What Git is doing in a Checkout right now. This is observed state, never
  * stored: both the person and an agent can begin or finish an operation from

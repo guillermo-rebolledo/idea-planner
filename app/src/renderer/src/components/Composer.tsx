@@ -6,7 +6,8 @@ import {
   type PermissionMode,
   type RunRequest,
   type SessionSummary,
-  type StartedSessionResult
+  type StartedSessionResult,
+  type WorktreeBootstrapResult
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { CheckoutPicker } from '@renderer/components/CheckoutPicker'
@@ -74,6 +75,10 @@ export function Composer({
   const [skill, setSkill] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pendingBootstrap, setPendingBootstrap] = useState<{
+    token: string
+    result: WorktreeBootstrapResult
+  } | null>(null)
   const messageId = useId()
   const messageRef = useRef<HTMLTextAreaElement>(null)
   // Guards the send itself rather than the rendered state, so two keystrokes
@@ -201,12 +206,44 @@ export function Composer({
         setError(result.message)
         return
       }
+      if (result.status === 'bootstrap-incomplete') {
+        setPendingBootstrap({ token: result.token, result: result.result })
+        return
+      }
       onStarted(result)
     } catch {
       if (!disposedRef.current) setError('That Session could not be started.')
     } finally {
       sendingRef.current = false
       // A successful send unmounts this surface; only a failure comes back.
+      if (!disposedRef.current) setSending(false)
+    }
+  }
+
+  async function resolveBootstrap(decision: 'retry' | 'continue'): Promise<void> {
+    if (!pendingBootstrap || sendingRef.current) return
+    sendingRef.current = true
+    setSending(true)
+    setError(null)
+    try {
+      const result = await window.shell.resumeWorktreeBootstrap({
+        token: pendingBootstrap.token,
+        decision
+      })
+      if (result.status === 'bootstrap-incomplete') {
+        setPendingBootstrap({ token: result.token, result: result.result })
+        return
+      }
+      if (result.status === 'started') {
+        setPendingBootstrap(null)
+        onStarted(result)
+        return
+      }
+      setError('That isolated Checkout could not be resumed.')
+    } catch {
+      if (!disposedRef.current) setError('That isolated Checkout could not be resumed.')
+    } finally {
+      sendingRef.current = false
       if (!disposedRef.current) setSending(false)
     }
   }
@@ -321,6 +358,50 @@ export function Composer({
         </p>
       )}
 
+      {pendingBootstrap && (
+        <section
+          aria-labelledby="worktree-bootstrap-heading"
+          className="bg-card mx-auto w-full max-w-xl rounded-lg border border-border p-4 text-sm"
+        >
+          <h2 id="worktree-bootstrap-heading" className="font-medium">
+            Some local files could not be copied
+          </h2>
+          {pendingBootstrap.result.copied.length > 0 && (
+            <div className="mt-3">
+              <h3 className="text-xs font-medium text-muted-foreground">Copied</h3>
+              <ul className="mt-1 list-inside list-disc">
+                {pendingBootstrap.result.copied.map((path) => (
+                  <li key={path}>{path}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="mt-3">
+            <h3 className="text-xs font-medium text-muted-foreground">Skipped</h3>
+            <ul className="mt-1 list-inside list-disc">
+              {pendingBootstrap.result.skipped.map((entry) => (
+                <li key={`${entry.path}:${entry.reason}`}>
+                  {entry.path} — {bootstrapReason(entry.reason)}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={sending}
+              onClick={() => void resolveBootstrap('continue')}
+            >
+              Continue without files
+            </Button>
+            <Button type="button" disabled={sending} onClick={() => void resolveBootstrap('retry')}>
+              Retry copying
+            </Button>
+          </div>
+        </section>
+      )}
+
       {error && (
         <p role="alert" className="text-center text-xs text-destructive">
           {error}
@@ -328,6 +409,10 @@ export function Composer({
       )}
     </form>
   )
+}
+
+function bootstrapReason(reason: WorktreeBootstrapResult['skipped'][number]['reason']): string {
+  return reason.replaceAll('-', ' ')
 }
 
 /** How many recent Sessions are worth a chip before they are just a list. */

@@ -16,6 +16,7 @@ export const IPC_CHANNELS = {
   initializeProject: 'project:init',
   confirmProject: 'project:confirm',
   startSession: 'session:start',
+  resumeWorktreeBootstrap: 'session:resume-worktree-bootstrap',
   listSessions: 'session:list',
   listDamagedSessions: 'session:list-damaged',
   queryMailbox: 'mailbox:query',

@@ -84,13 +84,29 @@ describe('Sessions', () => {
     const session = await core.startSession({
       projectRoot,
       message: 'Fix the location crash',
-      checkout: { kind: 'worktree', path: worktree }
+      checkout: { kind: 'worktree', path: worktree },
+      worktreeBootstrap: {
+        outcome: 'partial',
+        copied: ['.env.local'],
+        skipped: [{ path: '.env.private', reason: 'permission-denied' }]
+      }
     })
 
     expect(session.checkout).toEqual({ kind: 'worktree', path: worktree })
+    expect(session.worktreeBootstrap).toEqual({
+      outcome: 'partial',
+      copied: ['.env.local'],
+      skipped: [{ path: '.env.private', reason: 'permission-denied' }]
+    })
     // Fixed at creation, and durable: the next read still says so.
     await expect(core.listSessions()).resolves.toMatchObject([
-      { checkout: { kind: 'worktree', path: worktree } }
+      {
+        checkout: { kind: 'worktree', path: worktree },
+        worktreeBootstrap: {
+          copied: ['.env.local'],
+          skipped: [{ path: '.env.private', reason: 'permission-denied' }]
+        }
+      }
     ])
   })
 
