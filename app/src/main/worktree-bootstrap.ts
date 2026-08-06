@@ -11,6 +11,15 @@ import { promisify } from 'node:util'
 
 const run = promisify(execFile)
 const TIMEOUT_MS = 10_000
+const REDIRECTING_GIT_ENV = new Set([
+  'GIT_DIR',
+  'GIT_COMMON_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_NAMESPACE'
+])
 
 interface BootstrapInput {
   projectRoot: string
@@ -112,7 +121,7 @@ async function listCandidates(projectRoot: string, pathspecs: string[]): Promise
   const { stdout } = await run(
     'git',
     ['ls-files', '--cached', '--others', '-z', '--', ...pathspecs],
-    { cwd: projectRoot, timeout: TIMEOUT_MS }
+    { cwd: projectRoot, env: gitEnvironment(), timeout: TIMEOUT_MS }
   )
   return stdout.split('\0').filter(Boolean)
 }
@@ -205,6 +214,7 @@ function validRelativePath(path: string): boolean {
 async function isTracked(projectRoot: string, path: string): Promise<boolean> {
   const { stdout } = await run('git', ['ls-files', '--cached', '-z', '--', path], {
     cwd: projectRoot,
+    env: gitEnvironment(),
     timeout: TIMEOUT_MS
   })
   return stdout.length > 0
@@ -214,12 +224,20 @@ async function isIgnored(projectRoot: string, path: string): Promise<boolean> {
   try {
     await run('git', ['check-ignore', '--quiet', '--no-index', '--', path], {
       cwd: projectRoot,
+      env: gitEnvironment(),
       timeout: TIMEOUT_MS
     })
     return true
   } catch {
     return false
   }
+}
+
+/** A caller's repository pointers must never override the Project named by cwd. */
+function gitEnvironment(): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !REDIRECTING_GIT_ENV.has(name))
+  )
 }
 
 function containedBy(root: string, candidate: string): boolean {

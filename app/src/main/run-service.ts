@@ -31,7 +31,6 @@ import {
   type ConversationStreamEvent,
   type CodexLaunch,
   type DevelopSessionInput,
-  type FinalizeConversationRunInput,
   type HarnessEvent,
   type HarnessFailureCategory,
   type RunRequest,
@@ -53,6 +52,11 @@ import {
   type StartRunInput
 } from '@shared/run'
 import type { HarnessId } from '@shared/readiness'
+import {
+  completeRunLifecycleResultSchema,
+  openRunLifecycleResultSchema,
+  type CheckoutObservation
+} from '@shared/run-lifecycle'
 import type { SkillCatalog } from '@shared/skill'
 import { diffSnapshots, observeCheckoutState, snapshotCheckout, type CheckoutSnapshot } from './git'
 import { HARNESS_SPECS } from './readiness'
@@ -566,62 +570,6 @@ export class RunService {
       checkout,
       permissionMode: input.permissionMode
     }
-    const accept = (submissionId: string): Promise<unknown> =>
-      this.deps.core.send({
-        type: 'run/accept',
-        input: {
-          submissionId,
-          sessionId: input.sessionId,
-          prompt: input.prompt,
-          configuration
-        }
-      })
-    let accepted: RunSnapshot
-    try {
-      accepted = runSnapshotSchema.parse(await accept(input.submissionId))
-    } catch (error) {
-      if (
-        !retryTerminal ||
-        !(error instanceof Error) ||
-        !error.message.includes('Submission identity was already used')
-      ) {
-        throw error
-      }
-      accepted = await this.acceptRetry(input.submissionId, accept)
-    }
-    // A resent submission whose Run already ended is a new attempt at the
-    // same message. The message stays one message — the Conversation's
-    // submission identity is untouched — but a Run that already failed is
-    // not somewhere a retry can land, so each attempt takes its own durable
-    // acceptance under a derived identity. This is what makes the recovery
-    // card's "send that message again" actually contact a Harness.
-    for (
-      let attempt = 2;
-      retryTerminal && TERMINAL_RUN_STATUSES.has(accepted.status) && attempt <= 20;
-      attempt++
-    ) {
-      try {
-        accepted = runSnapshotSchema.parse(
-          await accept(`${input.submissionId}:attempt-${String(attempt)}`)
-        )
-      } catch {
-        // This attempt's identity was already used for different content —
-        // the person changed the configuration between retries, or the
-        // Harness updated underneath them. The next attempt number is free.
-      }
-    }
-    if (TERMINAL_RUN_STATUSES.has(accepted.status)) return accepted
-    // From here on this Run is this process's, whatever the broker knows yet.
-    this.mine.add(accepted.id)
-    if (accepted.status !== 'accepted') {
-      if (this.deps.broker.activeRunIds().includes(accepted.id)) return accepted
-      return await this.record(
-        accepted,
-        'failed',
-        'error',
-        'Interrupted Run requires explicit recovery; the Harness was not contacted again'
-      )
-    }
     const conversation = await this.readConversation(input.sessionId)
     const latestHarness = [...conversation.entries]
       .reverse()
@@ -648,19 +596,65 @@ export class RunService {
     const restoreFromHistory =
       switchedHarness || (latestHarness === input.harness && !threadCompatible)
     const handoff = deterministicHandoff(conversation, input.skill ?? null)
-    // The Conversation records the Run boundary before anything can fail, so
-    // every later outcome has somewhere understandable to land.
-    await this.deps.core.send({
-      type: 'conversation/begin',
-      sessionId: input.sessionId,
-      runId: accepted.id,
-      submissionId: input.submissionId,
-      harness: input.harness,
-      skill: input.skill,
-      model: input.model,
-      askedPermissionMode: CLAUDE_PERMISSION_MODES[input.permissionMode],
-      restorationNote: latestHarness === input.harness && !threadCompatible
-    })
+    const accept = (submissionId: string): Promise<unknown> =>
+      this.deps.core.send({
+        type: 'run/lifecycle-open',
+        input: {
+          submissionId,
+          conversationSubmissionId: input.submissionId,
+          sessionId: input.sessionId,
+          prompt: input.prompt,
+          configuration,
+          askedPermissionMode: CLAUDE_PERMISSION_MODES[input.permissionMode],
+          restorationNote: latestHarness === input.harness && !threadCompatible
+        }
+      })
+    let accepted: RunSnapshot
+    try {
+      accepted = openRunLifecycleResultSchema.parse(await accept(input.submissionId)).run
+    } catch (error) {
+      if (
+        !retryTerminal ||
+        !(error instanceof Error) ||
+        !error.message.includes('Submission identity was already used')
+      ) {
+        throw error
+      }
+      accepted = await this.acceptRetry(input.submissionId, accept)
+    }
+    // A resent submission whose Run already ended is a new attempt at the
+    // same message. The message stays one message — the Conversation's
+    // submission identity is untouched — but a Run that already failed is
+    // not somewhere a retry can land, so each attempt takes its own durable
+    // acceptance under a derived identity. This is what makes the recovery
+    // card's "send that message again" actually contact a Harness.
+    for (
+      let attempt = 2;
+      retryTerminal && TERMINAL_RUN_STATUSES.has(accepted.status) && attempt <= 20;
+      attempt++
+    ) {
+      try {
+        accepted = openRunLifecycleResultSchema.parse(
+          await accept(`${input.submissionId}:attempt-${String(attempt)}`)
+        ).run
+      } catch {
+        // This attempt's identity was already used for different content —
+        // the person changed the configuration between retries, or the
+        // Harness updated underneath them. The next attempt number is free.
+      }
+    }
+    if (TERMINAL_RUN_STATUSES.has(accepted.status)) return accepted
+    // From here on this Run is this process's, whatever the broker knows yet.
+    this.mine.add(accepted.id)
+    if (accepted.status !== 'accepted') {
+      if (this.deps.broker.activeRunIds().includes(accepted.id)) return accepted
+      return await this.record(
+        accepted,
+        'failed',
+        'error',
+        'Interrupted Run requires explicit recovery; the Harness was not contacted again'
+      )
+    }
     // Main owns the moment a Run starts. Publish it only after Core has made
     // the boundary durable, so a listener can immediately read `running`.
     this.deps.onConversationEvent?.({
@@ -916,7 +910,9 @@ export class RunService {
     let lastError: unknown
     for (let attempt = 2; attempt <= 20; attempt++) {
       try {
-        return runSnapshotSchema.parse(await accept(`${submissionId}:attempt-${String(attempt)}`))
+        return openRunLifecycleResultSchema.parse(
+          await accept(`${submissionId}:attempt-${String(attempt)}`)
+        ).run
       } catch (error) {
         lastError = error
       }
@@ -1329,16 +1325,21 @@ export class RunService {
     // could categorize, its own last diagnostic line is the explanation.
     const explained =
       status === 'failed' && category === null && diagnostic ? `${summary}: ${diagnostic}` : summary
-    const snapshot = await this.record(run, status, kind, explained)
-    await this.recordUnreportedChanges(run)
-    const finalize: FinalizeConversationRunInput = {
-      sessionId: run.sessionId,
-      runId: run.id,
-      outcome: status,
-      category: status === 'failed' ? category : null,
-      summary: explained
-    }
-    await this.deps.core.send({ type: 'conversation/finalize', input: finalize })
+    const checkoutObservation = await this.observeUnreportedChanges(run)
+    const terminal = completeRunLifecycleResultSchema.parse(
+      await this.deps.core.send({
+        type: 'run/lifecycle-complete',
+        input: {
+          sessionId: run.sessionId,
+          runId: run.id,
+          status,
+          kind,
+          summary: explained,
+          category: status === 'failed' ? category : null,
+          checkoutObservation
+        }
+      })
+    )
     // Said out loud, after Core has written it: a Run ending is the one
     // lifecycle event nothing else reports. The Conversation re-reads itself
     // while a Run is in flight and would find out anyway, but every other
@@ -1355,12 +1356,10 @@ export class RunService {
             ? { type: 'stopped' }
             : { type: 'failed', category: category ?? 'unknown', summary: explained }
     })
-    if (status === 'completed') {
+    if (terminal.queueDisposition === 'advance') {
       void this.queueCoordinator.drain(run.sessionId).catch(() => undefined)
-    } else {
-      await this.setQueuePaused(run.sessionId, true)
     }
-    return snapshot
+    return terminal.run
   }
 
   /**
@@ -1370,15 +1369,18 @@ export class RunService {
    * for. A Checkout with no snapshot simply has nothing to compare, which is
    * not a failure and never ends a Run differently.
    */
-  private async recordUnreportedChanges(run: Pick<RunSnapshot, 'id' | 'sessionId'>): Promise<void> {
+  private async observeUnreportedChanges(
+    run: Pick<RunSnapshot, 'id' | 'sessionId'>
+  ): Promise<CheckoutObservation> {
     const baseline = this.baselines.get(run.id)
     this.baselines.delete(run.id)
-    if (!baseline) return
+    if (baseline?.snapshot.status !== 'taken') return { status: 'unavailable' }
     try {
-      await this.compareAndRecord(run, baseline)
+      return { status: 'observed', changes: await this.compareCheckout(run, baseline) }
     } catch {
-      // A comparison that cannot be made leaves the reported record alone.
-      // Ending the Run is what matters here, and it has already happened.
+      // A comparison that cannot be made leaves the reported record alone;
+      // Core still receives an honest terminal observation with no inferred changes.
+      return { status: 'unavailable' }
     } finally {
       // The snapshot's objects have done their job; what they described is in
       // the Conversation now.
@@ -1391,21 +1393,28 @@ export class RunService {
     run: Pick<RunSnapshot, 'id' | 'sessionId'>,
     baseline: CheckoutBaseline
   ): Promise<void> {
-    if (baseline.snapshot.status !== 'taken') return
+    const changes = await this.compareCheckout(run, baseline)
+    if (changes.length === 0) return
+    // Recording the same comparison twice is safe: Core keeps only paths this
+    // Run has not already accounted for, so a replay after a crash between
+    // this and the cleanup adds nothing.
+    await this.deps.core.send({
+      type: 'conversation/checkout-changes',
+      input: { sessionId: run.sessionId, runId: run.id, files: changes }
+    })
+  }
+
+  private async compareCheckout(
+    run: Pick<RunSnapshot, 'id' | 'sessionId'>,
+    baseline: CheckoutBaseline
+  ): Promise<Extract<CheckoutObservation, { status: 'observed' }>['changes']> {
+    if (baseline.snapshot.status !== 'taken') return []
     const comparison = await diffSnapshots(
       baseline.checkout,
       baseline.directory,
       baseline.snapshot,
       await snapshotCheckout(baseline.checkout, baseline.directory)
     )
-    if (comparison.changes.length === 0) return
-    // Recording the same comparison twice is safe: Core keeps only paths this
-    // Run has not already accounted for, so a replay after a crash between
-    // this and the cleanup adds nothing.
-    await this.deps.core.send({
-      type: 'conversation/checkout-changes',
-      input: { sessionId: run.sessionId, runId: run.id, files: comparison.changes }
-    })
     // A cap nobody is told about turns a partial answer into a wrong one.
     if (comparison.unlisted > 0) {
       await this.record(
@@ -1417,6 +1426,7 @@ export class RunService {
         )} changed files are listed; the rest changed too`
       )
     }
+    return comparison.changes
   }
 
   private async record(
