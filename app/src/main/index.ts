@@ -942,6 +942,7 @@ void app.whenReady().then(() => {
     privateRoot: join(app.getPath('userData'), 'runs'),
     proxyExecutable: process.execPath,
     proxyScript: join(__dirname, 'mcp-proxy.js'),
+    runEffect: (effect) => mainEffectRuntime.runPromise(effect),
     skills: skillsFor,
     // Assistant text and control events take the direct path to the window so
     // streaming stays responsive; durable projection follows behind it. A Run

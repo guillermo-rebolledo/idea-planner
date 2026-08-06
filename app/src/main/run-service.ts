@@ -1,9 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { execFile } from 'node:child_process'
-import { chmod, mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
-import { promisify } from 'node:util'
+import { join } from 'node:path'
+import * as Effect from 'effect/Effect'
 import { z } from 'zod'
 import {
   checkoutDirectory,
@@ -15,7 +14,6 @@ import {
   type StartedSessionResult
 } from '@shared/contract'
 import {
-  HARNESS_DEFAULT_MODEL,
   MAX_APPROVAL_DETAIL,
   conversationSnapshotSchema,
   developSessionInputSchema,
@@ -29,7 +27,6 @@ import {
   unfinishedRunSchema,
   type ConversationSnapshot,
   type ConversationStreamEvent,
-  type CodexLaunch,
   type DevelopSessionInput,
   type HarnessEvent,
   type HarnessFailureCategory,
@@ -37,11 +34,8 @@ import {
   type QueuedSubmission,
   type UnfinishedRun
 } from '@shared/conversation'
-import { proposeStandingApproval, ruleText, type ProposedRule } from '@shared/approval'
+import { proposeStandingApproval, ruleText } from '@shared/approval'
 import {
-  APPROVAL_TOOL,
-  APP_TOOLS,
-  MCP_SERVER_NAME,
   resolveApprovalInputSchema,
   runSnapshotSchema,
   startRunInputSchema,
@@ -64,6 +58,12 @@ import { HARNESS_SPECS } from './readiness'
 import { ToolHost, type ApprovalRequest } from './tool-host'
 import type { RunProcessBroker } from './run-process-broker'
 import { QueueCoordinator } from './queue-coordinator'
+import {
+  createHarnessAdapter,
+  harnessAdapterLayer,
+  type AdapterRequestProposal,
+  type HarnessAdapter
+} from './harness-adapter'
 
 interface CorePort {
   send(command: CoreCommand): Promise<unknown>
@@ -75,7 +75,7 @@ const harnessStreamSchema = z.object({
   outgoing: z.array(z.string())
 })
 interface ReadinessPort {
-  refresh(harness?: 'codex' | 'claude'): Promise<{
+  refresh(harness?: HarnessId): Promise<{
     harnesses: {
       harness: string
       available: boolean
@@ -105,6 +105,8 @@ interface RunServiceDeps {
   interruptGraceMs?: number
   /** Delivers normalized assistant and control events straight to the window. */
   onConversationEvent?: (event: ConversationStreamEvent) => void
+  /** Runs Main product Effects on Electron's one scoped runtime. */
+  runEffect?: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
 }
 
 /** Statuses a Run never leaves. A resend that finds one starts a new attempt. */
@@ -166,12 +168,7 @@ interface CheckoutBaseline {
 }
 
 /** What one outstanding request could be turned into, if the person asks. */
-interface RequestProposal {
-  projectRoot: string
-  harness: StartRunInput['harness']
-  proposed: ProposedRule | null
-  summary: string
-}
+type RequestProposal = AdapterRequestProposal
 
 /** Coordinates durable Core acceptance with Main's native process authority. */
 export class RunService {
@@ -208,6 +205,8 @@ export class RunService {
    * tools and nothing else (ticket 12c).
    */
   private readonly baselines = new Map<string, CheckoutBaseline>()
+  /** The selected implementation for each active Run. */
+  private readonly adapters = new Map<string, HarnessAdapter>()
 
   constructor(private readonly deps: RunServiceDeps) {
     this.queueCoordinator = new QueueCoordinator({
@@ -215,6 +214,25 @@ export class RunService {
       start: (sessionId, item) => this.startQueued(sessionId, item),
       pause: (sessionId) => this.setQueuePaused(sessionId, true)
     })
+  }
+
+  private adapter(harness: HarnessId): HarnessAdapter {
+    return createHarnessAdapter(
+      harness,
+      harnessAdapterLayer({
+        core: this.deps.core,
+        homeDirectory: this.deps.homeDirectory,
+        proxyExecutable: this.deps.proxyExecutable,
+        proxyScript: this.deps.proxyScript,
+        claudeOauthToken: this.deps.claudeOauthToken,
+        stageSettings: this.deps.stageSettings,
+        writeFrame: (runId, frame) => this.deps.broker.write(runId, frame)
+      })
+    )
+  }
+
+  private runEffect<A, E>(effect: Effect.Effect<A, E>): Promise<A> {
+    return this.deps.runEffect ? this.deps.runEffect(effect) : Effect.runPromise(effect)
   }
 
   private async startQueued(
@@ -559,6 +577,7 @@ export class RunService {
 
   async start(rawInput: StartRunInput, retryTerminal = true): Promise<RunSnapshot> {
     const input = startRunInputSchema.parse(rawInput)
+    const adapter = this.adapter(input.harness)
     const checkout = await this.checkoutFor(input.sessionId)
     const readiness = await this.deps.readiness.refresh(input.harness)
     const harness = readiness.harnesses.find((entry) => entry.harness === input.harness)
@@ -575,11 +594,8 @@ export class RunService {
       .update(`${input.sessionId}\0${input.submissionId}`)
       .digest('hex')
     const runDirectory = join(this.deps.privateRoot, runKey)
-    const environment = minimalEnvironment(
-      harness.executablePath,
-      this.deps.homeDirectory,
-      input.harness,
-      runDirectory
+    const environment = await this.runEffect(
+      adapter.environment(harness.executablePath, runDirectory)
     )
     const configuration = {
       harness: input.harness,
@@ -613,9 +629,7 @@ export class RunService {
       latestHarnessBoundary !== undefined &&
       latestHarnessBoundary.skill === input.skill &&
       latestHarnessBoundary.model === input.model &&
-      (input.harness !== 'claude' ||
-        (await claudeThreadExists(this.deps.homeDirectory, checkout, savedThread))) &&
-      (input.harness !== 'codex' || (await codexThreadExists(this.deps.homeDirectory, savedThread)))
+      (await this.runEffect(adapter.threadExists(checkout, savedThread)))
     const restoreFromHistory =
       switchedHarness || (latestHarness === input.harness && !threadCompatible)
     const handoff = deterministicHandoff(conversation, input.skill ?? null)
@@ -628,7 +642,7 @@ export class RunService {
           sessionId: input.sessionId,
           prompt: input.prompt,
           configuration,
-          askedPermissionMode: CLAUDE_PERMISSION_MODES[input.permissionMode],
+          askedPermissionMode: adapter.askedPermissionMode(input.permissionMode),
           restorationNote: latestHarness === input.harness && !threadCompatible
         }
       })
@@ -669,6 +683,7 @@ export class RunService {
     if (TERMINAL_RUN_STATUSES.has(accepted.status)) return accepted
     // From here on this Run is this process's, whatever the broker knows yet.
     this.mine.add(accepted.id)
+    this.adapters.set(accepted.id, adapter)
     if (accepted.status !== 'accepted') {
       if (this.deps.broker.activeRunIds().includes(accepted.id)) return accepted
       return await this.record(
@@ -717,19 +732,20 @@ export class RunService {
       // A socket file left behind by a crash would otherwise make this Run's
       // capability socket unbindable; the path belongs to this Run alone.
       await rm(socketPath, { force: true })
-      await this.prepareHarnessHome(
-        input.harness,
-        runDirectory,
-        socketPath,
-        capabilityToken,
-        input.permissionMode,
-        await this.standingRules(checkout, input.harness),
-        harness.executablePath
+      await this.runEffect(
+        adapter.prepare({
+          runDirectory,
+          socketPath,
+          capabilityToken,
+          permissionMode: input.permissionMode,
+          standingRules: await this.standingRules(checkout, adapter.id),
+          executable: harness.executablePath
+        })
       )
       toolHost = new ToolHost({
         socketPath,
         capabilityToken,
-        servesApprovals: input.permissionMode === 'ask',
+        servesApprovals: input.permissionMode === 'ask' && adapter.servesApprovals,
         callbacks: {
           onActivity: (kind, summary) =>
             this.record(accepted, undefined, kind, sanitize(summary, checkout)).then(
@@ -741,7 +757,7 @@ export class RunService {
           onChoices: (question, options) => {
             void this.offerChoices(accepted, question, options).catch(() => undefined)
           },
-          onApproval: (request) => this.requestApproval(accepted, checkout, input.harness, request)
+          onApproval: (request) => this.requestApproval(accepted, checkout, adapter.id, request)
         }
       })
       await toolHost.start()
@@ -767,13 +783,9 @@ export class RunService {
         )
         throw new Error('Harness executable changed after durable Run acceptance')
       }
-      const harnessEnvironment =
-        input.harness === 'claude'
-          ? {
-              ...configuration.environment,
-              CLAUDE_CODE_OAUTH_TOKEN: await (this.deps.claudeOauthToken ?? readClaudeOauthToken)()
-            }
-          : configuration.environment
+      const harnessEnvironment = await this.runEffect(
+        adapter.launchEnvironment(harness.executablePath, runDirectory)
+      )
       // Taken before the Harness runs, so everything the person had already
       // changed is the baseline and stays theirs.
       //
@@ -819,44 +831,32 @@ export class RunService {
       // Codex says nothing until it is spoken to, so its Adapter is opened
       // before the process is started and its opening frame written the moment
       // it is. Claude is opened the same way and is owed nothing.
-      const opening = harnessStreamSchema.parse(
-        await this.deps.core.send({
-          type: 'harness/open',
+      const opening = await this.runEffect(
+        adapter.open({
           runId: accepted.id,
-          harness: input.harness,
-          ...(input.harness === 'codex'
-            ? {
-                launch: {
-                  cwd: checkout,
-                  approvalPolicy: CODEX_APPROVAL_POLICIES[input.permissionMode],
-                  sandbox: CODEX_SANDBOXES[input.permissionMode],
-                  ...(input.model === HARNESS_DEFAULT_MODEL ? {} : { model: input.model }),
-                  effort: input.effort,
-                  developerInstructions: skill
-                    ? await readFile(join(skill.path, 'SKILL.md'), 'utf8')
-                    : '',
-                  prompt: restoreFromHistory
-                    ? `${runPrompt}\n\nDeterministic handoff from the Conversation so far:\n${handoff}`
-                    : runPrompt,
-                  ...(threadCompatible && savedThread ? { resumeThreadId: savedThread } : {})
-                }
-              }
-            : {})
+          checkout,
+          configuration,
+          prompt: runPrompt,
+          skillInstructions: skill ? await readFile(join(skill.path, 'SKILL.md'), 'utf8') : '',
+          ...(restoreFromHistory ? { handoff } : {}),
+          ...(threadCompatible && savedThread ? { resumeThreadId: savedThread } : {})
         })
       )
       await this.deps.broker.start({
         id: accepted.id,
         executable: harness.executablePath,
-        args: harnessArguments(
-          { ...input, prompt: runPrompt },
-          runDirectory,
-          restoreFromHistory ? handoff : undefined,
-          threadCompatible ? savedThread : undefined
+        args: await this.runEffect(
+          adapter.arguments(
+            { ...configuration, prompt: runPrompt },
+            runDirectory,
+            restoreFromHistory ? handoff : undefined,
+            threadCompatible ? savedThread : undefined
+          )
         ),
         workingDirectory: checkout,
         runDirectory,
         environment: harnessEnvironment,
-        answersProtocol: input.harness === 'codex',
+        answersProtocol: adapter.answersProtocol,
         onBeforeCleanup: async () => {
           await toolHost.close()
           await rm(socketDirectory, { recursive: true, force: true })
@@ -865,7 +865,7 @@ export class RunService {
         onOutput: (stream, text) => {
           if (stream === 'stdout') {
             const pending = (this.pendingIngest.get(accepted.id) ?? Promise.resolve())
-              .then(() => this.ingest(accepted, input.harness, checkout, text))
+              .then(() => this.ingest(accepted, adapter, checkout, text))
               .catch(() => {
                 this.failures.set(accepted.id, 'protocol')
               })
@@ -997,7 +997,7 @@ export class RunService {
    */
   private async ingest(
     run: Pick<RunSnapshot, 'id' | 'sessionId' | 'configuration'>,
-    harness: StartRunInput['harness'],
+    adapter: HarnessAdapter,
     checkout: string,
     chunk: string
   ): Promise<void> {
@@ -1006,7 +1006,7 @@ export class RunService {
         type: 'conversation/ingest',
         sessionId: run.sessionId,
         runId: run.id,
-        harness,
+        harness: adapter.id,
         chunk
       })
     )
@@ -1026,7 +1026,11 @@ export class RunService {
           event
         })
       }
-      const activity = describeActivity(event, run.configuration.permissionMode)
+      const activity = describeActivity(
+        event,
+        run.configuration.permissionMode,
+        adapter.askedPermissionMode(run.configuration.permissionMode)
+      )
       if (activity) {
         await this.record(run, undefined, activity.kind, sanitize(activity.summary, checkout))
       }
@@ -1037,7 +1041,7 @@ export class RunService {
         const proposals = this.proposals.get(run.id) ?? new Map<string, RequestProposal>()
         proposals.set(event.id, {
           projectRoot: checkout,
-          harness,
+          harness: adapter.id,
           proposed: event.proposedRule,
           summary: event.summary
         })
@@ -1052,17 +1056,8 @@ export class RunService {
           await this.record(run, 'running', 'output', 'The Harness stopped waiting on that request')
         }
       }
-      // `codex app-server` is a server: it answers a turn and then waits for
-      // the next one, so nothing ends the Run on its own. The turn ending is
-      // the Run ending here, and the process is stopped rather than left
-      // running for a turn that will never be asked for.
-      if (event.type === 'completed' && harness === 'codex') await this.finishTurn(run)
-      // The same server-shaped problem when it fails: an error answer breaks
-      // the one fixed exchange, nothing further will be said, and the process
-      // sits there — a Run stuck on "Working" with the person told nothing.
-      // Failure ends the Run exactly as completion does, so the Conversation
-      // records what happened and its recovery guidance appears.
-      if (event.type === 'failed' && harness === 'codex') await this.failTurn(run, event.summary)
+      const terminal = adapter.terminalFact(event)
+      if (terminal) await this.finishHarnessTurn(run, terminal)
     }
   }
 
@@ -1071,26 +1066,13 @@ export class RunService {
    * means the Conversation records what happened; stopping through the broker
    * suppresses the exit path, so the Run is not concluded twice.
    */
-  private async finishTurn(run: Pick<RunSnapshot, 'id' | 'sessionId'>): Promise<void> {
-    if (this.finishing.has(run.id)) return
-    this.finishing.add(run.id)
-    await this.conclude(run, 'completed', 'lifecycle', 'Harness completed the turn')
-    await this.deps.broker.stop(run.id, 'quit').catch(() => undefined)
-    this.finishing.delete(run.id)
-  }
-
-  /**
-   * Ends a Run whose Harness reported failure but will not exit, the failing
-   * twin of {@link finishTurn}. The category the failure carried is already in
-   * `failures`, so conclude reports the cause rather than a bare "it failed".
-   */
-  private async failTurn(
+  private async finishHarnessTurn(
     run: Pick<RunSnapshot, 'id' | 'sessionId'>,
-    summary: string
+    terminal: { status: 'completed' | 'failed'; kind: 'lifecycle' | 'error'; summary: string }
   ): Promise<void> {
     if (this.finishing.has(run.id)) return
     this.finishing.add(run.id)
-    await this.conclude(run, 'failed', 'error', summary.slice(0, 500))
+    await this.conclude(run, terminal.status, terminal.kind, terminal.summary)
     await this.deps.broker.stop(run.id, 'quit').catch(() => undefined)
     this.finishing.delete(run.id)
   }
@@ -1260,12 +1242,8 @@ export class RunService {
   }
 
   private async interruptTurn(runId: string): Promise<boolean> {
-    const frames = z
-      .array(z.string())
-      .parse(await this.deps.core.send({ type: 'harness/interrupt', runId }))
-    // A Harness with no way to be asked is one there is nothing to wait for.
-    if (frames.length === 0) return false
-    this.writeFrames(runId, frames)
+    const adapter = this.adapters.get(runId)
+    if (!adapter || !(await this.runEffect(adapter.interrupt(runId)))) return false
     const deadline = Date.now() + (this.deps.interruptGraceMs ?? 2_000)
     while (Date.now() < deadline) {
       if (!this.deps.broker.activeRunIds().includes(runId)) return true
@@ -1293,41 +1271,17 @@ export class RunService {
       proposal: RequestProposal
     }
   ): Promise<boolean> {
-    if (decided.proposal.harness === 'codex') {
-      const answer = z.object({ answered: z.boolean(), outgoing: z.array(z.string()) }).parse(
-        await this.deps.core.send({
-          type: 'harness/answer',
-          runId: input.runId,
-          approvalId: input.approvalId,
-          allow: decided.allowed,
-          // Codex keeps the prefix it proposed, on its own decision.
-          remember: decided.remembered
-        })
-      )
-      this.writeFrames(input.runId, answer.outgoing)
-      return answer.answered
-    }
-    const host = this.toolHosts.get(input.runId)
-    if (!host?.hasOutstandingApproval(input.approvalId)) return false
-    return host.resolveApproval(
-      input.approvalId,
-      decided.allowed
-        ? {
-            behavior: 'allow',
-            // This Run's settings were staged before the grant existed, so the
-            // rule rides along with the answer and Claude applies it to the
-            // Thread it is already running. Nothing here decides what it
-            // covers: its own matcher does, exactly as it will next Run.
-            ...(decided.remembered && decided.proposal.proposed?.harness === 'claude'
-              ? {
-                  sessionRule: {
-                    toolName: decided.proposal.proposed.toolName,
-                    content: decided.proposal.proposed.content
-                  }
-                }
-              : {})
-          }
-        : { behavior: 'deny', message: decided.message }
+    const adapter = this.adapters.get(input.runId) ?? this.adapter(decided.proposal.harness)
+    return await this.runEffect(
+      adapter.answerApproval({
+        runId: input.runId,
+        approvalId: input.approvalId,
+        allowed: decided.allowed,
+        remembered: decided.remembered,
+        message: decided.message,
+        proposal: decided.proposal,
+        host: this.toolHosts.get(input.runId)
+      })
     )
   }
 
@@ -1362,6 +1316,7 @@ export class RunService {
     this.failures.delete(run.id)
     this.diagnostics.delete(run.id)
     this.proposals.delete(run.id)
+    this.adapters.delete(run.id)
     if (baseline) {
       if (this.baselines.get(run.id)?.directory === baseline.directory) {
         this.baselines.delete(run.id)
@@ -1493,113 +1448,6 @@ export class RunService {
       .parse(await this.deps.core.send({ type: 'approval/rules', projectRoot, harness }))
   }
 
-  /**
-   * Asks Codex whether it can read the rules this app wrote. Refusing to start
-   * is the point: an unreadable rules file is ignored in silence, and a Run
-   * that goes on to ask about something the person already allowed is one that
-   * has lost their answer.
-   */
-  private async validateExecpolicy(executable: string, rulesFile: string): Promise<void> {
-    const checked = await promisify(execFile)(executable, [
-      'execpolicy',
-      'check',
-      '--rules',
-      rulesFile,
-      '--',
-      'true'
-    ]).then(
-      () => null,
-      (error: unknown) => (error instanceof Error ? error.message : 'unknown problem')
-    )
-    if (checked !== null) {
-      throw new Error(`Refusing to start: this Project's Codex rules are not valid — ${checked}`)
-    }
-  }
-
-  private async prepareHarnessHome(
-    harness: StartRunInput['harness'],
-    runDirectory: string,
-    socketPath: string,
-    capabilityToken: string,
-    permissionMode: PermissionMode,
-    standingRules: string[],
-    /** The Harness that will read them, which is also what validates them. */
-    executable: string
-  ): Promise<void> {
-    const proxy = {
-      command: this.deps.proxyExecutable,
-      env: {
-        ELECTRON_RUN_AS_NODE: '1',
-        NODE_OPTIONS: `--require=${this.deps.proxyScript}`,
-        APP_MCP_SOCKET: socketPath,
-        APP_MCP_CAPABILITY: capabilityToken
-      }
-    }
-    await writeFile(
-      join(runDirectory, 'mcp.json'),
-      JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: proxy } }),
-      { mode: 0o600 }
-    )
-    if (harness === 'claude') {
-      // This Run's settings, layered over the person's own and never written
-      // into them: their terminal use of the Harness is not ours to change.
-      //
-      // Ask gates every tool, including the app's own — and being asked whether
-      // the app may offer you a menu is not a permission decision anybody has.
-      // An allow rule short-circuits the prompt for exactly those, and nothing
-      // else. What the agent does to the Checkout still comes to the person.
-      //
-      // The Project's Standing Approvals join them. The Harness consults these
-      // rules before it asks, so a standing-approved call never reaches this
-      // app at all — which is the whole point, and the reason the rules were
-      // narrowed when they were written rather than when they are used.
-      const settings = this.deps.stageSettings
-        ? this.deps.stageSettings(permissionMode)
-        : {
-            permissions: {
-              defaultMode: CLAUDE_PERMISSION_MODES[permissionMode],
-              allow: [...APP_TOOLS, ...standingRules]
-            }
-          }
-      // Checked before the Harness sees them: invalid settings are ignored in
-      // silence, so a rule that never loaded looks exactly like one that did.
-      const validated = claudeSettingsSchema.safeParse(settings)
-      if (!validated.success) {
-        throw new Error(
-          `Refusing to start: this Run's settings are not valid — ${validated.error.issues[0]?.message ?? 'unknown problem'}`
-        )
-      }
-      await writeFile(join(runDirectory, 'settings.json'), JSON.stringify(validated.data), {
-        mode: 0o600
-      })
-      return
-    }
-    const codexHome = join(runDirectory, 'codex-home')
-    await mkdir(codexHome, { recursive: true, mode: 0o700 })
-    // This Project's Standing Approvals, as Codex's own execpolicy. Validated
-    // with Codex's own checker before the Run uses them, because a rules file
-    // it cannot read is one it ignores — and a permission that silently never
-    // loaded looks exactly like one that did.
-    if (standingRules.length > 0) {
-      const rulesDirectory = join(codexHome, 'rules')
-      await mkdir(rulesDirectory, { recursive: true, mode: 0o700 })
-      const rulesFile = join(rulesDirectory, 'standing-approvals.rules')
-      await writeFile(rulesFile, `${standingRules.join('\n')}\n`, { mode: 0o600 })
-      await this.validateExecpolicy(executable, rulesFile)
-    }
-    // Auth follows CODEX_HOME, so a staged home needs it reachable — as a link
-    // rather than a copy. It is a credential, and this app does not hold one.
-    await symlink(
-      join(this.deps.homeDirectory, '.codex', 'auth.json'),
-      join(codexHome, 'auth.json')
-    )
-    await writeFile(
-      join(codexHome, 'config.toml'),
-      `[mcp_servers.${MCP_SERVER_NAME}]\ncommand = ${JSON.stringify(proxy.command)}\n\n[mcp_servers.${MCP_SERVER_NAME}.env]\nELECTRON_RUN_AS_NODE = "1"\nNODE_OPTIONS = ${JSON.stringify(proxy.env.NODE_OPTIONS)}\nAPP_MCP_SOCKET = ${JSON.stringify(socketPath)}\nAPP_MCP_CAPABILITY = ${JSON.stringify(capabilityToken)}\n`,
-      { mode: 0o600 }
-    )
-  }
-
   private async stopForPolicy(run: RunSnapshot, summary: string): Promise<void> {
     await this.conclude(run, 'policy-violation', 'lifecycle', `Run stopped by policy: ${summary}`)
     try {
@@ -1641,71 +1489,6 @@ function terminalObservation(
  * so the two can never drift apart.
  */
 
-function minimalEnvironment(
-  executable: string,
-  home: string,
-  harness: StartRunInput['harness'],
-  runDirectory: string
-): Record<string, string> {
-  return {
-    PATH: `${dirname(executable)}:/usr/bin:/bin`,
-    HOME: home,
-    LANG: 'en_US.UTF-8',
-    LC_ALL: 'en_US.UTF-8',
-    ...(harness === 'codex' ? { CODEX_HOME: join(runDirectory, 'codex-home') } : {})
-    // Claude's per-Run configuration is a staged settings file, not a staged
-    // home: CLAUDE_CONFIG_DIR relocates account state too, and a staged one
-    // reports the person as not logged in.
-  }
-}
-
-function harnessArguments(
-  input: StartRunInput,
-  runDirectory: string,
-  handoff?: string,
-  threadId?: string
-): string[] {
-  if (input.harness === 'codex') {
-    // One long-lived JSON-RPC peer. Everything that used to be argv — policy,
-    // sandbox, model, effort, the Skill, the prompt — now travels over the
-    // protocol, where approvals and diffs travel too.
-    return ['app-server']
-  }
-  return [
-    '--print',
-    // The person's own sources, so their installed Skills are discoverable,
-    // plus this Run's settings layered on top.
-    '--setting-sources',
-    'user',
-    '--settings',
-    join(runDirectory, 'settings.json'),
-    '--strict-mcp-config',
-    '--mcp-config',
-    join(runDirectory, 'mcp.json'),
-    // No allow-list: naming only the app's MCP tool is what left the Harness
-    // with no native tools at all. It edits the Checkout with its own.
-    '--permission-mode',
-    CLAUDE_PERMISSION_MODES[input.permissionMode],
-    // Ask is this mode plus somewhere for its prompts to go. Without the tool
-    // the Harness has nothing to ask, and stalls on its first tool call.
-    ...(input.permissionMode === 'ask' ? ['--permission-prompt-tool', APPROVAL_TOOL] : []),
-    '--no-chrome',
-    '--output-format',
-    'stream-json',
-    '--verbose',
-    '--include-partial-messages',
-    '--include-hook-events',
-    ...(threadId ? ['--resume', threadId] : []),
-    ...(input.model === HARNESS_DEFAULT_MODEL ? [] : ['--model', input.model]),
-    // Only when the chosen model has one. Asking for a level a model does not
-    // offer is asking the Harness for something it would refuse (ticket 13).
-    ...(input.effort === null ? [] : ['--effort', input.effort]),
-    // Claude reads a Skill natively when the message names one; without one
-    // the message is just the message.
-    `${input.skill ? `/${input.skill} ` : ''}${input.prompt}${handoff ? `\n\nDeterministic handoff from the Conversation so far:\n${handoff}` : ''}`
-  ]
-}
-
 /**
  * What a new Harness Thread needs to continue the Conversation: the Skill in
  * force and the turns immediately before it.
@@ -1727,55 +1510,6 @@ function deterministicHandoff(conversation: ConversationSnapshot, skill: string 
  * the Run. Rollouts live under `sessions/YYYY/MM/DD/rollout-…-<threadId>.jsonl`;
  * checked on disk like Claude's, because the app-server is not running yet.
  */
-async function codexThreadExists(homeDirectory: string, threadId: string): Promise<boolean> {
-  const sessions = join(homeDirectory, '.codex', 'sessions')
-  const suffix = `-${threadId}.jsonl`
-  const list = (directory: string): Promise<{ name: string; isDirectory(): boolean }[]> =>
-    readdir(directory, { withFileTypes: true }).then(
-      (entries) => entries,
-      () => []
-    )
-  for (const year of await list(sessions)) {
-    if (!year.isDirectory()) continue
-    for (const month of await list(join(sessions, year.name))) {
-      if (!month.isDirectory()) continue
-      for (const day of await list(join(sessions, year.name, month.name))) {
-        if (!day.isDirectory()) continue
-        const files = await list(join(sessions, year.name, month.name, day.name))
-        if (files.some((file) => !file.isDirectory() && file.name.endsWith(suffix))) return true
-      }
-    }
-  }
-  return false
-}
-
-async function claudeThreadExists(
-  homeDirectory: string,
-  checkout: string,
-  threadId: string
-): Promise<boolean> {
-  const projectKey = resolve(checkout).replaceAll('/', '-')
-  const threadPath = join(homeDirectory, '.claude', 'projects', projectKey, `${threadId}.jsonl`)
-  return readFile(threadPath, 'utf8').then(
-    () => true,
-    () => false
-  )
-}
-
-const claudeCredentialsSchema = z.object({
-  claudeAiOauth: z.object({ accessToken: z.string().min(1) })
-})
-
-async function readClaudeOauthToken(): Promise<string> {
-  const { stdout } = await promisify(execFile)('/usr/bin/security', [
-    'find-generic-password',
-    '-s',
-    'Claude Code-credentials',
-    '-w'
-  ])
-  return claudeCredentialsSchema.parse(JSON.parse(stdout)).claudeAiOauth.accessToken
-}
-
 async function hashFile(path: string): Promise<string> {
   return createHash('sha256')
     .update(await readFile(path))
@@ -1796,53 +1530,14 @@ function sanitize(value: string, checkout: string): string {
 }
 
 /**
- * What this app is willing to put in a Run's settings file. Narrow on purpose:
- * the Harness ignores what it cannot read without saying so, so anything this
- * schema does not describe would fail silently at the far end.
- */
-const claudeSettingsSchema = z.object({
-  permissions: z.object({
-    defaultMode: z.enum(['default', 'acceptEdits', 'plan', 'bypassPermissions']),
-    allow: z.array(z.string().min(1)).optional(),
-    deny: z.array(z.string().min(1)).optional()
-  })
-})
-
-/**
- * The app's two Permission Modes as Claude names them
- * (`docs/harness-permission-mapping.md`). Ask maps to the mode that asks; a
- * Run in that mode is refused until ticket 07b serves the prompt that answers
- * it, because one that starts anyway stalls on its first tool call.
- */
-const CLAUDE_PERMISSION_MODES: Record<PermissionMode, string> = {
-  ask: 'default',
-  auto: 'bypassPermissions'
-}
-
-/**
- * The same two Modes as Codex names them (`docs/harness-permission-mapping.md`).
- * `untrusted` is the only policy that guarantees escalation is decided by a
- * rule rather than by the model, so a person who chose Ask cannot silently get
- * no prompts; `never` with full access is the documented no-prompt pairing.
- */
-const CODEX_APPROVAL_POLICIES: Record<PermissionMode, CodexLaunch['approvalPolicy']> = {
-  ask: 'untrusted',
-  auto: 'never'
-}
-
-const CODEX_SANDBOXES: Record<PermissionMode, CodexLaunch['sandbox']> = {
-  ask: 'workspace-write',
-  auto: 'danger-full-access'
-}
-
-/**
  * What a normalized event contributes to the collapsed activity stream.
  * Assistant text and Suggested Responses are Conversation content, not
  * activity, so they deliberately produce nothing here.
  */
 function describeActivity(
   event: HarnessEvent,
-  permissionMode: PermissionMode
+  permissionMode: PermissionMode,
+  askedPermissionMode: string
 ): { kind: RunActivityKind; summary: string } | undefined {
   switch (event.type) {
     case 'reasoning':
@@ -1868,9 +1563,8 @@ function describeActivity(
       // Managed settings outrank command-line arguments, so the mode the app
       // asked for is not necessarily the one running. Saying so is the whole
       // point of reading it back.
-      const asked = CLAUDE_PERMISSION_MODES[permissionMode]
       const mismatch =
-        event.permissionMode !== undefined && event.permissionMode !== asked
+        event.permissionMode !== undefined && event.permissionMode !== askedPermissionMode
           ? ` — running as ${event.permissionMode}, not the ${permissionMode} you chose`
           : ''
       return {
