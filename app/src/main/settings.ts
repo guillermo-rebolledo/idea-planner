@@ -10,6 +10,8 @@ import {
 
 const settingsSchema = z.object({
   themePreference: themePreferenceSchema.default('system'),
+  /** Ask before quitting while one or more Runs still own a Harness process. */
+  warnBeforeQuitWithActiveRuns: z.boolean().default(true),
   /** Days without activity after which a pinned Session shows as Dormant. */
   dormantAfterDays: z.number().int().positive().default(14),
   /** Explicitly selected Harness executables; absence means PATH resolution. */
@@ -22,6 +24,7 @@ const settingsSchema = z.object({
 
 export interface Settings {
   themePreference: ThemePreference
+  warnBeforeQuitWithActiveRuns: boolean
   dormantAfterDays: number
   harnessExecutables: Record<string, string>
   loginShellDiscovery: { grantedAt: string } | null
@@ -63,6 +66,7 @@ export class SettingsStore {
     }
     return {
       themePreference: 'system',
+      warnBeforeQuitWithActiveRuns: true,
       dormantAfterDays: 14,
       harnessExecutables: {},
       loginShellDiscovery: null,

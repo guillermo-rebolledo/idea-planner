@@ -948,6 +948,31 @@ describe('Run service', () => {
     })
   })
 
+  it('does not report its own Run as crashed while the Harness process is still starting', async () => {
+    const root = await readyClaudeRoot('run-starting-refresh-')
+    const core = fakeCore(join(root, 'a-project'))
+    const broker = fakeBroker({
+      start: vi.fn(async (launch: RunLaunch) => {
+        core.conversation = { ...core.conversation, activeRunId: launch.id }
+        await service.conversation('session')
+      })
+    })
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
+    })
+
+    await service.start(startInput())
+
+    expect(core.commands).not.toContain('conversation/finalize')
+  })
+
   it('explains a failed Run with the Harness’s own last diagnostic line', async () => {
     const root = await readyHarnessRoot('run-diagnostic-')
     const core = fakeCore(join(root, 'a-project'))

@@ -33,7 +33,7 @@ interface Sandbox {
 
 let sandbox: Sandbox
 
-async function launchShell(): Promise<ElectronApplication> {
+async function launchShell(options: { quitWarning?: boolean } = {}): Promise<ElectronApplication> {
   return electron.launch({
     executablePath: electronBinary,
     args: [mainEntry],
@@ -42,6 +42,7 @@ async function launchShell(): Promise<ElectronApplication> {
       APP_TEST_APP_DATA: sandbox.appDataDir,
       APP_TEST_READINESS_PATH: sandbox.readinessBinDir,
       APP_TEST_READINESS_HOME: sandbox.readinessHomeDir,
+      ...(options.quitWarning ? { APP_TEST_QUIT_WARNING: '1' } : {}),
       // Successive answers from the Project picker, in order.
       APP_TEST_CHOOSE_PROJECT_DIRS: [
         sandbox.projectDir,
@@ -174,6 +175,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'getBootState',
       'getCheckoutFacts',
       'getConversation',
+      'getQuitWarningPreference',
       'getReadiness',
       'initializeProject',
       'listBranches',
@@ -189,6 +191,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'offerProject',
       'onConversationEvent',
       'onOpenSessionRequest',
+      'onQuitRequested',
       'onThemeChanged',
       'onUndoShortcut',
       'openExternalLink',
@@ -200,10 +203,12 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'removeProject',
       'renameSession',
       'resolveApproval',
+      'respondToQuitRequest',
       'resumeConversationQueue',
       'revokeStandingApproval',
       'sendQueuedSubmissionNow',
       'setLoginShellDiscovery',
+      'setQuitWarningPreference',
       'setSessionArchived',
       'setSessionPinned',
       'setThemePreference',
@@ -473,6 +478,82 @@ const BUSY_CLAUDE_FAKE = `case "$1" in
   -p|--print) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
 esac`
 
+test('quitting with active agents warns, safely exits, and remembers the reversible choice', async () => {
+  await installFakeHarness('claude', BUSY_CLAUDE_FAKE)
+  const firstRun = await launchShell({ quitWarning: true })
+  try {
+    const page = await firstRun.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Keep this agent busy while quitting')
+    await expect(page.getByRole('img', { name: 'Run in progress' })).toBeVisible()
+
+    await firstRun.evaluate(({ app: electronApp }) => electronApp.quit())
+    const warning = page.getByRole('dialog', { name: 'An agent is still working' })
+    await expect(warning).toContainText('safely stops every active Run and its processes')
+    await warning.getByRole('button', { name: 'Keep Working' }).click()
+    await expect(warning).toHaveCount(0)
+
+    await firstRun.evaluate(({ app: electronApp }) => electronApp.quit())
+    await expect(warning).toBeVisible()
+    const exited = new Promise<void>((resolve) => firstRun.process().once('exit', () => resolve()))
+    const alwaysQuit = warning
+      .getByRole('button', { name: 'Always Quit Without Asking' })
+      .click()
+      .catch(() => undefined)
+    await exited
+    await alwaysQuit
+  } finally {
+    await firstRun.close().catch(() => undefined)
+  }
+
+  const secondRun = await launchShell({ quitWarning: true })
+  try {
+    const page = await secondRun.firstWindow()
+    await page.getByRole('button', { name: 'App menu' }).click()
+    await page.getByRole('menuitem', { name: 'Settings…' }).click()
+    const settings = page.getByRole('dialog', { name: 'Settings' })
+    const preference = settings.getByRole('checkbox', {
+      name: 'Warn before quitting with active agents'
+    })
+    await expect(preference).not.toBeChecked()
+    await preference.check()
+    await settings.getByRole('button', { name: 'Done' }).click()
+
+    await startSession(page, 'Warn me again before quitting')
+    await expect(page.getByRole('img', { name: 'Run in progress' })).toBeVisible()
+    await secondRun.evaluate(({ app: electronApp }) => electronApp.quit())
+    const warning = page.getByRole('dialog', { name: 'An agent is still working' })
+    await expect(warning).toBeVisible()
+    const exited = new Promise<void>((resolve) => secondRun.process().once('exit', () => resolve()))
+    const quit = warning
+      .getByRole('button', { name: 'Quit Anyway' })
+      .click()
+      .catch(() => undefined)
+    await exited
+    await quit
+  } finally {
+    await secondRun.close().catch(() => undefined)
+  }
+})
+
+test('Ctrl+C safely exits without asking to keep the app open', async () => {
+  await installFakeHarness('claude', BUSY_CLAUDE_FAKE)
+  const app = await launchShell({ quitWarning: true })
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Stop this agent from the terminal')
+    await expect(page.getByRole('img', { name: 'Run in progress' })).toBeVisible()
+
+    const exited = new Promise<void>((resolve) => app.process().once('exit', () => resolve()))
+    const interrupt = app.evaluate(() => process.emit('SIGINT')).catch(() => undefined)
+    await exited
+    await interrupt
+  } finally {
+    await app.close().catch(() => undefined)
+  }
+})
+
 /**
  * A Harness that keeps talking: enough prose to overflow the transcript, sent
  * a line at a time, so a reader can be somewhere else while it arrives.
@@ -590,7 +671,8 @@ test('one streamed Harness message stays one DOM message through durable checkpo
     await expect(
       history.getByText('Checkpointed once and handed off', { exact: true })
     ).toBeVisible()
-    await expect(history.getByRole('region', { name: 'Run outcome' })).toBeVisible()
+    await expect(history.getByRole('region', { name: 'Run outcome' })).toHaveCount(0)
+    await expect(history.getByRole('region', { name: /edited file/ })).toHaveCount(0)
 
     const observed = await page.evaluate(() => {
       const probe = (window as unknown as { streamMessageProbe: Record<string, unknown> })
@@ -679,17 +761,20 @@ test('a long Conversation bounds render work while a reply streams', async () =>
     await expect(history.getByText(/chunk-59/, { exact: false })).toBeVisible()
     const reducedMotion = await page
       .getByRole('img', { name: 'Run in progress' })
-      .locator('circle')
-      .first()
-      .evaluate((element) => {
-        const style = getComputedStyle(element)
+      .evaluate(async (element) => {
+        if (!(element instanceof HTMLCanvasElement)) throw new Error('The orb is not a canvas')
+        const firstFrame = element.toDataURL()
+        await new Promise((resolve) => window.setTimeout(resolve, 100))
         return {
           matches: matchMedia('(prefers-reduced-motion: reduce)').matches,
-          duration: style.animationDuration,
-          iterations: style.animationIterationCount
+          painted: element
+            .getContext('2d')
+            ?.getImageData(0, 0, element.width, element.height)
+            .data.some((channel) => channel !== 0),
+          static: firstFrame === element.toDataURL()
         }
       })
-    expect(reducedMotion).toEqual({ matches: true, duration: '1e-05s', iterations: '1' })
+    expect(reducedMotion).toEqual({ matches: true, painted: true, static: true })
     await expect.poll(() => page.getByText(/^Running · /).textContent()).toMatch(/\d+s$/)
     expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('Durable history 0')
 
@@ -871,32 +956,24 @@ test('a Session says which files it changed, and offers nothing to accept', asyn
     await chip.click()
     await expect(panel).toHaveCount(0)
 
-    // The Conversation marks the Run with a quiet divider, then delivers one
-    // durable outcome with the result, file impact, and next actions.
+    // The Conversation marks the Run with a quiet divider. A successful Run
+    // only adds an outcome surface when it changed files.
     const history = page.getByRole('log', { name: 'Conversation history' })
     await expect(history.getByText(/^Run · /).last()).toBeVisible()
-    const outcome = history.getByRole('region', { name: 'Run outcome' }).last()
-    await expect(outcome.getByText('Run delivered')).toBeVisible()
-    await expect(outcome).toContainText('1 changed file ready to review')
-    await expect(outcome.getByRole('button', { name: 'Review files' })).toBeVisible()
-    await expect(outcome.getByRole('button', { name: 'Continue' })).toBeVisible()
+    await expect(history.getByRole('region', { name: 'Run outcome' })).toHaveCount(0)
+    const edits = history.getByRole('region', { name: '1 edited file' })
+    const editedFile = edits.getByRole('button', { name: /Edited greeting\.ts/ })
+    await expect(editedFile).toContainText('+1')
+    await expect(editedFile).toContainText('−1')
 
-    // The activity record stays one expandable line inside the delivery.
-    const block = history.getByLabel('Run activity').last()
-    await expect(block).toContainText('Edited 1 file')
+    // Hovering the changed file previews its recorded diff without opening
+    // the full panel.
+    await editedFile.hover()
+    await expect(page.getByText('+export const greeting = "goodbye"').last()).toBeVisible()
+    await expect(panel).toHaveCount(0)
 
-    // The chevron re-expands it to the chronological step list — the read,
-    // the edit, the command. Steps only, no captured output.
-    await block.getByRole('button', { name: /Edited 1 file/ }).click()
-    const steps = history.getByRole('list', { name: 'Run steps' })
-    await expect(steps.getByText('Read greeting.ts')).toBeVisible()
-    await expect(steps.getByText('echo ok')).toBeVisible()
-    await expect(steps.getByText('ok', { exact: true })).toHaveCount(0)
-
-    // The edited file is a way into the Files panel, focused on that file.
-    const step = steps.getByRole('button', { name: /greeting\.ts/ })
-    await expect(step).toBeVisible()
-    await step.click()
+    // Review remains the explicit way into the complete Files panel.
+    await edits.getByRole('button', { name: 'Review' }).click()
     await expect(panel.getByText('+export const greeting = "goodbye"')).toBeVisible()
 
     // And with that Run finished, the Session is quiet again: at rest a row
@@ -1051,13 +1128,71 @@ const MODEL_LISTING_CODEX = `case "$1" in
       case "$line" in
         *'"initialize"'*) printf '{"jsonrpc":"2.0","id":1,"result":{}}\n';;
         *'"model/list"'*)
-          printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"data":[{"id":"gpt-5.6-sol","displayName":"GPT-5.6-Sol","description":"The default","hidden":false,"isDefault":true,"supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}],"defaultReasoningEffort":"low"}],"nextCursor":null}}'
+          printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"data":[{"id":"gpt-5.5","displayName":"GPT-5.5","description":"The default","hidden":false,"isDefault":true,"supportedReasoningEfforts":[{"reasoningEffort":"medium"}],"defaultReasoningEffort":"medium"},{"id":"gpt-5.6-sol","displayName":"GPT-5.6-Sol","description":"The selected model","hidden":false,"isDefault":false,"supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}],"defaultReasoningEffort":"low"}],"nextCursor":null}}'
           ;;
       esac
     done
     exit 0;;
 esac
 exit 1`
+
+/** A Codex app-server that completes two successive Runs in one Conversation. */
+const TWO_TURN_CODEX = `case "$1" in
+  --version) echo "codex-cli 0.146.0"; exit 0;;
+  login) exit 0;;
+  app-server)
+    while IFS= read -r line; do
+      case "$line" in
+        *'"initialize"'*) printf '{"jsonrpc":"2.0","id":1,"result":{}}\n';;
+        *'"model/list"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"data":[{"id":"gpt-5.6-sol","displayName":"GPT-5.6-Sol","description":"The default","hidden":false,"isDefault":true,"supportedReasoningEfforts":[{"reasoningEffort":"low"}],"defaultReasoningEffort":"low"}],"nextCursor":null}}'
+          ;;
+        *'"thread/start"'*|*'"thread/resume"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-1"}}}'
+          ;;
+        *'"turn/start"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn-1"}}}'
+          case "$line" in
+            *'Second request'*) answer='Second answer';;
+            *) answer='First answer';;
+          esac
+          sleep 0.2
+          printf '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"agentMessage","id":"message","text":"%s"}}}\n' "$answer"
+          printf '%s\n' '{"jsonrpc":"2.0","method":"turn/completed","params":{}}'
+          ;;
+      esac
+    done
+    exit 0;;
+esac
+exit 1`
+
+test('Codex completes a second message without losing Core', async () => {
+  await installFakeHarness('codex', TWO_TURN_CODEX)
+  await installFakeHarness('claude', 'exit 1')
+  const app = await launchShell()
+  let stderr = ''
+  app.process().stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString()
+  })
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'First request')
+
+    const history = page.getByRole('log', { name: 'Conversation history' })
+    await expect(history.getByText('First answer', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'First request', exact: true })).toBeVisible()
+    await page.getByLabel('Your message').fill('Second request')
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
+
+    await expect(history.getByText(/Second answer|Run needs attention/).last()).toBeVisible()
+    expect(stderr, `Main stderr:\n${stderr}`).not.toContain('Core stopped unexpectedly')
+    await expect(history.getByText('Second answer', { exact: true })).toBeVisible()
+    await expect(history.getByText('Run needs attention')).toHaveCount(0)
+  } finally {
+    await app.close()
+  }
+})
 
 test('one picker chooses the model, and with it the Harness that runs it', async () => {
   await installFakeHarness('codex', MODEL_LISTING_CODEX)
@@ -1130,6 +1265,9 @@ test('one picker chooses the model, and with it the Harness that runs it', async
       .last()
     await expect(boundary).toContainText('gpt-5.6-sol')
     await expect(boundary).toContainText('Full access')
+    await expect(page.getByRole('combobox', { name: 'Model', exact: true })).toContainText(
+      'GPT-5.6-Sol'
+    )
   } finally {
     await app.close()
   }

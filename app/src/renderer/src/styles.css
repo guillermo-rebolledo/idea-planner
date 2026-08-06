@@ -281,25 +281,6 @@ body {
   max-height: calc(100% - 3rem);
 }
 
-/* The dot-matrix running indicator (`ui/dot-matrix.tsx`): every dot breathes
-   on this one keyframe, offset per dot along the diagonal, so the grid reads
-   as a wave. Under reduced motion the global rule above freezes it, and each
-   dot rests at its quiet opacity. */
-.dot-matrix-dot {
-  opacity: 0.25;
-  animation: dot-matrix-wave 1.4s ease-in-out infinite;
-}
-
-@keyframes dot-matrix-wave {
-  0%,
-  100% {
-    opacity: 0.25;
-  }
-  30% {
-    opacity: 1;
-  }
-}
-
 /* Text the app is still producing: a highlight band sweeping across letters
    painted in the muted ink (the shadcn shimmer, in this app's roles). Under
    reduced motion the sweep freezes off-canvas and the text is simply muted. */
@@ -314,7 +295,7 @@ body {
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: shimmer-sweep 2s linear infinite;
+  animation: shimmer-sweep 1.25s linear infinite;
 }
 
 @keyframes shimmer-sweep {

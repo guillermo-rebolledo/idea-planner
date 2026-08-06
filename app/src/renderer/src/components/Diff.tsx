@@ -1,4 +1,5 @@
 import type { DiffHunk } from '@shared/contract'
+import { cn } from '@renderer/lib/utils'
 
 /**
  * `+N −M`, the product's one use of green and red. Colour is rationed to
@@ -34,9 +35,20 @@ export function ExitCode({ code }: { code: number }): React.JSX.Element {
  * appears: the change is already on disk (ADR 0004) and git is the only undo,
  * so there is nothing here to accept or reject.
  */
-export function DiffView({ hunks }: { hunks: DiffHunk[] }): React.JSX.Element {
+export function DiffView({
+  hunks,
+  className
+}: {
+  hunks: DiffHunk[]
+  className?: string
+}): React.JSX.Element {
   return (
-    <pre className="mt-1 overflow-x-auto rounded-md border border-border bg-surface p-2 font-mono text-xs select-text">
+    <pre
+      className={cn(
+        'mt-1 overflow-x-auto rounded-md border border-border bg-surface p-2 font-mono text-xs select-text',
+        className
+      )}
+    >
       {hunks.map((hunk, index) => (
         // A hunk is identified by where it starts and how far it runs.
         <div key={`${hunk.oldStart}:${hunk.newStart}:${hunk.lines.length}`}>

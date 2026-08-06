@@ -59,6 +59,7 @@ import {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 12: the window can answer Main's active-Run quit warning.
  * 11: Checkout facts include the currently observed Checkout State.
  * 10: Project-wide Skill trust is bound to a reviewed content digest.
  * 9: Queued Submissions and queue state are durable Conversation projections.
@@ -66,7 +67,7 @@ import {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 11
+export const CONTRACT_VERSION = 12
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -253,6 +254,9 @@ export const themeStateSchema = z.object({
   resolved: resolvedThemeSchema
 })
 export type ThemeState = z.infer<typeof themeStateSchema>
+
+export const quitRequestResponseSchema = z.enum(['keep-working', 'quit', 'always-quit'])
+export type QuitRequestResponse = z.infer<typeof quitRequestResponseSchema>
 
 export const bootStateSchema = z.object({
   contractVersion: z.literal(CONTRACT_VERSION),
@@ -482,6 +486,12 @@ export interface ShellApi {
   deleteSession(sessionId: string): Promise<void>
   setThemePreference(preference: ThemePreference): Promise<ThemeState>
   onThemeChanged(listener: (theme: ThemeState) => void): () => void
+  /** Whether quitting with active Runs asks first. Cleanup always runs either way. */
+  getQuitWarningPreference(): Promise<boolean>
+  setQuitWarningPreference(enabled: boolean): Promise<boolean>
+  /** Answers the in-app warning raised by a native or terminal quit request. */
+  respondToQuitRequest(response: QuitRequestResponse): Promise<void>
+  onQuitRequested(listener: (activeRunCount: number) => void): () => void
   /**
    * ⌘Z, delivered from Main: the application menu's Undo consumes the key
    * before the page sees it, so the Renderer is told instead. Fires for every

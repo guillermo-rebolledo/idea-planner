@@ -1,9 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Markdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { ThinkingOrb } from 'thinking-orbs'
 import {
   ArrowUp,
-  Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -21,6 +21,7 @@ import {
   X
 } from 'lucide-react'
 import {
+  DEFAULT_EFFORT,
   HARNESS_DEFAULT_MODEL,
   assistantMessageId,
   isActiveQueuedSubmission,
@@ -39,6 +40,7 @@ import {
   type SuggestedResponse
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
+import { HoverCard, HoverCardContent, HoverCardTrigger } from '@renderer/components/ui/hover-card'
 import {
   applicableEffort,
   effectiveChoice,
@@ -46,8 +48,7 @@ import {
   useModelCatalog,
   type ModelChoice
 } from '@renderer/components/ModelPicker'
-import { DiffCounts, ExitCode } from '@renderer/components/Diff'
-import { DotMatrix } from '@renderer/components/ui/dot-matrix'
+import { DiffCounts, DiffView, ExitCode } from '@renderer/components/Diff'
 import { PermissionModePicker } from '@renderer/components/PermissionModePicker'
 import {
   MessageScroller,
@@ -152,6 +153,45 @@ const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
 
 const NO_CONVERSATION_ENTRIES: ConversationEntry[] = []
 
+/**
+ * Recovery is a choice for the latest unresolved turn, not permanent history.
+ * A newer message or Run means the person already continued, even if an older
+ * snapshot projection still carries the recovery value.
+ */
+function currentRecovery(
+  entries: ConversationEntry[],
+  recovery: ConversationRecovery | null
+): { recovery: ConversationRecovery; key: string } | null {
+  if (recovery === null) return null
+
+  let boundaryIndex = -1
+  let boundaryId = ''
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]
+    if (
+      entry?.kind === 'boundary' &&
+      entry.recovery?.category === recovery.category &&
+      entry.recovery.summary === recovery.summary &&
+      entry.recovery.resumableSubmissionId === recovery.resumableSubmissionId
+    ) {
+      boundaryIndex = index
+      boundaryId = entry.id
+      break
+    }
+  }
+  if (boundaryIndex === -1) return { recovery, key: JSON.stringify(recovery) }
+
+  const continued = entries
+    .slice(boundaryIndex + 1)
+    .some(
+      (entry) =>
+        entry.kind === 'message' || (entry.kind === 'boundary' && entry.boundary === 'run-started')
+    )
+  if (continued) return null
+
+  return { recovery, key: boundaryId }
+}
+
 function skillChangeCount(catalog: SkillCatalog): number {
   return (
     catalog.changes.added.length + catalog.changes.removed.length + catalog.changes.changed.length
@@ -196,6 +236,10 @@ export function Conversation({
   // One choice, not three: the model carries the Harness that reaches it.
   const { models, readiness } = useModelCatalog()
   const [chosen, setChosen] = useState<ModelChoice | null>(null)
+  // The launch screen and this composer are two component lifetimes. Seed the
+  // latter from the durable Run so the model chosen for the first message is
+  // also what the next message offers. A choice made here outranks refreshes.
+  const choiceTouchedRef = useRef(false)
   // Ask by default: a Run edits the Project in place, and being asked first is
   // the posture somebody would choose if they were choosing deliberately.
   // Seeded from the Session's latest Run once its record loads, so the mode
@@ -211,6 +255,7 @@ export function Conversation({
   const [standingApprovalConfirmId, setStandingApprovalConfirmId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [dismissedRecoveryKey, setDismissedRecoveryKey] = useState<string | null>(null)
 
   const snapshot = phase.state === 'ready' ? phase.snapshot : null
   const activeRunId = snapshot?.activeRunId ?? null
@@ -246,6 +291,17 @@ export function Conversation({
     const latest = runs[0]
     if (!modeTouchedRef.current && latest) {
       setPermissionMode(latest.configuration.permissionMode)
+    }
+  }, [runs])
+
+  useEffect(() => {
+    const latest = runs[0]
+    if (!choiceTouchedRef.current && latest) {
+      setChosen({
+        harness: latest.configuration.harness,
+        model: latest.configuration.model,
+        effort: latest.configuration.effort ?? DEFAULT_EFFORT
+      })
     }
   }, [runs])
 
@@ -447,6 +503,8 @@ export function Conversation({
 
   const durableEntries = snapshot?.entries ?? NO_CONVERSATION_ENTRIES
   const items = useMemo(() => groupEntries(durableEntries), [durableEntries])
+  const recoverable = currentRecovery(durableEntries, snapshot?.recovery ?? null)
+  const displayedRecovery = recoverable?.key === dismissedRecoveryKey ? null : (recoverable ?? null)
 
   // Centered like every other whole-surface state in the app: the surface is
   // loading or failed, not a card that happens to sit at its top-left corner.
@@ -487,7 +545,7 @@ export function Conversation({
   const canDevelop = readiness?.harnesses.find((entry) => entry.harness === chosenHarness)
     ?.capabilities.developSession
   const blocked = readiness !== null && canDevelop?.available !== true
-  const resumable = phase.snapshot.recovery?.resumableSubmissionId ?? null
+  const resumable = displayedRecovery?.recovery.resumableSubmissionId ?? null
   const resumableText = entries.find(
     (entry) => entry.kind === 'message' && entry.submissionId === resumable
   )
@@ -786,26 +844,35 @@ export function Conversation({
                   </div>
                 )}
 
-              {phase.snapshot.recovery &&
+              {displayedRecovery &&
                 row(
                   'recovery',
-                  <div role="alert" className="rounded-md border border-border bg-muted/50 p-3">
-                    <p className="text-xs text-foreground">
-                      {RECOVERY_GUIDANCE[phase.snapshot.recovery.category]}
-                    </p>
-                    <p className="mt-1 text-xs break-words text-muted-foreground">
-                      What happened: {phase.snapshot.recovery.summary}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      The full sanitized activity for this Run is below.
-                    </p>
+                  <div
+                    role="status"
+                    aria-label="Run recovery"
+                    className="flex items-start gap-2.5 rounded-md border border-border bg-muted/30 px-3 py-2.5"
+                  >
+                    <TriangleAlert
+                      aria-hidden="true"
+                      className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs text-foreground">
+                        {RECOVERY_GUIDANCE[displayedRecovery.recovery.category]}
+                      </p>
+                      <details className="mt-1 text-xs text-muted-foreground">
+                        <summary className="w-fit cursor-pointer select-none">Run details</summary>
+                        <p className="mt-1 break-words">{displayedRecovery.recovery.summary}</p>
+                      </details>
+                    </div>
                     {resumable && resumableText?.kind === 'message' && (
                       <Button
-                        className="mt-2"
+                        className="shrink-0"
                         size="sm"
                         variant="secondary"
                         disabled={busy}
-                        onClick={() =>
+                        onClick={() => {
+                          setDismissedRecoveryKey(displayedRecovery.key)
                           void send(
                             resumableText.text,
                             resumableText.source === 'suggested-response'
@@ -813,11 +880,20 @@ export function Conversation({
                               : 'composer',
                             resumable
                           )
-                        }
+                        }}
                       >
-                        Send that message again
+                        Send again
                       </Button>
                     )}
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      aria-label="Dismiss recovery notice"
+                      className="-m-1 size-6 shrink-0"
+                      onClick={() => setDismissedRecoveryKey(displayedRecovery.key)}
+                    >
+                      <X aria-hidden="true" className="size-3" />
+                    </Button>
                   </div>
                 )}
             </MessageScrollerContent>
@@ -1095,6 +1171,7 @@ export function Conversation({
               event.preventDefault()
               const text = draft.trim()
               if (!text) return
+              if (displayedRecovery) setDismissedRecoveryKey(displayedRecovery.key)
               // While a Run works, capture every Run choice in the durable,
               // Session-owned queue. No pending message exists only in React.
               if (activeRunId !== null || hasQueuedSubmissions) {
@@ -1148,7 +1225,13 @@ export function Conversation({
                 ref={composerRef}
                 rows={3}
                 value={draft}
-                onChange={(event) => setDraft(event.target.value)}
+                onChange={(event) => {
+                  const nextDraft = event.target.value
+                  if (nextDraft.trim() && displayedRecovery) {
+                    setDismissedRecoveryKey(displayedRecovery.key)
+                  }
+                  setDraft(nextDraft)
+                }}
                 onKeyDown={(event) => {
                   if (event.key !== 'Enter') return
                   // Mid-composition Enter belongs to the input method.
@@ -1159,7 +1242,10 @@ export function Conversation({
                   // keystroke's.
                   if (activeRunId !== null || hasQueuedSubmissions) return
                   event.preventDefault()
-                  if (draft.trim()) void send(draft.trim(), 'composer')
+                  if (draft.trim()) {
+                    if (displayedRecovery) setDismissedRecoveryKey(displayedRecovery.key)
+                    void send(draft.trim(), 'composer')
+                  }
                 }}
                 placeholder="Reply, or / for a Skill…"
                 className="w-full resize-none bg-transparent px-3 pt-3 pb-1 text-sm outline-none placeholder:text-muted-foreground"
@@ -1179,7 +1265,10 @@ export function Conversation({
                     catalog={models}
                     readiness={readiness}
                     choice={choice}
-                    onChange={setChosen}
+                    onChange={(next) => {
+                      choiceTouchedRef.current = true
+                      setChosen(next)
+                    }}
                     disabled={activeRunId !== null}
                   />
                 </span>
@@ -1291,7 +1380,7 @@ function Spinner(): React.JSX.Element {
 }
 
 /**
- * What a Run in flight shows: the dot-matrix pulse, the current step
+ * What a Run in flight shows: the composing orb, the current step
  * shimmering as it streams, and how long the Run has been at it. One quiet
  * row rather than a panel — the step-by-step record arrives once the Run has
  * finished, when there is a record to read.
@@ -1318,7 +1407,13 @@ function RunWorkingIndicator({
       : 'Working…'
   return (
     <div role="status" className="flex items-center gap-2.5 font-mono text-xs">
-      <DotMatrix label="Run in progress" className="shrink-0 text-status-running" />
+      <ThinkingOrb
+        state="composing"
+        size={20}
+        theme="auto"
+        aria-label="Run in progress"
+        className="shrink-0"
+      />
       <span className="min-w-0 flex-1 shimmer truncate">{current}</span>
       {startedAt !== null && (
         <span className="shrink-0 text-2xs text-muted-foreground">
@@ -1339,13 +1434,130 @@ function RunElapsed({ startedAt }: { startedAt: string }): React.JSX.Element {
   return <>{formatDuration(elapsed)}</>
 }
 
+type FileChangeEntry = Extract<ConversationEntry, { kind: 'file-change' }>
+
+interface ChangedFileGroup {
+  path: string
+  changes: FileChangeEntry[]
+  added: number
+  removed: number
+  shortened: boolean
+  changeKind: FileChangeEntry['changeKind']
+}
+
+/** One row per edited file, while retaining each recorded write for its preview. */
+function groupChangedFiles(changes: FileChangeEntry[]): ChangedFileGroup[] {
+  const grouped = new Map<string, ChangedFileGroup>()
+  for (const change of changes) {
+    const known = grouped.get(change.path)
+    grouped.set(change.path, {
+      path: change.path,
+      changes: [...(known?.changes ?? []), change],
+      added: (known?.added ?? 0) + change.added,
+      removed: (known?.removed ?? 0) + change.removed,
+      shortened: (known?.shortened ?? false) || change.shortened,
+      changeKind: change.changeKind
+    })
+  }
+  return [...grouped.values()]
+}
+
+function fileName(path: string): string {
+  return path.split('/').at(-1) ?? path
+}
+
+const CHANGE_LABEL: Record<FileChangeEntry['changeKind'], string> = {
+  added: 'Added',
+  changed: 'Edited',
+  deleted: 'Deleted'
+}
+
 /**
- * One activity block per finished Run (mock 2d): one line saying what the Run
- * did, and a chevron that expands it to the chronological step list — reads,
- * edits, commands, MCP calls; steps only, no captured output. It appears once
- * the Run is over, so the Conversation is quiet at rest and nothing shuffles
- * while the agent works. Clicking an edited file opens the Files panel on it,
- * the app's one diff surface.
+ * The compact successful outcome: changed files only. Hover previews the
+ * recorded diff; click still opens the complete Files panel for review.
+ */
+function ChangedFilesSummary({
+  changes,
+  onOpenFile
+}: {
+  changes: FileChangeEntry[]
+  onOpenFile: (path: string) => void
+}): React.JSX.Element {
+  const files = groupChangedFiles(changes)
+
+  return (
+    <section
+      aria-label={`${String(files.length)} edited file${files.length === 1 ? '' : 's'}`}
+      className="overflow-hidden rounded-lg border border-border bg-muted/30"
+    >
+      <ul className="divide-y divide-border">
+        {files.map((file) => (
+          <li key={file.path} className="flex items-center gap-2 p-2.5">
+            <HoverCard>
+              <HoverCardTrigger
+                delay={200}
+                closeDelay={150}
+                render={
+                  <button
+                    type="button"
+                    onClick={() => onOpenFile(file.path)}
+                    className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                }
+              >
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border bg-surface text-muted-foreground">
+                  <FileDiff aria-hidden="true" className="size-3.5" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium" title={file.path}>
+                    {CHANGE_LABEL[file.changeKind]} {fileName(file.path)}
+                  </span>
+                  <span className="block font-mono text-2xs tabular-nums">
+                    <DiffCounts added={file.added} removed={file.removed} />
+                  </span>
+                </span>
+              </HoverCardTrigger>
+              <HoverCardContent side="top" align="start" className="w-screen max-w-xl">
+                <div className="flex items-baseline gap-2 px-0.5">
+                  <p className="min-w-0 flex-1 truncate font-mono text-xs" title={file.path}>
+                    {file.path}
+                  </p>
+                  <span className="shrink-0 font-mono text-2xs tabular-nums">
+                    <DiffCounts added={file.added} removed={file.removed} />
+                  </span>
+                </div>
+                <div className="max-h-72 overflow-auto">
+                  {file.changes.map((change, index) => (
+                    <div key={change.id}>
+                      {file.changes.length > 1 && (
+                        <p className="mt-2 px-0.5 font-mono text-2xs text-muted-foreground">
+                          Write {String(index + 1)} of {String(file.changes.length)}
+                        </p>
+                      )}
+                      <DiffView hunks={change.hunks} />
+                    </div>
+                  ))}
+                  {file.shortened && (
+                    <p className="mt-1 px-0.5 text-xs text-muted-foreground">
+                      Preview shortened. Review the file to see the complete change.
+                    </p>
+                  )}
+                </div>
+              </HoverCardContent>
+            </HoverCard>
+            <Button size="sm" variant="secondary" onClick={() => onOpenFile(file.path)}>
+              Review
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+/**
+ * A successful Run leaves only its edited files. Failed and stopped Runs keep
+ * the fuller outcome and activity record needed to understand the interruption.
  */
 function RunOutcome({
   group,
@@ -1361,7 +1573,7 @@ function RunOutcome({
   steps: StepEntry[]
   onOpenFile: (path: string) => void
   onContinue: () => void
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   const [expanded, setExpanded] = useState(false)
 
   const changes = steps.flatMap((step) => (step.kind === 'file-change' ? [step] : []))
@@ -1386,26 +1598,23 @@ function RunOutcome({
   const failed =
     group.ended?.boundary === 'run-failed' || (run !== null && FAILED_STATUSES.has(run.status))
   const stopped = group.ended?.boundary === 'run-stopped' || run?.status === 'stopped'
-  const outcome = failed ? 'attention' : stopped ? 'stopped' : 'delivered'
+  if (!failed && !stopped) {
+    return changes.length > 0 ? (
+      <ChangedFilesSummary changes={changes} onOpenFile={onOpenFile} />
+    ) : null
+  }
+
+  const outcome = failed ? 'attention' : 'stopped'
   const duration =
     startedAt !== null && group.ended
       ? formatDuration(Date.parse(group.ended.at) - Date.parse(startedAt))
       : null
   const firstChangedPath = changes[0]?.path ?? null
-  const outcomeLabel =
-    outcome === 'attention'
-      ? 'Run needs attention'
-      : outcome === 'stopped'
-        ? 'Run stopped'
-        : 'Run delivered'
+  const outcomeLabel = outcome === 'attention' ? 'Run needs attention' : 'Run stopped'
   const outcomeDetail =
     outcome === 'attention'
       ? 'The Run ended before it could deliver a complete result.'
-      : outcome === 'stopped'
-        ? 'Everything completed before the stop is kept.'
-        : edited.size > 0
-          ? `${String(edited.size)} changed file${edited.size === 1 ? '' : 's'} ready to review.`
-          : 'No file changes were recorded.'
+      : 'Everything completed before the stop is kept.'
 
   return (
     <section aria-label="Run outcome" className="py-3">
@@ -1419,10 +1628,8 @@ function RunOutcome({
         >
           {outcome === 'attention' ? (
             <TriangleAlert aria-hidden="true" className="size-3.5" />
-          ) : outcome === 'stopped' ? (
-            <Square aria-hidden="true" className="size-3" />
           ) : (
-            <Check aria-hidden="true" className="size-3.5" />
+            <Square aria-hidden="true" className="size-3" />
           )}
         </span>
         <div className="min-w-0 flex-1">
@@ -1850,9 +2057,8 @@ function RunSection({
             partial={message.partial}
           />
         ))}
-      {/* In flight: one pulsing line about the current step. At rest: the
-          collapsed record of what the Run did. Never both — and never a
-          panel that shuffles while the agent works. */}
+      {/* In flight: one pulsing line about the current step. At rest: only
+          changed files or an interrupted Run need an outcome surface. */}
       {active && !waiting && (
         <RunWorkingIndicator steps={group.steps} live={live} startedAt={startedAt} />
       )}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Archive, ArrowRightLeft, Bot, FolderPlus, Lock, SunMedium } from 'lucide-react'
+import { Archive, ArrowRightLeft, Bot, FolderPlus, Lock, Settings } from 'lucide-react'
 import {
   type ChooseProjectResult,
   type ReadinessSnapshot,
@@ -14,6 +14,7 @@ import {
 } from '@renderer/components/StandingApprovals'
 import { Button } from '@renderer/components/ui/button'
 import { Modal } from '@renderer/components/ui/dialog'
+import { SettingsDialog } from '@renderer/components/Settings'
 import {
   Menu,
   MenuContent,
@@ -44,12 +45,6 @@ type Refusal = Extract<ChooseProjectResult, { status: 'refused' }>
 /** A folder inside a Project whose root git puts somewhere else. */
 type RootConfirmation = Extract<ChooseProjectResult, { status: 'confirm-root' }>
 
-const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
-  { value: 'system', label: 'System' },
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' }
-]
-
 /**
  * The app menu, anchored in the sidebar footer (mockup 3c). The rarely
  * touched things live here — adding a Project, Harnesses, Standing Approvals,
@@ -71,6 +66,7 @@ export function AppMenu({
   const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
   const [approvals, setApprovals] = useState<ProjectApprovals[]>([])
   const [approvalsOpen, setApprovalsOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [refusal, setRefusal] = useState<Refusal | null>(null)
   const [confirmation, setConfirmation] = useState<RootConfirmation | null>(null)
   const [busy, setBusy] = useState(false)
@@ -197,32 +193,10 @@ export function AppMenu({
             </span>
           </MenuItem>
           <MenuSeparator />
-          <div className="flex items-center gap-2 px-2 py-1.5">
-            <SunMedium aria-hidden="true" className="size-3.5 text-muted-foreground" />
-            Theme
-            <span
-              role="group"
-              aria-label="Theme"
-              className="ml-auto flex gap-0.5 rounded-md border border-border p-0.5"
-            >
-              {THEME_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-pressed={(theme?.preference ?? 'system') === option.value}
-                  onClick={() => onThemeChange(option.value)}
-                  className={cn(
-                    'rounded px-2 py-0.5 text-2xs transition-colors focus-visible:ring-2 focus-visible:ring-ring',
-                    (theme?.preference ?? 'system') === option.value
-                      ? 'bg-accent font-medium text-foreground'
-                      : 'text-muted-foreground hover:text-foreground'
-                  )}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </span>
-          </div>
+          <MenuItem onClick={() => setSettingsOpen(true)}>
+            <Settings aria-hidden="true" className="size-3.5 text-muted-foreground" />
+            Settings…
+          </MenuItem>
           <MenuSeparator />
           <MenuItem onClick={onGoToSession}>
             <ArrowRightLeft aria-hidden="true" className="size-3.5 text-muted-foreground" />
@@ -244,6 +218,14 @@ export function AppMenu({
           approvals={approvals}
           onRevoke={(projectRoot, approval) => void revoke(projectRoot, approval)}
           onDismiss={() => setApprovalsOpen(false)}
+        />
+      )}
+
+      {settingsOpen && (
+        <SettingsDialog
+          theme={theme}
+          onThemeChange={onThemeChange}
+          onDismiss={() => setSettingsOpen(false)}
         />
       )}
 
