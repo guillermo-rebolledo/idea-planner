@@ -554,6 +554,60 @@ describe('Run service', () => {
     expect(core.commands.filter((command) => command === 'run/lifecycle-open')).toHaveLength(1)
   })
 
+  it('sends reviewed code to the Harness while the Conversation keeps the prose', async () => {
+    const root = await readyHarnessRoot('run-develop-attached-')
+    const core = fakeCore(join(root, 'a-project'))
+    const service = new RunService({
+      core,
+      broker: fakeBroker(),
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
+    })
+    const attachment = {
+      id: 'file-change:run-1:1:hunk-0',
+      path: 'src/greeting.ts',
+      runId: 'run-1',
+      entryId: 'file-change:run-1:1',
+      scope: 'hunk' as const,
+      hunkIndex: 0,
+      startLine: 1,
+      endLine: 1,
+      lines: ['+const greeting = "goodbye"'],
+      shortened: false,
+      capturedAt: '2026-08-07T10:00:00.000Z'
+    }
+
+    await service.develop({
+      sessionId: 'session',
+      submissionId: 'submission-1',
+      text: 'Make this shorter',
+      source: 'composer',
+      reviewAttachments: [attachment],
+      harness: 'claude',
+      model: 'gpt-5-codex',
+      effort: 'medium',
+      permissionMode: 'auto'
+    })
+
+    const submitted = core.send.mock.calls
+      .map(([command]) => command as { type: string; input?: Record<string, unknown> })
+      .find((command) => command.type === 'conversation/submit')
+    expect(submitted?.input).toMatchObject({
+      text: 'Make this shorter',
+      reviewAttachments: [attachment]
+    })
+    const opened = core.send.mock.calls
+      .map(([command]) => command as { type: string; input?: { prompt?: string } })
+      .find((command) => command.type === 'run/lifecycle-open')
+    expect(opened?.input?.prompt).toContain('Make this shorter')
+    expect(opened?.input?.prompt).toContain('<reviewed-code count="1">')
+    expect(opened?.input?.prompt).toContain('+const greeting = "goodbye"')
+  })
+
   it('does not contact a Harness when a Project Skill loses trust before launch', async () => {
     const root = await readyClaudeRoot('run-skill-recheck-')
     const projectRoot = join(root, 'a-project')

@@ -44,6 +44,10 @@ _Avoid_: Conversation, turn, Harness Thread
 A durable, editable request waiting inside one Session while another Run is active. It captures the message and its Run configuration when queued, keeps a stable submission identity through edits and reordering, and contacts a Harness only when Main claims it after an explicit Resume or a completed Run.
 _Avoid_: Held message, draft, follow-up, pending prompt
 
+**Review Attachment**:
+Code the user selected while reading what a Session changed — a whole recorded write, one hunk, or a range of its lines — copied at the moment of selecting it and carried by exactly one message or Queued Submission. It is historical context for the Harness, never a live reference: later writes to the same file leave it untouched, and it has no thread, reply, resolved state, or synchronization anywhere.
+_Avoid_: Review comment, annotation, code selection, snippet
+
 **Harness**:
 A locally installed CLI coding agent the app drives as a child process, such as Codex or Claude Code. The app never provides inference itself.
 _Avoid_: Provider, model, backend

@@ -20,6 +20,11 @@ import {
   X,
   type LucideIcon
 } from 'lucide-react'
+import {
+  reviewAttachmentLabel,
+  reviewAttachmentsRefusal,
+  type ReviewAttachment
+} from '@shared/contract'
 import type {
   MailboxProject,
   MailboxQuery,
@@ -129,6 +134,10 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   // only diff surface. Which file is open inside it is per visit, not stored.
   const [filesOpen, setFilesOpen] = useState(false)
   const [focusedFile, setFocusedFile] = useState<string | null>(null)
+  // Reviewed code waiting to go with the next message. It is held here rather
+  // than in either surface: it is selected in Files and sent from the
+  // Conversation, and neither one owns it.
+  const [reviewAttachments, setReviewAttachments] = useState<ReviewAttachment[]>([])
   // Sessions whose record could not be read. Shown rather than left out: a
   // Session that disappears without a word is the failure the store exists to
   // prevent, and not listing one is only half of not being silent.
@@ -208,8 +217,49 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   function openSession(session: SessionSummary): void {
     // A fresh visit starts at the list, not wherever the last one left off.
     setFocusedFile(null)
+    // Reviewed code belongs to the Session it was read in, and to the message
+    // it was about to go with. Neither travels to another Session.
+    setReviewAttachments([])
     setSurface({ kind: 'session', session })
   }
+
+  /**
+   * Takes reviewed code onto the next message. Selecting the same thing twice
+   * is the same attachment, and a set that has grown past what a message may
+   * carry is refused here — before anything is committed, rather than cut
+   * quietly after the send.
+   */
+  const attachReviewedCode = useCallback(
+    (attachment: ReviewAttachment) => {
+      // Decided out here, never inside the updater: an updater runs more than
+      // once, and an announcement is something said to a person.
+      if (reviewAttachments.some((held) => held.id === attachment.id)) {
+        setAnnouncement(`${reviewAttachmentLabel(attachment)} is already attached.`)
+        return
+      }
+      const next = [...reviewAttachments, attachment]
+      const refusal = reviewAttachmentsRefusal(next)
+      if (refusal) {
+        setAnnouncement(refusal)
+        return
+      }
+      setReviewAttachments(next)
+      setAnnouncement(
+        `Attached ${reviewAttachmentLabel(attachment)} — ${String(attachment.lines.length)} lines${attachment.shortened ? ', shortened' : ''}.`
+      )
+    },
+    [reviewAttachments, setAnnouncement]
+  )
+
+  const removeReviewedCode = useCallback(
+    (id: string) => {
+      const removed = reviewAttachments.find((held) => held.id === id)
+      if (!removed) return
+      setReviewAttachments(reviewAttachments.filter((held) => held.id !== id))
+      setAnnouncement(`Removed ${reviewAttachmentLabel(removed)}.`)
+    },
+    [reviewAttachments, setAnnouncement]
+  )
 
   /** Files is an inspector, never a third column allowed to crush the work. */
   function openFiles(path?: string): void {
@@ -617,6 +667,9 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
               session={surface.session}
               conversation={conversation}
               onOpenFile={openFiles}
+              reviewAttachments={reviewAttachments}
+              onRemoveReviewAttachment={removeReviewedCode}
+              onClearReviewAttachments={() => setReviewAttachments([])}
             />
           ) : (
             <Composer
@@ -634,6 +687,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
             focusedPath={focusedFile}
             onFocus={setFocusedFile}
             onClose={() => setFilesOpen(false)}
+            onAttach={attachReviewedCode}
           />
         )}
       </div>

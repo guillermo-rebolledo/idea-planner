@@ -99,6 +99,7 @@ describe('selected Conversation refreshes', () => {
       text: `Message ${String(index)}`,
       completeness: 'complete',
       source: index % 2 === 0 ? 'composer' : 'harness',
+      reviewAttachments: [],
       submissionId: null,
       suggestedResponses: [],
       plainOptions: false
@@ -228,6 +229,7 @@ describe('selected Conversation refreshes', () => {
         text: 'Keep this message',
         completeness: 'complete',
         source: 'composer',
+        reviewAttachments: [],
         submissionId: 'submission',
         suggestedResponses: [],
         plainOptions: false

@@ -1039,6 +1039,72 @@ test('a Session says which files it changed, and offers nothing to accept', asyn
   }
 })
 
+test('reviewed code becomes a stable attachment on the next message', async () => {
+  await installFakeHarness('claude', EDITING_CLAUDE_FAKE)
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Change the greeting')
+
+    await page.getByRole('button', { name: /Files this Session changed/ }).click()
+    const panel = page.getByRole('complementary', { name: 'Files this Session changed' })
+    await panel.getByRole('button', { name: /greeting\.ts/ }).click()
+
+    // Attaching is a real control with its own name: no text selection, no
+    // hover, no colour. Reached and taken from the keyboard alone.
+    const attachHunk = panel.getByRole('button', {
+      name: 'Attach hunk 1 of greeting.ts'
+    })
+    await attachHunk.focus()
+    await page.keyboard.press('Enter')
+    await expect(page.getByRole('status').filter({ hasText: 'Attached greeting.ts' })).toBeVisible()
+
+    // A line of that hunk can be attached on its own, by ticking it.
+    await panel
+      .getByRole('checkbox', { name: /Select added line 1 of hunk 1 in greeting\.ts/ })
+      .check()
+    await panel.getByRole('button', { name: /Attach 1 selected line of greeting\.ts/ }).click()
+
+    const attached = page.getByRole('region', { name: 'Attached code' })
+    await expect(attached.getByText('greeting.ts — hunk 1')).toBeVisible()
+    await expect(attached.getByText('greeting.ts — line 1')).toBeVisible()
+
+    // Inspect shows exactly what will be sent.
+    await attached.getByRole('button', { name: /Inspect greeting\.ts — hunk 1/ }).click()
+    await expect(attached.getByText('+export const greeting = "goodbye"')).toBeVisible()
+
+    // Removing one announces it and keeps focus on the next Remove; removing
+    // the last returns focus to the composer.
+    await attached.getByRole('button', { name: /Remove greeting\.ts — hunk 1/ }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Removed greeting.ts' })).toBeVisible()
+    await expect(
+      attached.getByRole('button', { name: /Remove greeting\.ts — line 1/ })
+    ).toBeFocused()
+    await attached.getByRole('button', { name: /Remove greeting\.ts — line 1/ }).click()
+    await expect(page.getByRole('textbox', { name: 'Your message' })).toBeFocused()
+    await expect(page.getByRole('region', { name: 'Attached code' })).toHaveCount(0)
+
+    // Attached again, and sent: the Conversation keeps the person's words and
+    // nothing of the serialized block, and the composer is empty afterwards.
+    await attachHunk.click()
+    await page.getByLabel('Your message').fill('Make this shorter')
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
+
+    const history = page.getByRole('log', { name: 'Conversation history' })
+    await expect(history.getByText('Make this shorter')).toBeVisible()
+    await expect(history.getByText('<reviewed-code')).toHaveCount(0)
+    await expect(page.getByRole('region', { name: 'Attached code' })).toHaveCount(0)
+
+    // What the message carried stays readable afterwards, as the history it is.
+    await history.getByRole('button', { name: 'Show 1 attached selection' }).click()
+    const sent = history.getByRole('list', { name: 'Code sent with this message' })
+    await expect(sent.getByText('+export const greeting = "goodbye"')).toBeVisible()
+  } finally {
+    await app.close()
+  }
+})
+
 /**
  * A Harness that changes a file the way a shell command does — no edit tool,
  * no report — and one that reports nothing at all about it.

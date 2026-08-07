@@ -10,7 +10,6 @@ import {
   FileDiff,
   FileText,
   LoaderCircle,
-  Paperclip,
   Pause,
   Pencil,
   Play,
@@ -32,6 +31,8 @@ import {
   type ConversationRecovery,
   type PermissionMode,
   type QueueOutcome,
+  reviewAttachmentLabel,
+  reviewAttachmentsRefusal,
   type ReviewAttachment,
   type RunSnapshot,
   type SessionSummary,
@@ -180,12 +181,20 @@ function projectSkillErrorText(reason: NonNullable<SkillCatalog['projectTrustErr
 export function Conversation({
   session,
   conversation,
-  onOpenFile
+  onOpenFile,
+  reviewAttachments,
+  onRemoveReviewAttachment,
+  onClearReviewAttachments
 }: {
   session: SessionSummary
   conversation: SelectedConversation
   /** Opens the Files panel focused on one file — the app's one diff surface. */
   onOpenFile: (path: string) => void
+  /** Reviewed code selected in Files, waiting to go with the next message. */
+  reviewAttachments: ReviewAttachment[]
+  onRemoveReviewAttachment: (id: string) => void
+  /** The message carrying them was committed, so the composer is empty again. */
+  onClearReviewAttachments: () => void
 }): React.JSX.Element {
   const sessionId = session.id
   const { phase, runs, live, failureSummary, refresh, adopt: adoptSnapshot } = conversation
@@ -193,8 +202,7 @@ export function Conversation({
   const [editingQueuedId, setEditingQueuedId] = useState<string | null>(null)
   const [queuedEdit, setQueuedEdit] = useState('')
   const [queueAnnouncement, setQueueAnnouncement] = useState('')
-  const [reviewAttachments, setReviewAttachments] = useState<ReviewAttachment[]>([])
-  const reviewAttachmentInputRef = useRef<HTMLInputElement>(null)
+  const [inspectedAttachmentId, setInspectedAttachmentId] = useState<string | null>(null)
   // No Skill by default. Most messages are not asking for a methodology, and
   // one applied because it happened to be selected is one nobody chose.
   const [skill, setSkill] = useState<string | null>(null)
@@ -288,12 +296,27 @@ export function Conversation({
       // A queued message carries the Skill chosen when it was parked, not
       // whatever is selected by the time the Run finishes. `undefined` means
       // "the composer's current pick"; `null` means "queued with no Skill".
-      queuedSkill?: string | null
+      queuedSkill?: string | null,
+      /**
+       * The reviewed code a message already committed to. A resend is the
+       * same message under the same identity, so it must carry exactly what
+       * it carried the first time rather than whatever is attached now.
+       */
+      resendAttachments?: ReviewAttachment[]
     ) => {
       if (!chosenHarness) return
       const messageSkill = queuedSkill === undefined ? chosenSkill : queuedSkill
       const resolvedSubmissionId = submissionId ?? crypto.randomUUID()
       const ownsComposer = source === 'composer' && !submissionId && queuedSkill === undefined
+      // Only a message being written now carries what is attached now. A
+      // resend answers under an identity already used, and changing what it
+      // says would be a different message wearing the same name.
+      const attached = resendAttachments ?? (ownsComposer ? reviewAttachments : [])
+      const refusal = reviewAttachmentsRefusal(attached)
+      if (refusal) {
+        setError(refusal)
+        return
+      }
       setOptimisticMessage({
         kind: 'message',
         id: `user:${resolvedSubmissionId}`,
@@ -304,6 +327,7 @@ export function Conversation({
         completeness: 'complete',
         source,
         submissionId: resolvedSubmissionId,
+        reviewAttachments: attached,
         suggestedResponses: [],
         plainOptions: false
       })
@@ -322,6 +346,7 @@ export function Conversation({
           submissionId: resolvedSubmissionId,
           text,
           source,
+          reviewAttachments: attached,
           ...(messageSkill ? { skill: messageSkill } : {}),
           harness: chosenHarness,
           model: choice?.model ?? HARNESS_DEFAULT_MODEL,
@@ -331,6 +356,7 @@ export function Conversation({
         })
         adoptSnapshot(next)
         setOptimisticMessage(null)
+        if (ownsComposer && attached.length > 0) onClearReviewAttachments()
       } catch {
         // The message was accepted durably before the Run was attempted, so
         // re-read before deciding whether the optimistic copy was accepted.
@@ -355,7 +381,18 @@ export function Conversation({
         setBusy(false)
       }
     },
-    [sessionId, chosenHarness, chosenSkill, choice, models, permissionMode, refresh, adoptSnapshot]
+    [
+      sessionId,
+      chosenHarness,
+      chosenSkill,
+      choice,
+      models,
+      permissionMode,
+      refresh,
+      adoptSnapshot,
+      reviewAttachments,
+      onClearReviewAttachments
+    ]
   )
 
   /**
@@ -861,7 +898,10 @@ export function Conversation({
                             resumableText.source === 'suggested-response'
                               ? 'suggested-response'
                               : 'composer',
-                            resumable
+                            resumable,
+                            undefined,
+                            // Exactly what it was sent with the first time.
+                            resumableText.reviewAttachments
                           )
                         }}
                       >
@@ -1156,6 +1196,11 @@ export function Conversation({
               // Session-owned queue. No pending message exists only in React.
               if (activeRunId !== null || hasQueuedSubmissions) {
                 if (!chosenHarness) return
+                const refusal = reviewAttachmentsRefusal(reviewAttachments)
+                if (refusal) {
+                  setError(refusal)
+                  return
+                }
                 setBusy(true)
                 void window.shell
                   .enqueueQueuedSubmission({
@@ -1174,10 +1219,7 @@ export function Conversation({
                     adoptSnapshot(next)
                     setDraft((current) => (current === text ? '' : current))
                     setSkill((current) => (current === chosenSkill ? null : current))
-                    setReviewAttachments([])
-                    if (reviewAttachmentInputRef.current) {
-                      reviewAttachmentInputRef.current.value = ''
-                    }
+                    onClearReviewAttachments()
                     setQueueAnnouncement(durableQueueAnnouncement(next.queue.outcome))
                   })
                   .catch(() => setError('That message could not be added to the queue.'))
@@ -1252,28 +1294,6 @@ export function Conversation({
                     disabled={activeRunId !== null}
                   />
                 </span>
-                {(activeRunId !== null || hasQueuedSubmissions) && (
-                  <label className="inline-flex size-8 cursor-pointer items-center justify-center rounded-md text-muted-foreground focus-within:ring-2 focus-within:ring-ring hover:bg-muted hover:text-foreground">
-                    <span className="sr-only">Attach files for queued review</span>
-                    <Paperclip aria-hidden="true" className="size-3.5" />
-                    <input
-                      ref={reviewAttachmentInputRef}
-                      type="file"
-                      multiple
-                      aria-label="Attach files for queued review"
-                      className="sr-only"
-                      onChange={(event) => {
-                        const attachments = Array.from(event.currentTarget.files ?? [])
-                          .map((file) => ({
-                            path: window.shell.pathForFile(file),
-                            name: file.name
-                          }))
-                          .filter((attachment) => attachment.path.length > 0)
-                        setReviewAttachments(attachments)
-                      }}
-                    />
-                  </label>
-                )}
                 <Button
                   type="submit"
                   size="icon"
@@ -1288,30 +1308,83 @@ export function Conversation({
               </div>
             </div>
             {reviewAttachments.length > 0 && (
-              <div className="flex flex-wrap gap-1" aria-label="Queued review attachments">
-                {reviewAttachments.map((attachment) => (
-                  <span
-                    key={attachment.path}
-                    className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-2xs text-muted-foreground"
-                  >
-                    <FileText aria-hidden="true" className="size-3" />
-                    {attachment.name ?? attachment.path}
-                  </span>
-                ))}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setReviewAttachments([])
-                    if (reviewAttachmentInputRef.current) {
-                      reviewAttachmentInputRef.current.value = ''
-                    }
-                  }}
-                >
-                  Clear attachments
-                </Button>
-              </div>
+              <section aria-label="Attached code" className="flex flex-col gap-1">
+                <p className="text-2xs text-muted-foreground">
+                  Attached as it read when you selected it. Later edits do not change it.
+                </p>
+                <ul className="flex flex-col gap-1">
+                  {reviewAttachments.map((attachment, index) => (
+                    <li
+                      key={attachment.id}
+                      className="rounded-md border border-border bg-surface px-2 py-1.5"
+                    >
+                      <div className="flex items-center gap-2">
+                        <FileText
+                          aria-hidden="true"
+                          className="size-3 shrink-0 text-muted-foreground"
+                        />
+                        <span className="min-w-0 flex-1 truncate font-mono text-2xs">
+                          {reviewAttachmentLabel(attachment)}
+                        </span>
+                        <span className="shrink-0 text-2xs text-muted-foreground">
+                          {attachment.lines.length}{' '}
+                          {attachment.lines.length === 1 ? 'line' : 'lines'}
+                          {attachment.shortened ? ' · shortened' : ''}
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          aria-expanded={inspectedAttachmentId === attachment.id}
+                          aria-label={`Inspect ${reviewAttachmentLabel(attachment)}`}
+                          onClick={() =>
+                            setInspectedAttachmentId((current) =>
+                              current === attachment.id ? null : attachment.id
+                            )
+                          }
+                        >
+                          Inspect
+                        </Button>
+                        <Button
+                          id={`remove-attachment-${attachment.id}`}
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          aria-label={`Remove ${reviewAttachmentLabel(attachment)}`}
+                          onClick={() => {
+                            // Focus never falls to the document: the next card's
+                            // Remove takes it, or the composer does when this was
+                            // the last one.
+                            const nextId =
+                              reviewAttachments[index + 1]?.id ?? reviewAttachments[index - 1]?.id
+                            onRemoveReviewAttachment(attachment.id)
+                            window.requestAnimationFrame(() => {
+                              if (nextId)
+                                document.getElementById(`remove-attachment-${nextId}`)?.focus()
+                              else composerRef.current?.focus()
+                            })
+                          }}
+                        >
+                          <X aria-hidden="true" className="size-3" />
+                        </Button>
+                      </div>
+                      {inspectedAttachmentId === attachment.id && (
+                        <DiffView
+                          hunks={[
+                            {
+                              oldStart: attachment.startLine ?? 0,
+                              oldLines: attachment.lines.length,
+                              newStart: attachment.startLine ?? 0,
+                              newLines: attachment.lines.length,
+                              lines: attachment.lines
+                            }
+                          ]}
+                        />
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </section>
             )}
             {activeRunId !== null && (
               <p className="text-xs text-muted-foreground">
@@ -2060,6 +2133,7 @@ function UserBubble({
       <p className="max-w-lg rounded-lg bg-accent px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap select-text">
         {entry.text}
       </p>
+      {entry.reviewAttachments.length > 0 && <SentReviewAttachments entry={entry} />}
       {pending && (
         <span
           role="status"
@@ -2069,6 +2143,51 @@ function UserBubble({
           <LoaderCircle aria-hidden="true" className="size-2.5 animate-spin" />
           Sending…
         </span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * What a message carried with it, kept readable after it was sent. It is the
+ * code as it read when the person selected it, not as the file is now, so it
+ * is presented as history: the same snapshot the Harness was given.
+ */
+function SentReviewAttachments({ entry }: { entry: MessageEntry }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const label = `${String(entry.reviewAttachments.length)} attached ${entry.reviewAttachments.length === 1 ? 'selection' : 'selections'}`
+  return (
+    <div className="flex max-w-lg flex-col items-end gap-1">
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {open ? 'Hide' : 'Show'} {label}
+      </Button>
+      {open && (
+        <ul aria-label="Code sent with this message" className="w-full">
+          {entry.reviewAttachments.map((attachment) => (
+            <li key={attachment.id} className="mt-1">
+              <p className="font-mono text-2xs text-muted-foreground">
+                {reviewAttachmentLabel(attachment)} · read {formatClock(attachment.capturedAt)}
+              </p>
+              <DiffView
+                hunks={[
+                  {
+                    oldStart: attachment.startLine ?? 0,
+                    oldLines: attachment.lines.length,
+                    newStart: attachment.startLine ?? 0,
+                    newLines: attachment.lines.length,
+                    lines: attachment.lines
+                  }
+                ]}
+              />
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   )

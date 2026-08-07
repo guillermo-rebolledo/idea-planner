@@ -402,6 +402,192 @@ describe('durable Queued Submissions', () => {
   })
 })
 
+describe('Review Attachments on durable submissions', () => {
+  const snapshotOf = (lines: string[], id = 'file-change:run-1:1') => ({
+    id,
+    path: 'src/greeting.ts',
+    runId: 'run-1',
+    entryId: id,
+    scope: 'hunk' as const,
+    hunkIndex: 0,
+    startLine: 1,
+    endLine: lines.length,
+    lines,
+    shortened: false,
+    capturedAt: '2026-07-31T12:00:00.000Z'
+  })
+
+  const attached = snapshotOf(['-const greeting = "hello"', '+const greeting = "goodbye"'])
+
+  const queuedWith = (submissionId: string, reviewAttachments: (typeof attached)[]) => ({
+    sessionId,
+    submissionId,
+    text: 'Make this shorter',
+    source: 'composer' as const,
+    harness: 'codex' as const,
+    model: 'gpt-5-codex',
+    effort: 'medium',
+    skill: 'grilling',
+    permissionMode: 'ask' as const,
+    reviewAttachments
+  })
+
+  it('keeps the reviewed snapshot on the message it was sent with', async () => {
+    await core.submitConversationMessage({
+      sessionId,
+      submissionId: 'submission-1',
+      text: 'Make this shorter',
+      source: 'composer',
+      reviewAttachments: [attached]
+    })
+
+    core = makeCore()
+    const snapshot = await core.getConversation(sessionId)
+    const message = messages(snapshot.entries).find(
+      (entry) => entry.submissionId === 'submission-1'
+    )
+    // The prose is the person's, unchanged: the snapshot travels beside it.
+    expect(message?.text).toBe('Make this shorter')
+    expect(message?.reviewAttachments).toEqual([attached])
+  })
+
+  it('reads a message written before attachments existed as carrying none', async () => {
+    const snapshot = await core.getConversation(sessionId)
+    const starting = messages(snapshot.entries)[0]
+
+    expect(starting?.reviewAttachments).toEqual([])
+  })
+
+  it('refuses a submission identity reused for different reviewed code', async () => {
+    await core.submitConversationMessage({
+      sessionId,
+      submissionId: 'submission-1',
+      text: 'Make this shorter',
+      source: 'composer',
+      reviewAttachments: [attached]
+    })
+
+    await expect(
+      core.submitConversationMessage({
+        sessionId,
+        submissionId: 'submission-1',
+        text: 'Make this shorter',
+        source: 'composer',
+        reviewAttachments: [snapshotOf(['+const greeting = "hi"'])]
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('refuses a queued identity reused for different reviewed code', async () => {
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queuedWith('queued-1', [attached])
+    })
+
+    await expect(
+      core.changeQueuedSubmissions({
+        type: 'enqueue',
+        input: queuedWith('queued-1', [snapshotOf(['+const greeting = "hi"'])])
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('refuses more selections than a message may carry, before anything is written', async () => {
+    const many = Array.from({ length: 11 }, (_value, index) =>
+      snapshotOf(['+line'], `file-change:run-1:${String(index)}`)
+    )
+
+    await expect(
+      core.changeQueuedSubmissions({ type: 'enqueue', input: queuedWith('queued-1', many) })
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+    expect((await core.getConversation(sessionId)).queue.items).toHaveLength(0)
+  })
+
+  it('is idempotent for a resend carrying the same reviewed code', async () => {
+    const input = {
+      sessionId,
+      submissionId: 'submission-1',
+      text: 'Make this shorter',
+      source: 'composer' as const,
+      reviewAttachments: [attached]
+    }
+    await core.submitConversationMessage(input)
+    const snapshot = await core.submitConversationMessage(input)
+
+    expect(
+      messages(snapshot.entries).filter((entry) => entry.text === 'Make this shorter')
+    ).toHaveLength(1)
+  })
+
+  it('keeps a queued message an older build wrote, without the shape it once had', async () => {
+    await core.changeQueuedSubmissions({ type: 'enqueue', input: queuedWith('queued-1', []) })
+    const journal = join(stateDir, 'sessions', sessionId, 'conversation.jsonl')
+    const entry = JSON.parse(
+      (await readFile(journal, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { id: string })
+        .filter((parsed) => parsed.id === 'queued:queued-1')
+        .map((parsed) => JSON.stringify(parsed))[0] ?? '{}'
+    ) as Record<string, unknown>
+    // What the previous build wrote there: a file path, not a snapshot.
+    await writeFile(
+      journal,
+      `${await readFile(journal, 'utf8')}${JSON.stringify({
+        ...entry,
+        reviewAttachments: [{ path: 'src/greeting.ts', name: 'greeting.ts' }]
+      })}\n`
+    )
+
+    core = makeCore()
+    const snapshot = await core.getConversation(sessionId)
+    // The message survives; only what it quoted, which was never a snapshot,
+    // is gone.
+    expect(snapshot.queue.items).toMatchObject([
+      { submissionId: 'queued-1', reviewAttachments: [] }
+    ])
+  })
+
+  it('carries the snapshot through edit, reorder, restart, claim and launch', async () => {
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queuedWith('queued-1', [attached])
+    })
+    await core.changeQueuedSubmissions({ type: 'enqueue', input: queuedWith('queued-2', []) })
+    await core.changeQueuedSubmissions({
+      type: 'edit',
+      input: { sessionId, submissionId: 'queued-1', text: 'Actually, make this clearer' }
+    })
+    await core.changeQueuedSubmissions({
+      type: 'move',
+      input: { sessionId, submissionId: 'queued-1', direction: 'later' }
+    })
+
+    core = makeCore()
+    await core.changeQueuedSubmissions({ type: 'resume', sessionId })
+    // The reordered item is second, so drain past the one before it.
+    await core.nextQueuedSubmission(sessionId)
+    await core.observeQueuedSubmissionLaunch({
+      sessionId,
+      submissionId: 'queued-2',
+      outcome: 'started'
+    })
+    const plan = await core.nextQueuedSubmission(sessionId)
+
+    expect(plan?.item.reviewAttachments).toEqual([attached])
+    // The Harness is told the prose and the snapshot; the Conversation keeps
+    // only the prose.
+    expect(plan?.prompt).toContain('Actually, make this clearer')
+    expect(plan?.prompt).toContain('<reviewed-code count="1">')
+    expect(plan?.prompt).toContain('+const greeting = "goodbye"')
+    const admitted = messages((await core.getConversation(sessionId)).entries).find(
+      (entry) => entry.submissionId === 'queued-1'
+    )
+    expect(admitted?.text).toBe('Actually, make this clearer')
+    expect(admitted?.reviewAttachments).toEqual([attached])
+  })
+})
+
 describe('streaming a Run into the Conversation', () => {
   beforeEach(async () => {
     await core.submitConversationMessage({
