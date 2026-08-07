@@ -6,15 +6,11 @@ Amended: 2026-08-05
 
 ## Context
 
-The Core utility process owns durable Run acceptance, normalized event state,
-product-managed Idea-document writes, and product lifecycle decisions. Main
-alone can own native Codex/Claude process groups, the macOS sandbox, and the
-short-lived planning capability described below. Planning artifacts under an
-Idea's `.scratch/` tree are deliberately outside Core's managed-document and
-version-history contract. Hand-rolled promises inside Core would put durable
-cancellation and write-ordering guarantees on bespoke queues, while importing
-Effect into Electron authority wiring would enlarge the trusted surface without
-improving the narrow OS process contract.
+The Core utility process owns durable Session, Run, Conversation, and Queued
+Submission facts, including product lifecycle decisions and Harness protocol
+normalization. Main owns native Codex and Claude processes, Checkout
+observation, adapter selection, and supervision. Transport and presentation
+remain narrow Promise/zod or React seams.
 
 The existing Core already hand-rolls three things a structured-effect system
 provides: typed errors (`CoreError` codes), dependency injection (`CoreDeps`),
@@ -23,27 +19,26 @@ and write serialization (a manual promise queue).
 [Effect](https://effect.website) (3.x, stable) provides structured concurrency
 with guaranteed interruption, typed error channels, `Stream` for event
 pipelines, `Scope` for resource cleanup, and `Layer`/`Context` for dependency
-injection — exactly the shape of the upcoming Run supervision work.
+injection. Those primitives match the implemented durable lifecycle and native
+Run supervision architecture.
 
 ## Decision
 
 Use Effect as the target architecture for non-UI product behavior in the
-**Core utility process** and **Main**. Core is Effect-native today; Main is
-migrated in complete behavior slices so commands, events, and persisted state
-remain compatible throughout the program. Durable Run state, Conversation
-journals, Run lifecycle, Harness adapters, queue coordination, and native
-supervision move into Effect as their slices land.
+**Core utility process** and **Main**. Durable Run state, Conversation journals,
+Run lifecycle, Harness adapters, queue coordination, and native supervision are
+Effect-native. Each migration landed atomically; no compatibility facade,
+feature flag, or alternate production implementation remains.
 
 Effect stays behind the application's transport and presentation seams:
 
 - Core is Effect end-to-end: `core.ts` exposes an Effect-native surface
   consumed by the utility-process entry (`app/src/core/index.ts`), which runs
   each request in its own fiber keyed by request id.
-- Main's first slice is `RunProcessBroker` resource lifetime: native process
-  operations are represented as an injected Effect layer, and each Run is a
-  child Scope of one Electron-lifetime runtime. Its existing promise facade to
-  `RunService` remains temporarily behavior-compatible while later slices move
-  that caller into Effect.
+- Main product behavior uses one Electron-lifetime runtime. Native process
+  operations are injected Effect services, and each Run is a child Scope of
+  that runtime. Promise conversion happens only at Electron callbacks and
+  transport boundaries.
 - The Core process seam and Electron IPC seam stay promise-based. Dispatchers
   use `runPromiseExit` at those edges and speak plain validated messages.
 - The shared IPC contract (`app/src/shared/contract.ts`) stays **zod**. Effect
@@ -64,15 +59,14 @@ Conventions inside Core and Effect-native Main modules:
   must be mapped to `CoreError` before crossing the Core interface.
 - Main uses tagged domain errors inside operational Effects. Scope finalizers
   cannot expose a typed error channel, so a finalizer converts a cleanup error
-  to a defect at that boundary; the enclosing promise facade still observes it
-  and preserves the existing supervision-failure behavior.
+  to a defect at that boundary; the Electron-facing promise adapter still
+  observes it and preserves supervision-failure behavior.
 - Injectable dependencies (clock, id generation, later: filesystem, SQLite,
   process spawning) are `Context.Tag` services provided via `Layer`, so tests
   swap them without monkey-patching.
 - Mutable state owned by an Effect-native slice lives in `Ref`; mutual
   exclusion uses `Effect.Semaphore` instead of hand-rolled promise queues.
-  A compatibility facade may retain existing observable state until the slice
-  that owns it migrates, but new resource lifetime belongs to Scope.
+  Resource lifetime belongs to Scope.
 
 ## Consequences
 
@@ -84,56 +78,27 @@ Conventions inside Core and Effect-native Main modules:
   Renderer work is unaffected.
 - Effect 3.x is the pinned major; a v4 migration is expected eventually and is
   accepted as a known cost.
-- Reference migration: the capture slice in `app/src/core/core.ts` demonstrates
-  the idioms (services, `Ref`, semaphore, `tryPromise`, boundary unwrapping).
+- Reference modules are `app/src/core/core.ts`,
+  `app/src/core/queued-submission-lifecycle.ts`,
+  `app/src/main/harness-adapter.ts`, and
+  `app/src/main/queue-coordinator.ts`.
 
-## Superseded follow-up: Main process supervision stays promise-based
+## Final ownership and recovery invariants
 
-> **Superseded by the 2026-08-05 amendment.** Main retains native process
-> authority, but its product behavior and supervision are now Effect-native.
-> During the phased migration, a complete migrated slice may keep a temporary
-> promise facade to its unmigrated caller. The final architecture converts only
-> at Electron callbacks and transport seams.
-
-> **Partially superseded by [ADR 0003](./0003-harness-native-permissions.md).**
-> The model-visible tool surface described below was removed: `PlanningPolicy`
-> is gone, and the Harness's native tools and permission system replace the
-> app-owned planning sandbox.
-
-The original decision kept `RunService`, `PlanningToolHost`, and
-`RunProcessBroker` promise- and event-driven in **Main**. The 2026-08-05
-amendment replaces that implementation direction while preserving their native
-authority boundary: resolve the already-probed executable, freeze the launch
-configuration through Core, then launch, terminate, reap, verify, and remove
-the private Run directory.
-
-The provider runs with its own native tools and its own permission system; the
-app does not contain it. Main adds exactly one tool no Harness offers natively —
-structured response options, which back Suggested Responses — through a per-Run
-capability socket and a tiny stdio proxy. `PlanningToolHost` serializes those
-calls, bounds them per Run, and reports them as activity. A Run's private
-directory still holds the staged provider home, so the provider can read its own
-bootstrap authentication without that path becoming a model-visible operation.
-
-Main may report observed native lifecycle and policy events, but it does not
-own canonical state transitions: each one is validated and persisted by Core
-before presentation. Dependencies are injected and the boundary contract is
-tested directly. Revisit if orchestration expands beyond this fixed
-request/persist/launch/report sequence.
-
-### Amendment: starting a Session is one act, sequenced in Main
-
-Sending on the launch screen creates a Session and answers the message that
-created it, in one Run. That sequence — `session/start` through Core, then the
-existing develop path — lives on `RunService` as `startSession`, which expands
-Main's orchestration past the fixed request/persist/launch/report sequence the
-follow-up decision drew a line at.
-
-It stays in Main rather than moving into Core because the second half of it is
-already there: developing a Session is Main's, since it launches and supervises
-the Harness process. Splitting the act so Core sequenced the half it can see
-would put the launch screen's one gesture behind two owners.
-
-Canonical state is unaffected: both halves are still validated and persisted by
-Core before anything is presented, and Main invents no state of its own. Revisit
-if Main starts sequencing acts whose steps are all Core's.
+- Main observes native process exit, Harness results, supervision failures, and
+  Checkout comparison. It sends one terminal observation and publishes only
+  after Core confirms durability.
+- Core alone decides terminal Run state, Conversation ending, Checkout evidence,
+  queue disposition, replay, and repair. Opening and completion are stable,
+  idempotent lifecycle requests; the Conversation fact is canonical and derived
+  Run or queue state is repairable.
+- Main Harness Adapters own credentials, staged homes, launch arguments and
+  environment, native permissions, Harness Thread continuity, Approval Request
+  transport, interruption, and Harness-specific completion. Core protocol
+  Adapters normalize raw Harness frames into product events.
+- The queued lifecycle owns editability, ordering, claim, retry, recovery, and
+  disposition. Main performs only the resulting native launch behind one
+  per-Session gate.
+- The selected Conversation read model owns durable reads, streamed state,
+  freshness and paint cadence, write-result adoption, and identity
+  reconciliation. No second Renderer refresh path exists.

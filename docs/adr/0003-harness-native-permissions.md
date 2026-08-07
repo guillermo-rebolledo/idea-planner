@@ -11,9 +11,9 @@ model of the pre-pivot product (see git history for
 ## Context
 
 The planning product enforced a fixed, non-overridable planning-only sandbox: no
-source edits, no command execution, no Git mutation, even under a provider's own
-Auto mode. The model's only visible operations were typed tools advertised by a
-Main-owned MCP host (`planning-tool-host.ts`) and validated by `planning-policy.ts`.
+source edits, no command execution, no Git mutation, even under a Harness's own
+Full access mode. The old implementation advertised only app-owned tools and
+validated them with an app-owned planning policy; both seams have been deleted.
 
 The pivoted product is a coding agent. Its entire purpose is to edit source and
 run commands, so a planning-only policy cannot survive. The open question was
@@ -52,8 +52,8 @@ MCP _adds_ tools alongside the native ones; it no longer replaces them.
 
 ## Consequences
 
-- `planning-policy.ts` is removed. `planning-tool-host.ts` shrinks to the tools
-  with no native counterpart.
+- The planning policy and planning-only tool-host seams are removed. `ToolHost`
+  serves only capabilities with no native counterpart.
 - **The mode mapping is lossy and must be documented.** Codex thinks in approval
   policy crossed with sandbox scope; Claude Code thinks in permission modes. Ask
   and Full access will not behave identically on both, and the differences must
@@ -67,3 +67,6 @@ MCP _adds_ tools alongside the native ones; it no longer replaces them.
 - The app can no longer guarantee containment. Containment is the Harness's, and
   the user's chosen mode is real. This is the deliberate trade for being a
   coding agent at all.
+- All Harness-specific permission mapping, rule staging, Approval Request
+  transport, and in-Run answers live inside the selected Main Harness Adapter.
+  Common Run orchestration sees only the Adapter interface.

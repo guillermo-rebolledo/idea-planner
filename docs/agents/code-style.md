@@ -52,7 +52,7 @@ listed in the config. A new source directory must be added to
 
 ## Enforced architecture boundaries
 
-Two `no-restricted-imports` rules encode decisions that are otherwise easy to
+Three `no-restricted-imports` boundaries encode decisions that are otherwise easy to
 erode. Treat a violation as a design question, not a lint annoyance:
 
 - **Effect stays behind product-behavior seams.** Core and Main product behavior
@@ -62,6 +62,10 @@ erode. Treat a violation as a design question, not a lint annoyance:
 - **The sandbox holds.** `src/renderer` and `src/shared` may not import
   `node:*` or `electron`. Renderer capabilities go through the Preload surface
   declared in `@shared/contract`.
+- **Process implementations stay private.** Main cannot import Core
+  implementation modules, and shared contracts, Preload, and Renderer cannot
+  import either Core or Main implementations. Cross-process behavior goes
+  through the validated shared contract.
 
 ## When a rule is wrong
 

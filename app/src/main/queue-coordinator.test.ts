@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { CoreCommand } from '@shared/contract'
 import type { QueuedSubmission } from '@shared/conversation'
 import { QueueCoordinator } from './queue-coordinator'
 
@@ -29,81 +28,75 @@ const PLAN = {
 
 describe('per-Session queue drainage', () => {
   it('claims and starts only one item across concurrent drains', async () => {
-    const commands: CoreCommand[] = []
+    const observations: unknown[] = []
     let claimed = false
-    const core = {
-      send: vi.fn((command: CoreCommand) => {
-        commands.push(command)
-        if (command.type === 'conversation/queue-next') {
-          if (claimed) return Promise.resolve(null)
-          claimed = true
-          return Promise.resolve(PLAN)
-        }
-        if (command.type === 'conversation/queue-launch-observed') {
-          return Promise.resolve({ continueDraining: false })
-        }
-        return Promise.resolve({})
+    const queue = {
+      next: vi.fn(() => {
+        if (claimed) return Promise.resolve(null)
+        claimed = true
+        return Promise.resolve(PLAN)
+      }),
+      observeLaunch: vi.fn((input: unknown) => {
+        observations.push(input)
+        return Promise.resolve({ continueDraining: false })
       })
     }
     const start = vi.fn(() => Promise.resolve({ status: 'running' as const }))
-    const coordinator = new QueueCoordinator({ core, start })
+    const coordinator = new QueueCoordinator({ queue, start })
 
     await Promise.all([coordinator.drain('session'), coordinator.drain('session')])
 
     expect(start).toHaveBeenCalledTimes(1)
-    expect(commands).toContainEqual({
-      type: 'conversation/queue-launch-observed',
-      input: { sessionId: 'session', submissionId: 'submission-1', outcome: 'started' }
+    expect(observations).toContainEqual({
+      sessionId: 'session',
+      submissionId: 'submission-1',
+      outcome: 'started'
     })
   })
 
   it('pauses without changing the claimed item when launch fails', async () => {
-    const commands: CoreCommand[] = []
-    const core = {
-      send: vi.fn((command: CoreCommand) => {
-        commands.push(command)
-        if (command.type === 'conversation/queue-next') return Promise.resolve(PLAN)
-        if (command.type === 'conversation/queue-launch-observed') {
-          return Promise.resolve({ continueDraining: false })
-        }
-        return Promise.resolve({})
+    const observations: unknown[] = []
+    const queue = {
+      next: vi.fn(() => Promise.resolve(PLAN)),
+      observeLaunch: vi.fn((input: unknown) => {
+        observations.push(input)
+        return Promise.resolve({ continueDraining: false })
       })
     }
     const coordinator = new QueueCoordinator({
-      core,
+      queue,
       start: vi.fn(() => Promise.reject(new Error('not ready')))
     })
 
     await coordinator.drain('session')
 
-    expect(commands).toContainEqual({
-      type: 'conversation/queue-launch-observed',
-      input: { sessionId: 'session', submissionId: 'submission-1', outcome: 'not-started' }
+    expect(observations).toContainEqual({
+      sessionId: 'session',
+      submissionId: 'submission-1',
+      outcome: 'not-started'
     })
   })
 
   it('releases and pauses a claim when no Harness was contacted', async () => {
-    const commands: CoreCommand[] = []
-    const core = {
-      send: vi.fn((command: CoreCommand) => {
-        commands.push(command)
-        if (command.type === 'conversation/queue-next') return Promise.resolve(PLAN)
-        if (command.type === 'conversation/queue-launch-observed') {
-          return Promise.resolve({ continueDraining: false })
-        }
-        return Promise.resolve({})
+    const observations: unknown[] = []
+    const queue = {
+      next: vi.fn(() => Promise.resolve(PLAN)),
+      observeLaunch: vi.fn((input: unknown) => {
+        observations.push(input)
+        return Promise.resolve({ continueDraining: false })
       })
     }
     const coordinator = new QueueCoordinator({
-      core,
+      queue,
       start: vi.fn(() => Promise.resolve({ status: 'supervision-failed' as const }))
     })
 
     await coordinator.drain('session')
 
-    expect(commands).toContainEqual({
-      type: 'conversation/queue-launch-observed',
-      input: { sessionId: 'session', submissionId: 'submission-1', outcome: 'not-started' }
+    expect(observations).toContainEqual({
+      sessionId: 'session',
+      submissionId: 'submission-1',
+      outcome: 'not-started'
     })
   })
 })

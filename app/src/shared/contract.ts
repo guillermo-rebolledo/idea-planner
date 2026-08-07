@@ -1,11 +1,9 @@
 import { z } from 'zod'
 import {
   codexLaunchSchema,
-  finalizeConversationRunInputSchema,
   harnessEventSchema,
   queuedSubmissionChangeSchema,
   queuedSubmissionLaunchObservationSchema,
-  recordCheckoutChangesInputSchema,
   runRequestSchema,
   submitConversationMessageInputSchema,
   type ConversationSnapshot,
@@ -39,9 +37,7 @@ import {
 import { completeRunLifecycleInputSchema, openRunLifecycleInputSchema } from './run-lifecycle'
 import type { EditorCatalog, OpenInEditorInput } from './editor'
 import {
-  acceptRunInputSchema,
   recordRunEventInputSchema,
-  skillNameSchema,
   type ResolveApprovalInput,
   type RunSnapshot,
   type StartRunInput,
@@ -343,7 +339,6 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('session/rename'), input: renameSessionInputSchema }),
   z.object({ type: z.literal('session/delete'), sessionId: z.string().min(1) }),
-  z.object({ type: z.literal('run/accept'), input: acceptRunInputSchema }),
   z.object({ type: z.literal('run/lifecycle-open'), input: openRunLifecycleInputSchema }),
   z.object({ type: z.literal('run/lifecycle-complete'), input: completeRunLifecycleInputSchema }),
   z.object({ type: z.literal('run/list'), sessionId: z.string().min(1) }),
@@ -355,18 +350,6 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('conversation/queue-launch-observed'),
     input: queuedSubmissionLaunchObservationSchema
-  }),
-  z.object({
-    type: z.literal('conversation/begin'),
-    sessionId: z.string().min(1),
-    runId: z.string().min(1),
-    submissionId: z.string().min(1),
-    harness: harnessIdSchema.optional(),
-    skill: skillNameSchema.optional(),
-    model: z.string().min(1).optional(),
-    restorationNote: z.boolean().optional(),
-    /** The native mode this app asked for, to compare with what the Harness reports. */
-    askedPermissionMode: z.string().min(1).max(100).optional()
   }),
   z.object({
     type: z.literal('harness/open'),
@@ -395,12 +378,7 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     runId: z.string().min(1),
     event: harnessEventSchema
   }),
-  z.object({
-    type: z.literal('conversation/checkout-changes'),
-    input: recordCheckoutChangesInputSchema
-  }),
-  z.object({ type: z.literal('conversation/unfinished') }),
-  z.object({ type: z.literal('conversation/finalize'), input: finalizeConversationRunInputSchema })
+  z.object({ type: z.literal('conversation/unfinished') })
 ])
 export type CoreCommand = z.infer<typeof coreCommandSchema>
 

@@ -4,11 +4,15 @@ import {
   queuedSubmissionLaunchResultSchema,
   type QueuedSubmissionLaunchPlan
 } from '@shared/conversation'
-import type { CoreCommand } from '@shared/contract'
 import type { RunSnapshot } from '@shared/run'
 
 interface QueueCoordinatorNativeServices {
-  core(command: CoreCommand): Effect.Effect<unknown, QueueCoordinatorError>
+  next(sessionId: string): Effect.Effect<unknown, QueueCoordinatorError>
+  observeLaunch(input: {
+    sessionId: string
+    submissionId: string
+    outcome: 'started' | 'not-started'
+  }): Effect.Effect<unknown, QueueCoordinatorError>
   launch(
     plan: QueuedSubmissionLaunchPlan
   ): Effect.Effect<Pick<RunSnapshot, 'status'>, QueueCoordinatorError>
@@ -25,7 +29,14 @@ class QueueCoordinatorError extends Data.TaggedError('QueueCoordinatorError')<{
 }> {}
 
 interface QueueCoordinatorDeps {
-  core: { send(command: CoreCommand): Promise<unknown> }
+  queue: {
+    next(sessionId: string): Promise<unknown>
+    observeLaunch(input: {
+      sessionId: string
+      submissionId: string
+      outcome: 'started' | 'not-started'
+    }): Promise<unknown>
+  }
   start(plan: QueuedSubmissionLaunchPlan): Promise<Pick<RunSnapshot, 'status'>>
   runEffect?: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
 }
@@ -42,9 +53,14 @@ export class QueueCoordinator {
 
   constructor(private readonly deps: QueueCoordinatorDeps) {
     this.native = Layer.succeed(QueueCoordinatorNative, {
-      core: (command) =>
+      next: (sessionId) =>
         Effect.tryPromise({
-          try: () => deps.core.send(command),
+          try: () => deps.queue.next(sessionId),
+          catch: (cause) => new QueueCoordinatorError({ operation: 'core', cause })
+        }),
+      observeLaunch: (input) =>
+        Effect.tryPromise({
+          try: () => deps.queue.observeLaunch(input),
           catch: (cause) => new QueueCoordinatorError({ operation: 'core', cause })
         }),
       launch: (plan) =>
@@ -80,7 +96,7 @@ export class QueueCoordinator {
   ): Effect.Effect<void, QueueCoordinatorError, QueueCoordinatorNative> {
     return Effect.gen(this, function* () {
       const native = yield* QueueCoordinatorNative
-      const raw = yield* native.core({ type: 'conversation/queue-next', sessionId })
+      const raw = yield* native.next(sessionId)
       const parsed = queuedSubmissionLaunchPlanSchema.nullable().safeParse(raw)
       if (!parsed.success) {
         return yield* new QueueCoordinatorError({ operation: 'protocol', cause: parsed.error })
@@ -97,9 +113,10 @@ export class QueueCoordinator {
           error.operation === 'launch' ? Effect.succeed('not-started' as const) : Effect.fail(error)
         )
       )
-      const observed = yield* native.core({
-        type: 'conversation/queue-launch-observed',
-        input: { sessionId, submissionId: plan.item.submissionId, outcome }
+      const observed = yield* native.observeLaunch({
+        sessionId,
+        submissionId: plan.item.submissionId,
+        outcome
       })
       const result = queuedSubmissionLaunchResultSchema.safeParse(observed)
       if (!result.success) {
