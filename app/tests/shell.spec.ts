@@ -207,6 +207,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'onOpenSessionRequest',
       'onQuitRequested',
       'onThemeChanged',
+      'onToggleSidebarShortcut',
       'onUndoShortcut',
       'openExternalLink',
       'openInEditor',
@@ -479,11 +480,20 @@ test('a person organizes the mailbox: pin, search, archive with undo, rename, co
     await expect(home.getByText('Tool shed')).toBeVisible()
     await expect(inbox.getByText('Community tool library')).toHaveCount(0)
 
+    // The global shortcut toggles in either direction even while the composer
+    // owns focus, without stealing the draft or invoking the browser's Save.
+    const focusedField = page.getByRole('searchbox', { name: 'Search Sessions' })
+    await focusedField.focus()
+    await page.keyboard.press('ControlOrMeta+s')
+    const rail = page.getByRole('navigation', { name: 'Session inbox (compact)' })
+    await expect(rail).toBeVisible()
+    await page.keyboard.press('ControlOrMeta+s')
+    await expect(page.getByRole('navigation', { name: 'Session inbox' })).toBeVisible()
+    await page.keyboard.press('ControlOrMeta+s')
+
     // The inbox collapses to one Project navigator rather than one ambiguous
     // icon per Session. Projects and their Sessions open as cascading lists,
     // while the center surface stays in place.
-    await page.getByRole('button', { name: 'Collapse inbox to rail' }).click()
-    const rail = page.getByRole('navigation', { name: 'Session inbox (compact)' })
     await expect(rail.getByRole('button', { name: 'Offline recipe planner' })).toHaveCount(0)
     await expect(page.getByRole('main')).toBeVisible()
     await rail.getByRole('button', { name: 'Browse Projects and Sessions' }).click()
@@ -1261,7 +1271,11 @@ const TWO_TURN_CODEX = `case "$1" in
         *'"model/list"'*)
           printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"data":[{"id":"gpt-5.6-sol","displayName":"GPT-5.6-Sol","description":"The default","hidden":false,"isDefault":true,"supportedReasoningEfforts":[{"reasoningEffort":"low"}],"defaultReasoningEffort":"low"}],"nextCursor":null}}'
           ;;
-        *'"thread/start"'*|*'"thread/resume"'*)
+        *'"thread/start"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-1"}}}'
+          ;;
+        *'"thread/resume"'*)
+          sleep 1
           printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-1"}}}'
           ;;
         *'"turn/start"'*)
@@ -1298,10 +1312,17 @@ test('Codex completes a second message without losing Core', async () => {
     await expect(page.getByRole('button', { name: 'First request', exact: true })).toBeVisible()
     await page.getByLabel('Your message').fill('Second request')
     await page.getByRole('button', { name: 'Send', exact: true }).click()
+    await expect(history.getByText('Second request', { exact: true })).toBeVisible({ timeout: 250 })
+    await expect(page.getByLabel('Your message')).toHaveValue('', { timeout: 250 })
+    await expect(history.getByRole('status', { name: 'Sending message' })).toBeVisible()
+    await page.getByLabel('Your message').fill('Third thought')
 
     await expect(history.getByText(/Second answer|Run needs attention/).last()).toBeVisible()
     expect(stderr, `Main stderr:\n${stderr}`).not.toContain('Core stopped unexpectedly')
     await expect(history.getByText('Second answer', { exact: true })).toBeVisible()
+    await expect(history.getByText('Second request', { exact: true })).toHaveCount(1)
+    await expect(history.getByRole('status', { name: 'Sending message' })).toHaveCount(0)
+    await expect(page.getByLabel('Your message')).toHaveValue('Third thought')
     await expect(history.getByText('Run needs attention')).toHaveCount(0)
   } finally {
     await app.close()

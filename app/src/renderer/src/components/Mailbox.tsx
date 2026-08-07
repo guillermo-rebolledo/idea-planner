@@ -389,6 +389,13 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
           event.preventDefault()
           setInboxCollapsed((collapsed) => !collapsed)
         }
+        // Physical ⌘S / Ctrl+S is claimed and forwarded by Main before
+        // Chromium sees it. This branch covers synthesized input and builds
+        // where no native application menu owns the key.
+        if (event.key.toLowerCase() === 's' && !event.shiftKey && !event.altKey) {
+          event.preventDefault()
+          setInboxCollapsed((collapsed) => !collapsed)
+        }
         // ⌘K works from anywhere, mid-typing included: going somewhere else
         // is exactly what someone mid-thought reaches for.
         if (event.key.toLowerCase() === 'k' && !event.shiftKey) {
@@ -437,6 +444,13 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
     })
   }, [undoArchive])
 
+  // Main claims ⌘S / Ctrl+S before Chromium's Save Page action and forwards
+  // the one application-level meaning regardless of what currently has focus.
+  useEffect(
+    () => window.shell.onToggleSidebarShortcut(() => setInboxCollapsed((collapsed) => !collapsed)),
+    []
+  )
+
   function handleStarted({ session, runStarted }: StartedSessionResult): void {
     void refreshSessionStructure(effectiveQuery)
     openSession(session)
@@ -474,6 +488,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
           variant="ghost"
           size="icon"
           aria-label={inboxCollapsed ? 'Expand inbox' : 'Collapse inbox to rail'}
+          title={`${inboxCollapsed ? 'Expand' : 'Collapse'} inbox (⌘S / Ctrl+S)`}
           aria-expanded={!inboxCollapsed}
           onClick={() => setInboxCollapsed((collapsed) => !collapsed)}
         >

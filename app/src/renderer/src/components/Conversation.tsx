@@ -277,6 +277,7 @@ export function Conversation({
   // it. Changing requests always withdraws an unfinished confirmation.
   const [standingApprovalConfirmId, setStandingApprovalConfirmId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [optimisticMessage, setOptimisticMessage] = useState<MessageEntry | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dismissedRecoveryKey, setDismissedRecoveryKey] = useState<string | null>(null)
 
@@ -384,12 +385,34 @@ export function Conversation({
     ) => {
       if (!chosenHarness) return
       const messageSkill = queuedSkill === undefined ? chosenSkill : queuedSkill
+      const resolvedSubmissionId = submissionId ?? crypto.randomUUID()
+      const ownsComposer = source === 'composer' && !submissionId && queuedSkill === undefined
+      setOptimisticMessage({
+        kind: 'message',
+        id: `user:${resolvedSubmissionId}`,
+        at: new Date().toISOString(),
+        runId: null,
+        role: 'user',
+        text,
+        completeness: 'complete',
+        source,
+        submissionId: resolvedSubmissionId,
+        suggestedResponses: [],
+        plainOptions: false
+      })
+      if (ownsComposer) {
+        // Clear at the click, not after launch. The field stays available for
+        // the person's next thought while this send settles; no later callback
+        // may erase whatever they type in the meantime.
+        setDraft((current) => (current.trim() === text ? '' : current))
+        setSkill((current) => (current === chosenSkill ? null : current))
+      }
       setBusy(true)
       setError(null)
       try {
         const next = await window.shell.developSession({
           sessionId,
-          submissionId: submissionId ?? crypto.randomUUID(),
+          submissionId: resolvedSubmissionId,
           text,
           source,
           ...(messageSkill ? { skill: messageSkill } : {}),
@@ -400,21 +423,27 @@ export function Conversation({
           permissionMode: permissionMode
         })
         adoptSnapshot(next)
-        // Per message, not per Session: real work switches methodology inside
-        // one thread of context, and a Skill that outlives the message it was
-        // chosen for is one nobody chose for the next one. A queued send
-        // touches neither — whatever was typed since it was parked stays.
-        if (source === 'composer' && !submissionId && queuedSkill === undefined) {
-          setDraft('')
-          setSkill(null)
-        }
+        setOptimisticMessage(null)
       } catch {
-        setError(
-          'The Run could not start. Check that the Harness is ready and that supervision has recovered.'
-        )
         // The message was accepted durably before the Run was attempted, so
-        // re-read the Conversation rather than leaving it looking lost.
-        await refresh()
+        // re-read before deciding whether the optimistic copy was accepted.
+        const durable = await refresh()
+        const accepted =
+          durable?.entries.some((entry) => entry.id === `user:${resolvedSubmissionId}`) ?? false
+        setOptimisticMessage((current) =>
+          current?.submissionId === resolvedSubmissionId ? null : current
+        )
+        if (accepted) {
+          setError(
+            'The Run could not start. Your message is saved; check that the Harness is ready and that supervision has recovered.'
+          )
+        } else {
+          setError('Your message could not be sent. It has been restored to the composer.')
+          if (ownsComposer) {
+            setDraft((current) => (current ? current : text))
+            setSkill((current) => current ?? messageSkill)
+          }
+        }
       } finally {
         setBusy(false)
       }
@@ -525,7 +554,18 @@ export function Conversation({
   }, [pendingApproval, deciding, decide, activeRunId, stop])
 
   const durableEntries = snapshot?.entries ?? NO_CONVERSATION_ENTRIES
-  const items = useMemo(() => groupEntries(durableEntries), [durableEntries])
+  const optimisticMessageId = optimisticMessage?.id ?? null
+  const optimisticVisible =
+    optimisticMessageId !== null &&
+    !durableEntries.some((entry) => entry.id === optimisticMessageId)
+  const visibleEntries = useMemo(
+    () =>
+      optimisticVisible && optimisticMessage !== null
+        ? [...durableEntries, optimisticMessage]
+        : durableEntries,
+    [durableEntries, optimisticMessage, optimisticVisible]
+  )
+  const items = useMemo(() => groupEntries(visibleEntries), [visibleEntries])
   const turns = useMemo(() => summarizeTurns(items), [items])
   const recoverable = currentRecovery(durableEntries, snapshot?.recovery ?? null)
   const displayedRecovery = recoverable?.key === dismissedRecoveryKey ? null : (recoverable ?? null)
@@ -618,7 +658,14 @@ export function Conversation({
                 if (item.type === 'user') {
                   // The user's message starts the turn, so it is what the
                   // viewport anchors on.
-                  return row(item.entry.id, <UserBubble entry={item.entry} />, true)
+                  return row(
+                    item.entry.id,
+                    <UserBubble
+                      entry={item.entry}
+                      pending={optimisticVisible && item.entry.id === optimisticMessageId}
+                    />,
+                    true
+                  )
                 }
                 if (item.type === 'assistant') {
                   return row(
@@ -1263,10 +1310,10 @@ export function Conversation({
                   // Mid-composition Enter belongs to the input method.
                   if (event.nativeEvent.isComposing) return
                   if (event.shiftKey || event.altKey) return
-                  // While a Run works, Enter makes a line rather than a send —
-                  // holding a message is the button's deliberate act, never a
-                  // keystroke's.
-                  if (activeRunId !== null || hasQueuedSubmissions) return
+                  // While a send settles or a Run works, Enter makes a line
+                  // rather than a second send — holding a message is the
+                  // button's deliberate act, never a keystroke's.
+                  if (busy || activeRunId !== null || hasQueuedSubmissions) return
                   event.preventDefault()
                   if (draft.trim()) {
                     if (displayedRecovery) setDismissedRecoveryKey(displayedRecovery.key)
@@ -2094,12 +2141,28 @@ function formatClock(at: string): string {
   return new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
 }
 
-function UserBubble({ entry }: { entry: MessageEntry }): React.JSX.Element {
+function UserBubble({
+  entry,
+  pending = false
+}: {
+  entry: MessageEntry
+  pending?: boolean
+}): React.JSX.Element {
   return (
-    <div className="flex justify-end">
+    <div className="flex flex-col items-end gap-1">
       <p className="max-w-lg rounded-lg bg-accent px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap select-text">
         {entry.text}
       </p>
+      {pending && (
+        <span
+          role="status"
+          aria-label="Sending message"
+          className="flex items-center gap-1 font-mono text-2xs text-muted-foreground"
+        >
+          <LoaderCircle aria-hidden="true" className="size-2.5 animate-spin" />
+          Sending…
+        </span>
+      )}
     </div>
   )
 }
