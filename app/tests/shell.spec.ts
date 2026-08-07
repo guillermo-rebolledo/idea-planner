@@ -1757,3 +1757,91 @@ test('with no usable Harness the app says so and opens as soon as one is repaire
     await app.close()
   }
 })
+
+const DELEGATING_CLAUDE_FAKE = `case "$1" in
+  --version) echo "2.1.220 (Claude Code)"; exit 0;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  --print)
+    echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
+    echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_0","type":"message","role":"assistant","content":[{"type":"text","text":"Dispatching a reviewer."}]},"session_id":"thread-1"}'
+    echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_agent","name":"Agent","input":{"description":"Standards review","prompt":"Review the diff against the repository standards","subagent_type":"Explore"}}]},"session_id":"thread-1"}'
+    echo '{"type":"system","subtype":"task_started","task_id":"task-a","tool_use_id":"toolu_agent","description":"Standards review","subagent_type":"Explore","task_type":"local_agent","prompt":"Review the diff against the repository standards"}'
+    echo '{"type":"system","subtype":"task_progress","task_id":"task-a","tool_use_id":"toolu_agent","description":"Running Read code-style.md","subagent_type":"Explore","usage":{"total_tokens":10,"tool_uses":1,"duration_ms":900},"last_tool_name":"Read"}'
+    echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_sub","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_inner","name":"Bash","input":{"command":"grep -r standards ."}}]},"parent_tool_use_id":"toolu_agent","session_id":"thread-1"}'
+    echo '{"type":"system","subtype":"task_updated","task_id":"task-a","patch":{"status":"completed","end_time":1786128654241}}'
+    echo '{"type":"system","subtype":"task_notification","task_id":"task-a","tool_use_id":"toolu_agent","status":"completed","summary":"No findings against the repository standards.","usage":{"total_tokens":20,"tool_uses":2,"duration_ms":1400}}'
+    echo '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_agent","type":"tool_result","content":[{"type":"text","text":"No findings against the repository standards."}]}]},"session_id":"thread-1"}'
+    echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_2","type":"message","role":"assistant","content":[{"type":"text","text":"The review came back clean."}]},"session_id":"thread-1"}'
+    echo '{"type":"result","subtype":"success","is_error":false,"session_id":"thread-1","result":"Done.","usage":{"input_tokens":12,"output_tokens":2}}'
+    /bin/sleep 1
+    exit 0;;
+esac`
+
+test('a Run that dispatches a subagent says so, and the dock holds the fleet', async () => {
+  await installFakeHarness('claude', DELEGATING_CLAUDE_FAKE)
+
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Review the diff')
+
+    // The Conversation's whole mention of the fleet is one pill. The Run's own
+    // record does not grow a row per progress report.
+    const history = page.getByRole('log', { name: 'Conversation history' })
+    const pill = history.getByRole('button', { name: /subagent/ })
+    await expect(pill).toContainText('1 subagent created')
+    await expect(pill).toContainText('all landed')
+    // The subagent's own command is its work, not the Run's.
+    await expect(history.getByText('grep -r standards .')).toHaveCount(0)
+
+    // Every subagent stays reachable once they have all landed: the dock is on
+    // its rail rather than gone.
+    // Exactly named: the rail's own name begins with the dock's.
+    const dock = page.getByRole('complementary', { name: 'Subagents', exact: true })
+    await expect(page.getByRole('complementary', { name: 'Subagents, collapsed' })).toBeVisible()
+
+    // The pill opens the dock, which says what it is and what it did — and
+    // never how much of it is left, which no Harness reports.
+    await pill.click()
+    const card = dock.getByRole('button', { name: /Standards review/ })
+    await expect(card).toContainText('Standards review')
+    await expect(card).toContainText('Done')
+    await expect(card).toContainText('2 steps')
+    await expect(dock.getByRole('progressbar')).toHaveCount(0)
+
+    // Opening it shows what it was sent to do and what it reported back.
+    await card.click()
+    await expect(dock.getByRole('heading', { name: 'Standards review' })).toBeVisible()
+    await expect(dock.getByText('Review the diff against the repository standards')).toBeVisible()
+    await expect(dock.getByText('No findings against the repository standards.')).toBeVisible()
+
+    // And it collapses back to the rail, from inside the subagent.
+    await dock.getByRole('button', { name: 'Collapse the Subagents dock' }).click()
+    await expect(dock).toHaveCount(0)
+    const rail = page.getByRole('complementary', { name: 'Subagents, collapsed' })
+    await expect(rail).toBeVisible()
+
+    // A mark on the rail is an identity and a state; hovering it says what
+    // that subagent actually did, so the rail can be read without reopening.
+    const mark = rail.getByRole('button', { name: /Standards review/ })
+    await mark.hover()
+    const preview = page.getByText('No findings against the repository standards.')
+    await expect(preview).toBeVisible()
+    await expect(page.getByText('2 steps')).toBeVisible()
+
+    // The same preview reaches a keyboard: tabbing onto the mark opens it, so
+    // the rail says as much to somebody who never uses a pointer.
+    await page.keyboard.press('Escape')
+    await rail.getByRole('button', { name: 'Expand the Subagents dock' }).focus()
+    await page.keyboard.press('Tab')
+    await expect(mark).toBeFocused()
+    await expect(preview).toBeVisible()
+
+    // And it still opens the dock straight onto that subagent.
+    await mark.click()
+    await expect(dock.getByRole('heading', { name: 'Standards review' })).toBeVisible()
+  } finally {
+    await app.close()
+  }
+})

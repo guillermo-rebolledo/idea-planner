@@ -61,6 +61,21 @@ export const harnessUsageSchema = z.object({
 })
 export type HarnessUsage = z.infer<typeof harnessUsageSchema>
 
+/**
+ * What a subagent is doing, in the four states the Harnesses can actually
+ * distinguish. `interrupted` is neither success nor failure: the Run ended, or
+ * the agent was closed, before anything was reported back.
+ */
+export const subagentStatusSchema = z.enum(['working', 'done', 'failed', 'interrupted'])
+export type SubagentStatus = z.infer<typeof subagentStatusSchema>
+
+/**
+ * How much of a subagent's brief and report is kept. A subagent is handed a
+ * prompt and returns prose, and both are written by a model with no length
+ * budget; this is the same order as an approval's detail.
+ */
+export const MAX_SUBAGENT_TEXT = 8_000
+
 /** What happened to a file: it appeared, its text changed, or it went. */
 export const changeKindSchema = z.enum(['added', 'changed', 'deleted'])
 export type ChangeKind = z.infer<typeof changeKindSchema>
@@ -152,6 +167,35 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
     /** As the Harness reported it. Null when it says only that it failed. */
     exitCode: z.number().int().nullable().default(null),
     /** Null when the Harness reported none and nothing saw the start. */
+    durationMs: z.number().int().nonnegative().nullable().default(null)
+  }),
+  /**
+   * One subagent the Run dispatched, in whatever state it is now. The whole
+   * state travels every time, so a later event supersedes an earlier one and
+   * nothing has to be assembled from a sequence of deltas — the same bargain
+   * `command` makes, for the same reason: the Harnesses report a subagent by
+   * repeatedly describing it, not by describing what changed.
+   */
+  z.object({
+    type: z.literal('subagent'),
+    /** The Harness's own id for the dispatch, which every later report names. */
+    id: z.string().min(1).max(200),
+    /** What it was called: Claude's description, or Codex's agent path. */
+    name: z.string().min(1).max(200),
+    /** The kind of worker, when the Harness names one. */
+    role: z.string().min(1).max(100).optional(),
+    /**
+     * What it was sent to do, in full. Absent under a Harness that does not
+     * carry the dispatch prompt — the surface says less rather than guessing.
+     */
+    brief: z.string().max(MAX_SUBAGENT_TEXT).optional(),
+    status: subagentStatusSchema,
+    /** The one line saying what it is on now, while it is working. */
+    activity: z.string().min(1).max(500).optional(),
+    /** What it reported back. Only ever present once it has ended. */
+    result: z.string().max(MAX_SUBAGENT_TEXT).optional(),
+    /** How many steps it has taken, when the Harness counts them. */
+    steps: z.number().int().nonnegative().nullable().default(null),
     durationMs: z.number().int().nonnegative().nullable().default(null)
   }),
   z.object({
@@ -551,6 +595,40 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
      */
     added: z.number().int().nonnegative().default(0),
     removed: z.number().int().nonnegative().default(0)
+  }),
+  /**
+   * A subagent the Run dispatched. Durable rather than live-only for the same
+   * reason a command is: what a Run delegated, and what came back, is part of
+   * what happened in the Conversation, and is worth re-reading after the Run
+   * that spawned it is gone.
+   *
+   * A subagent whose Run ended before it reported becomes `interrupted` — the
+   * stream ending is itself the fact — rather than being left working forever
+   * or promoted to an outcome nobody gave.
+   */
+  z.object({
+    kind: z.literal('subagent'),
+    id: z.string().min(1),
+    at: z.string().datetime(),
+    /**
+     * When it was dispatched, kept through every later write. `at` moves with
+     * each report, so without this a subagent working for a minute would read
+     * as one that had just started.
+     */
+    startedAt: z.string().datetime(),
+    runId: z.string().min(1),
+    /** The Harness's own id for the dispatch, kept so later reports find it. */
+    dispatchId: z.string().min(1).max(200),
+    name: z.string().min(1).max(200),
+    /** The kind of worker, when the Harness names one. */
+    role: z.string().min(1).max(100).nullable().default(null),
+    /** Absent under a Harness that does not carry the dispatch prompt. */
+    brief: z.string().max(MAX_SUBAGENT_TEXT).nullable().default(null),
+    status: subagentStatusSchema,
+    activity: z.string().max(500).nullable().default(null),
+    result: z.string().max(MAX_SUBAGENT_TEXT).nullable().default(null),
+    steps: z.number().int().nonnegative().nullable().default(null),
+    durationMs: z.number().int().nonnegative().nullable().default(null)
   }),
   queuedSubmissionEntrySchema,
   queueStateEntrySchema,

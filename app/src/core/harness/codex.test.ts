@@ -327,6 +327,121 @@ describe('a new file', () => {
   })
 })
 
+describe('subagents', () => {
+  /**
+   * A second recording, of a turn that delegated its work
+   * (`codex-subagent.jsonl`). Codex runs a subagent as a Harness Thread of its
+   * own, so the interesting part is what belongs to which thread.
+   */
+  async function replaySubagents(size = 64): Promise<HarnessEvent[]> {
+    const raw = await readFile(join(__dirname, 'fixtures', 'codex-subagent.jsonl'), 'utf8')
+    const adapter = createCodexAdapter(launch())
+    const events: HarnessEvent[] = []
+    for (let index = 0; index < raw.length; index += size) {
+      events.push(...adapter.ingest(raw.slice(index, index + size)))
+    }
+    events.push(...adapter.flush())
+    return events
+  }
+
+  it('names the subagent Codex spawned and follows it to its report', async () => {
+    const subagents = (await replaySubagents()).filter((event) => event.type === 'subagent')
+
+    expect(subagents.at(0)).toMatchObject({
+      type: 'subagent',
+      id: 'call_O5Z9xjHdfvzJzLVc1HZRo7C1',
+      name: 'Count notes',
+      status: 'working'
+    })
+    // Codex carries no dispatch prompt for a spawn, so the surface has no
+    // brief to show and must not invent one.
+    expect(subagents.at(0)).not.toHaveProperty('brief')
+
+    const last = subagents.at(-1)
+    expect(last).toMatchObject({ type: 'subagent', status: 'done', steps: 1 })
+    // Its last word before its turn ended, and not a word before: a message it
+    // produced while still working is as likely to be thinking aloud.
+    expect(last?.type === 'subagent' && last.result).toBe('2 lines (`wc -l notes.txt`).')
+    expect(
+      subagents.filter((event) => event.status === 'working').some((event) => event.result)
+    ).toBe(false)
+  })
+
+  it('keeps the subagent’s thread out of the Run’s own record', async () => {
+    const events = await replaySubagents()
+
+    // The subagent ran the command and gave the answer. Both arrived on its
+    // own thread, and neither is the Run's own work.
+    expect(events.filter((event) => event.type === 'command')).toEqual([])
+    expect(
+      events.filter((event) => event.type === 'assistant-message').map((event) => event.text)
+    ).not.toContain('2')
+  })
+
+  it('ends the Run on its own turn, not on the subagent’s', async () => {
+    // The recording holds both endings: the subagent's turn completes while
+    // the Run works on, and the Run's own turn completes after it. Reading the
+    // first as the Run's would close a Run that is still going.
+    const events = await replaySubagents()
+    const endings = events.filter(
+      (event) => event.type === 'completed' || event.type === 'subagent'
+    )
+    expect(endings.filter((event) => event.type === 'completed')).toHaveLength(1)
+    // The subagent landed before the Run did.
+    expect(endings.at(-1)).toMatchObject({ type: 'completed' })
+    expect(endings.filter((event) => event.type === 'subagent').at(-1)).toMatchObject({
+      status: 'done'
+    })
+  })
+
+  /**
+   * A second way Codex spawns, seen on gpt-5.3-codex-spark: no
+   * `subAgentActivity` at all, only `collabAgentToolCall`. The spawn carries
+   * the brief, and the `wait` that follows carries each agent's state and the
+   * report it came back with.
+   */
+  async function replayCollab(size = 64): Promise<HarnessEvent[]> {
+    const raw = await readFile(join(__dirname, 'fixtures', 'codex-collab-subagents.jsonl'), 'utf8')
+    const adapter = createCodexAdapter(launch())
+    const events: HarnessEvent[] = []
+    for (let index = 0; index < raw.length; index += size) {
+      events.push(...adapter.ingest(raw.slice(index, index + size)))
+    }
+    events.push(...adapter.flush())
+    return events
+  }
+
+  it('follows both subagents spawned through the collab tools', async () => {
+    const subagents = (await replayCollab()).filter((event) => event.type === 'subagent')
+    const byId = new Map(subagents.map((event) => [event.id, event]))
+    expect(byId.size).toBe(2)
+
+    // The spawn carries the brief this Harness had none of before.
+    expect([...byId.values()].map((event) => event.brief)).toEqual([
+      expect.stringContaining('Inspect repository structure and build tooling'),
+      expect.stringContaining('Inspect source code layout')
+    ])
+    // Both landed, and each came back with what it found.
+    expect([...byId.values()].every((event) => event.status === 'done')).toBe(true)
+    expect([...byId.values()].every((event) => (event.result ?? '').length > 0)).toBe(true)
+    // Named apart, so a dock of two says which is which.
+    expect(new Set([...byId.values()].map((event) => event.name)).size).toBe(2)
+  })
+
+  it('keeps both subagents’ own work out of the Run, and the Run’s end its own', async () => {
+    const events = await replayCollab()
+    expect(events.filter((event) => event.type === 'command')).toEqual([])
+    expect(events.filter((event) => event.type === 'completed')).toHaveLength(1)
+    // The Run's own turn ends last, after both subagents have landed.
+    expect(events.at(-1)).toMatchObject({ type: 'completed' })
+  })
+
+  it('reports no unsupported protocol for a turn that delegated', async () => {
+    expect((await replaySubagents()).filter((event) => event.type === 'unsupported')).toEqual([])
+    expect((await replayCollab()).filter((event) => event.type === 'unsupported')).toEqual([])
+  })
+})
+
 describe('failure', () => {
   it('reports what the Harness said, categorized', () => {
     const adapter = createCodexAdapter(launch())

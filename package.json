@@ -9,7 +9,8 @@
   },
   "scripts": {
     "prototype": "vite prototypes/core-workspace",
-    "prototype:check": "tsc -p prototypes/core-workspace/tsconfig.json && vite build prototypes/core-workspace --outDir ../../dist/prototype --emptyOutDir",
+    "prototype:subagents": "pnpm --filter argos-desktop exec vite --config prototype.vite.config.ts",
+    "prototype:check": "tsc -p prototypes/core-workspace/tsconfig.json && vite build prototypes/core-workspace --outDir ../../dist/prototype --emptyOutDir && tsc -p prototypes/subagent-thread/tsconfig.json",
     "codex:protocol": "rm -rf app/src/core/harness/codex-protocol && codex app-server generate-ts --out app/src/core/harness/codex-protocol",
     "codex:record": "node scripts/record-codex-session.mjs",
     "lint": "eslint .",
