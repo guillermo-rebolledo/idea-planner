@@ -166,6 +166,33 @@ describe('selected Conversation refreshes', () => {
     expect(publish).toHaveBeenLastCalledWith({ conversation: newer, runs: [] })
   })
 
+  it('returns the durable snapshot an optimistic action refreshes against', async () => {
+    const durable = conversation(null, [
+      {
+        kind: 'message',
+        id: 'user:submission',
+        at: AT,
+        runId: null,
+        role: 'user',
+        text: 'Keep this message',
+        completeness: 'complete',
+        source: 'composer',
+        submissionId: 'submission',
+        suggestedResponses: [],
+        plainOptions: false
+      }
+    ])
+    const refresh = new ConversationRefresh('session', {
+      readConversation: vi.fn(() => Promise.resolve(durable)),
+      readRuns: vi.fn(() => Promise.resolve([])),
+      publish: vi.fn()
+    })
+
+    const result = await refresh.request()
+
+    expect(result?.conversation).toEqual(durable)
+  })
+
   it('reloads Run history only when the active Run identity changes', async () => {
     const snapshots = [conversation('run'), conversation('run'), conversation(null)]
     const readRuns = vi.fn<() => Promise<RunSnapshot[]>>().mockResolvedValue([])

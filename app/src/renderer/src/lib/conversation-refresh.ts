@@ -41,12 +41,12 @@ export class ConversationRefresh {
     private readonly dependencies: ConversationRefreshDependencies
   ) {}
 
-  request(): Promise<void> {
+  request(): Promise<SelectedConversationSnapshot | null> {
     this.requested += 1
     this.active ??= this.drain().finally(() => {
       this.active = null
     })
-    return this.active
+    return this.active.then(() => this.latest)
   }
 
   /** Takes a snapshot returned by a write without waiting for a reread. */

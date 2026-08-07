@@ -503,6 +503,8 @@ export interface ShellApi {
    * press — the listener decides whether anything of its own is undoable.
    */
   onUndoShortcut(listener: () => void): () => void
+  /** ⌘S (Ctrl+S elsewhere), claimed from the native Save action by Main. */
+  onToggleSidebarShortcut(listener: () => void): () => void
   /** Returns the latest readiness snapshot, probing on first demand. */
   getReadiness(): Promise<ReadinessSnapshot>
   /** Re-probes one Harness or all of them (“Check again”). */

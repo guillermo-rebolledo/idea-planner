@@ -13,7 +13,7 @@ export interface SelectedConversation {
   phase: ConversationPhase
   snapshot: ConversationSnapshot | null
   runs: RunSnapshot[]
-  refresh: () => Promise<void>
+  refresh: () => Promise<ConversationSnapshot | null>
   adopt: (snapshot: ConversationSnapshot) => void
 }
 
@@ -71,8 +71,9 @@ export function useSelectedConversation(sessionId: string | null): SelectedConve
     return () => window.clearInterval(timer)
   }, [activeRunId])
 
-  const refresh = useCallback(async (): Promise<void> => {
-    await ownerRef.current?.request()
+  const refresh = useCallback(async (): Promise<ConversationSnapshot | null> => {
+    const selected = await ownerRef.current?.request()
+    return selected?.conversation ?? null
   }, [])
 
   const adopt = useCallback((snapshot: ConversationSnapshot): void => {

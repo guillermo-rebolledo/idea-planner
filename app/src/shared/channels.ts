@@ -31,6 +31,7 @@ export const IPC_CHANNELS = {
   respondToQuitRequest: 'quit-warning:respond',
   quitRequested: 'quit-warning:requested',
   undoShortcut: 'shortcut:undo',
+  toggleSidebarShortcut: 'shortcut:toggle-sidebar',
   getReadiness: 'readiness:get',
   refreshReadiness: 'readiness:refresh',
   chooseHarnessExecutable: 'readiness:choose-executable',

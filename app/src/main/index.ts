@@ -898,13 +898,26 @@ function createWindow(): void {
   // first. This hook fires before the menu, so the Renderer is told and can
   // undo its own last action — while typing it does nothing, and the menu's
   // Undo goes on serving the text field.
-  window.webContents.on('before-input-event', (_event, input) => {
+  window.webContents.on('before-input-event', (event, input) => {
     const undo =
       input.type === 'keyDown' &&
       input.key.toLowerCase() === 'z' &&
       (input.meta || input.control) &&
       !input.shift
     if (undo) window.webContents.send(IPC_CHANNELS.undoShortcut)
+
+    const toggleSidebar =
+      input.type === 'keyDown' &&
+      input.key.toLowerCase() === 's' &&
+      (input.meta || input.control) &&
+      !input.shift &&
+      !input.alt
+    if (toggleSidebar) {
+      // Electron otherwise treats this as Save Page before the Renderer can
+      // use it. Claiming it here also makes the shortcut independent of focus.
+      event.preventDefault()
+      window.webContents.send(IPC_CHANNELS.toggleSidebarShortcut)
+    }
   })
 
   window.on('ready-to-show', () => {
