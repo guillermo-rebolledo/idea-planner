@@ -771,7 +771,8 @@ export class RunService {
           onChoices: (question, options) => {
             void this.offerChoices(accepted, question, options).catch(() => undefined)
           },
-          onApproval: (request) => this.requestApproval(accepted, checkout, adapter.id, request)
+          onApproval: (request) => this.requestApproval(accepted, checkout, adapter.id, request),
+          readConversation: () => this.readConversation(accepted.sessionId)
         }
       })
       await toolHost.start()

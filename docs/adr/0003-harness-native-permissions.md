@@ -34,8 +34,18 @@ mechanism per Harness is recorded in
 [docs/harness-permission-mapping.md](../harness-permission-mapping.md).
 
 The Main-owned MCP host is **retained but reduced** to tools that have no native
-equivalent — currently `offer_response_options`, which backs Suggested Responses.
-MCP _adds_ tools alongside the native ones; it no longer replaces them.
+equivalent: `offer_response_options`, which backs Suggested Responses, and the
+bounded read-only `session_diff`, which exposes only the current Session's
+recorded Conversation projection. MCP _adds_ tools alongside the native ones;
+it no longer replaces them.
+
+`session_diff` is an explicit permission exception in Ask mode. Each Harness
+auto-approves that exact tool name: Claude through its staged `permissions.allow`
+list and Codex through the per-tool MCP `approval_mode = "approve"` setting.
+There is no server-, namespace-, or prefix-wide exception, so later app tools
+inherit no authority from it. The tool accepts no Session identifier or absolute
+path, never reads the live Checkout, and returns bounded, already-redacted
+Conversation data without copying patches into Run activity.
 
 ## Considered options
 
@@ -53,7 +63,8 @@ MCP _adds_ tools alongside the native ones; it no longer replaces them.
 ## Consequences
 
 - The planning policy and planning-only tool-host seams are removed. `ToolHost`
-  serves only capabilities with no native counterpart.
+  serves only capabilities with no native counterpart, including the explicit
+  `session_diff` read-only projection.
 - **The mode mapping is lossy and must be documented.** Codex thinks in approval
   policy crossed with sandbox scope; Claude Code thinks in permission modes. Ask
   and Full access will not behave identically on both, and the differences must

@@ -12,7 +12,13 @@ import {
   type CodexLaunch,
   type HarnessEvent
 } from '@shared/conversation'
-import { APP_TOOLS, APPROVAL_TOOL, MCP_SERVER_NAME, type PermissionMode } from '@shared/run'
+import {
+  APP_TOOLS,
+  APPROVAL_TOOL,
+  MCP_SERVER_NAME,
+  SESSION_DIFF_TOOL_NAME,
+  type PermissionMode
+} from '@shared/run'
 import type { RunConfiguration } from '@shared/run'
 import type { HarnessId } from '@shared/readiness'
 import type { ProposedRule } from '@shared/approval'
@@ -336,7 +342,7 @@ function createCodexAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter 
         const proxy = proxyConfiguration(dependencies, input)
         await writeFile(
           join(codexHome, 'config.toml'),
-          `[mcp_servers.${MCP_SERVER_NAME}]\ncommand = ${JSON.stringify(proxy.command)}\n\n[mcp_servers.${MCP_SERVER_NAME}.env]\nELECTRON_RUN_AS_NODE = "1"\nNODE_OPTIONS = ${JSON.stringify(proxy.env.NODE_OPTIONS)}\nAPP_MCP_SOCKET = ${JSON.stringify(input.socketPath)}\nAPP_MCP_CAPABILITY = ${JSON.stringify(input.capabilityToken)}\n`,
+          `[mcp_servers.${MCP_SERVER_NAME}]\ncommand = ${JSON.stringify(proxy.command)}\n\n[mcp_servers.${MCP_SERVER_NAME}.env]\nELECTRON_RUN_AS_NODE = "1"\nNODE_OPTIONS = ${JSON.stringify(proxy.env.NODE_OPTIONS)}\nAPP_MCP_SOCKET = ${JSON.stringify(input.socketPath)}\nAPP_MCP_CAPABILITY = ${JSON.stringify(input.capabilityToken)}\n\n[mcp_servers.${MCP_SERVER_NAME}.tools.${SESSION_DIFF_TOOL_NAME}]\napproval_mode = "approve"\n`,
           { mode: 0o600 }
         )
       })

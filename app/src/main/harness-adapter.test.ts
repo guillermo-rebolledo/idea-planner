@@ -83,6 +83,12 @@ describe('Harness adapter contract', () => {
     expect(await realpath(join(runDirectory, 'codex-home', 'auth.json'))).toBe(
       await realpath(join(root, '.codex', 'auth.json'))
     )
+    expect(await readFile(join(runDirectory, 'codex-home', 'config.toml'), 'utf8')).toContain(
+      '[mcp_servers.app.tools.session_diff]\napproval_mode = "approve"'
+    )
+    expect(await readFile(join(runDirectory, 'codex-home', 'config.toml'), 'utf8')).not.toContain(
+      'default_tools_approval_mode'
+    )
     expect(await Effect.runPromise(adapter.environment('/opt/codex', runDirectory))).toMatchObject({
       CODEX_HOME: join(runDirectory, 'codex-home')
     })
@@ -169,6 +175,7 @@ describe('Harness adapter contract', () => {
         defaultMode: 'default',
         allow: [
           'mcp__app__offer_response_options',
+          'mcp__app__session_diff',
           'mcp__app__approval_request',
           'Bash(pnpm test:*)'
         ]
