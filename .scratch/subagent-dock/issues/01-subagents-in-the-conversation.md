@@ -31,7 +31,9 @@ Measured against `claude 2.1.224` and `codex-cli 0.146.0` by spawning a real sub
 | ended          | `system/task_updated` → `patch.status`; `system/task_notification`    |
 | result         | `task_notification.summary`, and the `Agent` tool_result's text       |
 
-**Codex** — enough, but thinner:
+**Codex spawns two different ways, and which one depends on the model.** Both are handled.
+
+*Through `subAgentActivity`* (seen on the default model) — enough, but thinner:
 
 | Need          | Where it comes from                                                      |
 | ------------- | ------------------------------------------------------------------------ |
@@ -43,7 +45,18 @@ Measured against `claude 2.1.224` and `codex-cli 0.146.0` by spawning a real sub
 | ended         | `subAgentActivity` kind `interrupted`, or the turn ending                |
 | brief         | **not available** — `collabAgentToolCall.prompt` is null for a spawn here |
 
-So the dock states less under Codex, and must not pretend otherwise: no brief section when there is no brief, and a name derived from the agent path.
+*Through the collab tools* (seen on `gpt-5.3-codex-spark`, which sends **no `subAgentActivity` at all**):
+
+| Need          | Where it comes from                                                                 |
+| ------------- | ----------------------------------------------------------------------------------- |
+| dispatch + id | `collabAgentToolCall` with `tool: "spawnAgent"`, its `id`                            |
+| threads       | `receiverThreadIds` on the completed spawn — one call may start several agents        |
+| brief         | `prompt` on the spawn — the one place this Harness does state a brief                 |
+| name          | **not available** — numbered in dispatch order, with the brief saying what each is for |
+| state         | `agentsStates[threadId].status` on every later collab call                            |
+| result        | `agentsStates[threadId].message`, or the agent's own last message on its Thread       |
+
+So the dock states less under Codex, and must not pretend otherwise: no brief section when there is no brief, and a name derived from the agent path or from the dispatch order.
 
 ## Decisions
 

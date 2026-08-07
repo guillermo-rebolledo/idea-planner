@@ -100,6 +100,12 @@ const CODEX_CHANGE_KINDS: Record<string, ChangeKind | undefined> = {
   update: 'changed'
 }
 
+/** One spawned agent's state, as the collab tools report it. */
+const collabAgentStateSchema = z.object({
+  status: z.string().default(''),
+  message: z.string().nullable().default(null)
+})
+
 const itemSchema = z.object({
   type: z.string().default(''),
   id: z.string().min(1).max(200).default('item'),
@@ -115,7 +121,15 @@ const itemSchema = z.object({
   /** The Harness Thread the subagent's own work arrives on. */
   agentThreadId: z.string().min(1).max(200).optional(),
   /** Codex's name for the agent, as a path: `/root/count_notes_lines`. */
-  agentPath: z.string().min(1).max(500).optional()
+  agentPath: z.string().min(1).max(500).optional(),
+  /** Which collab tool this is: `spawnAgent`, `wait`, `closeAgent`, … */
+  tool: z.string().optional(),
+  /** The Threads a collab call is about; for a spawn, the agents it started. */
+  receiverThreadIds: z.array(z.string().min(1).max(200)).optional(),
+  /** The brief a spawn handed its agent. */
+  prompt: z.string().nullable().optional(),
+  /** How each of those agents is doing, and what it has said. */
+  agentsStates: z.record(collabAgentStateSchema).optional()
 })
 
 const tokenUsageSchema = z.object({
@@ -192,6 +206,21 @@ const SUBAGENT_STATUS: Record<string, SubagentStatus> = {
 }
 
 /**
+ * And what it calls each state the collab tools report for a spawned agent.
+ * `notFound` is the odd one: an agent Codex has lost track of never reported,
+ * which is what `interrupted` means here.
+ */
+const COLLAB_STATUS: Record<string, SubagentStatus> = {
+  pendingInit: 'working',
+  running: 'working',
+  completed: 'done',
+  errored: 'failed',
+  interrupted: 'interrupted',
+  shutdown: 'interrupted',
+  notFound: 'interrupted'
+}
+
+/**
  * One subagent as this Adapter is tracking it. Keyed by the Harness Thread it
  * runs on — the only thing every one of its frames carries — and holding the
  * last thing it said, which becomes its report once it ends.
@@ -246,10 +275,68 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
    */
   const subagents = new Map<string, ThreadDispatch>()
 
+  /**
+   * A name for an agent Codex named nothing. The collab tools carry a brief
+   * and a Thread id and no name at all, and a dock of "019fddc1-d537…" is a
+   * dock nobody can tell apart — so they are numbered in dispatch order, and
+   * the brief the card shows says what each one is for.
+   */
+  function nextSubagentName(): string {
+    return `Subagent ${String(subagents.size + 1)}`
+  }
+
   /** The subagent as it stands now: every event carries its whole state. */
   function report(dispatch: ThreadDispatch): HarnessEvent[] {
     subagents.set(dispatch.threadId, dispatch)
     return [subagentEvent(dispatch)]
+  }
+
+  /**
+   * The collab tools, which are the other way Codex spawns — and on some
+   * models the only way: gpt-5.3-codex-spark sends no `subAgentActivity` at
+   * all. A `spawnAgent` names the Threads it started and carries the brief it
+   * handed them, which is the one place this Harness states a brief; every
+   * later call re-states how each of those agents is doing and, once one has
+   * finished, what it reported back.
+   */
+  function describeCollabCall(item: z.infer<typeof itemSchema>): HarnessEvent[] {
+    const events: HarnessEvent[] = []
+    const receivers = item.receiverThreadIds ?? []
+    if (item.tool === 'spawnAgent') {
+      for (const [index, on] of receivers.entries()) {
+        const existing = subagents.get(on)
+        const dispatch: ThreadDispatch = {
+          steps: null,
+          durationMs: null,
+          status: 'working',
+          ...existing,
+          // One call may start several agents, so the Thread is what keeps
+          // their identities apart.
+          id: receivers.length > 1 ? `${item.id}:${String(index)}` : item.id,
+          threadId: on,
+          name: existing?.name ?? nextSubagentName(),
+          ...(item.prompt !== null && item.prompt !== undefined ? { brief: item.prompt } : {})
+        }
+        events.push(...report(dispatch))
+      }
+    }
+    // Every collab call carries the current state of the agents it concerns,
+    // including the report a finished one came back with.
+    for (const [on, state] of Object.entries(item.agentsStates ?? {})) {
+      const dispatch = subagents.get(on)
+      if (dispatch === undefined) continue
+      const status = COLLAB_STATUS[state.status] ?? dispatch.status
+      const result = state.message ?? dispatch.lastMessage ?? undefined
+      const ended = status !== 'working'
+      const next: ThreadDispatch = {
+        ...dispatch,
+        status,
+        ...(ended && result !== undefined ? { result } : {})
+      }
+      if (next.status === dispatch.status && next.result === dispatch.result) continue
+      events.push(...report(next))
+    }
+    return events
   }
 
   /**
@@ -565,10 +652,7 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
         })
       }
       case 'collabAgentToolCall':
-        // The parent's own bookkeeping — spawn, wait, close. What it is
-        // bookkeeping about arrives as `subAgentActivity` and on the
-        // subagent's own Thread, which is where this Adapter reads it.
-        return []
+        return describeCollabCall(item)
       case 'userMessage':
       case 'plan':
       case 'todoList':
