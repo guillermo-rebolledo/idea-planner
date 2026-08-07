@@ -1822,8 +1822,16 @@ test('a Run that dispatches a subagent says so, and the dock holds the fleet', a
     const rail = page.getByRole('complementary', { name: 'Subagents, collapsed' })
     await expect(rail).toBeVisible()
 
-    // A mark on the rail opens the dock straight onto that subagent.
-    await rail.getByRole('button', { name: /Standards review/ }).click()
+    // A mark on the rail is an identity and a state; hovering it says what
+    // that subagent actually did, so the rail can be read without reopening.
+    const mark = rail.getByRole('button', { name: /Standards review/ })
+    await mark.hover()
+    const preview = page.getByText('No findings against the repository standards.')
+    await expect(preview).toBeVisible()
+    await expect(page.getByText('2 steps')).toBeVisible()
+
+    // And it still opens the dock straight onto that subagent.
+    await mark.click()
     await expect(dock.getByRole('heading', { name: 'Standards review' })).toBeVisible()
   } finally {
     await app.close()

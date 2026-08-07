@@ -25,6 +25,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Bot, PanelRightClose, PanelRightOpen } from 'lucide-react'
+import { HoverCard, HoverCardContent, HoverCardTrigger } from '@renderer/components/ui/hover-card'
 import type { SubagentStatus } from '@shared/contract'
 import { elapsedMs, fleetSummary, type FleetMember } from '@renderer/lib/subagent-fleet'
 import { cn } from '@renderer/lib/utils'
@@ -182,6 +183,52 @@ function CollapseButton({ onClick }: { onClick: () => void }): React.JSX.Element
   )
 }
 
+/**
+ * What one subagent amounts to at a glance: who it is, what it is on now, and
+ * how far it has got. Written in spans throughout so the same summary reads
+ * correctly inside the dock's card, which is a button, and inside the rail's
+ * hover preview, which is not.
+ */
+function SubagentSummary({ member, now }: { member: FleetMember; now: number }): React.JSX.Element {
+  const elapsed = elapsedMs(member, now)
+  // While it works, what it is on now; once it has ended, what it came back
+  // with. Never both: the card has one line, and the newer fact wins it.
+  const line = member.status === 'working' ? member.activity : member.result
+  return (
+    <>
+      <span className="flex items-center gap-2">
+        <AgentMark />
+        <span className="min-w-0 flex-1 truncate text-xs font-medium">{member.name}</span>
+        {elapsed !== null && (
+          <span className="shrink-0 font-mono text-2xs text-muted-foreground tabular-nums">
+            {formatElapsed(elapsed)}
+          </span>
+        )}
+      </span>
+
+      {line !== null && (
+        <span
+          className={cn(
+            'mt-1.5 line-clamp-2 text-2xs text-muted-foreground',
+            member.status === 'working' && 'shimmer'
+          )}
+        >
+          {line}
+        </span>
+      )}
+
+      <span className="mt-2 flex items-center gap-2">
+        <StatusMark status={member.status} />
+        {member.steps !== null && (
+          <span className="ml-auto shrink-0 font-mono text-2xs text-muted-foreground tabular-nums">
+            {member.steps} {member.steps === 1 ? 'step' : 'steps'}
+          </span>
+        )}
+      </span>
+    </>
+  )
+}
+
 function FleetCard({
   member,
   now,
@@ -191,8 +238,6 @@ function FleetCard({
   now: number
   onOpen: () => void
 }): React.JSX.Element {
-  const elapsed = elapsedMs(member, now)
-  const line = member.status === 'working' ? member.activity : member.result
   return (
     <li>
       <button
@@ -200,35 +245,7 @@ function FleetCard({
         onClick={onOpen}
         className="w-full rounded-lg border border-border bg-surface-raised p-2.5 text-left hover:border-muted-foreground/40"
       >
-        <span className="flex items-center gap-2">
-          <AgentMark />
-          <span className="min-w-0 flex-1 truncate text-xs font-medium">{member.name}</span>
-          {elapsed !== null && (
-            <span className="shrink-0 font-mono text-2xs text-muted-foreground tabular-nums">
-              {formatElapsed(elapsed)}
-            </span>
-          )}
-        </span>
-
-        {line !== null && (
-          <span
-            className={cn(
-              'mt-1.5 line-clamp-2 text-2xs text-muted-foreground',
-              member.status === 'working' && 'shimmer'
-            )}
-          >
-            {line}
-          </span>
-        )}
-
-        <span className="mt-2 flex items-center gap-2">
-          <StatusMark status={member.status} />
-          {member.steps !== null && (
-            <span className="ml-auto shrink-0 font-mono text-2xs text-muted-foreground tabular-nums">
-              {member.steps} {member.steps === 1 ? 'step' : 'steps'}
-            </span>
-          )}
-        </span>
+        <SubagentSummary member={member} now={now} />
       </button>
     </li>
   )
@@ -312,9 +329,11 @@ function SubagentThread({
  */
 function FleetRail({
   fleet,
+  now,
   onExpand
 }: {
   fleet: FleetMember[]
+  now: number
   onExpand: (dispatchId: string | null) => void
 }): React.JSX.Element {
   return (
@@ -335,27 +354,44 @@ function FleetRail({
         <PanelRightOpen aria-hidden="true" className="size-4" />
       </button>
       <span aria-hidden="true" className="h-px w-5 bg-border" />
+      {/* A mark is an identity and a state and nothing else, which is enough
+          to notice something and never enough to decide about it. Hovering one
+          says what that subagent is actually doing, so the rail can be read
+          without being reopened — the same bargain the Turn Rail's cards and
+          the changed-file previews already make. */}
       {fleet.map((member) => (
-        <button
-          key={member.dispatchId}
-          type="button"
-          aria-label={`${member.name} — ${STATUS_TEXT[member.status]}`}
-          onClick={() => {
-            onExpand(member.dispatchId)
-          }}
-          className="relative grid size-7 place-items-center rounded-md hover:bg-muted"
-        >
-          <AgentMark size="md" />
-          <span
-            aria-hidden="true"
-            className={cn(
-              'absolute right-0.5 bottom-0.5 size-1.5 rounded-full ring-2 ring-surface',
-              member.status === 'failed' ? 'bg-destructive' : 'bg-current',
-              STATUS_INK[member.status],
-              member.status === 'working' && 'animate-pulse motion-reduce:animate-none'
-            )}
-          />
-        </button>
+        <HoverCard key={member.dispatchId}>
+          <HoverCardTrigger
+            delay={200}
+            closeDelay={150}
+            render={
+              <button
+                type="button"
+                aria-label={`${member.name} — ${STATUS_TEXT[member.status]}`}
+                onClick={() => {
+                  onExpand(member.dispatchId)
+                }}
+                className="relative grid size-7 place-items-center rounded-md hover:bg-muted"
+              />
+            }
+          >
+            <AgentMark size="md" />
+            <span
+              aria-hidden="true"
+              className={cn(
+                'absolute right-0.5 bottom-0.5 size-1.5 rounded-full ring-2 ring-surface',
+                member.status === 'failed' ? 'bg-destructive' : 'bg-current',
+                STATUS_INK[member.status],
+                member.status === 'working' && 'animate-pulse motion-reduce:animate-none'
+              )}
+            />
+          </HoverCardTrigger>
+          {/* Beside the rail rather than over it, so the card never covers the
+              marks it is a preview of. */}
+          <HoverCardContent side="left" align="start" className="flex flex-col">
+            <SubagentSummary member={member} now={now} />
+          </HoverCardContent>
+        </HoverCard>
       ))}
     </aside>
   )
@@ -392,6 +428,7 @@ export function SubagentDock({
     return (
       <FleetRail
         fleet={fleet}
+        now={now}
         onExpand={(dispatchId) => {
           onOpen(dispatchId)
           onExpandedChange(true)
