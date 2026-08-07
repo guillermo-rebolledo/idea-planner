@@ -5,14 +5,20 @@ import {
   harnessFailureCategorySchema
 } from './conversation'
 import {
-  acceptRunInputSchema,
+  runOpeningInputSchema,
   runActivityKindSchema,
   runSnapshotSchema,
   type SkillName
 } from './run'
 
+/**
+ * The only shared Run lifecycle seam. Main submits native observations; Core
+ * atomically owns Run records, Conversation boundaries, Checkout evidence,
+ * queue disposition, idempotency, and repair. Effect values never cross it.
+ */
+
 /** One durable request to accept a Run and open its Conversation boundary. */
-export const openRunLifecycleInputSchema = acceptRunInputSchema.extend({
+export const openRunLifecycleInputSchema = runOpeningInputSchema.extend({
   /** The durable message this attempt answers; retries keep the original identity. */
   conversationSubmissionId: z.string().min(1).max(200).optional(),
   restorationNote: z.boolean().optional(),

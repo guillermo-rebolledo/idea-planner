@@ -22,6 +22,13 @@ export interface HarnessAdapterCorePort {
   send(command: CoreCommand): Promise<unknown>
 }
 
+/**
+ * The complete Run-native Harness seam in Main. Implementations own credentials,
+ * staged homes, arguments, native permissions, Thread continuity, interruption,
+ * and completion facts. They delegate raw-frame normalization and protocol
+ * answers to Core; RunService only selects one.
+ */
+
 export interface HarnessAdapterDeps {
   core: HarnessAdapterCorePort
   homeDirectory: string

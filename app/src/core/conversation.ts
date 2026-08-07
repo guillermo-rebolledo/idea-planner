@@ -25,13 +25,12 @@ import {
   type ConversationEntry,
   type ConversationRecovery,
   type ConversationSnapshot,
-  type FinalizeConversationRunInput,
+  type CheckoutChange,
   type HarnessEvent,
   type CodexLaunch,
   type HarnessFailureCategory,
   type HarnessStream,
   type HarnessUsage,
-  type RecordCheckoutChangesInput,
   type EditQueuedSubmissionInput,
   type EnqueueQueuedSubmissionInput,
   type MoveQueuedSubmissionInput,
@@ -44,7 +43,7 @@ import {
   type SuggestedResponse
 } from '@shared/conversation'
 import type { HarnessId } from '@shared/readiness'
-import type { SkillName } from '@shared/run'
+import type { RunActivityKind, SkillName } from '@shared/run'
 import { createCodexAdapter, type HarnessAdapter } from './harness/codex'
 import { parseGitPatch } from './harness/diff'
 import {
@@ -62,10 +61,13 @@ import { createClaudeAdapter } from './harness/claude'
  * The Session's one permanent Conversation, inside the app-owned Session
  * directory (ADR 0002). Nothing about it is written into the Project.
  *
- * Durable truth is an append-only JSONL journal: later entries with the same
- * id supersede earlier ones, so a coalesced streaming checkpoint costs one
- * append and an interrupted Run still reads back as labelled partial content.
- * Everything presented is projected from that journal in memory.
+ * This module also owns the Core-side protocol Adapters that normalize raw
+ * Harness frames into product events. Main's Harness Adapters own native
+ * process facts; protocol normalization remains beside this durable journal.
+ * Durable truth is append-only JSONL: later entries with the same id supersede
+ * earlier ones, so a coalesced streaming checkpoint costs one append and an
+ * interrupted Run still reads back as labelled partial content. Everything
+ * presented is projected from that journal in memory.
  */
 
 const JOURNAL = 'conversation.jsonl'
@@ -179,6 +181,20 @@ export interface AnswerHarnessInput {
   remember: boolean
 }
 
+interface FinalizeRunInput {
+  sessionId: string
+  runId: string
+  outcome: 'completed' | 'stopped' | 'failed' | 'policy-violation' | 'supervision-failed'
+  category: HarnessFailureCategory | null
+  summary: string
+  queuePaused?: boolean
+  transitionFingerprint?: string
+  checkoutObservation?: 'observed' | 'unavailable'
+  queueDisposition?: 'advance' | 'pause'
+  terminalActivityKind?: RunActivityKind
+  checkoutChanges?: CheckoutChange[]
+}
+
 export interface ConversationEffects {
   get(sessionId: string): Effect.Effect<ConversationSnapshot, CoreError>
   /**
@@ -220,8 +236,7 @@ export interface ConversationEffects {
   /** Parses one raw Harness chunk and applies everything it completed. */
   ingest(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
   /** Records changes found by comparing the Checkout, which nobody reported. */
-  recordCheckoutChanges(input: RecordCheckoutChangesInput): Effect.Effect<void, CoreError>
-  finalize(input: FinalizeConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
+  finalize(input: FinalizeRunInput): Effect.Effect<ConversationSnapshot, CoreError>
 }
 
 /**
@@ -1239,7 +1254,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
    * the panel says the Run did.
    */
   const projectCheckoutChanges = (
-    files: RecordCheckoutChangesInput['files'],
+    files: CheckoutChange[],
     existing: ConversationEntry[],
     runId: string,
     checkout: string,
@@ -1272,32 +1287,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
     })
   }
 
-  const recordCheckoutChanges = (
-    input: RecordCheckoutChangesInput
-  ): Effect.Effect<void, CoreError> =>
-    Effect.gen(function* () {
-      if (input.files.length === 0) return
-      const sessionDir = yield* sessionDirectory(input.sessionId)
-      const checkout = yield* options.checkoutFor(input.sessionId)
-      yield* writeLock.withPermits(1)(
-        Effect.gen(function* () {
-          const existing = yield* readEntries(sessionDir)
-          const now = yield* options.clock
-          const additions = projectCheckoutChanges(
-            input.files,
-            existing,
-            input.runId,
-            checkout,
-            now
-          )
-          if (additions.length) yield* appendMany(sessionDir, additions)
-        })
-      )
-    })
-
-  const finalize = (
-    input: FinalizeConversationRunInput
-  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+  const finalize = (input: FinalizeRunInput): Effect.Effect<ConversationSnapshot, CoreError> =>
     Effect.gen(function* () {
       const sessionDir = yield* sessionDirectory(input.sessionId)
       // Drain a truncated final protocol line before the lock is taken, so
@@ -1510,7 +1500,6 @@ export function createConversationEffects(options: ConversationOptions): Convers
     answer,
     interrupt,
     ingest,
-    recordCheckoutChanges,
     finalize
   }
 }
@@ -1523,7 +1512,7 @@ function approvalEntryId(runId: string, toolUseId: string): string {
 function runBoundarySummary(input: BeginConversationRunInput): string {
   // The Skill is whatever was installed and asked for; this app keeps no list
   // of names to prettify, because discovery is the only list there is.
-  const harness = input.harness === 'claude' ? 'Claude' : input.harness === 'codex' ? 'Codex' : null
+  const harness = input.harness ? (HARNESS_RUN_LABELS[input.harness] ?? null) : null
   const work = input.skill
     ? `Run started via ${harness ?? 'a Harness'}, working to ${input.skill}`
     : null
@@ -1536,6 +1525,11 @@ const ADAPTER_FACTORIES: Partial<Record<HarnessId, (launch?: CodexLaunch) => Har
   claude: () => createClaudeAdapter()
 }
 
+const HARNESS_RUN_LABELS: Partial<Record<HarnessId, string>> = {
+  claude: 'Claude',
+  codex: 'Codex'
+}
+
 function without<A>(current: ReadonlyMap<string, A>, key: string): ReadonlyMap<string, A> {
   const next = new Map(current)
   next.delete(key)
@@ -1543,7 +1537,7 @@ function without<A>(current: ReadonlyMap<string, A>, key: string): ReadonlyMap<s
 }
 
 const BOUNDARY_FOR_OUTCOME: Record<
-  FinalizeConversationRunInput['outcome'],
+  FinalizeRunInput['outcome'],
   Extract<ConversationEntry, { kind: 'boundary' }>['boundary']
 > = {
   completed: 'run-completed',
@@ -1574,7 +1568,7 @@ const RESENDABLE = new Set<ConversationRecovery['category']>([
 ])
 
 function describeRecovery(
-  input: FinalizeConversationRunInput,
+  input: FinalizeRunInput,
   run: {
     contacted: boolean
     producedAssistantText: boolean

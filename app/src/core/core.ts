@@ -16,24 +16,22 @@ import {
   type StartSessionInput
 } from '@shared/contract'
 import {
-  acceptRunInputSchema,
+  runOpeningInputSchema,
   recordRunEventInputSchema,
   runSnapshotSchema,
-  type AcceptRunInput,
+  type RunOpeningInput,
   type RecordRunEventInput,
   type RunSnapshot,
   type RunStatus
 } from '@shared/run'
 import type {
   ConversationSnapshot,
-  FinalizeConversationRunInput,
   HarnessStream,
   HarnessFailureCategory,
   QueuedSubmissionChange,
   QueuedSubmissionLaunchObservation,
   QueuedSubmissionLaunchPlan,
   QueuedSubmissionLaunchResult,
-  RecordCheckoutChangesInput,
   SubmitConversationMessageInput,
   UnfinishedRun
 } from '@shared/conversation'
@@ -65,7 +63,6 @@ import { StandingApprovalStore } from './approvals'
 import {
   createConversationEffects,
   type ApplyHarnessEventInput,
-  type BeginConversationRunInput,
   type AnswerHarnessInput,
   type IngestHarnessOutputInput,
   type OpenHarnessInput
@@ -80,9 +77,10 @@ export interface CoreDeps {
 }
 
 /**
- * The deep product-behavior module. It owns the Session lifecycle and the
- * app-owned store behind it, and is the primary test seam. It runs inside the
- * Core utility process in production and directly inside tests.
+ * The deep product-behavior module. It owns Session, Run, Conversation, and
+ * Queued Submission decisions plus their app-owned durable state, and is the
+ * primary test seam. It runs inside the Core utility process in production
+ * and directly inside tests.
  *
  * Internals are Effect (see ADR 0001); this interface stays promise-based so
  * Main and tests never see Effect types.
@@ -108,7 +106,6 @@ export interface Core {
   renameSession(sessionId: string, title: string): Promise<SessionSummary>
   openRunLifecycle(input: OpenRunLifecycleInput): Promise<OpenRunLifecycleResult>
   completeRunLifecycle(input: CompleteRunLifecycleInput): Promise<CompleteRunLifecycleResult>
-  acceptRun(input: AcceptRunInput): Promise<RunSnapshot>
   listRuns(sessionId: string): Promise<RunSnapshot[]>
   recordRunEvent(input: RecordRunEventInput): Promise<RunSnapshot>
   getConversation(sessionId: string): Promise<ConversationSnapshot>
@@ -118,7 +115,6 @@ export interface Core {
   observeQueuedSubmissionLaunch(
     input: QueuedSubmissionLaunchObservation
   ): Promise<QueuedSubmissionLaunchResult>
-  beginConversationRun(input: BeginConversationRunInput): Promise<ConversationSnapshot>
   applyHarnessEvent(input: ApplyHarnessEventInput): Promise<void>
   openHarness(input: OpenHarnessInput): Promise<HarnessStream>
   answerHarnessApproval(
@@ -126,9 +122,7 @@ export interface Core {
   ): Promise<{ answered: boolean; outgoing: string[] }>
   interruptHarness(runId: string): Promise<string[]>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Promise<HarnessStream>
-  recordCheckoutChanges(input: RecordCheckoutChangesInput): Promise<void>
   listUnfinishedRuns(): Promise<UnfinishedRun[]>
-  finalizeConversationRun(input: FinalizeConversationRunInput): Promise<ConversationSnapshot>
 }
 
 /**
@@ -163,7 +157,6 @@ export interface CoreEffects {
   completeRunLifecycle(
     input: CompleteRunLifecycleInput
   ): Effect.Effect<CompleteRunLifecycleResult, CoreError>
-  acceptRun(input: AcceptRunInput): Effect.Effect<RunSnapshot, CoreError>
   listRuns(sessionId: string): Effect.Effect<RunSnapshot[], CoreError>
   recordRunEvent(input: RecordRunEventInput): Effect.Effect<RunSnapshot, CoreError>
   getConversation(sessionId: string): Effect.Effect<ConversationSnapshot, CoreError>
@@ -179,9 +172,6 @@ export interface CoreEffects {
   observeQueuedSubmissionLaunch(
     input: QueuedSubmissionLaunchObservation
   ): Effect.Effect<QueuedSubmissionLaunchResult, CoreError>
-  beginConversationRun(
-    input: BeginConversationRunInput
-  ): Effect.Effect<ConversationSnapshot, CoreError>
   applyHarnessEvent(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
   openHarness(input: OpenHarnessInput): Effect.Effect<HarnessStream, CoreError>
   answerHarnessApproval(
@@ -189,11 +179,7 @@ export interface CoreEffects {
   ): Effect.Effect<{ answered: boolean; outgoing: string[] }, CoreError>
   interruptHarness(runId: string): Effect.Effect<string[], CoreError>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
-  recordCheckoutChanges(input: RecordCheckoutChangesInput): Effect.Effect<void, CoreError>
   listUnfinishedRuns(): Effect.Effect<UnfinishedRun[], CoreError>
-  finalizeConversationRun(
-    input: FinalizeConversationRunInput
-  ): Effect.Effect<ConversationSnapshot, CoreError>
 }
 
 const RUNS_DIR = 'runs'
@@ -233,6 +219,9 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
   })
   // Serializes durable Run writes, so a read-modify-write cannot interleave.
   const writeLock = Effect.runSync(Effect.makeSemaphore(1))
+  // Serializes the full terminal transition. It cannot share writeLock because
+  // completing a lifecycle records its final Run event through that lock.
+  const terminalTransitionLock = Effect.runSync(Effect.makeSemaphore(1))
 
   const provide = <A>(
     effect: Effect.Effect<A, CoreError, CoreServices>
@@ -421,8 +410,8 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       }
     })
 
-  const acceptRunInternal = (
-    rawInput: AcceptRunInput,
+  const openRunRecord = (
+    rawInput: RunOpeningInput,
     options: {
       runId?: string
       beforeDerivedWrite?: (run: RunSnapshot) => Effect.Effect<void, CoreError>
@@ -431,7 +420,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     provide(
       writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const parsed = acceptRunInputSchema.safeParse(rawInput)
+          const parsed = runOpeningInputSchema.safeParse(rawInput)
           if (!parsed.success) {
             return yield* Effect.fail(
               new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid Run')
@@ -523,9 +512,6 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       )
     )
 
-  const acceptRun = (rawInput: AcceptRunInput): Effect.Effect<RunSnapshot, CoreError> =>
-    acceptRunInternal(rawInput)
-
   const listRuns = (sessionId: string): Effect.Effect<RunSnapshot[], CoreError> =>
     sessions.directoryFor(sessionId).pipe(
       Effect.flatMap((sessionDir) =>
@@ -562,7 +548,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       const stableRunId = `run-${createHash('sha256')
         .update(`${input.sessionId}\0${input.submissionId}`)
         .digest('hex')}`
-      const run = yield* acceptRunInternal(input, {
+      const run = yield* openRunRecord(input, {
         runId: stableRunId,
         beforeDerivedWrite: (openingRun) =>
           conversation
@@ -588,88 +574,100 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
   const completeRunLifecycle = (
     rawInput: CompleteRunLifecycleInput
   ): Effect.Effect<CompleteRunLifecycleResult, CoreError> =>
-    Effect.gen(function* () {
-      const parsed = completeRunLifecycleInputSchema.safeParse(rawInput)
-      if (!parsed.success) {
-        return yield* Effect.fail(
-          new CoreError(
-            'INVALID_INPUT',
-            parsed.error.issues[0]?.message ?? 'Invalid Run completion'
-          )
-        )
-      }
-      const input = parsed.data
-      const terminal = decideTerminalObservation(input.observation)
-      const transitionFingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex')
-      const current = (yield* listRuns(input.sessionId)).find((run) => run.id === input.runId)
-      if (!current)
-        return yield* Effect.fail(new CoreError('RUN_NOT_FOUND', 'The Run was not found'))
-      if (TERMINAL_RUN_STATUSES.has(current.status)) {
-        if (current.status !== terminal.status) {
+    terminalTransitionLock.withPermits(1)(
+      Effect.gen(function* () {
+        const parsed = completeRunLifecycleInputSchema.safeParse(rawInput)
+        if (!parsed.success) {
           return yield* Effect.fail(
-            new CoreError('INVALID_INPUT', 'Run completion identity was reused with a new outcome')
+            new CoreError(
+              'INVALID_INPUT',
+              parsed.error.issues[0]?.message ?? 'Invalid Run completion'
+            )
           )
         }
-        const durableConversation = yield* conversation.get(input.sessionId)
-        const ending = durableConversation.entries.find(
+        const input = parsed.data
+        const terminal = decideTerminalObservation(input.observation)
+        const transitionFingerprint = createHash('sha256')
+          .update(JSON.stringify(input))
+          .digest('hex')
+        const current = (yield* listRuns(input.sessionId)).find((run) => run.id === input.runId)
+        if (!current)
+          return yield* Effect.fail(new CoreError('RUN_NOT_FOUND', 'The Run was not found'))
+        if (TERMINAL_RUN_STATUSES.has(current.status)) {
+          if (current.status !== terminal.status) {
+            return yield* Effect.fail(
+              new CoreError(
+                'INVALID_INPUT',
+                'Run completion identity was reused with a new outcome'
+              )
+            )
+          }
+          const durableConversation = yield* conversation.get(input.sessionId)
+          const ending = durableConversation.entries.find(
+            (entry) => entry.kind === 'boundary' && entry.id === `boundary:${input.runId}:ended`
+          )
+          if (
+            ending?.kind !== 'boundary' ||
+            ending.transitionFingerprint !== transitionFingerprint ||
+            ending.queueDisposition === undefined
+          ) {
+            return yield* Effect.fail(
+              new CoreError(
+                'INVALID_INPUT',
+                'Run completion identity was reused with different data'
+              )
+            )
+          }
+          return {
+            run: current,
+            conversation: durableConversation,
+            queueDisposition: ending.queueDisposition
+          }
+        }
+        const beforeTerminal = yield* conversation.get(input.sessionId)
+        const queueDisposition =
+          terminal.status === 'completed' && !beforeTerminal.queue.paused ? 'advance' : 'pause'
+        const conversationSnapshot = yield* conversation.finalize({
+          sessionId: input.sessionId,
+          runId: input.runId,
+          outcome: terminal.status,
+          category: terminal.category,
+          summary: terminal.summary,
+          terminalActivityKind: terminal.kind,
+          transitionFingerprint,
+          checkoutObservation: input.checkoutObservation.status,
+          queueDisposition,
+          checkoutChanges:
+            input.checkoutObservation.status === 'observed'
+              ? input.checkoutObservation.changes
+              : undefined,
+          ...(terminal.status === 'completed' ? {} : { queuePaused: true })
+        })
+        const durableEnding = conversationSnapshot.entries.find(
           (entry) => entry.kind === 'boundary' && entry.id === `boundary:${input.runId}:ended`
         )
-        if (
-          ending?.kind !== 'boundary' ||
-          ending.transitionFingerprint !== transitionFingerprint ||
-          ending.queueDisposition === undefined
-        ) {
+        if (durableEnding?.kind !== 'boundary' || durableEnding.queueDisposition === undefined) {
           return yield* Effect.fail(
-            new CoreError('INVALID_INPUT', 'Run completion identity was reused with different data')
+            new CoreError('IO_ERROR', 'Run completion was not made durable')
           )
         }
+        const run =
+          current.status === terminal.status
+            ? current
+            : yield* recordRunEvent({
+                sessionId: input.sessionId,
+                runId: input.runId,
+                status: terminal.status,
+                kind: terminal.kind,
+                summary: terminal.summary
+              })
         return {
-          run: current,
-          conversation: durableConversation,
-          queueDisposition: ending.queueDisposition
+          run,
+          conversation: conversationSnapshot,
+          queueDisposition: durableEnding.queueDisposition
         }
-      }
-      const beforeTerminal = yield* conversation.get(input.sessionId)
-      const queueDisposition =
-        terminal.status === 'completed' && !beforeTerminal.queue.paused ? 'advance' : 'pause'
-      const conversationSnapshot = yield* conversation.finalize({
-        sessionId: input.sessionId,
-        runId: input.runId,
-        outcome: terminal.status,
-        category: terminal.category,
-        summary: terminal.summary,
-        terminalActivityKind: terminal.kind,
-        transitionFingerprint,
-        checkoutObservation: input.checkoutObservation.status,
-        queueDisposition,
-        checkoutChanges:
-          input.checkoutObservation.status === 'observed'
-            ? input.checkoutObservation.changes
-            : undefined,
-        ...(terminal.status === 'completed' ? {} : { queuePaused: true })
       })
-      const durableEnding = conversationSnapshot.entries.find(
-        (entry) => entry.kind === 'boundary' && entry.id === `boundary:${input.runId}:ended`
-      )
-      if (durableEnding?.kind !== 'boundary' || durableEnding.queueDisposition === undefined) {
-        return yield* Effect.fail(new CoreError('IO_ERROR', 'Run completion was not made durable'))
-      }
-      const run =
-        current.status === terminal.status
-          ? current
-          : yield* recordRunEvent({
-              sessionId: input.sessionId,
-              runId: input.runId,
-              status: terminal.status,
-              kind: terminal.kind,
-              summary: terminal.summary
-            })
-      return {
-        run,
-        conversation: conversationSnapshot,
-        queueDisposition: durableEnding.queueDisposition
-      }
-    })
+    )
 
   /**
    * A permission granted for one Project, for good. The Project must be one
@@ -783,7 +781,6 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     },
     openRunLifecycle,
     completeRunLifecycle,
-    acceptRun,
     listRuns,
     recordRunEvent,
     getConversation: (sessionId) => conversation.get(sessionId),
@@ -791,15 +788,12 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     changeQueuedSubmissions: (input) => queuedSubmissions.change(input),
     nextQueuedSubmission: (sessionId) => queuedSubmissions.next(sessionId),
     observeQueuedSubmissionLaunch: (input) => queuedSubmissions.observeLaunch(input),
-    beginConversationRun: (input) => conversation.begin(input),
     applyHarnessEvent: (input) => conversation.apply(input),
     openHarness: (input) => conversation.open(input),
     answerHarnessApproval: (input) => conversation.answer(input),
     interruptHarness: (runId) => conversation.interrupt(runId),
     ingestHarnessOutput: (input) => conversation.ingest(input),
-    recordCheckoutChanges: (input) => conversation.recordCheckoutChanges(input),
-    listUnfinishedRuns,
-    finalizeConversationRun: (input) => conversation.finalize(input)
+    listUnfinishedRuns
   }
 }
 
@@ -929,7 +923,6 @@ export function createCore(deps: CoreDeps = {}): Core {
     renameSession: (sessionId, title) => run(core.renameSession(sessionId, title)),
     openRunLifecycle: (input) => run(core.openRunLifecycle(input)),
     completeRunLifecycle: (input) => run(core.completeRunLifecycle(input)),
-    acceptRun: (input) => run(core.acceptRun(input)),
     listRuns: (sessionId) => run(core.listRuns(sessionId)),
     recordRunEvent: (input) => run(core.recordRunEvent(input)),
     getConversation: (sessionId) => run(core.getConversation(sessionId)),
@@ -937,14 +930,11 @@ export function createCore(deps: CoreDeps = {}): Core {
     changeQueuedSubmissions: (input) => run(core.changeQueuedSubmissions(input)),
     nextQueuedSubmission: (sessionId) => run(core.nextQueuedSubmission(sessionId)),
     observeQueuedSubmissionLaunch: (input) => run(core.observeQueuedSubmissionLaunch(input)),
-    beginConversationRun: (input) => run(core.beginConversationRun(input)),
     applyHarnessEvent: (input) => run(core.applyHarnessEvent(input)),
     openHarness: (input) => run(core.openHarness(input)),
     answerHarnessApproval: (input) => run(core.answerHarnessApproval(input)),
     interruptHarness: (runId) => run(core.interruptHarness(runId)),
     ingestHarnessOutput: (input) => run(core.ingestHarnessOutput(input)),
-    recordCheckoutChanges: (input) => run(core.recordCheckoutChanges(input)),
-    listUnfinishedRuns: () => run(core.listUnfinishedRuns()),
-    finalizeConversationRun: (input) => run(core.finalizeConversationRun(input))
+    listUnfinishedRuns: () => run(core.listUnfinishedRuns())
   }
 }

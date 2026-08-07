@@ -100,6 +100,8 @@ const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
     'Harness cleanup could not be verified. Quit the app and check Activity Monitor before starting another Run.'
 }
 
+const HARNESS_LABEL = { claude: 'Claude Code', codex: 'Codex' } as const
+
 const NO_CONVERSATION_ENTRIES: ConversationEntry[] = []
 
 const QUEUE_ANNOUNCEMENT: Partial<Record<QueueOutcome['type'], string>> = {
@@ -2326,7 +2328,7 @@ function ActivityPanel({
       {/* What this Run was actually asked for, pinned when it was accepted.
           A Run keeps what it was given, whatever is chosen after it. */}
       <p className="mt-2 text-xs text-muted-foreground">
-        {run.configuration.harness === 'claude' ? 'Claude Code' : 'Codex'} ·{' '}
+        {HARNESS_LABEL[run.configuration.harness]} ·{' '}
         <span className="font-mono">{run.configuration.model}</span>
         {run.configuration.effort !== null && ` · thinking ${run.configuration.effort}`}
         {run.configuration.skill && ` · ${run.configuration.skill.name} Skill`}

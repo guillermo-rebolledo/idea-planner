@@ -4,17 +4,12 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type {
   ConversationEntry,
-  ConversationSnapshot,
+  CheckoutChange,
   DiffHunk,
-  EditQueuedSubmissionInput,
-  EnqueueQueuedSubmissionInput,
-  HarnessEvent,
-  MoveQueuedSubmissionInput,
-  QueuedSubmission,
-  QueuedSubmissionIdentity,
-  SetConversationQueuePausedInput
+  HarnessEvent
 } from '@shared/conversation'
 import { createCore, type Core } from './core'
+import { finishRunLifecycle } from './run-lifecycle-test-support'
 
 /**
  * Developing a Session through the permanent Conversation, observed at the
@@ -24,25 +19,15 @@ import { createCore, type Core } from './core'
 
 let stateDir: string
 let projectRoot: string
-type QueueTestCore = Core & {
-  enqueueQueuedSubmission(input: EnqueueQueuedSubmissionInput): Promise<ConversationSnapshot>
-  editQueuedSubmission(input: EditQueuedSubmissionInput): Promise<ConversationSnapshot>
-  moveQueuedSubmission(input: MoveQueuedSubmissionInput): Promise<ConversationSnapshot>
-  prioritizeQueuedSubmission(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
-  cancelQueuedSubmission(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
-  setConversationQueuePaused(input: SetConversationQueuePausedInput): Promise<ConversationSnapshot>
-  claimQueuedSubmission(sessionId: string): Promise<QueuedSubmission | null>
-}
-
-let core: QueueTestCore
+let core: Core
 let sessionId: string
 
 /** Every Session in these tests is started by this message. */
 const STARTING_MESSAGE = 'Offline receipts'
 
-function makeCore(): QueueTestCore {
+function makeCore(): Core {
   let tick = 0
-  const result = createCore({
+  return createCore({
     stateDirectory: stateDir,
     now: () => new Date(Date.UTC(2026, 6, 31, 12, 0, tick++)),
     randomId: (() => {
@@ -50,32 +35,10 @@ function makeCore(): QueueTestCore {
       return () => `test-id-${String(++n).padStart(4, '0')}`
     })()
   })
-  return Object.assign(result, {
-    enqueueQueuedSubmission: (input: EnqueueQueuedSubmissionInput) =>
-      result.changeQueuedSubmissions({
-        type: 'enqueue',
-        input: { ...input, reviewAttachments: input.reviewAttachments ?? [] }
-      }),
-    editQueuedSubmission: (input: EditQueuedSubmissionInput) =>
-      result.changeQueuedSubmissions({ type: 'edit', input }),
-    moveQueuedSubmission: (input: MoveQueuedSubmissionInput) =>
-      result.changeQueuedSubmissions({ type: 'move', input }),
-    prioritizeQueuedSubmission: (input: QueuedSubmissionIdentity) =>
-      result.changeQueuedSubmissions({ type: 'send-now', input }),
-    cancelQueuedSubmission: (input: QueuedSubmissionIdentity) =>
-      result.changeQueuedSubmissions({ type: 'cancel', input }),
-    setConversationQueuePaused: (input: SetConversationQueuePausedInput) =>
-      result.changeQueuedSubmissions({
-        type: input.paused ? 'pause' : 'resume',
-        sessionId: input.sessionId
-      }),
-    claimQueuedSubmission: (queuedSessionId: string) =>
-      result.nextQueuedSubmission(queuedSessionId).then((plan) => plan?.item ?? null)
-  })
 }
 
 async function startRun(prompt: string, submissionId: string): Promise<string> {
-  const run = await core.acceptRun({
+  const opened = await core.openRunLifecycle({
     submissionId,
     sessionId,
     prompt,
@@ -90,19 +53,28 @@ async function startRun(prompt: string, submissionId: string): Promise<string> {
       environment: {},
       checkout: projectRoot,
       permissionMode: 'ask'
-    }
-  })
-  await core.beginConversationRun({
-    sessionId,
-    runId: run.id,
-    submissionId,
-    harness: 'codex',
-    skill: 'grilling',
-    model: 'gpt-5-codex',
+    },
     askedPermissionMode: 'bypassPermissions'
   })
-  return run.id
+  await core.recordRunEvent({
+    sessionId,
+    runId: opened.run.id,
+    status: 'starting',
+    kind: 'lifecycle',
+    summary: 'Starting the Harness'
+  })
+  await core.recordRunEvent({
+    sessionId,
+    runId: opened.run.id,
+    status: 'running',
+    kind: 'lifecycle',
+    summary: 'Harness process running'
+  })
+  return opened.run.id
 }
+
+const finishRun = (input: Parameters<typeof finishRunLifecycle>[1], changes?: CheckoutChange[]) =>
+  finishRunLifecycle(core, input, changes)
 
 async function stream(runId: string, events: HarnessEvent[]): Promise<void> {
   for (const event of events) {
@@ -219,13 +191,21 @@ describe('durable Queued Submissions', () => {
   })
 
   it('projects FIFO items from replacement entries and survives a Core restart', async () => {
-    await core.enqueueQueuedSubmission(queued('queued-1', 'First queued message'))
-    await core.enqueueQueuedSubmission(queued('queued-2', 'Second queued message'))
-    await core.moveQueuedSubmission({ sessionId, submissionId: 'queued-2', direction: 'earlier' })
-    await core.editQueuedSubmission({
-      sessionId,
-      submissionId: 'queued-2',
-      text: 'Edited second message'
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queued('queued-1', 'First queued message')
+    })
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queued('queued-2', 'Second queued message')
+    })
+    await core.changeQueuedSubmissions({
+      type: 'move',
+      input: { sessionId, submissionId: 'queued-2', direction: 'earlier' }
+    })
+    await core.changeQueuedSubmissions({
+      type: 'edit',
+      input: { sessionId, submissionId: 'queued-2', text: 'Edited second message' }
     })
 
     core = makeCore()
@@ -252,12 +232,18 @@ describe('durable Queued Submissions', () => {
   })
 
   it('atomically claims the FIFO item and admits its user message once', async () => {
-    await core.enqueueQueuedSubmission(queued('queued-1', 'First queued message'))
-    await core.enqueueQueuedSubmission(queued('queued-2', 'Second queued message'))
-    await core.setConversationQueuePaused({ sessionId, paused: false })
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queued('queued-1', 'First queued message')
+    })
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queued('queued-2', 'Second queued message')
+    })
+    await core.changeQueuedSubmissions({ type: 'resume', sessionId })
 
-    const first = await core.claimQueuedSubmission(sessionId)
-    const replay = await core.claimQueuedSubmission(sessionId)
+    const first = (await core.nextQueuedSubmission(sessionId))?.item
+    const replay = (await core.nextQueuedSubmission(sessionId))?.item
     const snapshot = await core.getConversation(sessionId)
 
     expect(first).toMatchObject({ submissionId: 'queued-1', status: 'claimed' })
@@ -276,13 +262,22 @@ describe('durable Queued Submissions', () => {
   })
 
   it('prioritizes Send now atomically without disturbing the other FIFO positions', async () => {
-    await core.enqueueQueuedSubmission(queued('queued-1', 'First queued message'))
-    await core.enqueueQueuedSubmission(queued('queued-2', 'Second queued message'))
-    await core.enqueueQueuedSubmission(queued('queued-3', 'Third queued message'))
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queued('queued-1', 'First queued message')
+    })
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queued('queued-2', 'Second queued message')
+    })
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queued('queued-3', 'Third queued message')
+    })
 
-    const snapshot = await core.prioritizeQueuedSubmission({
-      sessionId,
-      submissionId: 'queued-3'
+    const snapshot = await core.changeQueuedSubmissions({
+      type: 'send-now',
+      input: { sessionId, submissionId: 'queued-3' }
     })
 
     expect(snapshot.queue.items.map((item) => item.submissionId)).toEqual([
@@ -293,22 +288,24 @@ describe('durable Queued Submissions', () => {
   })
 
   it('makes a pre-launch failure editable and claimable again', async () => {
-    await core.enqueueQueuedSubmission(queued('queued-1', 'Original queued message'))
-    await core.setConversationQueuePaused({ sessionId, paused: false })
-    await core.claimQueuedSubmission(sessionId)
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queued('queued-1', 'Original queued message')
+    })
+    await core.changeQueuedSubmissions({ type: 'resume', sessionId })
+    await core.nextQueuedSubmission(sessionId)
     await core.observeQueuedSubmissionLaunch({
       sessionId,
       submissionId: 'queued-1',
       outcome: 'not-started'
     })
-    await core.editQueuedSubmission({
-      sessionId,
-      submissionId: 'queued-1',
-      text: 'Edited after launch failed'
+    await core.changeQueuedSubmissions({
+      type: 'edit',
+      input: { sessionId, submissionId: 'queued-1', text: 'Edited after launch failed' }
     })
-    await core.setConversationQueuePaused({ sessionId, paused: false })
+    await core.changeQueuedSubmissions({ type: 'resume', sessionId })
 
-    const claimed = await core.claimQueuedSubmission(sessionId)
+    const claimed = (await core.nextQueuedSubmission(sessionId))?.item
     const snapshot = await core.getConversation(sessionId)
     expect(claimed).toMatchObject({ text: 'Edited after launch failed', status: 'claimed' })
     expect(
@@ -345,107 +342,26 @@ describe('durable Queued Submissions', () => {
     })
   })
 
-  it('reconciles an unchanged durable attempt before Main can contact a Harness again', async () => {
+  it('lets a restarted paused queue edit and reorder a recovered claim', async () => {
     await core.changeQueuedSubmissions({
       type: 'enqueue',
-      input: queued('queued-1', 'Already contacted')
+      input: queued('queued-1', 'Claimed before crash')
     })
-    await core.changeQueuedSubmissions({ type: 'resume', sessionId })
-    const plan = await core.nextQueuedSubmission(sessionId)
-    if (!plan) throw new Error('Queued launch plan missing')
-    await core.acceptRun({
-      submissionId: plan.runSubmissionId,
-      sessionId,
-      prompt: plan.prompt,
-      configuration: {
-        harness: 'codex',
-        executable: '/usr/local/bin/codex',
-        executableHash: 'a'.repeat(64),
-        harnessVersion: 'codex-cli 0.146.0',
-        model: 'gpt-5-codex',
-        effort: 'medium',
-        skill: {
-          name: 'grilling',
-          path: '/home/.agents/skills/grilling',
-          hash: 'b'.repeat(64)
-        },
-        environment: {},
-        checkout: projectRoot,
-        permissionMode: 'ask'
-      }
-    })
-
-    await expect(core.nextQueuedSubmission(sessionId)).resolves.toBeNull()
-    expect((await core.getConversation(sessionId)).queue.outcome).toEqual({
-      type: 'launch-reconciled',
-      submissionId: 'queued-1'
-    })
-  })
-
-  it('edits a recoverable claim into one new attempt without duplicating its user message', async () => {
     await core.changeQueuedSubmissions({
       type: 'enqueue',
-      input: queued('queued-1', 'Original queued message')
+      input: queued('queued-2', 'Still pending')
     })
     await core.changeQueuedSubmissions({ type: 'resume', sessionId })
-    const original = await core.nextQueuedSubmission(sessionId)
-    if (!original) throw new Error('Original launch plan missing')
-    await core.acceptRun({
-      submissionId: original.runSubmissionId,
-      sessionId,
-      prompt: original.prompt,
-      configuration: {
-        harness: 'codex',
-        executable: '/usr/local/bin/codex',
-        executableHash: 'a'.repeat(64),
-        harnessVersion: 'codex-cli 0.146.0',
-        model: 'gpt-5-codex',
-        effort: 'medium',
-        skill: {
-          name: 'grilling',
-          path: '/home/.agents/skills/grilling',
-          hash: 'b'.repeat(64)
-        },
-        environment: {},
-        checkout: projectRoot,
-        permissionMode: 'ask'
-      }
-    })
+    await core.nextQueuedSubmission(sessionId)
 
     core = makeCore()
     await core.changeQueuedSubmissions({
       type: 'edit',
-      input: { sessionId, submissionId: 'queued-1', text: 'Edited after recovery' }
+      input: { sessionId, submissionId: 'queued-1', text: 'Edited after restart' }
     })
-    await core.changeQueuedSubmissions({ type: 'resume', sessionId })
-    const retry = await core.nextQueuedSubmission(sessionId)
-    const snapshot = await core.getConversation(sessionId)
-
-    expect(retry).toMatchObject({
-      runSubmissionId: 'queued-1:attempt-2',
-      prompt: 'Edited after recovery'
-    })
-    expect(
-      messages(snapshot.entries).filter((entry) => entry.submissionId === 'queued-1')
-    ).toMatchObject([{ text: 'Edited after recovery' }])
-  })
-
-  it('lets a restarted paused queue edit and reorder a recovered claim', async () => {
-    await core.enqueueQueuedSubmission(queued('queued-1', 'Claimed before crash'))
-    await core.enqueueQueuedSubmission(queued('queued-2', 'Still pending'))
-    await core.setConversationQueuePaused({ sessionId, paused: false })
-    await core.claimQueuedSubmission(sessionId)
-
-    core = makeCore()
-    await core.editQueuedSubmission({
-      sessionId,
-      submissionId: 'queued-1',
-      text: 'Edited after restart'
-    })
-    const moved = await core.moveQueuedSubmission({
-      sessionId,
-      submissionId: 'queued-1',
-      direction: 'later'
+    const moved = await core.changeQueuedSubmissions({
+      type: 'move',
+      input: { sessionId, submissionId: 'queued-1', direction: 'later' }
     })
 
     expect(moved.queue.paused).toBe(true)
@@ -458,15 +374,27 @@ describe('durable Queued Submissions', () => {
   it('keeps terminal replacements and enforces the fifty-item limit', async () => {
     await Promise.all(
       Array.from({ length: 50 }, (_, index) =>
-        core.enqueueQueuedSubmission(queued(`queued-${String(index)}`, `Message ${String(index)}`))
+        core.changeQueuedSubmissions({
+          type: 'enqueue',
+          input: queued(`queued-${String(index)}`, `Message ${String(index)}`)
+        })
       )
     )
     await expect(
-      core.enqueueQueuedSubmission(queued('queued-overflow', 'One too many'))
+      core.changeQueuedSubmissions({
+        type: 'enqueue',
+        input: queued('queued-overflow', 'One too many')
+      })
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
 
-    await core.cancelQueuedSubmission({ sessionId, submissionId: 'queued-0' })
-    await core.enqueueQueuedSubmission(queued('queued-replacement', 'Replacement'))
+    await core.changeQueuedSubmissions({
+      type: 'cancel',
+      input: { sessionId, submissionId: 'queued-0' }
+    })
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: queued('queued-replacement', 'Replacement')
+    })
     const snapshot = await core.getConversation(sessionId)
     expect(snapshot.queue.items.find((item) => item.submissionId === 'queued-0')).toMatchObject({
       status: 'cancelled'
@@ -501,7 +429,7 @@ describe('streaming a Run into the Conversation', () => {
       { type: 'assistant-message', id: 'item_0', text: 'Who ', complete: false },
       { type: 'assistant-message', id: 'item_0', text: 'Who is this for?', complete: true }
     ])
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'completed',
@@ -522,7 +450,7 @@ describe('streaming a Run into the Conversation', () => {
     await stream(runId, [
       { type: 'assistant-message', id: 'item_0', text: 'Who is this f', complete: false }
     ])
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'stopped',
@@ -548,7 +476,7 @@ describe('streaming a Run into the Conversation', () => {
         options: [{ id: 'option-1', label: 'Solo freelancers', value: 'Solo freelancers.' }]
       }
     ])
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'completed',
@@ -571,7 +499,7 @@ describe('streaming a Run into the Conversation', () => {
         complete: true
       }
     ])
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'completed',
@@ -590,7 +518,7 @@ describe('streaming a Run into the Conversation', () => {
       { type: 'tool', name: 'app.read_file', summary: 'Read file source.ts' },
       { type: 'assistant-message', id: 'item_0', text: 'Who is this for?', complete: true }
     ])
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'completed',
@@ -611,7 +539,7 @@ describe('streaming a Run into the Conversation', () => {
       { type: 'assistant-message', id: 'item_0', text: 'Let me read the notes.', complete: true },
       { type: 'assistant-message', id: 'item_2', text: 'Who is this for?', complete: true }
     ])
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'completed',
@@ -638,7 +566,7 @@ describe('streaming a Run into the Conversation', () => {
         options: [{ id: 'option-1', label: 'Solo freelancers', value: 'Solo freelancers.' }]
       }
     ])
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'completed',
@@ -666,7 +594,7 @@ describe('streaming a Run into the Conversation', () => {
         }
       }
     ])
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId: first,
       outcome: 'completed',
@@ -741,7 +669,7 @@ describe('ingesting raw Harness output', () => {
       seen.push(...stream.events)
     }
     expect(seen.at(-1)).toEqual({ type: 'completed' })
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'completed',
@@ -765,7 +693,7 @@ describe('ingesting raw Harness output', () => {
       harness: 'codex',
       chunk: '{"type":"some.future.event"}\n{"type":"another.one"}\n'
     })
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'completed',
@@ -786,7 +714,7 @@ describe('ingesting raw Harness output', () => {
       chunk:
         '{"method":"item/completed","params":{"item":{"id":"item_0","type":"agentMessage","text":"Who is this for?"}}}\n'
     })
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'completed',
@@ -806,7 +734,7 @@ describe('ingesting raw Harness output', () => {
       harness: 'codex',
       chunk: '{"type":"some.future.event"}\n'
     })
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'failed',
@@ -826,7 +754,7 @@ describe('ingesting raw Harness output', () => {
       harness: 'codex',
       chunk: '{"type":"some.future.event"}\n'
     })
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'stopped',
@@ -839,7 +767,7 @@ describe('ingesting raw Harness output', () => {
   })
 
   it('gives Claude the same durable Conversation behavior as Codex', async () => {
-    const run = await core.acceptRun({
+    const opened = await core.openRunLifecycle({
       submissionId: 'submission-1',
       sessionId,
       prompt: 'Develop this',
@@ -856,15 +784,21 @@ describe('ingesting raw Harness output', () => {
         permissionMode: 'ask'
       }
     })
-    await core.beginConversationRun({
+    await core.recordRunEvent({
       sessionId,
-      runId: run.id,
-      submissionId: 'submission-1',
-      harness: 'claude',
-      skill: 'wayfinder',
-      model: 'claude-sonnet-4-5'
+      runId: opened.run.id,
+      status: 'starting',
+      kind: 'lifecycle',
+      summary: 'Starting the Harness'
     })
-    const runId = run.id
+    await core.recordRunEvent({
+      sessionId,
+      runId: opened.run.id,
+      status: 'running',
+      kind: 'lifecycle',
+      summary: 'Harness process running'
+    })
+    const runId = opened.run.id
     const seen = await core.ingestHarnessOutput({
       sessionId,
       runId,
@@ -873,7 +807,7 @@ describe('ingesting raw Harness output', () => {
         '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-sonnet-4-5"}\n{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"What decision is blocking this Session?"}],"usage":{"input_tokens":10,"output_tokens":7}}}\n{"type":"result","subtype":"success","is_error":false,"result":"What decision is blocking this Session?","usage":{"input_tokens":10,"output_tokens":7}}\n'
     })
     expect(seen.events.at(-1)).toEqual({ type: 'completed' })
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'completed',
@@ -901,7 +835,7 @@ describe('recovering from a Run that ended badly', () => {
   it('offers a safe resend after authentication loss', async () => {
     const runId = await startRun('Grill me', 'submission-1')
     await stream(runId, [{ type: 'assistant-message', id: 'item_0', text: 'Who', complete: false }])
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'failed',
@@ -919,7 +853,7 @@ describe('recovering from a Run that ended badly', () => {
   it('does not offer a resend when the context window is exhausted', async () => {
     const runId = await startRun('Grill me', 'submission-1')
     await stream(runId, [{ type: 'assistant-message', id: 'item_0', text: 'Who', complete: false }])
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'failed',
@@ -934,7 +868,7 @@ describe('recovering from a Run that ended badly', () => {
 
   it('calls a failure with no Harness output an uncertain submission', async () => {
     const runId = await startRun('Grill me', 'submission-1')
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'failed',
@@ -949,7 +883,7 @@ describe('recovering from a Run that ended badly', () => {
 
   it('clears the previous recovery once the next Run starts', async () => {
     const first = await startRun('Grill me', 'submission-1')
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId: first,
       outcome: 'failed',
@@ -1067,7 +1001,7 @@ describe('what this Session changed', () => {
         hunks: [hunk(['+Now with greetings'])]
       }
     })
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId: first,
       outcome: 'completed',
@@ -1136,10 +1070,15 @@ describe('what this Session changed', () => {
       }
     })
     // What a shell command did: the Harness said nothing about either file.
-    await core.recordCheckoutChanges({
-      sessionId,
-      runId,
-      files: [
+    await finishRun(
+      {
+        sessionId,
+        runId,
+        outcome: 'completed',
+        category: null,
+        summary: 'Harness process completed'
+      },
+      [
         {
           path: 'reported.ts',
           changeKind: 'changed',
@@ -1151,7 +1090,7 @@ describe('what this Session changed', () => {
           diff: 'diff --git a/codemodded.ts b/codemodded.ts\n@@ -0,0 +1,2 @@\n+const b = 2\n+const c = 3'
         }
       ]
-    })
+    )
 
     const changed = (await makeCore().getConversation(sessionId)).changedFiles
     expect(changed).toMatchObject([
@@ -1173,8 +1112,15 @@ describe('what this Session changed', () => {
         diff: 'diff --git a/quiet.ts b/quiet.ts\n@@ -1 +1 @@\n-const a = 0\n+const a = 1'
       }
     ]
-    await core.recordCheckoutChanges({ sessionId, runId, files })
-    await core.recordCheckoutChanges({ sessionId, runId, files })
+    const completion = {
+      sessionId,
+      runId,
+      outcome: 'completed' as const,
+      category: null,
+      summary: 'Harness process completed'
+    }
+    await finishRun(completion, files)
+    await finishRun(completion, files)
 
     const changed = (await makeCore().getConversation(sessionId)).changedFiles
     expect(changed).toMatchObject([{ path: 'quiet.ts', changes: 1, added: 1, removed: 1 }])
@@ -1182,10 +1128,15 @@ describe('what this Session changed', () => {
 
   it('tells a change with no text apart from one whose diff was not kept', async () => {
     const runId = await startRun('Add the logo', 'submission-binary')
-    await core.recordCheckoutChanges({
-      sessionId,
-      runId,
-      files: [
+    await finishRun(
+      {
+        sessionId,
+        runId,
+        outcome: 'completed',
+        category: null,
+        summary: 'Harness process completed'
+      },
+      [
         // A binary file: git named it and its patch says nothing about lines.
         {
           path: 'logo.png',
@@ -1195,7 +1146,7 @@ describe('what this Session changed', () => {
         // A change git named and could not hand back a patch for.
         { path: 'huge.ts', changeKind: 'changed', diff: '' }
       ]
-    })
+    )
 
     const changed = (await makeCore().getConversation(sessionId)).changedFiles
     expect(changed).toMatchObject([
@@ -1223,17 +1174,22 @@ describe('what this Session changed', () => {
 
   it('says a file is gone rather than showing it as changed', async () => {
     const runId = await startRun('Remove the old one', 'submission-delete')
-    await core.recordCheckoutChanges({
-      sessionId,
-      runId,
-      files: [
+    await finishRun(
+      {
+        sessionId,
+        runId,
+        outcome: 'completed',
+        category: null,
+        summary: 'Harness process completed'
+      },
+      [
         {
           path: 'doomed.ts',
           changeKind: 'deleted',
           diff: 'diff --git a/doomed.ts b/doomed.ts\n@@ -1 +0,0 @@\n-const gone = true'
         }
       ]
-    })
+    )
 
     const [file] = (await makeCore().getConversation(sessionId)).changedFiles
     expect(file).toMatchObject({ path: 'doomed.ts', changeKind: 'deleted', removed: 1, added: 0 })
@@ -1665,7 +1621,7 @@ describe('an approval from request to answer', () => {
     const runId = await startRun('Run the tests', 'submission-abandoned')
     await stream(runId, [request])
 
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId,
       runId,
       outcome: 'stopped',

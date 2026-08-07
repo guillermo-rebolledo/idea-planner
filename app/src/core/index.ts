@@ -102,8 +102,6 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.renameSession(command.input.sessionId, command.input.title)
     case 'session/delete':
       return core.deleteSession(command.sessionId)
-    case 'run/accept':
-      return core.acceptRun(command.input)
     case 'run/lifecycle-open':
       return core.openRunLifecycle(command.input)
     case 'run/lifecycle-complete':
@@ -122,20 +120,6 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.nextQueuedSubmission(command.sessionId)
     case 'conversation/queue-launch-observed':
       return core.observeQueuedSubmissionLaunch(command.input)
-    case 'conversation/begin':
-      return core.beginConversationRun({
-        sessionId: command.sessionId,
-        runId: command.runId,
-        submissionId: command.submissionId,
-        harness: command.harness,
-        skill: command.skill,
-        model: command.model,
-        restorationNote: command.restorationNote,
-        // Without this the Conversation has nothing to compare the Harness's
-        // reported mode against, so a Run in a mode nobody chose reads as one
-        // that ran exactly as asked.
-        askedPermissionMode: command.askedPermissionMode
-      })
     case 'harness/open':
       return core.openHarness({
         runId: command.runId,
@@ -164,12 +148,8 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
         runId: command.runId,
         event: command.event
       })
-    case 'conversation/checkout-changes':
-      return core.recordCheckoutChanges(command.input)
     case 'conversation/unfinished':
       return core.listUnfinishedRuns()
-    case 'conversation/finalize':
-      return core.finalizeConversationRun(command.input)
   }
 }
 

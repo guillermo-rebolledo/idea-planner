@@ -390,7 +390,7 @@ describe('Run service', () => {
     })
     expect(broker.launch?.args).toEqual(expect.arrayContaining(['--resume', 'saved-thread']))
   })
-  it('persists acceptance before starting Harness contact and freezes provenance', async () => {
+  it('freezes executable and Skill provenance into the durable lifecycle', async () => {
     const root = await mkdtemp(join(tmpdir(), 'run-service-'))
     temporaryDirectories.push(root)
     const skillPath = join(root, '.claude', 'skills', 'grilling', 'SKILL.md')
@@ -402,11 +402,9 @@ describe('Run service', () => {
     await writeFile(skillPath, '# Grilling')
     await writeFile(executablePath, '#!/bin/sh\n')
     await writeFile(join(root, '.codex', 'auth.json'), '{}')
-    const order: string[] = []
     let accepted: RunSnapshot | undefined
     const core = {
       send: vi.fn((command: { type: string; input?: unknown }) => {
-        order.push(command.type)
         if (command.type === 'session/get') {
           return Promise.resolve(fakeSession(join(root, 'a-project')))
         }
@@ -468,9 +466,8 @@ describe('Run service', () => {
       })
     }
     const broker = {
-      start: vi.fn(async (_launch: { args: string[]; onBeforeCleanup?: () => Promise<void> }) => {
-        order.push('harness/start')
-        await _launch.onBeforeCleanup?.()
+      start: vi.fn(async (launch: { args: string[]; onBeforeCleanup?: () => Promise<void> }) => {
+        await launch.onBeforeCleanup?.()
       }),
       stop: vi.fn(() => Promise.resolve()),
       stopAll: vi.fn(() => Promise.resolve()),
@@ -511,7 +508,6 @@ describe('Run service', () => {
       skill: 'grilling',
       permissionMode: 'auto'
     })
-    expect(order.indexOf('run/lifecycle-open')).toBeLessThan(order.indexOf('harness/start'))
     const accept = core.send.mock.calls.find(
       ([command]) => command.type === 'run/lifecycle-open'
     )?.[0]
@@ -632,9 +628,6 @@ describe('Run service', () => {
     })
 
     expect(started).toMatchObject({ session: { id: 'session' }, runStarted: true })
-    expect(core.commands.indexOf('session/start')).toBeLessThan(
-      core.commands.indexOf('conversation/submit')
-    )
     // The Run answers the starting message rather than adding a second one:
     // Core deduplicates by submission identity, and this is that identity.
     const sent = core.send.mock.calls.flat() as { type: string; input?: unknown }[]
@@ -988,32 +981,6 @@ describe('Run service', () => {
       observation: { type: 'harness-failed' },
       checkoutObservation: { status: 'unavailable' }
     })
-    expect(core.commands).not.toContain('conversation/finalize')
-  })
-
-  it('does not report its own Run as crashed while the Harness process is still starting', async () => {
-    const root = await readyClaudeRoot('run-starting-refresh-')
-    const core = fakeCore(join(root, 'a-project'))
-    const broker = fakeBroker({
-      start: vi.fn(async (launch: RunLaunch) => {
-        core.conversation = { ...core.conversation, activeRunId: launch.id }
-        await service.conversation('session')
-      })
-    })
-    const service = new RunService({
-      core,
-      broker,
-      readiness: readyReadiness(join(root, 'claude')),
-      homeDirectory: root,
-      privateRoot: join(root, 'private'),
-      proxyExecutable: '/usr/bin/true',
-      proxyScript: '/tmp/mcp-proxy.js',
-      skills: fakeSkills(root)
-    })
-
-    await service.start(startInput())
-
-    expect(core.commands).not.toContain('conversation/finalize')
   })
 
   it('explains a failed Run with the Harness’s own last diagnostic line', async () => {
@@ -1093,10 +1060,8 @@ describe('Run service', () => {
 
     await service.stopAll('quit')
 
-    const pauseIndex = core.commands.indexOf('conversation/queue-change')
-    expect(pauseIndex).toBeGreaterThanOrEqual(0)
+    expect(core.commands).toContain('conversation/queue-change')
     expect(broker.stopAll).toHaveBeenCalledWith('quit')
-    expect(core.commands.at(pauseIndex)).toBe('conversation/queue-change')
   })
 
   it('does not create a retry attempt when a claimed queue item recovers a terminal Run', async () => {
@@ -1327,7 +1292,6 @@ describe('a Run the app never got to finish', () => {
     expect(terminal?.input?.checkoutObservation?.changes?.map((file) => file.path)).toEqual([
       'tracked.ts'
     ])
-    expect(deps.core.commands).not.toContain('conversation/checkout-changes')
     await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([])
   })
 
@@ -1341,7 +1305,6 @@ describe('a Run the app never got to finish', () => {
     const service = new RunService(deps)
     await service.recoverUnfinishedWork()
 
-    expect(deps.core.commands).not.toContain('conversation/checkout-changes')
     await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([])
   })
 

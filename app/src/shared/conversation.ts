@@ -7,11 +7,11 @@ import { permissionModeSchema, runActivityKindSchema, skillNameSchema } from './
  * The Conversation is the Session's one permanent, user-visible history, and
  * the normalized harness event contract is the only thing allowed to change it.
  *
- * Every harness Adapter translates its Harness's protocol into these events,
- * so Core, Main, and the Renderer never see raw Harness frames. Conversation
- * content holds user and assistant messages plus visible Run boundaries;
- * reasoning summaries, tool activity, and diagnostics stay in the separate
- * sanitized activity stream.
+ * Each Core protocol Adapter terminates its Harness's raw frames and emits
+ * these events; only normalized events leave that boundary for Main and the
+ * Renderer. Conversation content holds user and assistant messages plus visible
+ * Run boundaries; reasoning summaries, tool activity, and diagnostics stay in
+ * the separate sanitized activity stream.
  */
 
 export const suggestedResponseSchema = z.object({
@@ -570,6 +570,7 @@ export const checkoutChangeSchema = z.object({
   changeKind: changeKindSchema,
   diff: z.string()
 })
+export type CheckoutChange = z.infer<typeof checkoutChangeSchema>
 
 /** A Run its Conversation still has open, which after a restart means nobody closed it. */
 export const unfinishedRunSchema = z.object({
@@ -577,13 +578,6 @@ export const unfinishedRunSchema = z.object({
   runId: z.string().min(1)
 })
 export type UnfinishedRun = z.infer<typeof unfinishedRunSchema>
-
-export const recordCheckoutChangesInputSchema = z.object({
-  sessionId: z.string().min(1),
-  runId: z.string().min(1),
-  files: z.array(checkoutChangeSchema).max(500)
-})
-export type RecordCheckoutChangesInput = z.infer<typeof recordCheckoutChangesInputSchema>
 
 export const conversationSnapshotSchema = z.object({
   sessionId: z.string().min(1),
@@ -738,23 +732,6 @@ export type DevelopSessionInput = z.infer<typeof developSessionInputSchema>
 export function startingSubmissionId(sessionId: string): string {
   return `start-${sessionId}`
 }
-
-export const finalizeConversationRunInputSchema = z.object({
-  sessionId: z.string().min(1),
-  runId: z.string().min(1),
-  outcome: z.enum(['completed', 'stopped', 'failed', 'policy-violation', 'supervision-failed']),
-  category: harnessFailureCategorySchema.nullable(),
-  summary: z.string().min(1).max(500),
-  /** Present for the deep lifecycle, where queue disposition is part of the ending. */
-  queuePaused: z.boolean().optional(),
-  transitionFingerprint: z.string().length(64).optional(),
-  checkoutObservation: z.enum(['observed', 'unavailable']).optional(),
-  queueDisposition: z.enum(['advance', 'pause']).optional(),
-  terminalActivityKind: runActivityKindSchema.optional(),
-  /** Checkout facts committed under the same transition identity as the ending. */
-  checkoutChanges: z.array(checkoutChangeSchema).max(500).optional()
-})
-export type FinalizeConversationRunInput = z.infer<typeof finalizeConversationRunInputSchema>
 
 /** App-owned Run boundaries that no Harness Adapter can report for itself. */
 export const conversationLifecycleEventSchema = z.object({

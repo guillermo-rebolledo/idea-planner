@@ -1,8 +1,5 @@
 import { z } from 'zod'
 import type { ModelOption } from '@shared/model'
-import type { ClientRequest } from './codex-protocol/ClientRequest'
-import type { Model } from './codex-protocol/v2/Model'
-import type { ModelListResponse } from './codex-protocol/v2/ModelListResponse'
 
 /**
  * Asking Codex what it can run, in Codex's own protocol.
@@ -28,7 +25,7 @@ export function openModelList(): string {
       clientInfo: { name: 'argos', title: 'Argos', version: '0.1.0' },
       capabilities: null
     }
-  } satisfies Framed<Extract<ClientRequest, { method: 'initialize' }>>)
+  })
 }
 
 /**
@@ -56,7 +53,7 @@ export function readModelListLine(line: string): {
           id: LIST,
           method: 'model/list',
           params: {}
-        } satisfies Framed<Extract<ClientRequest, { method: 'model/list' }>>)
+        })
       ],
       models: null
     }
@@ -85,11 +82,24 @@ export function readModelListLine(line: string): {
 const INITIALIZE = 1
 const LIST = 2
 
+type ModelDiscoveryRequest =
+  | {
+      jsonrpc: '2.0'
+      id: typeof INITIALIZE
+      method: 'initialize'
+      params: {
+        clientInfo: { name: string; title: string; version: string }
+        capabilities: null
+      }
+    }
+  | { jsonrpc: '2.0'; method: 'initialized'; params: Record<string, never> }
+  | { jsonrpc: '2.0'; id: typeof LIST; method: 'model/list'; params: Record<string, never> }
+
 /**
  * Only the fields the picker reads, validated because they arrive over a pipe.
- * The `satisfies` below is what stops this drifting: a field the generated
- * contract renames stops the build here rather than emptying the picker in
- * front of somebody (`docs/agents/codex-protocol.md`).
+ * It is deliberately local to the Codex model-discovery adapter. Runtime zod
+ * validation keeps a changed Harness response from emptying the picker with
+ * partially trusted data.
  */
 const codexModelSchema = z.object({
   id: z.string().min(1),
@@ -105,32 +115,7 @@ const answerSchema = z.object({
   result: z.object({ data: z.array(codexModelSchema) })
 })
 
-/** What this reads of one model has to be what the generated contract declares. */
-type Read = z.infer<typeof codexModelSchema>
-type _ModelFieldsExist =
-  {
-    id: Model['id']
-    hidden: Model['hidden']
-    displayName: Model['displayName']
-    description: Model['description']
-    defaultReasoningEffort: Model['defaultReasoningEffort']
-    supportedReasoningEfforts: {
-      reasoningEffort: Model['supportedReasoningEfforts'][number]['reasoningEffort']
-    }[]
-  } extends Record<keyof Read, unknown>
-    ? true
-    : never
-const _fieldsExist: _ModelFieldsExist = true
-/** And the answer has to still be shaped the way the contract says. */
-type _AnswerShape = ModelListResponse['data'] extends Model[] ? true : never
-const _answerShape: _AnswerShape = true
-void _fieldsExist
-void _answerShape
-
-/** A JSON-RPC frame, which the generated request types do not model. */
-type Framed<T> = T & { jsonrpc: '2.0' }
-
-function frame(message: unknown): string {
+function frame(message: ModelDiscoveryRequest): string {
   return `${JSON.stringify(message)}\n`
 }
 

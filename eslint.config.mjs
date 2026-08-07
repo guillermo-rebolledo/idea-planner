@@ -35,6 +35,18 @@ const noNodeInSandbox = {
     'The sandboxed Renderer and the shared contract must not reach Node or Electron. Go through the Preload surface in @shared/contract.'
 }
 
+const noCoreImplementationOutsideCore = {
+  group: ['@core/*', '**/core/**'],
+  message:
+    'Core implementation modules are private to the Core process. Use the validated shared contract at the process seam.'
+}
+
+const noNodeImplementationAtTransportOrUi = {
+  group: ['@core/*', '@main/*', '**/core/**', '**/main/**'],
+  message:
+    'Core and Main implementations stay behind their process seams. Shared, Preload, and Renderer code may depend only on shared contracts.'
+}
+
 export default tseslint.config(
   {
     ignores: [
@@ -114,6 +126,16 @@ export default tseslint.config(
 
   // Electron, IPC, and Preload adapters stay promise-based under ADR 0001.
   {
+    name: 'app/main-core-boundary',
+    files: ['app/src/main/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        { patterns: [noCoreImplementationOutsideCore] }
+      ]
+    }
+  },
+  {
     name: 'app/effect-boundary',
     files: [
       'app/src/preload/**/*.ts',
@@ -122,7 +144,10 @@ export default tseslint.config(
       'app/src/main/mcp-proxy.ts'
     ],
     rules: {
-      '@typescript-eslint/no-restricted-imports': ['error', { patterns: [noEffectAtTransportOrUi] }]
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        { patterns: [noEffectAtTransportOrUi, noNodeImplementationAtTransportOrUi] }
+      ]
     }
   },
 
@@ -134,7 +159,9 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
-        { patterns: [noEffectAtTransportOrUi, noNodeInSandbox] }
+        {
+          patterns: [noEffectAtTransportOrUi, noNodeInSandbox, noNodeImplementationAtTransportOrUi]
+        }
       ]
     }
   },

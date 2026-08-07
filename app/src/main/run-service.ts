@@ -186,7 +186,11 @@ interface CheckoutBaseline {
 /** What one outstanding request could be turned into, if the person asks. */
 type RequestProposal = AdapterRequestProposal
 
-/** Coordinates durable Core acceptance with Main's native process authority. */
+/**
+ * Main's Harness-independent Run owner. It observes native facts, delegates
+ * every Harness-specific fact to the selected Adapter, and sends one opening
+ * or terminal lifecycle request to Core; it never sequences Core persistence.
+ */
 export class RunService {
   private readonly queueCoordinator: QueueCoordinator
   private readonly toolHosts = new Map<string, ToolHost>()
@@ -226,7 +230,11 @@ export class RunService {
 
   constructor(private readonly deps: RunServiceDeps) {
     this.queueCoordinator = new QueueCoordinator({
-      core: deps.core,
+      queue: {
+        next: (sessionId) => deps.core.send({ type: 'conversation/queue-next', sessionId }),
+        observeLaunch: (input) =>
+          deps.core.send({ type: 'conversation/queue-launch-observed', input })
+      },
       start: (plan) => this.startQueued(plan),
       runEffect: (effect) => this.runEffect(effect)
     })

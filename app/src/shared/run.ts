@@ -97,7 +97,7 @@ export const runConfigurationSchema = z.object({
 })
 export type RunConfiguration = z.infer<typeof runConfigurationSchema>
 
-export const acceptRunInputSchema = z.object({
+export const runOpeningInputSchema = z.object({
   submissionId: z
     .string()
     .min(1)
@@ -107,7 +107,7 @@ export const acceptRunInputSchema = z.object({
   prompt: z.string().min(1).max(100_000),
   configuration: runConfigurationSchema
 })
-export type AcceptRunInput = z.infer<typeof acceptRunInputSchema>
+export type RunOpeningInput = z.infer<typeof runOpeningInputSchema>
 
 export const runSnapshotSchema = z.object({
   id: z.string().min(1),
@@ -129,7 +129,7 @@ export const runSnapshotSchema = z.object({
 })
 export type RunSnapshot = z.infer<typeof runSnapshotSchema>
 
-export const startRunInputSchema = acceptRunInputSchema
+export const startRunInputSchema = runOpeningInputSchema
   .pick({
     submissionId: true,
     sessionId: true,

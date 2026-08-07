@@ -64,7 +64,7 @@ void RULE_SHAPES_COVER_EVERY_HARNESS
  * a line of execpolicy Starlark.
  */
 export function ruleText(rule: ProposedRule): string {
-  if (rule.harness === 'claude') return `${rule.toolName}(${rule.content})`
+  if ('toolName' in rule) return `${rule.toolName}(${rule.content})`
   const pattern = rule.pattern.map((word) => JSON.stringify(word)).join(', ')
   return `prefix_rule(pattern = [${pattern}], decision = "allow")`
 }

@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -133,8 +132,10 @@ describe('durable Run lifecycle', () => {
       }
     }
 
-    const completed = await core.completeRunLifecycle(input)
-    const duplicate = await core.completeRunLifecycle(input)
+    const [completed, duplicate] = await Promise.all([
+      core.completeRunLifecycle(input),
+      core.completeRunLifecycle(input)
+    ])
 
     expect(duplicate).toEqual(completed)
     expect(completed.run.status).toBe('completed')
@@ -232,103 +233,4 @@ describe('durable Run lifecycle', () => {
       ).toMatchObject({ checkoutObservation: 'unavailable', terminalOutcome: status })
     }
   )
-
-  it('repairs every derived terminal outcome from its canonical boundary after restart', async () => {
-    const session = await core.startSession({ projectRoot, message: 'Start here' })
-    await core.changeQueuedSubmissions({
-      type: 'enqueue',
-      input: {
-        sessionId: session.id,
-        submissionId: 'submission-queued',
-        text: 'Continue with the next task',
-        source: 'composer',
-        harness: 'codex',
-        model: 'gpt-5',
-        effort: 'high',
-        permissionMode: 'ask',
-        reviewAttachments: []
-      }
-    })
-    await core.changeQueuedSubmissions({ type: 'resume', sessionId: session.id })
-    const opened = await core.openRunLifecycle(opening(session.id))
-    await core.recordRunEvent({
-      sessionId: session.id,
-      runId: opened.run.id,
-      status: 'starting',
-      kind: 'lifecycle',
-      summary: 'Starting the Harness'
-    })
-    await core.recordRunEvent({
-      sessionId: session.id,
-      runId: opened.run.id,
-      status: 'running',
-      kind: 'lifecycle',
-      summary: 'Harness process running'
-    })
-    await core.finalizeConversationRun({
-      sessionId: session.id,
-      runId: opened.run.id,
-      outcome: 'policy-violation',
-      category: null,
-      summary: 'Run stopped by policy',
-      transitionFingerprint: 'f'.repeat(64),
-      checkoutObservation: 'unavailable',
-      queueDisposition: 'pause',
-      terminalActivityKind: 'blocked'
-    })
-
-    expect((await core.listRuns(session.id))[0]?.status).toBe('running')
-    await expect(core.listUnfinishedRuns()).resolves.toEqual([])
-    const repaired = (await core.listRuns(session.id))[0]
-    expect(repaired?.status).toBe('policy-violation')
-    expect(repaired?.activity.some((event) => event.kind === 'blocked')).toBe(true)
-    expect(repaired?.activity.at(-1)?.summary).toBe('Run stopped by policy')
-    expect((await core.getConversation(session.id)).queue.paused).toBe(true)
-  })
-
-  it('returns the original durable queue decision when completion repairs its Run projection', async () => {
-    const session = await core.startSession({ projectRoot, message: 'Start here' })
-    const opened = await core.openRunLifecycle(opening(session.id))
-    await core.recordRunEvent({
-      sessionId: session.id,
-      runId: opened.run.id,
-      status: 'starting',
-      kind: 'lifecycle',
-      summary: 'Starting the Harness'
-    })
-    await core.recordRunEvent({
-      sessionId: session.id,
-      runId: opened.run.id,
-      status: 'running',
-      kind: 'lifecycle',
-      summary: 'Harness process running'
-    })
-    const input = {
-      sessionId: session.id,
-      runId: opened.run.id,
-      observation: {
-        type: 'harness-completed' as const,
-        kind: 'lifecycle' as const,
-        summary: 'Harness completed the turn'
-      },
-      checkoutObservation: { status: 'unavailable' as const }
-    }
-    const fingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex')
-    await core.finalizeConversationRun({
-      sessionId: session.id,
-      runId: opened.run.id,
-      outcome: 'completed',
-      category: null,
-      summary: input.observation.summary,
-      transitionFingerprint: fingerprint,
-      checkoutObservation: 'unavailable',
-      queueDisposition: 'advance'
-    })
-    await core.changeQueuedSubmissions({ type: 'pause', sessionId: session.id })
-
-    const repaired = await core.completeRunLifecycle(input)
-
-    expect(repaired.queueDisposition).toBe('advance')
-    expect(repaired.run.status).toBe('completed')
-  })
 })

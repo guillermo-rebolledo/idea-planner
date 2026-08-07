@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { MailboxCoreQuery, MailboxProject, MailboxSnapshot } from '@shared/contract'
 import { createCore, type Core } from './core'
+import { finishRunLifecycle } from './run-lifecycle-test-support'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -237,7 +238,7 @@ describe('search', () => {
 
 /** Puts a Session mid-Run, as developing one does. */
 async function beginRun(sessionId: string): Promise<string> {
-  const run = await core.acceptRun({
+  const opened = await core.openRunLifecycle({
     submissionId: `submission-${sessionId}`,
     sessionId,
     prompt: 'Change the greeting',
@@ -254,14 +255,25 @@ async function beginRun(sessionId: string): Promise<string> {
       permissionMode: 'ask'
     }
   })
-  await core.beginConversationRun({
+  await core.recordRunEvent({
     sessionId,
-    runId: run.id,
-    submissionId: `submission-${sessionId}`,
-    harness: 'claude'
+    runId: opened.run.id,
+    status: 'starting',
+    kind: 'lifecycle',
+    summary: 'Starting the Harness'
   })
-  return run.id
+  await core.recordRunEvent({
+    sessionId,
+    runId: opened.run.id,
+    status: 'running',
+    kind: 'lifecycle',
+    summary: 'Harness process running'
+  })
+  return opened.run.id
 }
+
+const finishRun = (input: Parameters<typeof finishRunLifecycle>[1]) =>
+  finishRunLifecycle(core, input)
 
 /** The one row a title names, wherever its Project group is. */
 function row(snapshot: MailboxSnapshot, title: string) {
@@ -295,7 +307,7 @@ it('says what each Session is doing on its row, without moving it', async () => 
     runId: quietRun,
     event: { type: 'assistant-message', id: 'msg_1', text: 'Done.', complete: true }
   })
-  await core.finalizeConversationRun({
+  await finishRun({
     sessionId: quiet.id,
     runId: quietRun,
     outcome: 'completed',
@@ -331,7 +343,7 @@ it('counts an unanswered structured question as waiting, and prose as not', asyn
       options: [{ id: 'option-1', label: 'The first', value: 'The first' }]
     }
   })
-  await core.finalizeConversationRun({
+  await finishRun({
     sessionId: asked.id,
     runId,
     outcome: 'completed',
@@ -471,7 +483,7 @@ describe('what is waiting for me', () => {
       status: 'running'
     })
 
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId: abandoned.id,
       runId,
       outcome: 'failed',
@@ -491,7 +503,7 @@ describe('what is waiting for me', () => {
   it('does not call a Run the person stopped a failure', async () => {
     const stopped = await start('Stopped it myself')
     const runId = await beginRun(stopped.id)
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId: stopped.id,
       runId,
       outcome: 'stopped',
@@ -506,7 +518,7 @@ describe('what is waiting for me', () => {
   it('reports a failed Run as failed on its row', async () => {
     const failed = await start('Ended badly')
     const runId = await beginRun(failed.id)
-    await core.finalizeConversationRun({
+    await finishRun({
       sessionId: failed.id,
       runId,
       outcome: 'failed',

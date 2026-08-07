@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 // Protocol lives with the Adapter, and this is the one module that speaks
 // Codex's model listing. Main owns the process; nothing here reads a frame.
 // The module is pure — no Effect crosses this import (ADR 0001).
-import { openModelList, readModelListLine } from '../core/harness/codex-models'
+import { openModelList, readModelListLine } from './codex-model-discovery-adapter'
 import type { HarnessId } from '@shared/readiness'
 import {
   CLAUDE_DEFAULT_EFFORT,
