@@ -360,40 +360,75 @@ function FleetRail({
           without being reopened — the same bargain the Turn Rail's cards and
           the changed-file previews already make. */}
       {fleet.map((member) => (
-        <HoverCard key={member.dispatchId}>
-          <HoverCardTrigger
-            delay={200}
-            closeDelay={150}
-            render={
-              <button
-                type="button"
-                aria-label={`${member.name} — ${STATUS_TEXT[member.status]}`}
-                onClick={() => {
-                  onExpand(member.dispatchId)
-                }}
-                className="relative grid size-7 place-items-center rounded-md hover:bg-muted"
-              />
-            }
-          >
-            <AgentMark size="md" />
-            <span
-              aria-hidden="true"
-              className={cn(
-                'absolute right-0.5 bottom-0.5 size-1.5 rounded-full ring-2 ring-surface',
-                member.status === 'failed' ? 'bg-destructive' : 'bg-current',
-                STATUS_INK[member.status],
-                member.status === 'working' && 'animate-pulse motion-reduce:animate-none'
-              )}
-            />
-          </HoverCardTrigger>
-          {/* Beside the rail rather than over it, so the card never covers the
-              marks it is a preview of. */}
-          <HoverCardContent side="left" align="start" className="flex flex-col">
-            <SubagentSummary member={member} now={now} />
-          </HoverCardContent>
-        </HoverCard>
+        <RailMark
+          key={member.dispatchId}
+          member={member}
+          now={now}
+          onOpen={() => {
+            onExpand(member.dispatchId)
+          }}
+        />
       ))}
     </aside>
+  )
+}
+
+/**
+ * One subagent on the rail: its mark, its state as a dot, and the preview.
+ *
+ * The card's open state is this component's rather than the primitive's,
+ * because the primitive opens on hover alone. Focus has to open it too, or the
+ * rail says one thing to a pointer and a plainer thing to a keyboard — and
+ * this is the surface whose whole job is answering "what is that one doing?"
+ * without being reopened.
+ */
+function RailMark({
+  member,
+  now,
+  onOpen
+}: {
+  member: FleetMember
+  now: number
+  onOpen: () => void
+}): React.JSX.Element {
+  const [previewing, setPreviewing] = useState(false)
+  return (
+    <HoverCard open={previewing} onOpenChange={setPreviewing}>
+      <HoverCardTrigger
+        delay={200}
+        closeDelay={150}
+        render={
+          <button
+            type="button"
+            aria-label={`${member.name} — ${STATUS_TEXT[member.status]}`}
+            onClick={onOpen}
+            onFocus={() => {
+              setPreviewing(true)
+            }}
+            onBlur={() => {
+              setPreviewing(false)
+            }}
+            className="relative grid size-7 place-items-center rounded-md hover:bg-muted"
+          />
+        }
+      >
+        <AgentMark size="md" />
+        <span
+          aria-hidden="true"
+          className={cn(
+            'absolute right-0.5 bottom-0.5 size-1.5 rounded-full ring-2 ring-surface',
+            member.status === 'failed' ? 'bg-destructive' : 'bg-current',
+            STATUS_INK[member.status],
+            member.status === 'working' && 'animate-pulse motion-reduce:animate-none'
+          )}
+        />
+      </HoverCardTrigger>
+      {/* Beside the rail rather than over it, so the card never covers the
+          marks it is a preview of. */}
+      <HoverCardContent side="left" align="start" className="flex flex-col">
+        <SubagentSummary member={member} now={now} />
+      </HoverCardContent>
+    </HoverCard>
   )
 }
 

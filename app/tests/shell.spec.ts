@@ -1830,6 +1830,14 @@ test('a Run that dispatches a subagent says so, and the dock holds the fleet', a
     await expect(preview).toBeVisible()
     await expect(page.getByText('2 steps')).toBeVisible()
 
+    // The same preview reaches a keyboard: tabbing onto the mark opens it, so
+    // the rail says as much to somebody who never uses a pointer.
+    await page.keyboard.press('Escape')
+    await rail.getByRole('button', { name: 'Expand the Subagents dock' }).focus()
+    await page.keyboard.press('Tab')
+    await expect(mark).toBeFocused()
+    await expect(preview).toBeVisible()
+
     // And it still opens the dock straight onto that subagent.
     await mark.click()
     await expect(dock.getByRole('heading', { name: 'Standards review' })).toBeVisible()
