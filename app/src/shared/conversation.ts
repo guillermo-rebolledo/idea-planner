@@ -773,6 +773,8 @@ export type ConversationEvent = z.infer<typeof conversationEventSchema>
 export const conversationStreamEventSchema = z.object({
   sessionId: z.string().min(1),
   runId: z.string().min(1),
+  /** Explicitly tells independent consumers which durable projection became stale. */
+  invalidation: z.enum(['none', 'mailbox']),
   event: conversationEventSchema
 })
 export type ConversationStreamEvent = z.infer<typeof conversationStreamEventSchema>

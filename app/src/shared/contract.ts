@@ -58,6 +58,7 @@ import {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 15: Conversation pushes carry explicit Mailbox lifecycle invalidation.
  * 14: deep Run lifecycle opening and terminal observations cross the boundary.
  * 13: isolated Checkout bootstrap results and retry/continue cross the boundary.
  * 12: the window can answer Main's active-Run quit warning.
@@ -68,7 +69,7 @@ import {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 14
+export const CONTRACT_VERSION = 15
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */

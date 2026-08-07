@@ -186,8 +186,8 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   // selected Conversation lane and never causes a mailbox-wide query.
   useEffect(() => {
     const refresh = new ConversationMailboxRefresh(() => void refreshMailbox(effectiveQuery))
-    const stop = window.shell.onConversationEvent(({ event }) => {
-      refresh.handle(event)
+    const stop = window.shell.onConversationEvent((streamed) => {
+      refresh.handle(streamed)
     })
     return () => {
       refresh.dispose()
@@ -308,7 +308,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   const conversation = useSelectedConversation(selectedSession?.id ?? null)
   // Session-cumulative and live: the same numbers the title bar wears and the
   // Files panel breaks down, from one read so they cannot disagree.
-  const changes = useSessionChanges(conversation.snapshot)
+  const changes = useSessionChanges(conversation.snapshot, conversation.live)
 
   // What the announcement subscription below needs to know without
   // resubscribing on every render: who is on screen, and what everything is

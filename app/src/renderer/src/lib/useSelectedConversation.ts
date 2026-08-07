@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ConversationSnapshot, RunSnapshot } from '@shared/contract'
 import {
-  ConversationRefresh,
+  SelectedConversationReadModel,
   conversationSelectedFor,
+  type LiveRun,
   type SelectedConversationSnapshot
-} from '@renderer/lib/conversation-refresh'
+} from '@renderer/lib/selected-conversation-read-model'
 
 export type ConversationPhase =
   { state: 'loading' } | { state: 'failed' } | { state: 'ready'; snapshot: ConversationSnapshot }
@@ -13,13 +14,15 @@ export interface SelectedConversation {
   phase: ConversationPhase
   snapshot: ConversationSnapshot | null
   runs: RunSnapshot[]
+  live: LiveRun | null
+  failureSummary: string | null
   refresh: () => Promise<ConversationSnapshot | null>
   adopt: (snapshot: ConversationSnapshot) => void
 }
 
 /** The sole renderer owner of the selected Session's durable Conversation. */
 export function useSelectedConversation(sessionId: string | null): SelectedConversation {
-  const ownerRef = useRef<ConversationRefresh | null>(null)
+  const ownerRef = useRef<SelectedConversationReadModel | null>(null)
   const [selected, setSelected] = useState<SelectedConversationSnapshot | null>(null)
   const [failedSessionId, setFailedSessionId] = useState<string | null>(null)
 
@@ -32,7 +35,7 @@ export function useSelectedConversation(sessionId: string | null): SelectedConve
     }
 
     let isCurrentOwner = true
-    const owner = new ConversationRefresh(sessionId, {
+    const owner = new SelectedConversationReadModel(sessionId, {
       readConversation: () => window.shell.getConversation(sessionId),
       readRuns: () => window.shell.listRuns(sessionId),
       publish: (snapshot) => {
@@ -42,21 +45,22 @@ export function useSelectedConversation(sessionId: string | null): SelectedConve
       },
       fail: () => {
         if (isCurrentOwner) setFailedSessionId(sessionId)
-      }
+      },
+      requestPaint: (callback) => window.requestAnimationFrame(callback),
+      cancelPaint: (handle) => window.cancelAnimationFrame(handle),
+      scheduleRefresh: (callback, delayMs) => window.setTimeout(callback, delayMs),
+      cancelRefresh: (handle) => window.clearTimeout(handle as number)
     })
     ownerRef.current = owner
-    void owner.request()
+    void owner.requestRefresh()
 
-    let eventTimer = 0
     const stop = window.shell.onConversationEvent((streamed) => {
-      if (streamed.sessionId !== sessionId) return
-      window.clearTimeout(eventTimer)
-      eventTimer = window.setTimeout(() => void owner.request(), 200)
+      owner.push(streamed)
     })
     return () => {
       isCurrentOwner = false
-      window.clearTimeout(eventTimer)
       stop()
+      owner.dispose()
       if (ownerRef.current === owner) ownerRef.current = null
     }
   }, [sessionId])
@@ -64,15 +68,8 @@ export function useSelectedConversation(sessionId: string | null): SelectedConve
   // Effects clear the previous owner's state after render. Key it here too so
   // a newly selected Session can never render its predecessor's Conversation.
   const currentSelected = conversationSelectedFor(sessionId, selected)
-  const activeRunId = currentSelected?.conversation.activeRunId ?? null
-  useEffect(() => {
-    if (activeRunId === null) return
-    const timer = window.setInterval(() => void ownerRef.current?.request(), 750)
-    return () => window.clearInterval(timer)
-  }, [activeRunId])
-
   const refresh = useCallback(async (): Promise<ConversationSnapshot | null> => {
-    const selected = await ownerRef.current?.request()
+    const selected = await ownerRef.current?.requestRefresh()
     return selected?.conversation ?? null
   }, [])
 
@@ -82,7 +79,7 @@ export function useSelectedConversation(sessionId: string | null): SelectedConve
     owner.adopt(snapshot)
     // The write result makes the Conversation live immediately. Its sequenced
     // follow-up also refreshes Run history when the active Run identity moved.
-    void owner.request()
+    void owner.requestRefresh()
   }, [])
 
   return {
@@ -94,6 +91,8 @@ export function useSelectedConversation(sessionId: string | null): SelectedConve
           : { state: 'loading' },
     snapshot: currentSelected?.conversation ?? null,
     runs: currentSelected?.runs ?? [],
+    live: currentSelected?.live ?? null,
+    failureSummary: currentSelected?.failureSummary ?? null,
     refresh,
     adopt
   }

@@ -780,6 +780,7 @@ describe('Run service', () => {
       'reasoning',
       'tool'
     ])
+    expect(streamed.map((entry) => entry.invalidation)).toEqual(['mailbox', 'none', 'none', 'none'])
     const activity = (core.send.mock.calls as [{ type: string; input?: unknown }][])
       .filter(([command]) => command.type === 'run/event')
       .map(([command]) => command.input as { kind: string; summary: string })
@@ -829,6 +830,7 @@ describe('Run service', () => {
     await vi.waitFor(() => {
       expect(streamed.at(-1)?.event).toMatchObject({ type: 'failed' })
     })
+    expect(streamed.at(-1)?.invalidation).toBe('mailbox')
     // And it is said only once Core has written it, so a listener that reacts
     // by re-reading finds the ending already durable.
     expect(core.commands).toContain('run/lifecycle-complete')
