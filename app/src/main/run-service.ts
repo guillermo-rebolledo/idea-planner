@@ -26,6 +26,7 @@ import {
   startingSubmissionId,
   unfinishedRunSchema,
   type ConversationSnapshot,
+  type ConversationEvent,
   type ConversationStreamEvent,
   type DevelopSessionInput,
   type HarnessEvent,
@@ -118,6 +119,22 @@ const TERMINAL_RUN_STATUSES = new Set<RunSnapshot['status']>([
   'policy-violation',
   'supervision-failed'
 ])
+
+const MAILBOX_INVALIDATING_EVENT_TYPES: ReadonlySet<ConversationEvent['type']> = new Set([
+  'started',
+  'stopped',
+  'choices',
+  'approval-request',
+  'approval-resolved',
+  'completed',
+  'failed'
+])
+
+function conversationInvalidation(
+  event: ConversationEvent
+): ConversationStreamEvent['invalidation'] {
+  return MAILBOX_INVALIDATING_EVENT_TYPES.has(event.type) ? 'mailbox' : 'none'
+}
 
 class ProjectSkillTrustChanged extends Error {
   constructor() {
@@ -686,6 +703,7 @@ export class RunService {
     this.deps.onConversationEvent?.({
       sessionId: input.sessionId,
       runId: accepted.id,
+      invalidation: 'mailbox',
       event: { type: 'started' }
     })
     if (skill) {
@@ -1011,6 +1029,7 @@ export class RunService {
         this.deps.onConversationEvent?.({
           sessionId: run.sessionId,
           runId: run.id,
+          invalidation: conversationInvalidation(event),
           event
         })
       }
@@ -1092,6 +1111,7 @@ export class RunService {
     this.deps.onConversationEvent?.({
       sessionId: run.sessionId,
       runId: run.id,
+      invalidation: conversationInvalidation(event),
       event
     })
   }
@@ -1138,7 +1158,12 @@ export class RunService {
       runId: run.id,
       event
     })
-    this.deps.onConversationEvent?.({ sessionId: run.sessionId, runId: run.id, event })
+    this.deps.onConversationEvent?.({
+      sessionId: run.sessionId,
+      runId: run.id,
+      invalidation: conversationInvalidation(event),
+      event
+    })
     await this.record(run, 'waiting', 'blocked', `Waiting for you to approve ${event.summary}`)
   }
 
@@ -1202,6 +1227,7 @@ export class RunService {
     this.deps.onConversationEvent?.({
       sessionId: input.sessionId,
       runId: input.runId,
+      invalidation: conversationInvalidation(event),
       event
     })
     // A denial is an answer, not a failure: the agent was told and carries on.
@@ -1320,6 +1346,7 @@ export class RunService {
     this.deps.onConversationEvent?.({
       sessionId: run.sessionId,
       runId: run.id,
+      invalidation: 'mailbox',
       event:
         terminal.run.status === 'completed'
           ? { type: 'completed' }

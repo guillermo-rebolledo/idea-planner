@@ -30,15 +30,12 @@ import {
   type ApprovalDecision,
   type ConversationEntry,
   type ConversationRecovery,
-  type ConversationStreamEvent,
-  type DiffHunk,
   type PermissionMode,
   type QueueOutcome,
   type ReviewAttachment,
   type RunSnapshot,
   type SessionSummary,
-  type SkillCatalog,
-  type SuggestedResponse
+  type SkillCatalog
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@renderer/components/ui/hover-card'
@@ -73,6 +70,7 @@ import {
   skillsMatching,
   useSkillCatalog
 } from '@renderer/components/Skills'
+import type { LiveRun } from '@renderer/lib/selected-conversation-read-model'
 import type { SelectedConversation } from '@renderer/lib/useSelectedConversation'
 import { cn } from '@renderer/lib/utils'
 
@@ -82,63 +80,6 @@ import { cn } from '@renderer/lib/utils'
  * against the durable snapshot, so what is on screen never outlives what was
  * saved. Suggested Responses submit directly; typed answers wait for Send.
  */
-
-/** Assistant text for the Run in flight, ahead of the durable projection. */
-interface LiveRun {
-  runId: string
-  /** One entry per Harness message, in the order the Harness opened them. */
-  messages: { id: string; text: string }[]
-  /** Files changed so far in this Run, shown while it is still working. */
-  changes: { id: string; path: string; hunks: DiffHunk[] }[]
-  /** Commands, by the Harness's id, so a running one becomes a finished one. */
-  commands: { id: string; command: string; output: string; failed: boolean; running: boolean }[]
-  suggestedResponses: SuggestedResponse[]
-}
-
-/** Fold one pushed event into the latest value waiting for the next paint. */
-function applyLiveEvent(current: LiveRun | null, streamed: ConversationStreamEvent): LiveRun {
-  const { event, runId } = streamed
-  const base: LiveRun =
-    current?.runId === runId
-      ? current
-      : { runId, messages: [], changes: [], commands: [], suggestedResponses: [] }
-  if (event.type === 'choices') return { ...base, suggestedResponses: event.options }
-  // A change is already on disk when it arrives, so it is shown on the next
-  // paint rather than waiting for the Run to finish.
-  if (event.type === 'file-change') {
-    return {
-      ...base,
-      changes: [
-        ...base.changes,
-        {
-          id: `${runId}:${base.changes.length + 1}`,
-          path: event.path,
-          hunks: event.hunks
-        }
-      ]
-    }
-  }
-  // A command appears when it starts and is replaced in place when it ends.
-  if (event.type === 'command') {
-    const known = base.commands.some((entry) => entry.id === event.id)
-    return {
-      ...base,
-      commands: known
-        ? base.commands.map((entry) => (entry.id === event.id ? { ...event } : entry))
-        : [...base.commands, { ...event }]
-    }
-  }
-  if (event.type !== 'assistant-message') return base
-  const known = base.messages.some((message) => message.id === event.id)
-  return {
-    ...base,
-    messages: known
-      ? base.messages.map((message) =>
-          message.id === event.id ? { ...message, text: event.text } : message
-        )
-      : [...base.messages, { id: event.id, text: event.text }]
-  }
-}
 
 const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
   authentication:
@@ -245,8 +186,7 @@ export function Conversation({
   onOpenFile: (path: string) => void
 }): React.JSX.Element {
   const sessionId = session.id
-  const { phase, runs, refresh, adopt: adoptSnapshot } = conversation
-  const [live, setLive] = useState<LiveRun | null>(null)
+  const { phase, runs, live, failureSummary, refresh, adopt: adoptSnapshot } = conversation
   const [draft, setDraft] = useState('')
   const [editingQueuedId, setEditingQueuedId] = useState<string | null>(null)
   const [queuedEdit, setQueuedEdit] = useState('')
@@ -328,41 +268,6 @@ export function Conversation({
       })
     }
   }, [runs])
-
-  useEffect(() => {
-    let publishedLive: LiveRun | null = null
-    let pendingLive: LiveRun | null = null
-    let frame: number | null = null
-    const stop = window.shell.onConversationEvent((streamed) => {
-      if (streamed.sessionId !== sessionId) return
-      const event = streamed.event
-      if (event.type === 'failed') {
-        setError(event.summary)
-        return
-      }
-      // An approval is durable the moment it is asked for, and the Run is
-      // blocked until it is answered — so it is read back rather than kept
-      // as a second copy of the same fact on this side.
-      if (event.type === 'approval-request' || event.type === 'approval-resolved') {
-        return
-      }
-      pendingLive = applyLiveEvent(pendingLive ?? publishedLive, streamed)
-      // Every event carries the complete latest value. Publishing the
-      // newest accumulated value at paint cadence keeps the Run responsive
-      // without asking React and markdown to reconcile intermediate text
-      // the browser could never display.
-      frame ??= window.requestAnimationFrame(() => {
-        frame = null
-        publishedLive = pendingLive
-        pendingLive = null
-        setLive(publishedLive)
-      })
-    })
-    return () => {
-      stop()
-      if (frame !== null) window.cancelAnimationFrame(frame)
-    }
-  }, [sessionId])
 
   const chosenSkill = offeredSkill(catalog, skill)
   const matchingSkills = skillsMatching(catalog, draft)
@@ -1428,9 +1333,9 @@ export function Conversation({
             )}
           </form>
 
-          {error && (
+          {(error ?? failureSummary) && (
             <p role="alert" className="pt-2 text-xs text-destructive">
-              {error}
+              {error ?? failureSummary}
             </p>
           )}
         </div>
