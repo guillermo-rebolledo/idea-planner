@@ -6,7 +6,8 @@ import type {
   ConversationEntry,
   CheckoutChange,
   DiffHunk,
-  HarnessEvent
+  HarnessEvent,
+  SubagentStatus
 } from '@shared/conversation'
 import { createCore, type Core } from './core'
 import { finishRunLifecycle } from './run-lifecycle-test-support'
@@ -1555,6 +1556,100 @@ describe('what a command step records', () => {
     // The clock ticks one second per reading, so between the start the
     // Conversation saw and the finish there is a measurable gap.
     expect(only.durationMs).toBeGreaterThan(0)
+  })
+
+  it('keeps one subagent, dated from its dispatch, however often it reports', async () => {
+    const runId = await startRun('Review the diff', 'submission-subagent')
+    const report = (
+      status: SubagentStatus,
+      rest: { activity?: string; result?: string; steps?: number } = {}
+    ) =>
+      core.applyHarnessEvent({
+        sessionId,
+        runId,
+        event: {
+          type: 'subagent',
+          id: 'toolu_agent_1',
+          name: 'Standards review',
+          role: 'Reviewer',
+          brief: 'Review the diff against the repository standards',
+          status,
+          steps: rest.steps ?? null,
+          durationMs: null,
+          ...(rest.activity !== undefined ? { activity: rest.activity } : {}),
+          ...(rest.result !== undefined ? { result: rest.result } : {})
+        }
+      })
+
+    await report('working')
+    await report('working', { activity: 'Read docs/agents/code-style.md', steps: 1 })
+    // Claude ends a subagent twice: once to say it finished, and again to say
+    // what it found. The second must still be dated from the dispatch.
+    await report('done', { steps: 3 })
+    await report('done', { result: 'No findings.', steps: 3 })
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    const subagents = reloaded.entries.filter((entry) => entry.kind === 'subagent')
+    // Three reports, one subagent: the dock draws a fleet, not a log.
+    expect(subagents).toHaveLength(1)
+    const [only] = subagents
+    if (only?.kind !== 'subagent') throw new Error('expected a subagent entry')
+    expect(only).toMatchObject({
+      runId,
+      dispatchId: 'toolu_agent_1',
+      name: 'Standards review',
+      role: 'Reviewer',
+      status: 'done',
+      result: 'No findings.',
+      steps: 3
+    })
+    // Dated from the dispatch rather than from its last word, so the time it
+    // took is the time it took.
+    expect(Date.parse(only.startedAt)).toBeLessThan(Date.parse(only.at))
+    expect(only.durationMs).toBeGreaterThan(0)
+    const dispatchedAt = only.startedAt
+
+    // And the same holds after a restart, when the projection is rebuilt.
+    const restarted = makeCore()
+    await restarted.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'subagent',
+        id: 'toolu_agent_1',
+        name: 'Standards review',
+        status: 'done',
+        result: 'No findings.',
+        steps: 3,
+        durationMs: null
+      }
+    })
+    const [reread] = (await makeCore().getConversation(sessionId)).entries.filter(
+      (entry) => entry.kind === 'subagent'
+    )
+    if (reread?.kind !== 'subagent') throw new Error('expected a subagent entry')
+    expect(reread.startedAt).toBe(dispatchedAt)
+  })
+
+  it('leaves a subagent that reported nothing back without a result or a duration', async () => {
+    const runId = await startRun('Review the diff', 'submission-subagent-open')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'subagent',
+        id: 'toolu_agent_2',
+        name: 'Fixture sweep',
+        status: 'working',
+        steps: null,
+        durationMs: null
+      }
+    })
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    const [only] = reloaded.entries.filter((entry) => entry.kind === 'subagent')
+    if (only?.kind !== 'subagent') throw new Error('expected a subagent entry')
+    expect(only).toMatchObject({ status: 'working', result: null, durationMs: null, brief: null })
   })
 
   it('measures no duration for an interrupted command, whose result never arrived', async () => {

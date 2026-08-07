@@ -358,4 +358,97 @@ describe('a command that is still running', () => {
       }
     ])
   })
+
+  describe('subagents', () => {
+    it('follows one dispatched subagent from its brief to what it reported back', async () => {
+      const subagents = (await replay('claude-subagent.jsonl')).filter(
+        (event) => event.type === 'subagent'
+      )
+
+      expect(subagents.at(0)).toEqual({
+        type: 'subagent',
+        id: 'toolu_01H4ZJcREffQM8V7syGiFcKa',
+        name: 'Count notes',
+        role: 'Explore',
+        brief: 'report how many lines notes.txt has',
+        status: 'working',
+        steps: null,
+        durationMs: null
+      })
+
+      // While it works, what it is on now is the only thing worth saying, and
+      // the Harness says it in prose already.
+      expect(subagents).toContainEqual({
+        type: 'subagent',
+        id: 'toolu_01H4ZJcREffQM8V7syGiFcKa',
+        name: 'Count notes',
+        role: 'Explore',
+        brief: 'report how many lines notes.txt has',
+        status: 'working',
+        activity: 'Running Count lines and bytes in notes.txt',
+        steps: 2,
+        durationMs: 7_867
+      })
+
+      const last = subagents.at(-1)
+      expect(last).toMatchObject({
+        type: 'subagent',
+        id: 'toolu_01H4ZJcREffQM8V7syGiFcKa',
+        name: 'Count notes',
+        status: 'done',
+        steps: 3,
+        durationMs: 12_430
+      })
+      expect(last?.type === 'subagent' && last.result).toContain('has **2 lines**')
+    })
+
+    it('keeps a subagent’s own work out of the Run’s record', async () => {
+      const events = await replay('claude-subagent.jsonl')
+
+      // The fixture's subagent runs two commands and reads a file. They are
+      // its work, not the Run's, and the Run's own record must not claim them.
+      expect(events.filter((event) => event.type === 'command')).toEqual([])
+      expect(events.filter((event) => event.type === 'tool')).toEqual([])
+      // Nor does the subagent's prose become the Run's prose: only the Run's
+      // own closing message is an assistant message here.
+      expect(
+        events.filter((event) => event.type === 'assistant-message').map((event) => event.text)
+      ).toEqual(['notes.txt has **2 lines** (`alpha`, `beta`).'])
+    })
+
+    it('reports no protocol failure for a Run that dispatched subagents', async () => {
+      expect(
+        (await replay('claude-subagent.jsonl')).filter((event) => event.type === 'failed')
+      ).toEqual([])
+    })
+
+    it('leaves a subagent the Run never finished as interrupted rather than done', () => {
+      const adapter = createClaudeAdapter()
+      adapter.ingest(
+        `${JSON.stringify({
+          type: 'system',
+          subtype: 'task_started',
+          task_id: 'task-9',
+          tool_use_id: 'toolu_9',
+          description: 'Sweep the fixtures',
+          subagent_type: 'Explore',
+          task_type: 'local_agent',
+          prompt: 'check the recorded fixture'
+        })}\n`
+      )
+
+      expect(adapter.flush()).toEqual([
+        {
+          type: 'subagent',
+          id: 'toolu_9',
+          name: 'Sweep the fixtures',
+          role: 'Explore',
+          brief: 'check the recorded fixture',
+          status: 'interrupted',
+          steps: null,
+          durationMs: null
+        }
+      ])
+    })
+  })
 })

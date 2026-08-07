@@ -48,6 +48,14 @@ _Avoid_: Held message, draft, follow-up, pending prompt
 Code the user selected while reading what a Session changed — a whole recorded write, one hunk, or a range of its lines — copied at the moment of selecting it and carried by exactly one message or Queued Submission. It is historical context for the Harness, never a live reference: later writes to the same file leave it untouched, and it has no thread, reply, resolved state, or synchronization anywhere.
 _Avoid_: Review comment, annotation, code selection, snippet
 
+**Subagent**:
+A worker a Run dispatched to do one piece of its work and report back, carrying a name, the brief it was given where the Harness supplies one, and — once it ends — what it reported. Its own commands, reads and prose are its work rather than the Run's, and never appear as steps the Run took. The Run stays responsible for it: a Subagent has no Conversation of its own and is never spoken to directly.
+_Avoid_: Child agent, task, worker thread, delegate
+
+**Subagents dock**:
+The surface holding one Run's Subagents, beside the Conversation rather than inside it, which collapses to a rail that keeps every Subagent's state visible. The Conversation itself says only that they exist.
+_Avoid_: Sidebar, panel, drawer, fleet view
+
 **Harness**:
 A locally installed CLI coding agent the app drives as a child process, such as Codex or Claude Code. The app never provides inference itself.
 _Avoid_: Provider, model, backend

@@ -59,11 +59,15 @@ import {
 } from '@renderer/components/ui/message-scroller'
 import { displayCommand } from '@shared/command'
 import { TurnRail, type TurnStep, type TurnSummary } from '@renderer/components/TurnRail'
+import { SubagentDock, SubagentPill } from '@renderer/components/SubagentDock'
+import { fleetOf } from '@renderer/lib/selected-conversation-read-model'
+import type { FleetMember } from '@renderer/lib/subagent-fleet'
 import {
-  ToolResult,
-  ToolResultOutput,
-  type ToolResultStatus
-} from '@renderer/components/ui/tool-result'
+  ChainOfThought,
+  ChainStep,
+  ChainStepOutput,
+  type ChainStepStatus
+} from '@renderer/components/ui/chain-of-thought'
 import {
   ChosenSkillNote,
   offeredSkill,
@@ -511,6 +515,31 @@ export function Conversation({
   )
   const items = useMemo(() => groupEntries(visibleEntries), [visibleEntries])
   const turns = useMemo(() => summarizeTurns(items), [items])
+  // Every Run's fleet, so a pill can say what its own Run dispatched while the
+  // dock shows whichever fleet is being read.
+  const fleets = useMemo(() => {
+    const runIds = new Set(
+      durableEntries.filter((entry) => entry.kind === 'subagent').map((entry) => entry.runId)
+    )
+    if (live !== null && live.subagents.length > 0) runIds.add(live.runId)
+    return new Map([...runIds].map((runId) => [runId, fleetOf(durableEntries, live, runId)]))
+  }, [durableEntries, live])
+  // Which fleet the dock is showing. The newest by default; a pill claims it.
+  const [chosenFleetRun, setChosenFleetRun] = useState<string | null>(null)
+  const [dockExpanded, setDockExpanded] = useState(false)
+  const [openSubagentId, setOpenSubagentId] = useState<string | null>(null)
+  /* Whether the person has taken the dock over. Until they do it follows the
+     Run — open while agents work, put away once they have all landed — and
+     afterwards it stays where they left it, because a panel that reopens
+     itself after being closed is a panel that is not really closable. */
+  const dockClaimedRef = useRef(false)
+  const fleetRunId = chosenFleetRun ?? [...fleets.keys()].at(-1) ?? null
+  const fleet = fleetRunId === null ? [] : (fleets.get(fleetRunId) ?? [])
+  const fleetWorking = fleet.some((member) => member.status === 'working')
+
+  useEffect(() => {
+    if (!dockClaimedRef.current) setDockExpanded(fleetWorking)
+  }, [fleetWorking])
   const recoverable = currentRecovery(durableEntries, snapshot?.recovery ?? null)
   const displayedRecovery = recoverable?.key === dismissedRecoveryKey ? null : (recoverable ?? null)
 
@@ -566,855 +595,886 @@ export function Conversation({
   )
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {/* The reader's place is the scroller's to keep (mock 1a). A new turn
+    <div className="flex h-full min-h-0">
+      <div className="flex h-full min-w-0 flex-1 flex-col">
+        {/* The reader's place is the scroller's to keep (mock 1a). A new turn
           anchors near the top with a peek of what came before it, the reply
           streams into the room below, and nothing moves once the reader has
           scrolled away — including when a Run streams for minutes. */}
-      <MessageScrollerProvider
-        autoScroll
-        defaultScrollPosition="last-anchor"
-        scrollPreviousItemPeek={56}
-      >
-        <MessageScroller className="@container/transcript min-h-0 flex-1">
-          {/* The turns of this Conversation, in the gutter the centered
+        <MessageScrollerProvider
+          autoScroll
+          defaultScrollPosition="last-anchor"
+          scrollPreviousItemPeek={56}
+        >
+          <MessageScroller className="@container/transcript min-h-0 flex-1">
+            {/* The turns of this Conversation, in the gutter the centered
               transcript leaves free. It is only drawn where that gutter
               actually exists — narrower than this the rail would be standing
               on the prose it is a map of. */}
-          <TurnRail turns={turns} />
-          {activeRunId && (
-            <div className="absolute end-4 top-3 z-10">
-              <Button size="sm" variant="secondary" onClick={stop}>
-                <Square aria-hidden="true" className="size-3" /> Stop
-              </Button>
-            </div>
-          )}
-          {/* The viewport is the scroll region a keyboard can reach; the
+            <TurnRail turns={turns} />
+            {activeRunId && (
+              <div className="absolute end-4 top-3 z-10">
+                <Button size="sm" variant="secondary" onClick={stop}>
+                  <Square aria-hidden="true" className="size-3" /> Stop
+                </Button>
+              </div>
+            )}
+            {/* The viewport is the scroll region a keyboard can reach; the
               content inside it is the transcript itself, and it is the
               transcript that is the live log. */}
-          <MessageScrollerViewport aria-label="Conversation">
-            <MessageScrollerContent
-              aria-label="Conversation history"
-              aria-busy={activeRunId !== null}
-              className="mx-auto w-full max-w-3xl gap-6 px-6 pt-8 pb-6"
-            >
-              {items.map((item) => {
-                if (item.type === 'user') {
-                  // The user's message starts the turn, so it is what the
-                  // viewport anchors on.
+            <MessageScrollerViewport aria-label="Conversation">
+              <MessageScrollerContent
+                aria-label="Conversation history"
+                aria-busy={activeRunId !== null}
+                className="mx-auto w-full max-w-3xl gap-6 px-6 pt-8 pb-6"
+              >
+                {items.map((item) => {
+                  if (item.type === 'user') {
+                    // The user's message starts the turn, so it is what the
+                    // viewport anchors on.
+                    return row(
+                      item.entry.id,
+                      <UserBubble
+                        entry={item.entry}
+                        pending={optimisticVisible && item.entry.id === optimisticMessageId}
+                      />,
+                      true
+                    )
+                  }
+                  if (item.type === 'assistant') {
+                    return row(
+                      item.entry.id,
+                      <AgentText
+                        id={item.entry.id}
+                        text={item.entry.text}
+                        partial={item.entry.completeness === 'partial'}
+                      />
+                    )
+                  }
+                  if (item.type === 'note') {
+                    return row(
+                      item.entry.id,
+                      <p className="font-mono text-2xs text-muted-foreground">
+                        {item.entry.summary}
+                      </p>
+                    )
+                  }
                   return row(
-                    item.entry.id,
-                    <UserBubble
-                      entry={item.entry}
-                      pending={optimisticVisible && item.entry.id === optimisticMessageId}
-                    />,
-                    true
-                  )
-                }
-                if (item.type === 'assistant') {
-                  return row(
-                    item.entry.id,
-                    <AgentText
-                      id={item.entry.id}
-                      text={item.entry.text}
-                      partial={item.entry.completeness === 'partial'}
+                    item.runId,
+                    <RunSection
+                      group={item}
+                      run={runs.find((run) => run.id === item.runId) ?? null}
+                      active={item.runId === activeRunId}
+                      waiting={pendingApproval?.runId === item.runId}
+                      live={liveForActiveRun?.runId === item.runId ? liveForActiveRun : null}
+                      fleet={fleets.get(item.runId) ?? []}
+                      fleetShown={dockExpanded && fleetRunId === item.runId}
+                      onToggleFleet={() => {
+                        dockClaimedRef.current = true
+                        const showing = dockExpanded && fleetRunId === item.runId
+                        setChosenFleetRun(item.runId)
+                        setOpenSubagentId(null)
+                        setDockExpanded(!showing)
+                      }}
+                      onOpenFile={onOpenFile}
+                      onContinue={() => composerRef.current?.focus()}
                     />
                   )
-                }
-                if (item.type === 'note') {
-                  return row(
-                    item.entry.id,
-                    <p className="font-mono text-2xs text-muted-foreground">{item.entry.summary}</p>
-                  )
-                }
-                return row(
-                  item.runId,
-                  <RunSection
-                    group={item}
-                    run={runs.find((run) => run.id === item.runId) ?? null}
-                    active={item.runId === activeRunId}
-                    waiting={pendingApproval?.runId === item.runId}
-                    live={liveForActiveRun?.runId === item.runId ? liveForActiveRun : null}
-                    onOpenFile={onOpenFile}
-                    onContinue={() => composerRef.current?.focus()}
-                  />
-                )
-              })}
-              {catalog?.projectTrusted &&
-                catalog.available.some((entry) => entry.source === 'project') &&
-                row(
-                  'skills-trusted',
-                  <p className="text-xs text-muted-foreground">
-                    This Project’s own Skills are offered because you trusted them.{' '}
-                    <button
-                      type="button"
-                      className="underline underline-offset-2"
-                      onClick={() =>
-                        void window.shell
-                          .trustProjectSkills({
-                            root: session.projectRoot,
-                            harness: chosenHarness ?? 'claude',
-                            trusted: false
-                          })
-                          .then(setCatalog, () => setError('That could not be withdrawn.'))
-                      }
-                    >
-                      Stop trusting them
-                    </button>
-                  </p>
-                )}
-
-              {catalog?.projectTrustError &&
-                row(
-                  'skills-observation-error',
-                  <div
-                    role="alert"
-                    aria-label="Project Skills unavailable"
-                    className="rounded-md border border-border bg-muted/50 p-3 text-xs"
-                  >
-                    Project Skills are {projectSkillErrorText(catalog.projectTrustError)}. They are
-                    not trusted, and no Project Skill can start until this is resolved.
-                  </div>
-                )}
-
-              {catalog?.projectTrustError === null &&
-                (catalog.untrusted.length > 0 || skillChangeCount(catalog) > 0) &&
-                row(
-                  'skills-untrusted',
-                  // A standing condition, not an interruption: it reads in
-                  // place instead of barging in on every mount.
-                  <div
-                    role="note"
-                    aria-label="Project Skills"
-                    className="rounded-md border border-border bg-muted/50 p-3"
-                  >
-                    <p className="text-xs">
-                      This Project brings {catalog.untrusted.length === 1 ? 'a Skill' : 'Skills'} of
-                      its own. A Skill is instructions for an agent that can edit files and run
-                      commands, and these arrived with the Project — so they are not offered until
-                      you say so.
+                })}
+                {catalog?.projectTrusted &&
+                  catalog.available.some((entry) => entry.source === 'project') &&
+                  row(
+                    'skills-trusted',
+                    <p className="text-xs text-muted-foreground">
+                      This Project’s own Skills are offered because you trusted them.{' '}
+                      <button
+                        type="button"
+                        className="underline underline-offset-2"
+                        onClick={() =>
+                          void window.shell
+                            .trustProjectSkills({
+                              root: session.projectRoot,
+                              harness: chosenHarness ?? 'claude',
+                              trusted: false
+                            })
+                            .then(setCatalog, () => setError('That could not be withdrawn.'))
+                        }
+                      >
+                        Stop trusting them
+                      </button>
                     </p>
-                    <ul className="mt-2 flex flex-col gap-1">
-                      {catalog.untrusted.map((entry) => (
-                        <li key={entry.name} className="text-xs">
-                          <span className="font-medium">{entry.name}</span>
-                          {entry.description && (
-                            <span className="text-muted-foreground"> — {entry.description}</span>
+                  )}
+
+                {catalog?.projectTrustError &&
+                  row(
+                    'skills-observation-error',
+                    <div
+                      role="alert"
+                      aria-label="Project Skills unavailable"
+                      className="rounded-md border border-border bg-muted/50 p-3 text-xs"
+                    >
+                      Project Skills are {projectSkillErrorText(catalog.projectTrustError)}. They
+                      are not trusted, and no Project Skill can start until this is resolved.
+                    </div>
+                  )}
+
+                {catalog?.projectTrustError === null &&
+                  (catalog.untrusted.length > 0 || skillChangeCount(catalog) > 0) &&
+                  row(
+                    'skills-untrusted',
+                    // A standing condition, not an interruption: it reads in
+                    // place instead of barging in on every mount.
+                    <div
+                      role="note"
+                      aria-label="Project Skills"
+                      className="rounded-md border border-border bg-muted/50 p-3"
+                    >
+                      <p className="text-xs">
+                        This Project brings {catalog.untrusted.length === 1 ? 'a Skill' : 'Skills'}{' '}
+                        of its own. A Skill is instructions for an agent that can edit files and run
+                        commands, and these arrived with the Project — so they are not offered until
+                        you say so.
+                      </p>
+                      <ul className="mt-2 flex flex-col gap-1">
+                        {catalog.untrusted.map((entry) => (
+                          <li key={entry.name} className="text-xs">
+                            <span className="font-medium">{entry.name}</span>
+                            {entry.description && (
+                              <span className="text-muted-foreground"> — {entry.description}</span>
+                            )}
+                            <span className="block font-mono text-2xs break-all text-muted-foreground select-text">
+                              {entry.path}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                      {skillChangeCount(catalog) > 0 && (
+                        <div className="mt-2" aria-label="Project Skill changes">
+                          <p className="text-xs font-medium">Changes since you trusted them</p>
+                          {(['added', 'removed', 'changed'] as const).map(
+                            (kind) =>
+                              catalog.changes[kind].length > 0 && (
+                                <p key={kind} className="text-xs text-muted-foreground">
+                                  <span className="capitalize">{kind}</span>:{' '}
+                                  {catalog.changes[kind]
+                                    .map((entry) => `${entry.name} (${entry.harness})`)
+                                    .join(', ')}
+                                </p>
+                              )
                           )}
-                          <span className="block font-mono text-2xs break-all text-muted-foreground select-text">
-                            {entry.path}
+                        </div>
+                      )}
+                      <Button
+                        className="mt-2"
+                        size="sm"
+                        variant="secondary"
+                        disabled={catalog.reviewedDigest === null}
+                        onClick={() =>
+                          void window.shell
+                            .trustProjectSkills({
+                              root: session.projectRoot,
+                              harness: chosenHarness ?? 'claude',
+                              trusted: true,
+                              reviewedDigest: catalog.reviewedDigest ?? undefined
+                            })
+                            .then(setCatalog, () => setError('Those Skills could not be trusted.'))
+                        }
+                      >
+                        Trust this Project’s Skills
+                      </Button>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Read them first — they are files in the Project. If they change before you
+                        confirm, the grant is refused. You can withdraw this at any time.
+                      </p>
+                    </div>
+                  )}
+
+                {pendingApproval &&
+                  row(
+                    'approval',
+                    <div
+                      ref={approvalCardRef}
+                      role="alert"
+                      aria-label="Approval request"
+                      tabIndex={-1}
+                      className="rounded-lg border border-status-blocked-border bg-status-blocked-surface outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <p className="flex items-center gap-2 px-3.5 pt-3 text-xs">
+                        <TriangleAlert
+                          aria-hidden="true"
+                          className="size-3.5 shrink-0 text-status-blocked"
+                        />
+                        <span className="font-semibold">Approval Request</span>
+                        <span className="text-muted-foreground">Run is waiting</span>
+                      </p>
+                      <p className="mx-3.5 mt-2 rounded-md border border-border bg-surface px-3 py-2 font-mono text-xs break-all select-text">
+                        {pendingApproval.summary}
+                      </p>
+                      {pendingApproval.detail && (
+                        <details className="mx-3.5 mt-1">
+                          <summary className="cursor-pointer text-xs text-muted-foreground">
+                            What it sent
+                          </summary>
+                          <pre className="mt-1 max-h-40 overflow-auto rounded-md border border-border bg-surface p-2 font-mono text-xs whitespace-pre-wrap select-text">
+                            {pendingApproval.detail}
+                          </pre>
+                        </details>
+                      )}
+                      <div className="flex flex-wrap items-center gap-2 px-3.5 py-3">
+                        <Button
+                          size="sm"
+                          disabled={deciding}
+                          onClick={() => void decide(pendingApproval, 'allow')}
+                        >
+                          Allow
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={deciding}
+                          onClick={() => void decide(pendingApproval, 'deny')}
+                        >
+                          Deny
+                        </Button>
+                        {deciding ? (
+                          <span
+                            role="status"
+                            className="ml-auto flex items-center gap-1.5 font-mono text-2xs text-muted-foreground tabular-nums"
+                          >
+                            <Spinner /> Answering…
                           </span>
-                        </li>
-                      ))}
-                    </ul>
-                    {skillChangeCount(catalog) > 0 && (
-                      <div className="mt-2" aria-label="Project Skill changes">
-                        <p className="text-xs font-medium">Changes since you trusted them</p>
-                        {(['added', 'removed', 'changed'] as const).map(
-                          (kind) =>
-                            catalog.changes[kind].length > 0 && (
-                              <p key={kind} className="text-xs text-muted-foreground">
-                                <span className="capitalize">{kind}</span>:{' '}
-                                {catalog.changes[kind]
-                                  .map((entry) => `${entry.name} (${entry.harness})`)
-                                  .join(', ')}
-                              </p>
-                            )
+                        ) : (
+                          <span className="ml-auto font-mono text-2xs text-muted-foreground">
+                            ⏎ allow · esc steps away
+                          </span>
                         )}
                       </div>
-                    )}
-                    <Button
-                      className="mt-2"
-                      size="sm"
-                      variant="secondary"
-                      disabled={catalog.reviewedDigest === null}
-                      onClick={() =>
-                        void window.shell
-                          .trustProjectSkills({
-                            root: session.projectRoot,
-                            harness: chosenHarness ?? 'claude',
-                            trusted: true,
-                            reviewedDigest: catalog.reviewedDigest ?? undefined
-                          })
-                          .then(setCatalog, () => setError('Those Skills could not be trusted.'))
-                      }
-                    >
-                      Trust this Project’s Skills
-                    </Button>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Read them first — they are files in the Project. If they change before you
-                      confirm, the grant is refused. You can withdraw this at any time.
-                    </p>
-                  </div>
-                )}
-
-              {pendingApproval &&
-                row(
-                  'approval',
-                  <div
-                    ref={approvalCardRef}
-                    role="alert"
-                    aria-label="Approval request"
-                    tabIndex={-1}
-                    className="rounded-lg border border-status-blocked-border bg-status-blocked-surface outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <p className="flex items-center gap-2 px-3.5 pt-3 text-xs">
-                      <TriangleAlert
-                        aria-hidden="true"
-                        className="size-3.5 shrink-0 text-status-blocked"
-                      />
-                      <span className="font-semibold">Approval Request</span>
-                      <span className="text-muted-foreground">Run is waiting</span>
-                    </p>
-                    <p className="mx-3.5 mt-2 rounded-md border border-border bg-surface px-3 py-2 font-mono text-xs break-all select-text">
-                      {pendingApproval.summary}
-                    </p>
-                    {pendingApproval.detail && (
-                      <details className="mx-3.5 mt-1">
-                        <summary className="cursor-pointer text-xs text-muted-foreground">
-                          What it sent
-                        </summary>
-                        <pre className="mt-1 max-h-40 overflow-auto rounded-md border border-border bg-surface p-2 font-mono text-xs whitespace-pre-wrap select-text">
-                          {pendingApproval.detail}
-                        </pre>
-                      </details>
-                    )}
-                    <div className="flex flex-wrap items-center gap-2 px-3.5 py-3">
-                      <Button
-                        size="sm"
-                        disabled={deciding}
-                        onClick={() => void decide(pendingApproval, 'allow')}
-                      >
-                        Allow
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={deciding}
-                        onClick={() => void decide(pendingApproval, 'deny')}
-                      >
-                        Deny
-                      </Button>
-                      {deciding ? (
-                        <span
-                          role="status"
-                          className="ml-auto flex items-center gap-1.5 font-mono text-2xs text-muted-foreground tabular-nums"
-                        >
-                          <Spinner /> Answering…
-                        </span>
-                      ) : (
-                        <span className="ml-auto font-mono text-2xs text-muted-foreground">
-                          ⏎ allow · esc steps away
-                        </span>
-                      )}
-                    </div>
-                    {pendingApproval.proposedRule && (
-                      // The durable rule comes before the durable action. Once it is
-                      // stored the Harness answers with it before this app is asked
-                      // anything, so it must occupy the focal area first.
-                      <div className="border-t border-status-blocked-border px-3.5 py-3">
-                        <p className="font-medium">Standing authorization</p>
-                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                          Every matching request in{' '}
-                          <span className="text-foreground">
-                            {projectDisplayName(session.projectRoot)}
-                          </span>{' '}
-                          would be answered with this exact rule:
-                        </p>
-                        <code className="mt-2 block rounded-md border border-border bg-surface px-3 py-2 font-mono text-xs break-all select-text">
-                          {ruleText(pendingApproval.proposedRule)}
-                        </code>
-                        <p className="mt-1.5 text-xs break-all text-muted-foreground">
-                          Stored only for {session.projectRoot}. You can revoke it at any time.
-                        </p>
-                        {standingApprovalConfirmId === pendingApproval.id ? (
-                          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-status-blocked-border pt-3">
-                            <p className="mr-auto text-xs font-medium">
-                              Store this rule for future matching requests?
-                            </p>
+                      {pendingApproval.proposedRule && (
+                        // The durable rule comes before the durable action. Once it is
+                        // stored the Harness answers with it before this app is asked
+                        // anything, so it must occupy the focal area first.
+                        <div className="border-t border-status-blocked-border px-3.5 py-3">
+                          <p className="font-medium">Standing authorization</p>
+                          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                            Every matching request in{' '}
+                            <span className="text-foreground">
+                              {projectDisplayName(session.projectRoot)}
+                            </span>{' '}
+                            would be answered with this exact rule:
+                          </p>
+                          <code className="mt-2 block rounded-md border border-border bg-surface px-3 py-2 font-mono text-xs break-all select-text">
+                            {ruleText(pendingApproval.proposedRule)}
+                          </code>
+                          <p className="mt-1.5 text-xs break-all text-muted-foreground">
+                            Stored only for {session.projectRoot}. You can revoke it at any time.
+                          </p>
+                          {standingApprovalConfirmId === pendingApproval.id ? (
+                            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-status-blocked-border pt-3">
+                              <p className="mr-auto text-xs font-medium">
+                                Store this rule for future matching requests?
+                              </p>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                disabled={deciding}
+                                onClick={() => setStandingApprovalConfirmId(null)}
+                              >
+                                Cancel
+                              </Button>
+                              <Button
+                                size="sm"
+                                disabled={deciding}
+                                onClick={() => void decide(pendingApproval, 'allow', true)}
+                              >
+                                Store this rule
+                              </Button>
+                            </div>
+                          ) : (
                             <Button
+                              className="mt-3"
                               size="sm"
                               variant="secondary"
                               disabled={deciding}
-                              onClick={() => setStandingApprovalConfirmId(null)}
+                              onClick={() => setStandingApprovalConfirmId(pendingApproval.id)}
                             >
-                              Cancel
+                              Always allow for {projectDisplayName(session.projectRoot)}…
                             </Button>
-                            <Button
-                              size="sm"
-                              disabled={deciding}
-                              onClick={() => void decide(pendingApproval, 'allow', true)}
-                            >
-                              Store this rule
-                            </Button>
-                          </div>
-                        ) : (
-                          <Button
-                            className="mt-3"
-                            size="sm"
-                            variant="secondary"
-                            disabled={deciding}
-                            onClick={() => setStandingApprovalConfirmId(pendingApproval.id)}
-                          >
-                            Always allow for {projectDisplayName(session.projectRoot)}…
-                          </Button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-              {displayedRecovery &&
-                row(
-                  'recovery',
-                  <div
-                    role="status"
-                    aria-label="Run recovery"
-                    className="flex items-start gap-2.5 rounded-md border border-border bg-muted/30 px-3 py-2.5"
-                  >
-                    <TriangleAlert
-                      aria-hidden="true"
-                      className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs text-foreground">
-                        {RECOVERY_GUIDANCE[displayedRecovery.recovery.category]}
-                      </p>
-                      <details className="mt-1 text-xs text-muted-foreground">
-                        <summary className="w-fit cursor-pointer select-none">Run details</summary>
-                        <p className="mt-1 break-words">{displayedRecovery.recovery.summary}</p>
-                      </details>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    {resumable && resumableText?.kind === 'message' && (
-                      <Button
-                        className="shrink-0"
-                        size="sm"
-                        variant="secondary"
-                        disabled={busy}
-                        onClick={() => {
-                          setDismissedRecoveryKey(displayedRecovery.key)
-                          void send(
-                            resumableText.text,
-                            resumableText.source === 'suggested-response'
-                              ? 'suggested-response'
-                              : 'composer',
-                            resumable,
-                            undefined,
-                            // Exactly what it was sent with the first time.
-                            resumableText.reviewAttachments
-                          )
-                        }}
-                      >
-                        Send again
-                      </Button>
-                    )}
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      aria-label="Dismiss recovery notice"
-                      className="-m-1 size-6 shrink-0"
-                      onClick={() => setDismissedRecoveryKey(displayedRecovery.key)}
-                    >
-                      <X aria-hidden="true" className="size-3" />
-                    </Button>
-                  </div>
-                )}
-            </MessageScrollerContent>
-          </MessageScrollerViewport>
-          <MessageScrollerButton />
-        </MessageScroller>
+                  )}
 
-        {/* Everything the person answers with rides below the transcript, as
+                {displayedRecovery &&
+                  row(
+                    'recovery',
+                    <div
+                      role="status"
+                      aria-label="Run recovery"
+                      className="flex items-start gap-2.5 rounded-md border border-border bg-muted/30 px-3 py-2.5"
+                    >
+                      <TriangleAlert
+                        aria-hidden="true"
+                        className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs text-foreground">
+                          {RECOVERY_GUIDANCE[displayedRecovery.recovery.category]}
+                        </p>
+                        <details className="mt-1 text-xs text-muted-foreground">
+                          <summary className="w-fit cursor-pointer select-none">
+                            Run details
+                          </summary>
+                          <p className="mt-1 break-words">{displayedRecovery.recovery.summary}</p>
+                        </details>
+                      </div>
+                      {resumable && resumableText?.kind === 'message' && (
+                        <Button
+                          className="shrink-0"
+                          size="sm"
+                          variant="secondary"
+                          disabled={busy}
+                          onClick={() => {
+                            setDismissedRecoveryKey(displayedRecovery.key)
+                            void send(
+                              resumableText.text,
+                              resumableText.source === 'suggested-response'
+                                ? 'suggested-response'
+                                : 'composer',
+                              resumable,
+                              undefined,
+                              // Exactly what it was sent with the first time.
+                              resumableText.reviewAttachments
+                            )
+                          }}
+                        >
+                          Send again
+                        </Button>
+                      )}
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        aria-label="Dismiss recovery notice"
+                        className="-m-1 size-6 shrink-0"
+                        onClick={() => setDismissedRecoveryKey(displayedRecovery.key)}
+                      >
+                        <X aria-hidden="true" className="size-3" />
+                      </Button>
+                    </div>
+                  )}
+              </MessageScrollerContent>
+            </MessageScrollerViewport>
+            <MessageScrollerButton />
+          </MessageScroller>
+
+          {/* Everything the person answers with rides below the transcript, as
             the mock draws it: the composer is the floor of the surface, not a
             row of the conversation. */}
-        <div className="mx-auto w-full max-w-3xl shrink-0 px-6 pb-4">
-          {suggested.length > 0 && (
-            <div className="border-t border-border p-3">
-              <p className="text-xs text-muted-foreground">
-                Suggested Responses send straight away. You can always write your own instead.
-              </p>
-              <ul className="mt-2 flex flex-wrap gap-2">
-                {suggested.map((option) => (
-                  <li key={option.id}>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={busy || blocked || activeRunId !== null || hasQueuedSubmissions}
-                      onClick={() => void send(option.value, 'suggested-response')}
-                    >
-                      {option.label}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {snapshot && snapshot.queue.items.some(isActiveQueuedSubmission) && (
-            <section
-              aria-label="Queued Submissions"
-              className="mb-2 rounded-lg border border-border bg-muted/30 p-3"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-xs font-medium text-foreground">Queued Submissions</h2>
-                  <p className="text-2xs text-muted-foreground">
-                    {snapshot.queue.paused
-                      ? 'Paused. Nothing starts until you resume.'
-                      : 'The next item starts after a completed Run.'}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  disabled={busy}
-                  onClick={() => {
-                    setBusy(true)
-                    const operation = snapshot.queue.paused
-                      ? window.shell.resumeConversationQueue(sessionId)
-                      : window.shell.pauseConversationQueue(sessionId)
-                    void operation
-                      .then(
-                        (next) => {
-                          adoptSnapshot(next)
-                          setQueueAnnouncement(durableQueueAnnouncement(next.queue.outcome))
-                        },
-                        () => setError('The queue state could not be changed.')
-                      )
-                      .finally(() => setBusy(false))
-                  }}
-                >
-                  {snapshot.queue.paused ? (
-                    <Play aria-hidden="true" className="size-3" />
-                  ) : (
-                    <Pause aria-hidden="true" className="size-3" />
-                  )}
-                  {snapshot.queue.paused ? 'Resume queue' : 'Pause queue'}
-                </Button>
-              </div>
-              <ol className="mt-2 space-y-2">
-                {snapshot.queue.items
-                  .filter(isActiveQueuedSubmission)
-                  .map((item, index, active) => (
-                    <li key={item.id} className="rounded-md border border-border bg-surface p-2">
-                      {editingQueuedId === item.submissionId ? (
-                        <form
-                          onSubmit={(event) => {
-                            event.preventDefault()
-                            const text = queuedEdit.trim()
-                            if (!text) return
-                            setBusy(true)
-                            void window.shell
-                              .editQueuedSubmission({
-                                sessionId,
-                                submissionId: item.submissionId,
-                                text
-                              })
-                              .then((next) => {
-                                adoptSnapshot(next)
-                                setEditingQueuedId(null)
-                                setQueueAnnouncement(durableQueueAnnouncement(next.queue.outcome))
-                                window.requestAnimationFrame(() =>
-                                  document.getElementById(`edit-${item.submissionId}`)?.focus()
-                                )
-                              })
-                              .catch(() => setError('That Queued Submission could not be edited.'))
-                              .finally(() => setBusy(false))
-                          }}
-                        >
-                          <label className="sr-only" htmlFor={`queued-edit-${item.submissionId}`}>
-                            Edit queued message
-                          </label>
-                          <textarea
-                            id={`queued-edit-${item.submissionId}`}
-                            aria-label="Edit queued message"
-                            rows={2}
-                            value={queuedEdit}
-                            onChange={(event) => setQueuedEdit(event.target.value)}
-                            className="w-full resize-none rounded border border-border bg-background p-2 text-xs outline-none focus:ring-2 focus:ring-ring"
-                          />
-                          <div className="mt-2 flex justify-end gap-1">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => setEditingQueuedId(null)}
-                            >
-                              Cancel
-                            </Button>
-                            <Button type="submit" size="sm" disabled={busy || !queuedEdit.trim()}>
-                              Save queued message
-                            </Button>
-                          </div>
-                        </form>
-                      ) : (
-                        <>
-                          <p className="text-xs text-foreground select-text">{item.text}</p>
-                          <p className="mt-1 text-2xs text-muted-foreground">
-                            {item.harness} · {item.model} · {item.permissionMode}
-                          </p>
-                          <div className="mt-2 flex flex-wrap gap-1">
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              aria-label={`Move ${item.text} earlier`}
-                              disabled={busy || !item.controls.moveEarlier}
-                              onClick={() => {
-                                setBusy(true)
-                                void window.shell
-                                  .moveQueuedSubmission({
-                                    sessionId,
-                                    submissionId: item.submissionId,
-                                    direction: 'earlier'
-                                  })
-                                  .then((next) => {
-                                    adoptSnapshot(next)
-                                    setQueueAnnouncement(
-                                      durableQueueAnnouncement(next.queue.outcome)
-                                    )
-                                  })
-                                  .finally(() => setBusy(false))
-                              }}
-                            >
-                              <ChevronUp aria-hidden="true" className="size-3" />
-                            </Button>
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              aria-label={`Move ${item.text} later`}
-                              disabled={busy || !item.controls.moveLater}
-                              onClick={() => {
-                                setBusy(true)
-                                void window.shell
-                                  .moveQueuedSubmission({
-                                    sessionId,
-                                    submissionId: item.submissionId,
-                                    direction: 'later'
-                                  })
-                                  .then((next) => {
-                                    adoptSnapshot(next)
-                                    setQueueAnnouncement(
-                                      durableQueueAnnouncement(next.queue.outcome)
-                                    )
-                                  })
-                                  .finally(() => setBusy(false))
-                              }}
-                            >
-                              <ChevronDown aria-hidden="true" className="size-3" />
-                            </Button>
-                            <Button
-                              id={`edit-${item.submissionId}`}
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              aria-label={`Edit ${item.text}`}
-                              disabled={busy || !item.controls.edit}
-                              onClick={() => {
-                                setQueuedEdit(item.text)
-                                setEditingQueuedId(item.submissionId)
-                              }}
-                            >
-                              <Pencil aria-hidden="true" className="size-3" />
-                            </Button>
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              aria-label={`Cancel ${item.text}`}
-                              disabled={busy || !item.controls.cancel}
-                              onClick={() => {
-                                const focusId =
-                                  active[index + 1]?.submissionId ?? active[index - 1]?.submissionId
-                                setBusy(true)
-                                void window.shell
-                                  .cancelQueuedSubmission({
-                                    sessionId,
-                                    submissionId: item.submissionId
-                                  })
-                                  .then((next) => {
-                                    adoptSnapshot(next)
-                                    setQueueAnnouncement(
-                                      durableQueueAnnouncement(next.queue.outcome)
-                                    )
-                                    window.requestAnimationFrame(() => {
-                                      if (focusId)
-                                        document.getElementById(`edit-${focusId}`)?.focus()
-                                      else composerRef.current?.focus()
-                                    })
-                                  })
-                                  .finally(() => setBusy(false))
-                              }}
-                            >
-                              <X aria-hidden="true" className="size-3" />
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              disabled={busy || !item.controls.sendNow}
-                              onClick={() => {
-                                setBusy(true)
-                                void window.shell
-                                  .sendQueuedSubmissionNow({
-                                    sessionId,
-                                    submissionId: item.submissionId
-                                  })
-                                  .then((next) => {
-                                    adoptSnapshot(next)
-                                    setQueueAnnouncement(
-                                      durableQueueAnnouncement(next.queue.outcome)
-                                    )
-                                  })
-                                  .finally(() => setBusy(false))
-                              }}
-                            >
-                              Send now
-                            </Button>
-                          </div>
-                        </>
-                      )}
-                    </li>
-                  ))}
-              </ol>
-              <p role="status" aria-live="polite" className="sr-only">
-                {queueAnnouncement}
-              </p>
-            </section>
-          )}
-
-          <form
-            className="flex flex-col gap-2"
-            onSubmit={(event) => {
-              event.preventDefault()
-              const text = draft.trim()
-              if (!text) return
-              if (displayedRecovery) setDismissedRecoveryKey(displayedRecovery.key)
-              // While a Run works, capture every Run choice in the durable,
-              // Session-owned queue. No pending message exists only in React.
-              if (activeRunId !== null || hasQueuedSubmissions) {
-                if (!chosenHarness) return
-                const refusal = reviewAttachmentsRefusal(reviewAttachments)
-                if (refusal) {
-                  setError(refusal)
-                  return
-                }
-                setBusy(true)
-                void window.shell
-                  .enqueueQueuedSubmission({
-                    sessionId,
-                    submissionId: crypto.randomUUID(),
-                    text,
-                    source: 'composer',
-                    ...(chosenSkill ? { skill: chosenSkill } : {}),
-                    harness: chosenHarness,
-                    model: choice?.model ?? HARNESS_DEFAULT_MODEL,
-                    effort: applicableEffort(models, choice),
-                    permissionMode,
-                    reviewAttachments
-                  })
-                  .then((next) => {
-                    adoptSnapshot(next)
-                    setDraft((current) => (current === text ? '' : current))
-                    setSkill((current) => (current === chosenSkill ? null : current))
-                    onClearReviewAttachments()
-                    setQueueAnnouncement(durableQueueAnnouncement(next.queue.outcome))
-                  })
-                  .catch(() => setError('That message could not be added to the queue.'))
-                  .finally(() => setBusy(false))
-                return
-              }
-              void send(text, 'composer')
-            }}
-          >
-            <label className="sr-only" htmlFor="conversation-composer">
-              Your message
-            </label>
-            {matchingSkills !== null && (
-              <SkillSuggestions matching={matchingSkills} onChoose={chooseSkill} />
-            )}
-            {/* One card, as the mock draws it: the field and everything the
-              next message is configured with, in the same box. The Skill is
-              asked for with `/` in the message rather than with a control. */}
-            <div className="rounded-xl border border-border bg-surface focus-within:ring-2 focus-within:ring-ring">
-              {/* The field stays alive while a Run works: thinking happens
-                  during the agent's turn, and a person mid-thought must not
-                  find their keyboard confiscated. Only sending waits. */}
-              <textarea
-                id="conversation-composer"
-                ref={composerRef}
-                rows={3}
-                value={draft}
-                onChange={(event) => {
-                  const nextDraft = event.target.value
-                  if (nextDraft.trim() && displayedRecovery) {
-                    setDismissedRecoveryKey(displayedRecovery.key)
-                  }
-                  setDraft(nextDraft)
-                }}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter') return
-                  // Mid-composition Enter belongs to the input method.
-                  if (event.nativeEvent.isComposing) return
-                  if (event.shiftKey || event.altKey) return
-                  // While a send settles or a Run works, Enter makes a line
-                  // rather than a second send — holding a message is the
-                  // button's deliberate act, never a keystroke's.
-                  if (busy || activeRunId !== null || hasQueuedSubmissions) return
-                  event.preventDefault()
-                  if (draft.trim()) {
-                    if (displayedRecovery) setDismissedRecoveryKey(displayedRecovery.key)
-                    void send(draft.trim(), 'composer')
-                  }
-                }}
-                placeholder="Reply, or / for a Skill…"
-                className="w-full resize-none bg-transparent px-3 pt-3 pb-1 text-sm outline-none placeholder:text-muted-foreground"
-              />
-              <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
-                <PermissionModePicker
-                  value={permissionMode}
-                  onChange={(mode) => {
-                    modeTouchedRef.current = true
-                    setPermissionMode(mode)
-                  }}
-                  projectRoot={session.projectRoot}
-                  disabled={activeRunId !== null}
-                />
-                <span className="ml-auto">
-                  <ModelPicker
-                    catalog={models}
-                    readiness={readiness}
-                    choice={choice}
-                    onChange={(next) => {
-                      choiceTouchedRef.current = true
-                      setChosen(next)
-                    }}
-                    disabled={activeRunId !== null}
-                  />
-                </span>
-                <Button
-                  type="submit"
-                  size="icon"
-                  aria-label={
-                    activeRunId !== null || hasQueuedSubmissions ? 'Add to queue' : 'Send'
-                  }
-                  className="rounded-full disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                  disabled={busy || blocked || !draft.trim()}
-                >
-                  <ArrowUp aria-hidden="true" className="size-3.5" />
-                </Button>
-              </div>
-            </div>
-            {reviewAttachments.length > 0 && (
-              <section aria-label="Attached code" className="flex flex-col gap-1">
-                <p className="text-2xs text-muted-foreground">
-                  Attached as it read when you selected it. Later edits do not change it.
+          <div className="mx-auto w-full max-w-3xl shrink-0 px-6 pb-4">
+            {suggested.length > 0 && (
+              <div className="border-t border-border p-3">
+                <p className="text-xs text-muted-foreground">
+                  Suggested Responses send straight away. You can always write your own instead.
                 </p>
-                <ul className="flex flex-col gap-1">
-                  {reviewAttachments.map((attachment, index) => (
-                    <li
-                      key={attachment.id}
-                      className="rounded-md border border-border bg-surface px-2 py-1.5"
-                    >
-                      <div className="flex items-center gap-2">
-                        <FileText
-                          aria-hidden="true"
-                          className="size-3 shrink-0 text-muted-foreground"
-                        />
-                        <span className="min-w-0 flex-1 truncate font-mono text-2xs">
-                          {reviewAttachmentLabel(attachment)}
-                        </span>
-                        <span className="shrink-0 text-2xs text-muted-foreground">
-                          {attachment.lines.length}{' '}
-                          {attachment.lines.length === 1 ? 'line' : 'lines'}
-                          {attachment.shortened ? ' · shortened' : ''}
-                        </span>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          aria-expanded={inspectedAttachmentId === attachment.id}
-                          aria-label={`Inspect ${reviewAttachmentLabel(attachment)}`}
-                          onClick={() =>
-                            setInspectedAttachmentId((current) =>
-                              current === attachment.id ? null : attachment.id
-                            )
-                          }
-                        >
-                          Inspect
-                        </Button>
-                        <Button
-                          id={`remove-attachment-${attachment.id}`}
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          aria-label={`Remove ${reviewAttachmentLabel(attachment)}`}
-                          onClick={() => {
-                            // Focus never falls to the document: the next card's
-                            // Remove takes it, or the composer does when this was
-                            // the last one.
-                            const nextId =
-                              reviewAttachments[index + 1]?.id ?? reviewAttachments[index - 1]?.id
-                            onRemoveReviewAttachment(attachment.id)
-                            window.requestAnimationFrame(() => {
-                              if (nextId)
-                                document.getElementById(`remove-attachment-${nextId}`)?.focus()
-                              else composerRef.current?.focus()
-                            })
-                          }}
-                        >
-                          <X aria-hidden="true" className="size-3" />
-                        </Button>
-                      </div>
-                      {inspectedAttachmentId === attachment.id && (
-                        <DiffView
-                          hunks={[
-                            {
-                              oldStart: attachment.startLine ?? 0,
-                              oldLines: attachment.lines.length,
-                              newStart: attachment.startLine ?? 0,
-                              newLines: attachment.lines.length,
-                              lines: attachment.lines
-                            }
-                          ]}
-                        />
-                      )}
+                <ul className="mt-2 flex flex-wrap gap-2">
+                  {suggested.map((option) => (
+                    <li key={option.id}>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={busy || blocked || activeRunId !== null || hasQueuedSubmissions}
+                        onClick={() => void send(option.value, 'suggested-response')}
+                      >
+                        {option.label}
+                      </Button>
                     </li>
                   ))}
                 </ul>
-              </section>
-            )}
-            {activeRunId !== null && (
-              <p className="text-xs text-muted-foreground">
-                A Run is working. Keep typing — Send adds a durable Queued Submission.{' '}
-                <span className="font-mono text-2xs">⌘.</span> stops the Run now.
-              </p>
-            )}
-            {chosenSkill && <ChosenSkillNote name={chosenSkill} onClear={() => setSkill(null)} />}
-            {blocked && canDevelop && (
-              <div role="status" className="rounded-md border border-border bg-muted/50 p-2">
-                <p className="text-xs text-foreground">{canDevelop.summary}</p>
-                {canDevelop.command && (
-                  <code className="mt-1 block font-mono text-xs break-all select-text">
-                    {canDevelop.command}
-                  </code>
-                )}
-                <p className="mt-1 text-xs text-muted-foreground">
-                  This app never installs or updates a Harness for you.
-                </p>
               </div>
             )}
-          </form>
 
-          {(error ?? failureSummary) && (
-            <p role="alert" className="pt-2 text-xs text-destructive">
-              {error ?? failureSummary}
-            </p>
-          )}
-        </div>
-      </MessageScrollerProvider>
+            {snapshot && snapshot.queue.items.some(isActiveQueuedSubmission) && (
+              <section
+                aria-label="Queued Submissions"
+                className="mb-2 rounded-lg border border-border bg-muted/30 p-3"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-xs font-medium text-foreground">Queued Submissions</h2>
+                    <p className="text-2xs text-muted-foreground">
+                      {snapshot.queue.paused
+                        ? 'Paused. Nothing starts until you resume.'
+                        : 'The next item starts after a completed Run.'}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy}
+                    onClick={() => {
+                      setBusy(true)
+                      const operation = snapshot.queue.paused
+                        ? window.shell.resumeConversationQueue(sessionId)
+                        : window.shell.pauseConversationQueue(sessionId)
+                      void operation
+                        .then(
+                          (next) => {
+                            adoptSnapshot(next)
+                            setQueueAnnouncement(durableQueueAnnouncement(next.queue.outcome))
+                          },
+                          () => setError('The queue state could not be changed.')
+                        )
+                        .finally(() => setBusy(false))
+                    }}
+                  >
+                    {snapshot.queue.paused ? (
+                      <Play aria-hidden="true" className="size-3" />
+                    ) : (
+                      <Pause aria-hidden="true" className="size-3" />
+                    )}
+                    {snapshot.queue.paused ? 'Resume queue' : 'Pause queue'}
+                  </Button>
+                </div>
+                <ol className="mt-2 space-y-2">
+                  {snapshot.queue.items
+                    .filter(isActiveQueuedSubmission)
+                    .map((item, index, active) => (
+                      <li key={item.id} className="rounded-md border border-border bg-surface p-2">
+                        {editingQueuedId === item.submissionId ? (
+                          <form
+                            onSubmit={(event) => {
+                              event.preventDefault()
+                              const text = queuedEdit.trim()
+                              if (!text) return
+                              setBusy(true)
+                              void window.shell
+                                .editQueuedSubmission({
+                                  sessionId,
+                                  submissionId: item.submissionId,
+                                  text
+                                })
+                                .then((next) => {
+                                  adoptSnapshot(next)
+                                  setEditingQueuedId(null)
+                                  setQueueAnnouncement(durableQueueAnnouncement(next.queue.outcome))
+                                  window.requestAnimationFrame(() =>
+                                    document.getElementById(`edit-${item.submissionId}`)?.focus()
+                                  )
+                                })
+                                .catch(() =>
+                                  setError('That Queued Submission could not be edited.')
+                                )
+                                .finally(() => setBusy(false))
+                            }}
+                          >
+                            <label className="sr-only" htmlFor={`queued-edit-${item.submissionId}`}>
+                              Edit queued message
+                            </label>
+                            <textarea
+                              id={`queued-edit-${item.submissionId}`}
+                              aria-label="Edit queued message"
+                              rows={2}
+                              value={queuedEdit}
+                              onChange={(event) => setQueuedEdit(event.target.value)}
+                              className="w-full resize-none rounded border border-border bg-background p-2 text-xs outline-none focus:ring-2 focus:ring-ring"
+                            />
+                            <div className="mt-2 flex justify-end gap-1">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setEditingQueuedId(null)}
+                              >
+                                Cancel
+                              </Button>
+                              <Button type="submit" size="sm" disabled={busy || !queuedEdit.trim()}>
+                                Save queued message
+                              </Button>
+                            </div>
+                          </form>
+                        ) : (
+                          <>
+                            <p className="text-xs text-foreground select-text">{item.text}</p>
+                            <p className="mt-1 text-2xs text-muted-foreground">
+                              {item.harness} · {item.model} · {item.permissionMode}
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                aria-label={`Move ${item.text} earlier`}
+                                disabled={busy || !item.controls.moveEarlier}
+                                onClick={() => {
+                                  setBusy(true)
+                                  void window.shell
+                                    .moveQueuedSubmission({
+                                      sessionId,
+                                      submissionId: item.submissionId,
+                                      direction: 'earlier'
+                                    })
+                                    .then((next) => {
+                                      adoptSnapshot(next)
+                                      setQueueAnnouncement(
+                                        durableQueueAnnouncement(next.queue.outcome)
+                                      )
+                                    })
+                                    .finally(() => setBusy(false))
+                                }}
+                              >
+                                <ChevronUp aria-hidden="true" className="size-3" />
+                              </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                aria-label={`Move ${item.text} later`}
+                                disabled={busy || !item.controls.moveLater}
+                                onClick={() => {
+                                  setBusy(true)
+                                  void window.shell
+                                    .moveQueuedSubmission({
+                                      sessionId,
+                                      submissionId: item.submissionId,
+                                      direction: 'later'
+                                    })
+                                    .then((next) => {
+                                      adoptSnapshot(next)
+                                      setQueueAnnouncement(
+                                        durableQueueAnnouncement(next.queue.outcome)
+                                      )
+                                    })
+                                    .finally(() => setBusy(false))
+                                }}
+                              >
+                                <ChevronDown aria-hidden="true" className="size-3" />
+                              </Button>
+                              <Button
+                                id={`edit-${item.submissionId}`}
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                aria-label={`Edit ${item.text}`}
+                                disabled={busy || !item.controls.edit}
+                                onClick={() => {
+                                  setQueuedEdit(item.text)
+                                  setEditingQueuedId(item.submissionId)
+                                }}
+                              >
+                                <Pencil aria-hidden="true" className="size-3" />
+                              </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                aria-label={`Cancel ${item.text}`}
+                                disabled={busy || !item.controls.cancel}
+                                onClick={() => {
+                                  const focusId =
+                                    active[index + 1]?.submissionId ??
+                                    active[index - 1]?.submissionId
+                                  setBusy(true)
+                                  void window.shell
+                                    .cancelQueuedSubmission({
+                                      sessionId,
+                                      submissionId: item.submissionId
+                                    })
+                                    .then((next) => {
+                                      adoptSnapshot(next)
+                                      setQueueAnnouncement(
+                                        durableQueueAnnouncement(next.queue.outcome)
+                                      )
+                                      window.requestAnimationFrame(() => {
+                                        if (focusId)
+                                          document.getElementById(`edit-${focusId}`)?.focus()
+                                        else composerRef.current?.focus()
+                                      })
+                                    })
+                                    .finally(() => setBusy(false))
+                                }}
+                              >
+                                <X aria-hidden="true" className="size-3" />
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                disabled={busy || !item.controls.sendNow}
+                                onClick={() => {
+                                  setBusy(true)
+                                  void window.shell
+                                    .sendQueuedSubmissionNow({
+                                      sessionId,
+                                      submissionId: item.submissionId
+                                    })
+                                    .then((next) => {
+                                      adoptSnapshot(next)
+                                      setQueueAnnouncement(
+                                        durableQueueAnnouncement(next.queue.outcome)
+                                      )
+                                    })
+                                    .finally(() => setBusy(false))
+                                }}
+                              >
+                                Send now
+                              </Button>
+                            </div>
+                          </>
+                        )}
+                      </li>
+                    ))}
+                </ol>
+                <p role="status" aria-live="polite" className="sr-only">
+                  {queueAnnouncement}
+                </p>
+              </section>
+            )}
+
+            <form
+              className="flex flex-col gap-2"
+              onSubmit={(event) => {
+                event.preventDefault()
+                const text = draft.trim()
+                if (!text) return
+                if (displayedRecovery) setDismissedRecoveryKey(displayedRecovery.key)
+                // While a Run works, capture every Run choice in the durable,
+                // Session-owned queue. No pending message exists only in React.
+                if (activeRunId !== null || hasQueuedSubmissions) {
+                  if (!chosenHarness) return
+                  const refusal = reviewAttachmentsRefusal(reviewAttachments)
+                  if (refusal) {
+                    setError(refusal)
+                    return
+                  }
+                  setBusy(true)
+                  void window.shell
+                    .enqueueQueuedSubmission({
+                      sessionId,
+                      submissionId: crypto.randomUUID(),
+                      text,
+                      source: 'composer',
+                      ...(chosenSkill ? { skill: chosenSkill } : {}),
+                      harness: chosenHarness,
+                      model: choice?.model ?? HARNESS_DEFAULT_MODEL,
+                      effort: applicableEffort(models, choice),
+                      permissionMode,
+                      reviewAttachments
+                    })
+                    .then((next) => {
+                      adoptSnapshot(next)
+                      setDraft((current) => (current === text ? '' : current))
+                      setSkill((current) => (current === chosenSkill ? null : current))
+                      onClearReviewAttachments()
+                      setQueueAnnouncement(durableQueueAnnouncement(next.queue.outcome))
+                    })
+                    .catch(() => setError('That message could not be added to the queue.'))
+                    .finally(() => setBusy(false))
+                  return
+                }
+                void send(text, 'composer')
+              }}
+            >
+              <label className="sr-only" htmlFor="conversation-composer">
+                Your message
+              </label>
+              {matchingSkills !== null && (
+                <SkillSuggestions matching={matchingSkills} onChoose={chooseSkill} />
+              )}
+              {/* One card, as the mock draws it: the field and everything the
+              next message is configured with, in the same box. The Skill is
+              asked for with `/` in the message rather than with a control. */}
+              <div className="rounded-xl border border-border bg-surface focus-within:ring-2 focus-within:ring-ring">
+                {/* The field stays alive while a Run works: thinking happens
+                  during the agent's turn, and a person mid-thought must not
+                  find their keyboard confiscated. Only sending waits. */}
+                <textarea
+                  id="conversation-composer"
+                  ref={composerRef}
+                  rows={3}
+                  value={draft}
+                  onChange={(event) => {
+                    const nextDraft = event.target.value
+                    if (nextDraft.trim() && displayedRecovery) {
+                      setDismissedRecoveryKey(displayedRecovery.key)
+                    }
+                    setDraft(nextDraft)
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter') return
+                    // Mid-composition Enter belongs to the input method.
+                    if (event.nativeEvent.isComposing) return
+                    if (event.shiftKey || event.altKey) return
+                    // While a send settles or a Run works, Enter makes a line
+                    // rather than a second send — holding a message is the
+                    // button's deliberate act, never a keystroke's.
+                    if (busy || activeRunId !== null || hasQueuedSubmissions) return
+                    event.preventDefault()
+                    if (draft.trim()) {
+                      if (displayedRecovery) setDismissedRecoveryKey(displayedRecovery.key)
+                      void send(draft.trim(), 'composer')
+                    }
+                  }}
+                  placeholder="Reply, or / for a Skill…"
+                  className="w-full resize-none bg-transparent px-3 pt-3 pb-1 text-sm outline-none placeholder:text-muted-foreground"
+                />
+                <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
+                  <PermissionModePicker
+                    value={permissionMode}
+                    onChange={(mode) => {
+                      modeTouchedRef.current = true
+                      setPermissionMode(mode)
+                    }}
+                    projectRoot={session.projectRoot}
+                    disabled={activeRunId !== null}
+                  />
+                  <span className="ml-auto">
+                    <ModelPicker
+                      catalog={models}
+                      readiness={readiness}
+                      choice={choice}
+                      onChange={(next) => {
+                        choiceTouchedRef.current = true
+                        setChosen(next)
+                      }}
+                      disabled={activeRunId !== null}
+                    />
+                  </span>
+                  <Button
+                    type="submit"
+                    size="icon"
+                    aria-label={
+                      activeRunId !== null || hasQueuedSubmissions ? 'Add to queue' : 'Send'
+                    }
+                    className="rounded-full disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                    disabled={busy || blocked || !draft.trim()}
+                  >
+                    <ArrowUp aria-hidden="true" className="size-3.5" />
+                  </Button>
+                </div>
+              </div>
+              {reviewAttachments.length > 0 && (
+                <section aria-label="Attached code" className="flex flex-col gap-1">
+                  <p className="text-2xs text-muted-foreground">
+                    Attached as it read when you selected it. Later edits do not change it.
+                  </p>
+                  <ul className="flex flex-col gap-1">
+                    {reviewAttachments.map((attachment, index) => (
+                      <li
+                        key={attachment.id}
+                        className="rounded-md border border-border bg-surface px-2 py-1.5"
+                      >
+                        <div className="flex items-center gap-2">
+                          <FileText
+                            aria-hidden="true"
+                            className="size-3 shrink-0 text-muted-foreground"
+                          />
+                          <span className="min-w-0 flex-1 truncate font-mono text-2xs">
+                            {reviewAttachmentLabel(attachment)}
+                          </span>
+                          <span className="shrink-0 text-2xs text-muted-foreground">
+                            {attachment.lines.length}{' '}
+                            {attachment.lines.length === 1 ? 'line' : 'lines'}
+                            {attachment.shortened ? ' · shortened' : ''}
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            aria-expanded={inspectedAttachmentId === attachment.id}
+                            aria-label={`Inspect ${reviewAttachmentLabel(attachment)}`}
+                            onClick={() =>
+                              setInspectedAttachmentId((current) =>
+                                current === attachment.id ? null : attachment.id
+                              )
+                            }
+                          >
+                            Inspect
+                          </Button>
+                          <Button
+                            id={`remove-attachment-${attachment.id}`}
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            aria-label={`Remove ${reviewAttachmentLabel(attachment)}`}
+                            onClick={() => {
+                              // Focus never falls to the document: the next card's
+                              // Remove takes it, or the composer does when this was
+                              // the last one.
+                              const nextId =
+                                reviewAttachments[index + 1]?.id ?? reviewAttachments[index - 1]?.id
+                              onRemoveReviewAttachment(attachment.id)
+                              window.requestAnimationFrame(() => {
+                                if (nextId)
+                                  document.getElementById(`remove-attachment-${nextId}`)?.focus()
+                                else composerRef.current?.focus()
+                              })
+                            }}
+                          >
+                            <X aria-hidden="true" className="size-3" />
+                          </Button>
+                        </div>
+                        {inspectedAttachmentId === attachment.id && (
+                          <DiffView
+                            hunks={[
+                              {
+                                oldStart: attachment.startLine ?? 0,
+                                oldLines: attachment.lines.length,
+                                newStart: attachment.startLine ?? 0,
+                                newLines: attachment.lines.length,
+                                lines: attachment.lines
+                              }
+                            ]}
+                          />
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+              {activeRunId !== null && (
+                <p className="text-xs text-muted-foreground">
+                  A Run is working. Keep typing — Send adds a durable Queued Submission.{' '}
+                  <span className="font-mono text-2xs">⌘.</span> stops the Run now.
+                </p>
+              )}
+              {chosenSkill && <ChosenSkillNote name={chosenSkill} onClear={() => setSkill(null)} />}
+              {blocked && canDevelop && (
+                <div role="status" className="rounded-md border border-border bg-muted/50 p-2">
+                  <p className="text-xs text-foreground">{canDevelop.summary}</p>
+                  {canDevelop.command && (
+                    <code className="mt-1 block font-mono text-xs break-all select-text">
+                      {canDevelop.command}
+                    </code>
+                  )}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    This app never installs or updates a Harness for you.
+                  </p>
+                </div>
+              )}
+            </form>
+
+            {(error ?? failureSummary) && (
+              <p role="alert" className="pt-2 text-xs text-destructive">
+                {error ?? failureSummary}
+              </p>
+            )}
+          </div>
+        </MessageScrollerProvider>
+      </div>
+
+      {/* The fleet, beside the transcript rather than inside it. It draws
+          nothing at all until a Run dispatches a subagent. */}
+      <SubagentDock
+        fleet={fleet}
+        expanded={dockExpanded}
+        openId={openSubagentId}
+        onOpen={setOpenSubagentId}
+        onExpandedChange={(expanded) => {
+          dockClaimedRef.current = true
+          setDockExpanded(expanded)
+        }}
+      />
     </div>
   )
 }
@@ -1627,29 +1687,7 @@ function RunOutcome({
   onOpenFile: (path: string) => void
   onContinue: () => void
 }): React.JSX.Element | null {
-  const [expanded, setExpanded] = useState(false)
-
   const changes = steps.flatMap((step) => (step.kind === 'file-change' ? [step] : []))
-  /** What this list still holds, now that commands have their own rows. */
-  const fileSteps = steps.filter((step) => step.kind !== 'command')
-  const reads = steps.filter((step) => step.kind === 'read').length
-  const edited = new Set(changes.map((step) => step.path))
-  const commandCount = steps.filter((step) => step.kind === 'command').length
-  const totals = changes.reduce(
-    (sum, change) => ({
-      added: sum.added + change.added,
-      removed: sum.removed + change.removed
-    }),
-    { added: 0, removed: 0 }
-  )
-  const summary =
-    [
-      reads > 0 && `Read ${String(reads)} file${reads === 1 ? '' : 's'}`,
-      edited.size > 0 && `Edited ${String(edited.size)} file${edited.size === 1 ? '' : 's'}`,
-      commandCount > 0 && `Ran ${String(commandCount)} command${commandCount === 1 ? '' : 's'}`
-    ]
-      .filter(Boolean)
-      .join(' · ') || 'Worked'
   const failed =
     group.ended?.boundary === 'run-failed' || (run !== null && FAILED_STATUSES.has(run.status))
   const stopped = group.ended?.boundary === 'run-stopped' || run?.status === 'stopped'
@@ -1710,91 +1748,196 @@ function RunOutcome({
         </div>
       </div>
 
-      <div className="mt-2 pt-1" aria-label="Run activity">
-        {steps.length > 0 ? (
-          <>
-            {/* Commands are not listed here: they have their own openable rows
-                above, where what they printed is also readable. This stays the
-                file record — what was read, and what was written — so a Run
-                that only ran commands has a summary and nothing to open. */}
-            <button
-              type="button"
-              aria-expanded={fileSteps.length > 0 ? expanded : undefined}
-              disabled={fileSteps.length === 0}
-              onClick={() => setExpanded(!expanded)}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40 disabled:hover:bg-transparent"
-            >
-              <ChevronRight
-                aria-hidden="true"
-                className={cn(
-                  'size-3 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none',
-                  fileSteps.length === 0 && 'invisible',
-                  expanded && 'rotate-90'
-                )}
-              />
-              <span className="min-w-0 flex-1 truncate">{summary}</span>
-              {(totals.added > 0 || totals.removed > 0) && (
-                <span className="shrink-0 font-mono text-2xs tabular-nums">
-                  <DiffCounts added={totals.added} removed={totals.removed} />
-                </span>
-              )}
-            </button>
-            {expanded && fileSteps.length > 0 && (
-              <ol className="border-t border-border py-1" aria-label="Files this Run touched">
-                {fileSteps.map((step) => (
-                  <StepRow key={step.id} step={step} onOpenFile={onOpenFile} />
-                ))}
-              </ol>
-            )}
-          </>
-        ) : (
-          <p className="px-3 py-1.5 text-xs text-muted-foreground">
-            No command or file activity was recorded.
-          </p>
-        )}
-      </div>
+      {/* What the Run did is one chain above this, in the order it happened.
+          The only thing left to say here is when there was nothing at all. */}
+      {steps.length === 0 && (
+        <p className="mt-2 px-3 py-1.5 text-xs text-muted-foreground">
+          No command or file activity was recorded.
+        </p>
+      )}
     </section>
   )
 }
 
 /**
- * The Run's tool calls: every command it ran, one openable line each.
+ * Everything the Run did, folded into one line that opens.
  *
- * Commands are the only step that answers with something — a read and an edit
- * are already whole in their own line, and the Files panel is the one diff
- * surface — so they are the only step this surface takes. What a command
- * printed was durable all along and had nowhere to be read; here it is, one
- * click from the line that ran it, and closed until then.
+ * A Run reads, writes, runs commands and asks permission, and until now each
+ * of those was its own stack of rows: the commands here, the approvals there,
+ * the files somewhere below. Three lists of the same work, none of them in the
+ * order it happened, and between them enough rows to push the Run's own prose
+ * off the screen.
+ *
+ * So they are one chain, in the one order they occurred, behind a sentence
+ * saying what it amounted to. Nothing is hidden that was not already a click
+ * away, and what a command printed is still exactly one click from the line
+ * that ran it.
  */
-function ToolCalls({ steps }: { steps: StepEntry[] }): React.JSX.Element | null {
-  const commands = steps.flatMap((step) => (step.kind === 'command' ? [step] : []))
-  if (commands.length === 0) return null
+function RunActivity({
+  group,
+  active,
+  duration,
+  onOpenFile
+}: {
+  group: RunGroup
+  active: boolean
+  duration: string | null
+  onOpenFile: (path: string) => void
+}): React.JSX.Element | null {
+  const items = runActivity(group)
+  if (items.length === 0) return null
 
   return (
-    <section aria-label="Tool calls" className="flex flex-col">
-      {commands.map((step) => (
-        <ToolResult
-          key={step.id}
-          title={displayCommand(step.command)}
-          status={commandStatus(step)}
-          meta={commandMeta(step)}
-          copyText={step.output}
-        >
-          {step.output.trim() === '' ? (
-            <p className="text-2xs text-muted-foreground">It printed nothing.</p>
-          ) : (
-            <ToolResultOutput>{step.output}</ToolResultOutput>
-          )}
-        </ToolResult>
-      ))}
-    </section>
+    <ChainOfThought
+      label={activitySentence(items)}
+      meta={duration}
+      running={active}
+      ariaLabel="What this Run did"
+    >
+      {items.map((item) =>
+        item.kind === 'approval' ? (
+          <ApprovalStep key={item.id} entry={item} />
+        ) : (
+          <ActivityStep key={item.id} step={item} onOpenFile={onOpenFile} />
+        )
+      )}
+    </ChainOfThought>
+  )
+}
+
+/**
+ * The Run's steps and its answered approvals back in the one order they
+ * happened in. A request the person never answered is left out: it is either
+ * still standing — and has its own surface, above — or the Run ended first,
+ * and a row saying nothing was decided is not a step of anything.
+ */
+function runActivity(group: RunGroup): (StepEntry | ApprovalEntry)[] {
+  const answered = group.approvals.filter((entry) => entry.decision !== null)
+  return [...group.steps, ...answered].sort(
+    (left, right) => Date.parse(left.at) - Date.parse(right.at)
+  )
+}
+
+/**
+ * What the Run did, in a sentence made only of what it is recorded as having
+ * done. Nothing here characterises the work — the app cannot know whether a
+ * Run was exploring or fixing — so it counts, and counting is something it can
+ * always do honestly.
+ */
+function activitySentence(items: (StepEntry | ApprovalEntry)[]): string {
+  const reads = items.filter((item) => item.kind === 'read').length
+  const commands = items.filter((item) => item.kind === 'command').length
+  const approvals = items.filter((item) => item.kind === 'approval').length
+  const edited = new Set(items.flatMap((item) => (item.kind === 'file-change' ? [item.path] : [])))
+    .size
+  const clauses = [
+    reads > 0 && `read ${plural(reads, 'file')}`,
+    commands > 0 && `ran ${plural(commands, 'command')}`,
+    edited > 0 && `edited ${plural(edited, 'file')}`,
+    approvals > 0 && `answered ${plural(approvals, 'request')}`
+  ].filter((clause) => clause !== false)
+  const sentence = joinClauses(clauses)
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1)
+}
+
+function plural(count: number, noun: string): string {
+  return `${String(count)} ${noun}${count === 1 ? '' : 's'}`
+}
+
+/** `a`, `a and b`, `a, b and c` — a list that reads as a sentence would. */
+function joinClauses(clauses: string[]): string {
+  if (clauses.length <= 1) return clauses[0] ?? 'Worked'
+  return `${clauses.slice(0, -1).join(', ')} and ${String(clauses.at(-1))}`
+}
+
+/** One read, edit or command as a step of the chain. */
+function ActivityStep({
+  step,
+  onOpenFile
+}: {
+  step: StepEntry
+  onOpenFile: (path: string) => void
+}): React.JSX.Element {
+  if (step.kind === 'read') {
+    return (
+      <ChainStep
+        icon={<FileText className="size-3.5" />}
+        title={`Read ${step.path}`}
+        onOpen={() => onOpenFile(step.path)}
+      />
+    )
+  }
+  if (step.kind === 'file-change') {
+    // The row is a way into the Files panel, the one diff surface.
+    return (
+      <ChainStep
+        icon={<FileDiff className="size-3.5" />}
+        title={`${CHANGE_LABEL[step.changeKind]} ${step.path}`}
+        meta={<DiffCounts added={step.added} removed={step.removed} />}
+        onOpen={() => onOpenFile(step.path)}
+      />
+    )
+  }
+  /* A command is the one step that answers with something, so it is the one
+     step that opens. It is also the one step drawn as it was written: no
+     rewording of a shell command is truer than the command. */
+  return (
+    <ChainStep
+      icon={<Terminal className="size-3.5" />}
+      title={displayCommand(step.command)}
+      mono
+      status={commandStatus(step)}
+      meta={commandMeta(step)}
+      copyText={step.output}
+    >
+      {step.output.trim() === '' ? (
+        <p className="text-2xs text-muted-foreground">It printed nothing.</p>
+      ) : (
+        <ChainStepOutput>{step.output}</ChainStepOutput>
+      )}
+    </ChainStep>
+  )
+}
+
+/** What the agent asked for, and what the person decided about it. */
+const APPROVAL_META: Record<ApprovalDecision, string> = {
+  allowed: 'Approved',
+  denied: 'Declined',
+  abandoned: 'Unanswered'
+}
+
+/**
+ * A decision the person made, kept in the order they made it. The line shows
+ * the request exactly as it was put to them — an approval is agreed to
+ * verbatim, so it is never tidied for display — and opening it gives the rest
+ * of what they were shown.
+ */
+function ApprovalStep({ entry }: { entry: ApprovalEntry }): React.JSX.Element {
+  const decision = entry.decision
+  if (decision === null) throw new Error('An unanswered request is not a step')
+  return (
+    <ChainStep
+      icon={<ShieldQuestion className="size-3.5" />}
+      title={entry.summary}
+      mono
+      meta={APPROVAL_META[decision]}
+    >
+      <p className="text-2xs text-muted-foreground">
+        {entry.tool} — {APPROVAL_OUTCOME[decision]}
+        {decision === 'denied' && entry.message ? ` — “${entry.message}”` : ''}
+        {entry.remembered && entry.proposedRule
+          ? ` — and always allow ${ruleText(entry.proposedRule)}`
+          : ''}
+      </p>
+      {entry.detail !== '' && <ChainStepOutput>{entry.detail}</ChainStepOutput>}
+    </ChainStep>
   )
 }
 
 type CommandEntry = Extract<ConversationEntry, { kind: 'command' }>
 
 /** How a command went, in the four states the row can draw. */
-function commandStatus(step: CommandEntry): ToolResultStatus {
+function commandStatus(step: CommandEntry): ChainStepStatus {
   if (step.running) return 'running'
   if (step.interrupted) return 'cancelled'
   return step.failed ? 'error' : 'success'
@@ -1805,120 +1948,25 @@ function commandStatus(step: CommandEntry): ToolResultStatus {
  * zero is not a measurement — it is a Harness that reported nothing — so it is
  * left off rather than printed as a time the command did not take.
  */
-function commandMeta(step: CommandEntry): string | undefined {
-  const parts = [
-    step.exitCode !== null && step.exitCode !== 0 ? `exit ${String(step.exitCode)}` : null,
+function commandMeta(step: CommandEntry): React.ReactNode {
+  const failure = step.exitCode !== null && step.exitCode !== 0 ? step.exitCode : null
+  const elapsed =
     step.durationMs !== null && step.durationMs > 0 ? formatDuration(step.durationMs) : null
-  ].filter((part) => part !== null)
-  return parts.length > 0 ? parts.join(' · ') : undefined
-}
-
-/**
- * One step as a row draws it: the fields the row needs and nothing else, so a
- * durable journal entry and a step still streaming render through the same
- * component instead of two parallel renderings of "a step".
- */
-type StepView =
-  | { kind: 'read'; id: string; path: string }
-  | {
-      kind: 'command'
-      id: string
-      command: string
-      running: boolean
-      failed: boolean
-      interrupted: boolean
-      exitCode: number | null
-      durationMs: number | null
-    }
-  | { kind: 'file-change'; id: string; path: string; added: number; removed: number }
-
-/** One chronological step of a Run: a read, an edit, or a command. */
-function StepRow({
-  step,
-  onOpenFile
-}: {
-  step: StepView
-  onOpenFile: (path: string) => void
-}): React.JSX.Element {
-  if (step.kind === 'read') {
-    return (
-      <li className="flex items-center gap-2 px-3 py-1 font-mono text-xs text-muted-foreground">
-        <FileText aria-hidden="true" className="size-3 shrink-0" />
-        <span className="min-w-0 flex-1 truncate select-text">Read {step.path}</span>
-      </li>
-    )
-  }
-  if (step.kind === 'command') {
-    return (
-      <li className="flex items-center gap-2 px-3 py-1 font-mono text-xs text-muted-foreground">
-        {step.running ? <Spinner /> : <Terminal aria-hidden="true" className="size-3 shrink-0" />}
-        <span className="min-w-0 flex-1 truncate select-text">{displayCommand(step.command)}</span>
-        {step.interrupted ? (
-          <span className="shrink-0">interrupted</span>
-        ) : !step.running && step.exitCode !== null ? (
-          <span className="shrink-0">
-            <ExitCode code={step.exitCode} />
-          </span>
-        ) : (
-          !step.running && step.failed && <span className="shrink-0 text-destructive">failed</span>
-        )}
-        {!step.running && step.durationMs !== null && (
-          <span className="shrink-0 text-2xs">{formatDuration(step.durationMs)}</span>
-        )}
-      </li>
-    )
-  }
-  // An edit. The row is a way into the Files panel, the one diff surface.
+  if (failure === null && elapsed === null) return undefined
   return (
-    <li>
-      <button
-        type="button"
-        onClick={() => onOpenFile(step.path)}
-        className="flex w-full items-center gap-2 px-3 py-1 text-left font-mono text-xs text-muted-foreground hover:bg-muted/40"
-      >
-        <FileDiff aria-hidden="true" className="size-3 shrink-0" />
-        <span className="min-w-0 flex-1 truncate select-text">{step.path}</span>
-        <span className="shrink-0">
-          <DiffCounts added={step.added} removed={step.removed} />
-        </span>
-      </button>
-    </li>
+    <>
+      {failure !== null && <ExitCode code={failure} />}
+      {failure !== null && elapsed !== null && ' · '}
+      {elapsed}
+    </>
   )
 }
 
-/** What the agent asked for, and what the person decided about it. */
+/** What the person decided, in the words the opened step spells it out in. */
 const APPROVAL_OUTCOME: Record<ApprovalDecision, string> = {
   allowed: 'You approved this',
   denied: 'You declined this',
   abandoned: 'Unanswered — the Run ended first'
-}
-
-function ApprovalRow({
-  entry
-}: {
-  entry: Extract<ConversationEntry, { kind: 'approval' }>
-}): React.JSX.Element {
-  return (
-    <li className="flex gap-2">
-      <ShieldQuestion
-        aria-hidden="true"
-        className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
-      />
-      <div className="min-w-0 flex-1">
-        <p className="text-xs">
-          <span className="text-muted-foreground">{entry.tool}</span>{' '}
-          <span className="font-mono break-all select-text">{entry.summary}</span>
-        </p>
-        <p className="text-xs text-muted-foreground">
-          {entry.decision === null ? 'Waiting for your answer' : APPROVAL_OUTCOME[entry.decision]}
-          {entry.decision === 'denied' && entry.message ? ` — “${entry.message}”` : ''}
-          {entry.remembered && entry.proposedRule
-            ? ` — and always allow ${ruleText(entry.proposedRule)}`
-            : ''}
-        </p>
-      </div>
-    </li>
-  )
 }
 
 type MessageEntry = Extract<ConversationEntry, { kind: 'message' }>
@@ -1987,6 +2035,9 @@ function groupEntries(entries: ConversationEntry[]): ConversationItem[] {
       case 'approval':
         groupFor(entry.runId).approvals.push(entry)
         break
+      // A subagent is not a row of the transcript: the dock holds the fleet,
+      // and the Run's pill is drawn from it rather than from this grouping.
+      case 'subagent':
       case 'usage':
       case 'thread':
       case 'queued-submission':
@@ -2294,6 +2345,9 @@ function RunSection({
   active,
   waiting,
   live,
+  fleet,
+  fleetShown,
+  onToggleFleet,
   onOpenFile,
   onContinue
 }: {
@@ -2302,11 +2356,19 @@ function RunSection({
   active: boolean
   waiting: boolean
   live: LiveRun | null
+  /** The subagents this Run dispatched, which are shown in the dock. */
+  fleet: FleetMember[]
+  /** True when the dock is open on this Run's fleet rather than another's. */
+  fleetShown: boolean
+  onToggleFleet: () => void
   onOpenFile: (path: string) => void
   onContinue: () => void
 }): React.JSX.Element {
   const startedAt = group.started?.at ?? run?.acceptedAt ?? null
-  const resolved = group.approvals.filter((entry) => entry.decision !== null)
+  const duration =
+    startedAt !== null && group.ended
+      ? formatDuration(Date.parse(group.ended.at) - Date.parse(startedAt))
+      : null
   const durableMessageIds = new Set(group.messages.map((message) => message.id))
   const liveMessages = new Map(
     (live?.messages ?? []).map((message) => [assistantMessageId(group.runId, message.id), message])
@@ -2344,18 +2406,22 @@ function RunSection({
             partial={message.partial}
           />
         ))}
-      {/* What the Run ran, in the order it ran it, and what each one printed
-          for anyone who asks. It sits under the prose that announced it and
-          above the line saying what is happening now. */}
-      <ToolCalls steps={group.steps} />
+      {/* What this Run delegated, in one line. The fleet itself is in the
+          dock: a subagent reports itself many times a minute, and a
+          transcript that grew a row per report would be a transcript nobody
+          could read the prose of. */}
+      {fleet.length > 0 && (
+        <SubagentPill fleet={fleet} expanded={fleetShown} onToggle={onToggleFleet} />
+      )}
+      {/* Everything the Run did, in the order it did it, behind one line
+          saying what it amounted to. It sits under the prose that announced it
+          and above the line saying what is happening now. */}
+      <RunActivity group={group} active={active} duration={duration} onOpenFile={onOpenFile} />
       {/* In flight: one pulsing line about the current step. At rest: only
           changed files or an interrupted Run need an outcome surface. */}
       {active && !waiting && (
         <RunWorkingIndicator steps={group.steps} live={live} startedAt={startedAt} />
       )}
-      {resolved.map((entry) => (
-        <ApprovalRow key={entry.id} entry={entry} />
-      ))}
       {/* The sanitized activity log surfaces only when a Run ended badly —
           that is exactly when the detail matters, and it belongs to the Run
           that produced it rather than to the bottom of the screen. */}

@@ -1605,6 +1605,16 @@ function describeActivity(
         kind: 'output',
         summary: `Harness retry ${event.attempt} in ${event.delayMs} ms (${event.category})`
       }
+    case 'subagent':
+      // Only the dispatch and the ending: a subagent reports itself many times
+      // over as it works, and an activity stream repeating each one would be a
+      // log of the reporting rather than of the work.
+      return event.status === 'working'
+        ? undefined
+        : {
+            kind: event.status === 'failed' ? 'error' : 'output',
+            summary: `Subagent ${event.name} ${event.status === 'done' ? 'reported back' : event.status}`
+          }
     // An approval is recorded where it is decided, with the wording the person
     // actually saw; repeating it here would say it twice.
     case 'approval-request':

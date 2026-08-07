@@ -3,12 +3,14 @@ import {
   redactCredentials,
   type ChangeKind,
   type HarnessEvent,
-  type HarnessFailureCategory
+  type HarnessFailureCategory,
+  type SubagentStatus
 } from '@shared/conversation'
 import type { StandingApprovalKind } from '@shared/approval'
 import type { CodexLaunch } from '@shared/conversation'
 import type { HarnessId } from '@shared/readiness'
 import { parseCodexPatch } from './diff'
+import { interruptWorking, subagentEvent, type Dispatch } from './subagent'
 import type { AskForApproval } from './codex-protocol/v2/AskForApproval'
 import type { SandboxMode } from './codex-protocol/v2/SandboxMode'
 import type { ThreadResumeParams } from './codex-protocol/v2/ThreadResumeParams'
@@ -107,7 +109,13 @@ const itemSchema = z.object({
   exitCode: z.number().nullable().optional(),
   durationMs: z.number().nullable().optional(),
   changes: z.array(changeSchema).optional(),
-  summary: z.array(z.string()).optional()
+  summary: z.array(z.string()).optional(),
+  /** What a `subAgentActivity` says: started, interacted with, interrupted. */
+  kind: z.string().optional(),
+  /** The Harness Thread the subagent's own work arrives on. */
+  agentThreadId: z.string().min(1).max(200).optional(),
+  /** Codex's name for the agent, as a path: `/root/count_notes_lines`. */
+  agentPath: z.string().min(1).max(500).optional()
 })
 
 const tokenUsageSchema = z.object({
@@ -174,7 +182,36 @@ const IGNORED_METHODS = new Set([
 ])
 
 /** Items worth showing the moment they begin rather than when they end. */
-const STARTED_ITEMS = new Set(['commandExecution'])
+const STARTED_ITEMS = new Set(['commandExecution', 'subAgentActivity'])
+
+/** What the app calls each activity Codex reports against a subagent. */
+const SUBAGENT_STATUS: Record<string, SubagentStatus> = {
+  started: 'working',
+  interacted: 'working',
+  interrupted: 'interrupted'
+}
+
+/**
+ * One subagent as this Adapter is tracking it. Keyed by the Harness Thread it
+ * runs on — the only thing every one of its frames carries — and holding the
+ * last thing it said, which becomes its report once it ends.
+ */
+interface ThreadDispatch extends Dispatch {
+  threadId: string
+  /** Its newest message. Not yet a report: it may still be thinking aloud. */
+  lastMessage?: string
+}
+
+/**
+ * Codex names an agent with a path — `/root/count_notes_lines`. The last
+ * segment is the name it was given; the rest is where it sits in a tree this
+ * app does not show. Said as a sentence, because a Conversation is prose.
+ */
+function agentName(path: string): string {
+  const leaf = path.split('/').filter(Boolean).at(-1) ?? path
+  const words = leaf.replaceAll(/[_-]+/g, ' ').trim()
+  return (words.slice(0, 1).toUpperCase() + words.slice(1)).slice(0, 200) || path.slice(0, 200)
+}
 
 const UNREADABLE: HarnessEvent = { type: 'unsupported', detail: 'unreadable protocol line' }
 
@@ -198,6 +235,70 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
   /** The prefix Codex proposed for each, so its own amendment can be sent back. */
   const proposedPrefixes = new Map<string, string[]>()
   let thread: string | null = null
+  /**
+   * Subagents this turn spawned, by the Harness Thread each one runs on.
+   *
+   * Codex gives a subagent a Thread of its own and then sends everything it
+   * does — its commands, its answer, its turn ending — under that Thread id on
+   * the same wire. Read without regard to which Thread they came from, a
+   * subagent's command becomes the Run's command, its answer becomes the Run's
+   * answer, and its turn ending ends the Run. So the Thread is what decides.
+   */
+  const subagents = new Map<string, ThreadDispatch>()
+
+  /** The subagent as it stands now: every event carries its whole state. */
+  function report(dispatch: ThreadDispatch): HarnessEvent[] {
+    subagents.set(dispatch.threadId, dispatch)
+    return [subagentEvent(dispatch)]
+  }
+
+  /**
+   * What one of a subagent's own frames says about it. Only its commands and
+   * its final message are worth anything here: the rest is the same protocol
+   * the Run itself produces, and it is not the Run's.
+   */
+  function describeSubagentFrame(
+    dispatch: ThreadDispatch,
+    method: string,
+    params: Record<string, unknown>
+  ): HarnessEvent[] {
+    // Its last word becomes its report, and only now: until the subagent's
+    // turn ends, a message it has produced is as likely to be it thinking
+    // aloud as it answering.
+    if (method === 'turn/completed') {
+      if (dispatch.status !== 'working') return []
+      return report({
+        ...dispatch,
+        status: 'done',
+        ...(dispatch.lastMessage !== undefined ? { result: dispatch.lastMessage } : {})
+      })
+    }
+    if (method === 'turn/failed') {
+      return report({
+        ...dispatch,
+        status: 'failed',
+        ...(dispatch.lastMessage !== undefined ? { result: dispatch.lastMessage } : {})
+      })
+    }
+    if (method !== 'item/started' && method !== 'item/completed') return []
+    const item = itemSchema.safeParse(params['item'])
+    if (!item.success) return []
+    if (item.data.type === 'commandExecution' && method === 'item/started') {
+      return report({
+        ...dispatch,
+        ...(item.data.command !== undefined ? { activity: item.data.command } : {}),
+        steps: (dispatch.steps ?? 0) + 1
+      })
+    }
+    if (item.data.type === 'agentMessage' && method === 'item/completed') {
+      const body = item.data.text ?? ''
+      // Held rather than published: the newest simply wins, and whichever is
+      // newest when the turn ends is the one it reported back with.
+      if (body) subagents.set(dispatch.threadId, { ...dispatch, lastMessage: body })
+      return []
+    }
+    return []
+  }
   let turn: string | null = null
 
   const send = (message: Record<string, unknown>): void => {
@@ -335,6 +436,14 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
 
   function consumeNotification(raw: z.infer<typeof notificationSchema>): HarnessEvent[] {
     const { method, params } = raw
+    const on = text(params['threadId'])
+    if (on && thread !== null && on !== thread) {
+      const dispatch = subagents.get(on)
+      // A Thread that is neither this Run's nor a subagent this Adapter saw
+      // spawned is not this Run's record either way. Nothing it says is
+      // dropped from a Conversation that was ever going to hold it.
+      return dispatch === undefined ? [] : describeSubagentFrame(dispatch, method, params)
+    }
     if (method === 'item/agentMessage/delta') {
       const itemId = text(params['itemId']) || 'message'
       const grown = (messages.get(itemId) ?? '') + text(params['delta'])
@@ -437,6 +546,29 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
           changeKind: CODEX_CHANGE_KINDS[change.kind?.type ?? ''] ?? 'changed',
           hunks: parseCodexPatch(change.diff)
         }))
+      case 'subAgentActivity': {
+        const on = item.agentThreadId
+        if (on === undefined) return []
+        const existing = subagents.get(on)
+        const status = SUBAGENT_STATUS[item.kind ?? ''] ?? existing?.status ?? 'working'
+        // Codex says the same activity twice, as it starts and as it
+        // completes; the second says nothing the first did not.
+        if (existing?.status === status && existing.id === item.id) return []
+        return report({
+          steps: null,
+          durationMs: null,
+          ...existing,
+          id: item.id,
+          threadId: on,
+          name: agentName(item.agentPath ?? item.id),
+          status
+        })
+      }
+      case 'collabAgentToolCall':
+        // The parent's own bookkeeping — spawn, wait, close. What it is
+        // bookkeeping about arrives as `subAgentActivity` and on the
+        // subagent's own Thread, which is where this Adapter reads it.
+        return []
       case 'userMessage':
       case 'plan':
       case 'todoList':
@@ -489,7 +621,13 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
     flush() {
       const trailing = pending
       pending = ''
-      return trailing.trim() ? [UNREADABLE] : []
+      return [
+        ...(trailing.trim() ? [UNREADABLE] : []),
+        // A subagent still working when the stream ends never reported back,
+        // exactly as under Claude. The two Harnesses must not disagree about
+        // what a Run ending does to what it delegated.
+        ...interruptWorking(subagents.values())
+      ]
     },
     takeOutgoing() {
       return outgoing.splice(0)

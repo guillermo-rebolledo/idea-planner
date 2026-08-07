@@ -45,6 +45,15 @@ export const sessionStateSchema = z.object({
    */
   runningCommands: z.record(z.string(), z.string()),
   /**
+   * The active Run's subagents, entry id → when each was dispatched. A
+   * subagent is reported over and over as it goes — including twice as it
+   * ends, once to say it finished and once to say what it found — and every
+   * one of those reports would otherwise reset how long it has been working.
+   * Kept for the whole Run rather than dropped when it ends, because the last
+   * report is exactly the one that needs the dispatch time to measure against.
+   */
+  subagentDispatchedAt: z.record(z.string(), z.string()).default({}),
+  /**
    * How many durable steps of each ordinal-numbered kind the active Run has
    * taken so far, for the id the next step gets. Counted here so a long Run
    * does not pay a full journal read per step.
@@ -84,6 +93,7 @@ export const EMPTY_STATE: SessionState = {
   recentMessageIds: [],
   recovery: null,
   runningCommands: {},
+  subagentDispatchedAt: {},
   runSteps: { read: 0, 'file-change': 0 },
   journalBytes: 0
 }
@@ -98,6 +108,7 @@ export function advance(state: SessionState, entry: ConversationEntry): SessionS
         activeRunId: entry.runId,
         recovery: null,
         runningCommands: {},
+        subagentDispatchedAt: {},
         runSteps: { read: 0, 'file-change': 0 }
       }
     }
@@ -117,6 +128,16 @@ export function advance(state: SessionState, entry: ConversationEntry): SessionS
       runningCommands: Object.fromEntries(
         Object.entries(state.runningCommands).filter(([id]) => id !== entry.id)
       )
+    }
+  }
+  if (entry.kind === 'subagent') {
+    if (entry.runId !== state.activeRunId) return state
+    // The first report is the one that dates it; every later one — including
+    // the one that ends it — is the same subagent, still dated from then.
+    if (entry.id in state.subagentDispatchedAt) return state
+    return {
+      ...state,
+      subagentDispatchedAt: { ...state.subagentDispatchedAt, [entry.id]: entry.startedAt }
     }
   }
   if (entry.kind === 'read' || entry.kind === 'file-change') {

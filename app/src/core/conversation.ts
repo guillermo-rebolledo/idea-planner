@@ -391,6 +391,26 @@ export function createConversationEffects(options: ConversationOptions): Convers
       return running?.at
     })
 
+  /**
+   * When a subagent was dispatched, from the projection for the active Run and
+   * from the journal for any other. Read the same way a command's start is,
+   * and for the same reason: a subagent reports itself many times over, and
+   * every report would otherwise start its clock again.
+   */
+  const subagentStartedAt = (
+    sessionDir: string,
+    runId: string,
+    entryId: string
+  ): Effect.Effect<string | undefined, CoreError> =>
+    Effect.gen(function* () {
+      const state = yield* readState(sessionDir)
+      if (state.activeRunId === runId) return state.subagentDispatchedAt[entryId]
+      const dispatched = (yield* readEntries(sessionDir)).find(
+        (entry) => entry.kind === 'subagent' && entry.id === entryId
+      )
+      return dispatched?.kind === 'subagent' ? dispatched.startedAt : undefined
+    })
+
   const snapshot = (
     sessionId: string,
     sessionDir: string
@@ -1248,6 +1268,40 @@ export function createConversationEffects(options: ConversationOptions): Convers
                   // Kept relative to the Checkout: an absolute path is this
                   // machine's, not this Conversation's.
                   path: redactCredentials(event.path).replaceAll(checkout, '.').slice(0, 1_000)
+                })
+              )
+              return
+            }
+            case 'subagent': {
+              // Keyed by the Harness's own dispatch id, so every report of the
+              // same subagent replaces the one before it rather than stacking
+              // a row per progress line — the bargain a command already makes.
+              const id = `subagent:${input.runId}:${event.id}`
+              const startedAt =
+                (yield* subagentStartedAt(sessionDir, input.runId, id)) ?? now.toISOString()
+              const ended = event.status !== 'working'
+              yield* append(
+                sessionDir,
+                conversationEntrySchema.parse({
+                  kind: 'subagent',
+                  id,
+                  at: now.toISOString(),
+                  startedAt,
+                  runId: input.runId,
+                  dispatchId: event.id,
+                  name: event.name,
+                  role: event.role ?? null,
+                  brief: event.brief ?? null,
+                  status: event.status,
+                  activity: event.activity ?? null,
+                  result: event.result ?? null,
+                  steps: event.steps,
+                  // The Harness's own figure when it gives one; otherwise
+                  // measured from the dispatch this Conversation saw. A
+                  // subagent still working is not yet a duration.
+                  durationMs: ended
+                    ? (event.durationMs ?? Math.max(0, now.getTime() - Date.parse(startedAt)))
+                    : null
                 })
               )
               return

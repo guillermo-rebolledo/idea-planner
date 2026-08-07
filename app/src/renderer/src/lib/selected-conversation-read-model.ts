@@ -2,11 +2,21 @@ import type {
   ConversationEntry,
   ConversationSnapshot,
   ConversationStreamEvent,
+  HarnessEvent,
   RunSnapshot,
   SuggestedResponse
 } from '@shared/contract'
+import type { FleetMember, SubagentEntry } from './subagent-fleet'
 
 export type LiveFileChange = Extract<ConversationEntry, { kind: 'file-change' }>
+
+/**
+ * One subagent as the Run is reporting it right now, ahead of the durable
+ * entry behind it. A subagent reports itself many times a minute while it
+ * works, and a dock that only redrew on the durable read would be a dock
+ * describing what the fleet was doing a moment ago.
+ */
+export type LiveSubagent = Omit<Extract<HarnessEvent, { type: 'subagent' }>, 'type'>
 
 /** Streamed state for the Run in flight, ahead of its durable projection. */
 export interface LiveRun {
@@ -15,6 +25,7 @@ export interface LiveRun {
   changes: LiveFileChange[]
   fileChangeOrdinal: number
   commands: { id: string; command: string; output: string; failed: boolean; running: boolean }[]
+  subagents: LiveSubagent[]
   suggestedResponses: SuggestedResponse[]
 }
 
@@ -209,6 +220,63 @@ export class SelectedConversationReadModel {
   }
 }
 
+function fromEntry(entry: SubagentEntry): FleetMember {
+  return {
+    dispatchId: entry.dispatchId,
+    name: entry.name,
+    role: entry.role,
+    brief: entry.brief,
+    status: entry.status,
+    activity: entry.activity,
+    result: entry.result,
+    steps: entry.steps,
+    startedAt: entry.startedAt,
+    durationMs: entry.durationMs
+  }
+}
+
+/**
+ * One Run's fleet, from the two places its subagents arrive.
+ *
+ * The durable entry is the record — it carries when the subagent was
+ * dispatched, and it survives the Run. The live event is what the Harness said
+ * a moment ago, ahead of the durable read. Neither is enough alone: a dock
+ * drawn from the record lags a working fleet by a refresh, and one drawn from
+ * the stream forgets everything the moment the Session is reopened. So the
+ * live report wins on everything it states, and the record keeps what only it
+ * knows — when the subagent started, and anything the newest report has
+ * stopped mentioning.
+ */
+export function fleetOf(
+  entries: ConversationEntry[],
+  live: LiveRun | null,
+  runId: string
+): FleetMember[] {
+  const fleet = new Map<string, FleetMember>()
+  for (const entry of entries) {
+    if (entry.kind !== 'subagent' || entry.runId !== runId) continue
+    fleet.set(entry.dispatchId, fromEntry(entry))
+  }
+  if (live?.runId === runId) {
+    for (const reported of live.subagents) {
+      const durable = fleet.get(reported.id)
+      fleet.set(reported.id, {
+        dispatchId: reported.id,
+        name: reported.name,
+        role: reported.role ?? durable?.role ?? null,
+        brief: reported.brief ?? durable?.brief ?? null,
+        status: reported.status,
+        activity: reported.activity ?? durable?.activity ?? null,
+        result: reported.result ?? durable?.result ?? null,
+        steps: reported.steps ?? durable?.steps ?? null,
+        startedAt: durable?.startedAt ?? null,
+        durationMs: reported.durationMs ?? durable?.durationMs ?? null
+      })
+    }
+  }
+  return [...fleet.values()]
+}
+
 function emptyLiveRun(runId: string): LiveRun {
   return {
     runId,
@@ -216,6 +284,7 @@ function emptyLiveRun(runId: string): LiveRun {
     changes: [],
     fileChangeOrdinal: 0,
     commands: [],
+    subagents: [],
     suggestedResponses: []
   }
 }
@@ -251,6 +320,18 @@ function applyLiveEvent(
           source: 'harness'
         }
       ]
+    }
+  }
+  if (event.type === 'subagent') {
+    // Keyed by the Harness's own dispatch id, exactly as the durable entry is:
+    // a subagent that reported twice is one subagent.
+    const { type: _type, ...subagent } = event
+    const known = base.subagents.some((entry) => entry.id === event.id)
+    return {
+      ...base,
+      subagents: known
+        ? base.subagents.map((entry) => (entry.id === event.id ? subagent : entry))
+        : [...base.subagents, subagent]
     }
   }
   if (event.type === 'command') {
