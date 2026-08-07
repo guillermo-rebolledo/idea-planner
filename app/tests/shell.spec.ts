@@ -479,13 +479,18 @@ test('a person organizes the mailbox: pin, search, archive with undo, rename, co
     await expect(home.getByText('Tool shed')).toBeVisible()
     await expect(inbox.getByText('Community tool library')).toHaveCount(0)
 
-    // The inbox collapses to a compact rail that keeps Sessions reachable
+    // The inbox collapses to one Project navigator rather than one ambiguous
+    // icon per Session. Projects and their Sessions open as cascading lists,
     // while the center surface stays in place.
     await page.getByRole('button', { name: 'Collapse inbox to rail' }).click()
     const rail = page.getByRole('navigation', { name: 'Session inbox (compact)' })
-    await expect(rail.getByRole('button', { name: 'Offline recipe planner' })).toBeVisible()
+    await expect(rail.getByRole('button', { name: 'Offline recipe planner' })).toHaveCount(0)
     await expect(page.getByRole('main')).toBeVisible()
-    await rail.getByRole('button', { name: 'Tool shed' }).click()
+    await rail.getByRole('button', { name: 'Browse Projects and Sessions' }).click()
+    const projects = page.getByRole('dialog', { name: 'Projects' })
+    await projects.getByRole('button', { name: `${projectName}, 2 Sessions` }).click()
+    const sessions = page.getByRole('dialog', { name: `${projectName} Sessions` })
+    await sessions.getByRole('button', { name: 'Tool shed' }).click()
     await expect(page.getByRole('heading', { name: 'Tool shed' })).toBeVisible()
   } finally {
     await app.close()
@@ -915,11 +920,26 @@ test('the sidebar groups by Project, and status is a dot that never moves a row'
     await expect(otherGroup.getByText('Elsewhere entirely')).toBeVisible()
     await expect(homeGroup.getByText('Offline recipe planner')).toBeVisible()
 
-    // The rail keeps the running Session legible with the inbox collapsed.
+    // The cascading navigator keeps each running Session legible under its
+    // Project with the inbox collapsed.
     await page.getByRole('button', { name: 'Collapse inbox to rail' }).click()
     const rail = page.getByRole('navigation', { name: 'Session inbox (compact)' })
-    await expect(rail.getByRole('button', { name: 'Elsewhere entirely, running' })).toBeVisible()
-    await expect(rail.getByRole('button', { name: 'Offline recipe planner' })).toBeVisible()
+    await rail.getByRole('button', { name: 'Browse Projects and Sessions' }).click()
+    const projects = page.getByRole('dialog', { name: 'Projects' })
+    const homeName = basename(await realpath(sandbox.projectDir))
+    await projects.getByRole('button', { name: `${homeName}, 1 Session` }).click()
+    await expect(
+      page
+        .getByRole('dialog', { name: `${homeName} Sessions` })
+        .getByRole('button', { name: 'Offline recipe planner, running' })
+    ).toBeVisible()
+    const otherName = basename(sandbox.plainDir)
+    await projects.getByRole('button', { name: `${otherName}, 1 Session` }).click()
+    await expect(
+      page
+        .getByRole('dialog', { name: `${otherName} Sessions` })
+        .getByRole('button', { name: 'Elsewhere entirely, running' })
+    ).toBeVisible()
   } finally {
     await app.close()
   }

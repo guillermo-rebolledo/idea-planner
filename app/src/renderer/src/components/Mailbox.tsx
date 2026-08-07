@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Archive,
+  ChevronRight,
   Circle,
   CircleDashed,
   CircleSlash,
   FolderGit2,
+  FolderTree,
   Inbox,
   MoreHorizontal,
   PanelLeft,
@@ -49,6 +51,7 @@ import { ReadinessDialog } from '@renderer/components/Readiness'
 import { SessionSwitcher } from '@renderer/components/SessionSwitcher'
 import { FilesPanel } from '@renderer/components/FilesPanel'
 import { WhereAmI } from '@renderer/components/WhereAmI'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useSessionChanges } from '@renderer/lib/useSessionChanges'
 import { useSelectedConversation } from '@renderer/lib/useSelectedConversation'
 import { ConversationMailboxRefresh } from '@renderer/lib/mailbox-refresh'
@@ -448,10 +451,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   }
 
   const snapshot = mailbox.state === 'ready' ? mailbox.snapshot : null
-  const allSessions =
-    snapshot === null
-      ? []
-      : [...snapshot.pinned, ...snapshot.projects].flatMap((group) => group.sessions)
+  const compactProjects = snapshot === null ? [] : projectsForCompactRail(snapshot)
 
   const rowHandlers: RowHandlers = {
     selectedId: selectedSession?.id,
@@ -500,11 +500,11 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       <div className="flex min-h-0 flex-1">
         {inboxCollapsed ? (
           <CompactRail
-            sessions={allSessions}
+            projects={compactProjects}
             selectedId={selectedSession?.id}
             onOpen={openSession}
             onExpand={() => setInboxCollapsed(false)}
-            onNewChat={() => startNewChat()}
+            onNewChat={startNewChat}
           />
         ) : (
           <div className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/40">
@@ -1154,14 +1154,14 @@ function DeleteConfirmDialog({
 }
 
 /**
- * What the rail says about a Session with no room for words.
+ * The compact mark beside a Session title.
  *
- * Every state gets its own mark. The rail used to fall back to one generic
- * message icon, which was a placeholder left behind when ticket 03 removed
- * the kind icons: it gave every Session the same face, which is the one thing
- * a status rail must not do.
+ * Every state gets its own shape, so status never relies on colour alone.
  */
-const RAIL_STATUS: Record<SessionStatus, { icon: LucideIcon; colorClass: string; said: string }> = {
+const SESSION_STATUS_MARK: Record<
+  SessionStatus,
+  { icon: LucideIcon; colorClass: string; said: string }
+> = {
   blocked: {
     icon: AlertTriangle,
     colorClass: 'text-status-blocked',
@@ -1184,18 +1184,41 @@ const RAIL_STATUS: Record<SessionStatus, { icon: LucideIcon; colorClass: string;
   }
 }
 
-/** What a Session looks like with no room to say anything about it. */
-function RailIcon({ status }: { status: SessionStatus }): React.JSX.Element {
-  const marked = RAIL_STATUS[status]
+/** The shape-and-colour status mark that precedes a Session title. */
+function SessionStatusIcon({ status }: { status: SessionStatus }): React.JSX.Element {
+  const marked = SESSION_STATUS_MARK[status]
   return <marked.icon aria-hidden="true" className={cn('size-3.5 shrink-0', marked.colorClass)} />
 }
 
 interface CompactRailProps {
-  sessions: MailboxSession[]
+  projects: MailboxProject[]
   selectedId: string | undefined
   onOpen: (session: MailboxSession) => void
   onExpand: () => void
-  onNewChat: () => void
+  onNewChat: (projectRoot?: string) => void
+}
+
+/**
+ * Pinned is a second visual grouping in the expanded inbox, not a second
+ * Project. The compact navigator reunites those Sessions with their Project
+ * so every Project appears exactly once in its first list.
+ */
+function projectsForCompactRail(snapshot: MailboxSnapshot): MailboxProject[] {
+  const projects = new Map(
+    snapshot.projects.map((project) => [
+      project.root,
+      { ...project, sessions: [...project.sessions] }
+    ])
+  )
+  for (const pinned of snapshot.pinned) {
+    const project = projects.get(pinned.root)
+    if (project) {
+      project.sessions.unshift(...pinned.sessions)
+    } else {
+      projects.set(pinned.root, { ...pinned, sessions: [...pinned.sessions] })
+    }
+  }
+  return [...projects.values()]
 }
 
 /**
@@ -1203,15 +1226,22 @@ interface CompactRailProps {
  * without displacing the center surface.
  */
 function CompactRail({
-  sessions,
+  projects,
   selectedId,
   onOpen,
   onExpand,
   onNewChat
 }: CompactRailProps): React.JSX.Element {
-  const blocked = sessions.filter((session) => session.status === 'blocked')
-  const waiting = blocked.length
-  const oneBlocked = blocked.length === 1 ? blocked[0] : undefined
+  const [projectsOpen, setProjectsOpen] = useState(false)
+  const [sessionProjectRoot, setSessionProjectRoot] = useState<string | null>(null)
+  const sessions = projects.flatMap((project) => project.sessions)
+  const waiting = sessions.filter((session) => session.status === 'blocked').length
+
+  function closeNavigator(): void {
+    setSessionProjectRoot(null)
+    setProjectsOpen(false)
+  }
+
   return (
     <nav
       aria-label="Session inbox (compact)"
@@ -1221,7 +1251,7 @@ function CompactRail({
         type="button"
         aria-label="New Session"
         title="New Session"
-        onClick={onNewChat}
+        onClick={() => onNewChat()}
         className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
       >
         <Plus aria-hidden="true" className="size-4" />
@@ -1235,57 +1265,138 @@ function CompactRail({
       >
         <Search aria-hidden="true" className="size-4" />
       </button>
-      {waiting > 0 && (
-        // The one question the rail must still answer: is anything waiting for
-        // me. Collapsing the inbox hides the groups, never this — and when
-        // exactly one Session is waiting, the count is a door, not a sign:
-        // clicking it goes straight to the thing that wants an answer.
-        <button
-          type="button"
-          aria-label={
-            oneBlocked
-              ? `“${oneBlocked.title}” needs attention. Open it`
-              : `${String(waiting)} Sessions need attention. Expand inbox`
-          }
-          title={
-            oneBlocked
-              ? `“${oneBlocked.title}” needs attention`
-              : `${String(waiting)} need attention`
-          }
-          onClick={() => (oneBlocked ? onOpen(oneBlocked) : onExpand())}
-          className="flex size-7 items-center justify-center rounded-full bg-status-blocked-surface text-xs font-medium text-status-blocked focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          {waiting}
-        </button>
-      )}
       <div aria-hidden="true" className="my-1 h-px w-6 bg-border" />
-      <ul className="flex flex-col items-center gap-1">
-        {sessions.map((session) => (
-          <li key={session.id} className="relative">
+      <Popover
+        open={projectsOpen}
+        onOpenChange={(open) => {
+          setProjectsOpen(open)
+          if (!open) setSessionProjectRoot(null)
+        }}
+      >
+        <PopoverTrigger
+          aria-label="Browse Projects and Sessions"
+          title="Projects and Sessions"
+          className="relative rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent data-popup-open:text-foreground"
+        >
+          <FolderTree aria-hidden="true" className="size-4" />
+          {waiting > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 flex min-w-3.5 items-center justify-center rounded-full border-2 border-muted bg-status-blocked-surface px-0.5 text-2xs font-medium text-status-blocked">
+              {waiting}
+            </span>
+          )}
+        </PopoverTrigger>
+        <PopoverContent
+          role="dialog"
+          aria-label="Projects"
+          align="start"
+          side="right"
+          sideOffset={8}
+          className="w-64 overflow-hidden"
+        >
+          <div className="flex h-9 items-center justify-between border-b border-border px-2.5">
+            <h2 className="text-xs font-medium">Projects</h2>
             <button
               type="button"
-              aria-label={`${session.title}${RAIL_STATUS[session.status].said}`}
-              title={session.title}
-              aria-current={selectedId === session.id ? 'true' : undefined}
-              onClick={() => onOpen(session)}
-              className={cn(
-                'rounded-md p-2 transition-colors focus-visible:ring-2 focus-visible:ring-ring',
-                selectedId === session.id
-                  ? 'bg-accent text-foreground'
-                  : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-              )}
+              aria-label="Close Projects"
+              onClick={closeNavigator}
+              className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <RailIcon status={session.status} />
+              <X aria-hidden="true" className="size-3.5" />
             </button>
-            {session.pinned && (
-              <Pin
-                aria-hidden="true"
-                className="absolute -top-0.5 -right-0.5 size-2.5 text-primary"
-              />
-            )}
-          </li>
-        ))}
-      </ul>
+          </div>
+          <div className="h-72 overflow-y-auto p-1.5">
+            {projects.map((project) => (
+              <Popover
+                key={project.root}
+                open={sessionProjectRoot === project.root}
+                onOpenChange={(open) => setSessionProjectRoot(open ? project.root : null)}
+              >
+                <PopoverTrigger
+                  aria-label={`${project.name}, ${String(project.sessions.length)} ${project.sessions.length === 1 ? 'Session' : 'Sessions'}`}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent"
+                >
+                  <FolderGit2
+                    aria-hidden="true"
+                    className="size-3.5 shrink-0 text-muted-foreground"
+                  />
+                  <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                  {!project.available && (
+                    <AlertTriangle
+                      aria-label="Unavailable"
+                      className="size-3 shrink-0 text-notice-foreground"
+                    />
+                  )}
+                  <span className="font-mono text-2xs text-muted-foreground">
+                    {project.sessions.length}
+                  </span>
+                  <ChevronRight aria-hidden="true" className="size-3 text-muted-foreground" />
+                </PopoverTrigger>
+                <PopoverContent
+                  role="dialog"
+                  aria-label={`${project.name} Sessions`}
+                  align="start"
+                  side="right"
+                  sideOffset={8}
+                  className="w-72 overflow-hidden"
+                >
+                  <div className="border-b border-border px-2.5 py-2">
+                    <h2 className="truncate text-xs font-medium">{project.name}</h2>
+                    <p className="mt-0.5 font-mono text-2xs text-muted-foreground">Sessions</p>
+                  </div>
+                  <div className="h-64 overflow-y-auto p-1.5">
+                    {project.available && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeNavigator()
+                          onNewChat(project.root)
+                        }}
+                        className="mb-1 flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <Plus aria-hidden="true" className="size-3.5" />
+                        New Session
+                      </button>
+                    )}
+                    {project.sessions.length === 0 ? (
+                      <p className="px-2 py-4 text-center text-xs text-muted-foreground">
+                        No active Sessions.
+                      </p>
+                    ) : (
+                      project.sessions.map((session) => (
+                        <button
+                          key={session.id}
+                          type="button"
+                          aria-label={`${session.title}${SESSION_STATUS_MARK[session.status].said}`}
+                          aria-current={selectedId === session.id ? 'true' : undefined}
+                          onClick={() => {
+                            closeNavigator()
+                            onOpen(session)
+                          }}
+                          className={cn(
+                            'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs focus-visible:ring-2 focus-visible:ring-ring',
+                            selectedId === session.id
+                              ? 'bg-accent text-foreground'
+                              : 'hover:bg-accent'
+                          )}
+                        >
+                          <SessionStatusIcon status={session.status} />
+                          <span className="min-w-0 flex-1 truncate">{session.title}</span>
+                          {session.pinned && (
+                            <Pin aria-label="Pinned" className="size-3 shrink-0 text-primary" />
+                          )}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            ))}
+          </div>
+          <p className="border-t border-border px-2.5 py-2 font-mono text-2xs text-muted-foreground">
+            {projects.length} Projects · {sessions.length} active Sessions
+          </p>
+        </PopoverContent>
+      </Popover>
     </nav>
   )
 }
