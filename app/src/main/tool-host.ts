@@ -1,6 +1,9 @@
 import { createServer, type Server, type Socket } from 'node:net'
 import { z } from 'zod'
-import { APPROVAL_TOOL_NAME } from '@shared/run'
+import type { ConversationEntry, ConversationSnapshot } from '@shared/conversation'
+import { APPROVAL_TOOL_NAME, SESSION_DIFF_TOOL_NAME } from '@shared/run'
+
+export const MAX_SESSION_DIFF_RESPONSE_BYTES = 64 * 1_024
 
 /** One tool call the agent is asking to be allowed, in Ask mode. */
 export interface ApprovalRequest {
@@ -48,15 +51,18 @@ interface ToolHostCallbacks {
    * Request is blocked precisely until somebody decides.
    */
   onApproval(request: ApprovalRequest): void | Promise<void>
+  /** The current Session's durable Conversation projection. */
+  readConversation(): Promise<ConversationSnapshot>
 }
 
 /**
- * What one tool call decided, and how the Run's activity records it. There is
- * exactly one tool, so this is a description of its outcome, not a policy.
+ * What one app-owned tool call decided, what it returns, and how the Run's
+ * activity records it.
  */
 interface ToolOutcome {
   decision: 'allow' | 'block' | 'stop'
   activity: { kind: 'allowed' | 'blocked'; summary: string }
+  text: string
 }
 
 interface RpcRequest {
@@ -67,7 +73,7 @@ interface RpcRequest {
 }
 
 const callSchema = z.object({
-  name: z.enum(['offer_response_options', APPROVAL_TOOL_NAME]),
+  name: z.enum(['offer_response_options', SESSION_DIFF_TOOL_NAME, APPROVAL_TOOL_NAME]),
   arguments: z.record(z.unknown()).default({})
 })
 
@@ -86,6 +92,11 @@ const choiceArgumentsSchema = z.object({
     .max(12)
 })
 
+const sessionDiffArgumentsSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('summary') }).strict(),
+  z.object({ mode: z.literal('file'), path: z.string().min(1).max(4_000) }).strict()
+])
+
 /** What the host advertises with no Approval Requests to serve. */
 const BASE_TOOLS = [
   tool(
@@ -103,6 +114,19 @@ const BASE_TOOLS = [
       }
     },
     ['question', 'options']
+  ),
+  tool(
+    SESSION_DIFF_TOOL_NAME,
+    'Read the current Session changes recorded in the Files panel. Summary returns file metadata only; file returns the recorded changes for one listed path.',
+    {
+      mode: { type: 'string', enum: ['summary', 'file'] },
+      path: {
+        type: 'string',
+        description: 'A relative path returned by summary mode. Required only in file mode.'
+      }
+    },
+    ['mode'],
+    { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   )
 ]
 
@@ -306,7 +330,13 @@ export class ToolHost {
     }
     await this.options.callbacks.onActivity('output', `Tool call started: ${parsed.data.name}`)
     try {
-      const outcome = await this.withDeadline((signal) => this.call(parsed.data.arguments, signal))
+      const outcome = await this.withDeadline((signal) =>
+        this.call(
+          z.enum(['offer_response_options', SESSION_DIFF_TOOL_NAME]).parse(parsed.data.name),
+          parsed.data.arguments,
+          signal
+        )
+      )
       await this.options.callbacks.onActivity(outcome.activity.kind, outcome.activity.summary)
       if (outcome.decision === 'stop' && !this.stopping) {
         this.stopping = true
@@ -315,7 +345,7 @@ export class ToolHost {
       this.respond(
         socket,
         request.id,
-        outcome.decision === 'allow' ? toolText('offered') : toolError(outcome.activity.summary)
+        outcome.decision === 'allow' ? toolText(outcome.text) : toolError(outcome.text)
       )
     } catch (error) {
       const summary =
@@ -405,9 +435,14 @@ export class ToolHost {
     )
   }
 
-  private async call(args: Record<string, unknown>, signal: AbortSignal): Promise<ToolOutcome> {
+  private async call(
+    name: 'offer_response_options' | typeof SESSION_DIFF_TOOL_NAME,
+    args: Record<string, unknown>,
+    signal: AbortSignal
+  ): Promise<ToolOutcome> {
     await this.options.beforeOperation?.()
     signal.throwIfAborted()
+    if (name === SESSION_DIFF_TOOL_NAME) return await this.readSessionDiff(args)
     // Offering answers touches nothing: no path, no process, no new authority.
     // This host is the only place that sees the arguments, so it is what tells
     // the Conversation about them.
@@ -419,13 +454,52 @@ export class ToolHost {
       this.unreadableChoices += 1
       return {
         decision: this.unreadableChoices >= 3 ? 'stop' : 'block',
-        activity: { kind: 'blocked', summary: 'Blocked unreadable Suggested Responses' }
+        activity: { kind: 'blocked', summary: 'Blocked unreadable Suggested Responses' },
+        text: 'Blocked unreadable Suggested Responses'
       }
     }
     this.options.callbacks.onChoices(offered.data.question, offered.data.options)
     return {
       decision: 'allow',
-      activity: { kind: 'allowed', summary: 'Offered Suggested Responses' }
+      activity: { kind: 'allowed', summary: 'Offered Suggested Responses' },
+      text: 'offered'
+    }
+  }
+
+  private async readSessionDiff(args: Record<string, unknown>): Promise<ToolOutcome> {
+    const parsed = sessionDiffArgumentsSchema.safeParse(args)
+    if (!parsed.success) {
+      const summary = 'Blocked unreadable Session diff request'
+      return { decision: 'block', activity: { kind: 'blocked', summary }, text: summary }
+    }
+    const conversation = await this.options.callbacks.readConversation()
+    if (parsed.data.mode === 'summary') {
+      const text = boundedSessionDiff('summary', conversation.changedFiles)
+      return {
+        decision: 'allow',
+        activity: {
+          kind: 'allowed',
+          summary: `Read ${String(conversation.changedFiles.length)} recorded changed files`
+        },
+        text
+      }
+    }
+    const path = parsed.data.path
+    if (!conversation.changedFiles.some((file) => file.path === path)) {
+      const summary = 'Blocked a path outside the recorded Session diff'
+      return { decision: 'block', activity: { kind: 'blocked', summary }, text: summary }
+    }
+    const changes = conversation.entries.filter(
+      (entry): entry is Extract<ConversationEntry, { kind: 'file-change' }> =>
+        entry.kind === 'file-change' && entry.path === path
+    )
+    return {
+      decision: 'allow',
+      activity: {
+        kind: 'allowed',
+        summary: `Read ${String(changes.length)} recorded changes for one Session file`
+      },
+      text: boundedSessionDiff('file', changes, path)
     }
   }
 
@@ -461,13 +535,42 @@ export class ToolHost {
 
 class OperationTimeoutError extends Error {}
 
+function boundedSessionDiff(mode: 'summary' | 'file', entries: unknown[], path?: string): string {
+  const key = mode === 'summary' ? 'files' : 'changes'
+  const response = (returned: unknown[]): Record<string, unknown> => ({
+    mode,
+    ...(path === undefined ? {} : { path }),
+    [key]: returned,
+    truncation: {
+      truncated: returned.length < entries.length,
+      returned: returned.length,
+      omitted: entries.length - returned.length,
+      total: entries.length,
+      maxBytes: MAX_SESSION_DIFF_RESPONSE_BYTES
+    }
+  })
+  const returned: unknown[] = []
+  for (const entry of entries) {
+    const candidate = JSON.stringify(response([...returned, entry]))
+    if (Buffer.byteLength(candidate, 'utf8') > MAX_SESSION_DIFF_RESPONSE_BYTES) break
+    returned.push(entry)
+  }
+  return JSON.stringify(response(returned))
+}
+
 function tool(
   name: string,
   description: string,
   properties: Record<string, unknown>,
-  required: string[] = []
+  required: string[] = [],
+  annotations?: Record<string, unknown>
 ): Record<string, unknown> {
-  return { name, description, inputSchema: { type: 'object', properties, required } }
+  return {
+    name,
+    description,
+    inputSchema: { type: 'object', properties, required },
+    ...(annotations === undefined ? {} : { annotations })
+  }
 }
 
 function toolText(text: string): Record<string, unknown> {

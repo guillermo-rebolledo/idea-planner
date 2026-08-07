@@ -43,6 +43,13 @@ Repo-wide edits on Codex are expressed as `workspace-write` with the repository 
 
 Neither path mutates the user's own configuration, per ADR 0003.
 
+The app-owned `session_diff` tool is the one deliberate cross-Harness read-only
+exception in Ask mode. Claude's staged allow list names
+`mcp__app__session_diff`; Codex's staged MCP server config gives only
+`mcp_servers.app.tools.session_diff` the `approve` mode. Neither mapping grants
+the `app` server or a tool-name prefix, so a future app tool still follows the
+Harness default.
+
 **Claude** — `--settings <file-or-json>` with `--setting-sources`. It is a real precedence layer carrying `permissions.allow/deny/ask`, `defaultMode`, and `hooks`.
 
 > **`CLAUDE_CONFIG_DIR` does not work for this.** A staged directory returns `Not logged in · Please run /login`, because OAuth account state lives in `<dir>/.claude.json` rather than the Keychain. It also relocates transcripts. `run-service.ts:703` currently uses it.

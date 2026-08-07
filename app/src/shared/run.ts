@@ -20,9 +20,15 @@ export const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`
  */
 export const APPROVAL_TOOL_NAME = 'approval_request'
 export const APPROVAL_TOOL = `${MCP_TOOL_PREFIX}${APPROVAL_TOOL_NAME}`
+export const SESSION_DIFF_TOOL_NAME = 'session_diff'
+export const SESSION_DIFF_TOOL = `${MCP_TOOL_PREFIX}${SESSION_DIFF_TOOL_NAME}`
 
 /** Every tool this app serves, as the Harness names them. */
-export const APP_TOOLS = [`${MCP_TOOL_PREFIX}offer_response_options`, APPROVAL_TOOL]
+export const APP_TOOLS = [
+  `${MCP_TOOL_PREFIX}offer_response_options`,
+  SESSION_DIFF_TOOL,
+  APPROVAL_TOOL
+]
 
 export const runStatusSchema = z.enum([
   'accepted',
