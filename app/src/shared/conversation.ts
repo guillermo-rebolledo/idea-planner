@@ -299,8 +299,17 @@ export const queuedSubmissionEntrySchema = z.object({
   effort: z.string().min(1).max(50).nullable(),
   skill: skillNameSchema.nullable(),
   permissionMode: permissionModeSchema,
-  /** The exact reviewed code this submission carries, kept as it was read. */
-  reviewAttachments: z.array(reviewAttachmentSchema).max(MAX_REVIEW_ATTACHMENTS).default([]),
+  /**
+   * The exact reviewed code this submission carries, kept as it was read.
+   * A journal written by an older build may hold something this no longer
+   * models; that degrades to none rather than dropping the whole submission,
+   * because losing a queued message is worse than losing what it quoted.
+   */
+  reviewAttachments: z
+    .array(reviewAttachmentSchema)
+    .max(MAX_REVIEW_ATTACHMENTS)
+    .default([])
+    .catch([]),
   status: queuedSubmissionStatusSchema,
   /** Explicit order among all non-terminal items. */
   position: z.number().int().nonnegative()
@@ -371,9 +380,15 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
      * The reviewed code the person attached to this message. Kept beside the
      * prose rather than inside it: the Conversation shows what they wrote,
      * and only the Harness prompt carries the snapshots. Messages written
-     * before attachments existed read back with none, which is what they had.
+     * before attachments existed read back with none, which is what they had,
+     * and one an older build wrote differently degrades to none rather than
+     * costing the Conversation the message itself.
      */
-    reviewAttachments: z.array(reviewAttachmentSchema).max(MAX_REVIEW_ATTACHMENTS).default([]),
+    reviewAttachments: z
+      .array(reviewAttachmentSchema)
+      .max(MAX_REVIEW_ATTACHMENTS)
+      .default([])
+      .catch([]),
     /** Offered only from Harness-native structured choices. */
     suggestedResponses: z.array(suggestedResponseSchema).default([]),
     /**

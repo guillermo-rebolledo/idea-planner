@@ -231,35 +231,34 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
    */
   const attachReviewedCode = useCallback(
     (attachment: ReviewAttachment) => {
-      setReviewAttachments((current) => {
-        if (current.some((held) => held.id === attachment.id)) {
-          setAnnouncement(`${reviewAttachmentLabel(attachment)} is already attached.`)
-          return current
-        }
-        const next = [...current, attachment]
-        const refusal = reviewAttachmentsRefusal(next)
-        if (refusal) {
-          setAnnouncement(refusal)
-          return current
-        }
-        setAnnouncement(
-          `Attached ${reviewAttachmentLabel(attachment)} — ${String(attachment.lines.length)} lines${attachment.shortened ? ', shortened' : ''}.`
-        )
-        return next
-      })
+      // Decided out here, never inside the updater: an updater runs more than
+      // once, and an announcement is something said to a person.
+      if (reviewAttachments.some((held) => held.id === attachment.id)) {
+        setAnnouncement(`${reviewAttachmentLabel(attachment)} is already attached.`)
+        return
+      }
+      const next = [...reviewAttachments, attachment]
+      const refusal = reviewAttachmentsRefusal(next)
+      if (refusal) {
+        setAnnouncement(refusal)
+        return
+      }
+      setReviewAttachments(next)
+      setAnnouncement(
+        `Attached ${reviewAttachmentLabel(attachment)} — ${String(attachment.lines.length)} lines${attachment.shortened ? ', shortened' : ''}.`
+      )
     },
-    [setAnnouncement]
+    [reviewAttachments, setAnnouncement]
   )
 
   const removeReviewedCode = useCallback(
     (id: string) => {
-      setReviewAttachments((current) => {
-        const removed = current.find((held) => held.id === id)
-        if (removed) setAnnouncement(`Removed ${reviewAttachmentLabel(removed)}.`)
-        return current.filter((held) => held.id !== id)
-      })
+      const removed = reviewAttachments.find((held) => held.id === id)
+      if (!removed) return
+      setReviewAttachments(reviewAttachments.filter((held) => held.id !== id))
+      setAnnouncement(`Removed ${reviewAttachmentLabel(removed)}.`)
     },
-    [setAnnouncement]
+    [reviewAttachments, setAnnouncement]
   )
 
   /** Files is an inspector, never a third column allowed to crush the work. */
@@ -670,7 +669,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
               onOpenFile={openFiles}
               reviewAttachments={reviewAttachments}
               onRemoveReviewAttachment={removeReviewedCode}
-              onSentReviewAttachments={() => setReviewAttachments([])}
+              onClearReviewAttachments={() => setReviewAttachments([])}
             />
           ) : (
             <Composer

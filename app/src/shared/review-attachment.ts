@@ -78,11 +78,13 @@ export type ReviewSelection =
   | { scope: 'lines'; hunkIndex: number; lineIndexes: number[] }
 
 /**
- * Which line of the new file each patch line is. A removed line has no line
- * in the new file, so it takes the number of the line it sat before — which
- * is what a person reading the diff would point at.
+ * Which line of the new file each patch line is, one per patch line. A
+ * removed line has no line in the new file, so it takes the number of the
+ * line it sat before — which is what a person reading the diff would point
+ * at. Stated once here, so what an attachment records and what the diff on
+ * screen says a line is cannot disagree.
  */
-function newFileLines(hunk: ReviewHunk): number[] {
+export function newFileLines(hunk: ReviewHunk): number[] {
   let cursor = hunk.newStart
   return hunk.lines.map((line) => {
     if (line.startsWith('-')) return cursor
@@ -120,7 +122,7 @@ export function captureReviewAttachment(
   const startLine = picked[0]?.line ?? null
   const endLine = picked.at(-1)?.line ?? null
   return reviewAttachmentSchema.parse({
-    id: selectionId(source, selection, startLine, endLine),
+    id: selectionId(source, selection),
     path: source.path,
     runId: source.runId,
     entryId: source.entryId,
@@ -145,16 +147,18 @@ function rangeOf(lineIndexes: number[], length: number): number[] {
   return Array.from({ length: last - first + 1 }, (_value, offset) => first + offset)
 }
 
-function selectionId(
-  source: ReviewAttachmentSource,
-  selection: ReviewSelection,
-  startLine: number | null,
-  endLine: number | null
-): string {
-  const where = selection.scope === 'file' ? 'file' : `hunk-${String(selection.hunkIndex)}`
-  const span =
-    selection.scope === 'lines' ? `:${String(startLine ?? 0)}-${String(endLine ?? 0)}` : ''
-  return `${source.entryId}:${where}${span}`
+/**
+ * What was picked, said exactly enough to tell two picks apart. Line
+ * selections are keyed by their rows in the recorded hunk rather than by
+ * new-file numbers: a removed line and the line replacing it share a number,
+ * and two different selections under one id would silently be one.
+ */
+function selectionId(source: ReviewAttachmentSource, selection: ReviewSelection): string {
+  if (selection.scope === 'file') return `${source.entryId}:file`
+  const where = `${source.entryId}:hunk-${String(selection.hunkIndex)}`
+  if (selection.scope === 'hunk') return where
+  const rows = rangeOf(selection.lineIndexes, source.hunks[selection.hunkIndex]?.lines.length ?? 0)
+  return `${where}:rows-${String(rows[0] ?? 0)}-${String(rows.at(-1) ?? 0)}`
 }
 
 /** What the attachment is called wherever it is shown or announced. */
@@ -181,14 +185,16 @@ export function serializeReviewAttachments(attachments: ReviewAttachment[]): str
   if (attachments.length === 0) return ''
   const blocks = attachments.map((attachment) => {
     const attributes = [
-      `path="${attachment.path}"`,
+      `path="${quoted(attachment.path)}"`,
       `scope="${attachment.scope}"`,
       ...(attachment.startLine !== null && attachment.endLine !== null
         ? [`lines="${String(attachment.startLine)}-${String(attachment.endLine)}"`]
         : []),
-      `captured="${attachment.capturedAt}"`,
+      `captured="${quoted(attachment.capturedAt)}"`,
       ...(attachment.shortened ? ['shortened="true"'] : [])
     ].join(' ')
+    // Every patch line keeps its ' ', '+' or '-' prefix, so no line of the
+    // reviewed code can ever read as this block's own closing delimiter.
     return `<selection ${attributes}>\n${attachment.lines.join('\n')}\n</selection>`
   })
   return [
@@ -198,6 +204,11 @@ export function serializeReviewAttachments(attachments: ReviewAttachment[]): str
     ...blocks,
     '</reviewed-code>'
   ].join('\n')
+}
+
+/** An attribute value that cannot end its own attribute. */
+function quoted(value: string): string {
+  return value.replaceAll('"', '&quot;')
 }
 
 /**
@@ -221,10 +232,9 @@ export function reviewAttachmentsRefusal(attachments: ReviewAttachment[]): strin
   if (attachments.length > MAX_REVIEW_ATTACHMENTS) {
     return `A message carries at most ${String(MAX_REVIEW_ATTACHMENTS)} attached selections.`
   }
-  const oversized = attachments.find((item) => item.lines.length > MAX_REVIEW_ATTACHMENT_LINES)
-  if (oversized) {
-    return `${reviewAttachmentLabel(oversized)} is longer than the ${String(MAX_REVIEW_ATTACHMENT_LINES)} lines one selection keeps.`
-  }
+  // The per-selection line limit is not restated here: capture applies it,
+  // says so with `shortened`, and the schema refuses anything longer — so a
+  // check on a parsed attachment could only ever be dead code.
   if (serializeReviewAttachments(attachments).length > MAX_REVIEW_ATTACHMENTS_CHARACTERS) {
     return 'These selections are too large to send together. Remove one and try again.'
   }

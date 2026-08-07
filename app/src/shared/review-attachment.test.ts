@@ -132,6 +132,19 @@ describe('capturing reviewed code', () => {
     expect(attachment.shortened).toBe(true)
   })
 
+  it('tells a removed line apart from the line replacing it', () => {
+    const pick = (row: number) =>
+      captureReviewAttachment(
+        { ...source, hunks: HUNKS },
+        { scope: 'lines', hunkIndex: 1, lineIndexes: [row] },
+        AT
+      )
+    // Both are line 20 of the new file — the removed one takes the number of
+    // the line it sat before — so a number alone would make them one.
+    expect(pick(0).startLine).toBe(pick(1).startLine)
+    expect(pick(0).id).not.toBe(pick(1).id)
+  })
+
   it('gives the same selection the same identity, so attaching twice is once', () => {
     const first = captureReviewAttachment(
       { ...source, hunks: HUNKS },
@@ -184,6 +197,14 @@ describe('the Harness prompt', () => {
     const prompt = harnessPromptWithReviewAttachments('Fix it', [attachment()])
 
     expect(prompt).not.toMatch(/\/Users\/|\/home\/|^\//m)
+  })
+
+  it('cannot have an attribute closed by the value inside it', () => {
+    const prompt = harnessPromptWithReviewAttachments('Fix it', [
+      attachment({ path: 'src/say "hi".ts' })
+    ])
+
+    expect(prompt).toContain('path="src/say &quot;hi&quot;.ts"')
   })
 
   it('is the message itself when nothing is attached', () => {

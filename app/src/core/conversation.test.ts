@@ -503,6 +503,51 @@ describe('Review Attachments on durable submissions', () => {
     expect((await core.getConversation(sessionId)).queue.items).toHaveLength(0)
   })
 
+  it('is idempotent for a resend carrying the same reviewed code', async () => {
+    const input = {
+      sessionId,
+      submissionId: 'submission-1',
+      text: 'Make this shorter',
+      source: 'composer' as const,
+      reviewAttachments: [attached]
+    }
+    await core.submitConversationMessage(input)
+    const snapshot = await core.submitConversationMessage(input)
+
+    expect(
+      messages(snapshot.entries).filter((entry) => entry.text === 'Make this shorter')
+    ).toHaveLength(1)
+  })
+
+  it('keeps a queued message an older build wrote, without the shape it once had', async () => {
+    await core.changeQueuedSubmissions({ type: 'enqueue', input: queuedWith('queued-1', []) })
+    const journal = join(stateDir, 'sessions', sessionId, 'conversation.jsonl')
+    const entry = JSON.parse(
+      (await readFile(journal, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { id: string })
+        .filter((parsed) => parsed.id === 'queued:queued-1')
+        .map((parsed) => JSON.stringify(parsed))[0] ?? '{}'
+    ) as Record<string, unknown>
+    // What the previous build wrote there: a file path, not a snapshot.
+    await writeFile(
+      journal,
+      `${await readFile(journal, 'utf8')}${JSON.stringify({
+        ...entry,
+        reviewAttachments: [{ path: 'src/greeting.ts', name: 'greeting.ts' }]
+      })}\n`
+    )
+
+    core = makeCore()
+    const snapshot = await core.getConversation(sessionId)
+    // The message survives; only what it quoted, which was never a snapshot,
+    // is gone.
+    expect(snapshot.queue.items).toMatchObject([
+      { submissionId: 'queued-1', reviewAttachments: [] }
+    ])
+  })
+
   it('carries the snapshot through edit, reorder, restart, claim and launch', async () => {
     await core.changeQueuedSubmissions({
       type: 'enqueue',

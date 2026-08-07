@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { MessageSquarePlus } from 'lucide-react'
-import type { DiffHunk } from '@shared/contract'
+import { newFileLines, type DiffHunk } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
 
@@ -75,6 +75,9 @@ export function DiffView({
     >
       {hunks.map((hunk, index) => {
         const ticked = selected[index] ?? []
+        // One rule for what line a patch line is, shared with what an
+        // attachment records about it.
+        const numbers = newFileLines(hunk)
         return (
           // A hunk is identified by where it starts and how far it runs.
           <div key={`${hunk.oldStart}:${hunk.newStart}:${hunk.lines.length}`}>
@@ -129,7 +132,7 @@ export function DiffView({
                           controls with one name are two nobody can tell apart.
                           The line's text is not repeated — it is already read
                           out beside the control. */}
-                      {`Select ${lineSide(line)} line ${String(newFileLine(hunk, lineIndex))} of hunk ${String(index + 1)} in ${attach.path}, row ${String(lineIndex + 1)}`}
+                      {`Select ${lineSide(line)} line ${String(numbers[lineIndex] ?? hunk.newStart)} of hunk ${String(index + 1)} in ${attach.path}, row ${String(lineIndex + 1)}`}
                     </span>
                     <input
                       type="checkbox"
@@ -164,13 +167,4 @@ function lineSide(line: string): string {
   if (line.startsWith('+')) return 'added'
   if (line.startsWith('-')) return 'removed'
   return 'unchanged'
-}
-
-/** Which line of the new file a patch line is, as the reader would count it. */
-function newFileLine(hunk: DiffHunk, lineIndex: number): number {
-  let cursor = hunk.newStart
-  for (let index = 0; index < lineIndex; index += 1) {
-    if (!hunk.lines[index]?.startsWith('-')) cursor += 1
-  }
-  return cursor
 }

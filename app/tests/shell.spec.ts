@@ -1095,6 +1095,11 @@ test('reviewed code becomes a stable attachment on the next message', async () =
     await expect(history.getByText('Make this shorter')).toBeVisible()
     await expect(history.getByText('<reviewed-code')).toHaveCount(0)
     await expect(page.getByRole('region', { name: 'Attached code' })).toHaveCount(0)
+
+    // What the message carried stays readable afterwards, as the history it is.
+    await history.getByRole('button', { name: 'Show 1 attached selection' }).click()
+    const sent = history.getByRole('list', { name: 'Code sent with this message' })
+    await expect(sent.getByText('+export const greeting = "goodbye"')).toBeVisible()
   } finally {
     await app.close()
   }
