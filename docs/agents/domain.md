@@ -43,6 +43,11 @@ Explicitly surface output that contradicts an existing ADR rather than silently 
   streamed Conversation state, Run history, freshness cadence, write-result
   adoption, and live/durable identity reconciliation. Mailbox consumes only
   explicit lifecycle invalidation.
+- **Review Attachments** are snapshotted in the Renderer from recorded
+  Conversation entries and owned durably by Core, on the message or Queued
+  Submission carrying them. Their bounds, identity-reuse rule, and Harness
+  prompt serialization live in the shared contract, so Renderer never decides
+  what may be sent and the Conversation keeps only the person's prose.
 
 Effect is confined to Core and Main product behavior. Core process transport,
 Electron IPC, Preload, shared contracts, and Renderer state are Promise/zod or

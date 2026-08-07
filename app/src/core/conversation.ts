@@ -42,6 +42,7 @@ import {
   type SetConversationQueuePausedInput,
   type SuggestedResponse
 } from '@shared/conversation'
+import { reviewAttachmentsRefusal, type ReviewAttachment } from '@shared/review-attachment'
 import type { HarnessId } from '@shared/readiness'
 import type { RunActivityKind, SkillName } from '@shared/run'
 import { createCodexAdapter, type HarnessAdapter } from './harness/codex'
@@ -415,6 +416,10 @@ export function createConversationEffects(options: ConversationOptions): Convers
         )
       }
       const input = parsed.data
+      // Bounds are answered before anything is committed: a selection cut
+      // after the send is one nobody agreed to.
+      const refusal = reviewAttachmentsRefusal(input.reviewAttachments)
+      if (refusal) return yield* Effect.fail(new CoreError('INVALID_INPUT', refusal))
       const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
@@ -423,8 +428,13 @@ export function createConversationEffects(options: ConversationOptions): Convers
           const existing = entries.find((entry) => entry.id === id)
           if (existing) {
             // A resent submission is the same submission: never a second
-            // message, and never a silently different one.
-            if (existing.kind !== 'message' || existing.text !== input.text) {
+            // message, and never a silently different one — including one
+            // carrying different reviewed code under the same identity.
+            if (
+              existing.kind !== 'message' ||
+              existing.text !== input.text ||
+              !sameAttachments(existing.reviewAttachments, input.reviewAttachments)
+            ) {
               return yield* Effect.fail(
                 new CoreError(
                   'INVALID_INPUT',
@@ -446,6 +456,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             completeness: 'complete',
             source: input.source,
             submissionId: input.submissionId,
+            reviewAttachments: input.reviewAttachments,
             suggestedResponses: [],
             plainOptions: false
           })
@@ -500,6 +511,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
         )
       }
       const input = parsed.data
+      const refusal = reviewAttachmentsRefusal(input.reviewAttachments)
+      if (refusal) return yield* Effect.fail(new CoreError('INVALID_INPUT', refusal))
       const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
@@ -514,7 +527,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
               existing.skill === (input.skill ?? null) &&
               existing.permissionMode === input.permissionMode &&
               existing.source === input.source &&
-              JSON.stringify(existing.reviewAttachments) === JSON.stringify(input.reviewAttachments)
+              sameAttachments(existing.reviewAttachments, input.reviewAttachments)
             if (!same) {
               return yield* Effect.fail(
                 new CoreError(
@@ -815,7 +828,11 @@ export function createConversationEffects(options: ConversationOptions): Convers
           if (!item) return null
           const messageId = `user:${item.submissionId}`
           const message = entries.find((entry) => entry.id === messageId)
-          if (message?.kind === 'message' && message.text !== item.text) {
+          if (
+            message?.kind === 'message' &&
+            (message.text !== item.text ||
+              !sameAttachments(message.reviewAttachments, item.reviewAttachments))
+          ) {
             return yield* Effect.fail(
               new CoreError(
                 'INVALID_INPUT',
@@ -838,6 +855,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 completeness: 'complete',
                 source: item.source,
                 submissionId: item.submissionId,
+                // The admitted message carries exactly what was queued: the
+                // snapshot travels with the message it belongs to.
+                reviewAttachments: item.reviewAttachments,
                 suggestedResponses: [],
                 plainOptions: false
               })
@@ -1502,6 +1522,15 @@ export function createConversationEffects(options: ConversationOptions): Convers
     ingest,
     finalize
   }
+}
+
+/**
+ * Whether two sets of Review Attachments are the same reviewed code. Identity
+ * reuse is refused on any difference: a submission id that answers about
+ * different code is a different submission wearing the same name.
+ */
+function sameAttachments(left: ReviewAttachment[], right: ReviewAttachment[]): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 /** One approval's durable identity: the Run, and the Harness's tool-use id. */

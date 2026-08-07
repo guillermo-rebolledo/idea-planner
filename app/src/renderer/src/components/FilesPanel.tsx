@@ -1,6 +1,13 @@
 import { useRef, useState } from 'react'
-import { FileDiff, FilePlus2, FileX2, X, type LucideIcon } from 'lucide-react'
-import type { ChangeKind, ChangedFile } from '@shared/contract'
+import { FileDiff, FilePlus2, FileX2, MessageSquarePlus, X, type LucideIcon } from 'lucide-react'
+import {
+  captureReviewAttachment,
+  type ChangeKind,
+  type ChangedFile,
+  type ReviewAttachment,
+  type ReviewSelection
+} from '@shared/contract'
+import { Button } from '@renderer/components/ui/button'
 import { DiffCounts, DiffView } from '@renderer/components/Diff'
 import type { FileChangeEntry, SessionChanges } from '@renderer/lib/useSessionChanges'
 import { cn } from '@renderer/lib/utils'
@@ -38,6 +45,11 @@ interface FilesPanelProps {
   focusedPath: string | null
   onFocus: (path: string | null) => void
   onClose: () => void
+  /**
+   * Takes the reviewed code onto the next message. The snapshot is made here,
+   * from what was recorded, so a later write never re-anchors it.
+   */
+  onAttach: (attachment: ReviewAttachment) => void
 }
 
 /** How wide the panel opens, and how far it may be dragged either way. */
@@ -51,7 +63,8 @@ export function FilesPanel({
   changes,
   focusedPath,
   onFocus,
-  onClose
+  onClose,
+  onAttach
 }: FilesPanelProps): React.JSX.Element {
   const { files, entries, totals } = changes
   const focused = files.find((file) => file.path === focusedPath) ?? null
@@ -144,6 +157,7 @@ export function FilesPanel({
             <FocusedDiff
               file={focused}
               changes={entries.filter((entry) => entry.path === focused.path)}
+              onAttach={onAttach}
             />
           )}
         </>
@@ -213,11 +227,26 @@ function writeClock(at: string): string {
 /** The selected file's diffs, newest last, exactly as they were recorded. */
 function FocusedDiff({
   file,
-  changes
+  changes,
+  onAttach
 }: {
   file: ChangedFile
   changes: FileChangeEntry[]
+  onAttach: (attachment: ReviewAttachment) => void
 }): React.JSX.Element {
+  /**
+   * The snapshot is taken from the recorded entry at the moment of asking,
+   * never from the file on disk: what the person read is what the agent is
+   * asked about, whatever happens to that file afterwards.
+   */
+  const attachFrom = (entry: FileChangeEntry, selection: ReviewSelection): void =>
+    onAttach(
+      captureReviewAttachment(
+        { path: entry.path, runId: entry.runId, entryId: entry.id, hunks: entry.hunks },
+        selection,
+        new Date().toISOString()
+      )
+    )
   const textless = file.added === 0 && file.removed === 0 && !file.shortened
   const unreadable = file.added === 0 && file.removed === 0 && file.shortened
   return (
@@ -243,12 +272,36 @@ function FocusedDiff({
           <div key={entry.id}>
             {/* A stacked log, not a net diff: each write is shown as it was
                 recorded, so an early state must not read as the final one. */}
-            {changes.length > 1 && (
-              <p className="px-1 pt-1.5 font-mono text-2xs text-muted-foreground">
-                Write {index + 1} of {changes.length} · {writeClock(entry.at)}
-              </p>
-            )}
-            <DiffView hunks={entry.hunks} />
+            <div className="flex flex-wrap items-baseline gap-2 px-1 pt-1.5">
+              {changes.length > 1 && (
+                <p className="font-mono text-2xs text-muted-foreground">
+                  Write {index + 1} of {changes.length} · {writeClock(entry.at)}
+                </p>
+              )}
+              {/* Whole-file attachment lives on the write it came from: an
+                  attachment always quotes one recorded change, so nothing it
+                  carries can be a mixture of two moments. */}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="ml-auto"
+                aria-label={`Attach all of ${file.path}${changes.length > 1 ? ` from write ${String(index + 1)}` : ''}`}
+                onClick={() => attachFrom(entry, { scope: 'file' })}
+              >
+                <MessageSquarePlus aria-hidden="true" className="size-3" />
+                Attach file
+              </Button>
+            </div>
+            <DiffView
+              hunks={entry.hunks}
+              attach={{
+                path: file.path,
+                onAttachHunk: (hunkIndex) => attachFrom(entry, { scope: 'hunk', hunkIndex }),
+                onAttachLines: (hunkIndex, lineIndexes) =>
+                  attachFrom(entry, { scope: 'lines', hunkIndex, lineIndexes })
+              }}
+            />
           </div>
         ))}
         {file.shortened && !unreadable && (

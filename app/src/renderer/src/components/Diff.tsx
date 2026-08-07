@@ -1,4 +1,7 @@
+import { useState } from 'react'
+import { MessageSquarePlus } from 'lucide-react'
 import type { DiffHunk } from '@shared/contract'
+import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
 
 /**
@@ -31,17 +34,38 @@ export function ExitCode({ code }: { code: number }): React.JSX.Element {
 }
 
 /**
+ * How a diff offers its lines to a message. Every control is a real button or
+ * checkbox with its own name: attaching code must never require pointing at
+ * text, hovering, or seeing which rows are green.
+ */
+export interface DiffAttachControls {
+  /** Named on every control, so each one says what it attaches. */
+  path: string
+  onAttachHunk: (hunkIndex: number) => void
+  /** The chosen lines, by their index inside that hunk. */
+  onAttachLines: (hunkIndex: number, lineIndexes: number[]) => void
+}
+
+/**
  * A diff, exactly as the Harness computed it. It is read-only everywhere it
  * appears: the change is already on disk (ADR 0004) and git is the only undo,
  * so there is nothing here to accept or reject.
+ *
+ * With `attach`, the same diff also becomes selectable: a hunk, or lines of
+ * one, can be copied onto the next message as reviewed code.
  */
 export function DiffView({
   hunks,
-  className
+  className,
+  attach
 }: {
   hunks: DiffHunk[]
   className?: string
+  attach?: DiffAttachControls
 }): React.JSX.Element {
+  // Which lines are ticked, per hunk. Ephemeral by design: a selection is a
+  // way of naming an attachment, not a thing the Session remembers.
+  const [selected, setSelected] = useState<Record<number, number[]>>({})
   return (
     <pre
       className={cn(
@@ -49,28 +73,104 @@ export function DiffView({
         className
       )}
     >
-      {hunks.map((hunk, index) => (
-        // A hunk is identified by where it starts and how far it runs.
-        <div key={`${hunk.oldStart}:${hunk.newStart}:${hunk.lines.length}`}>
-          {index > 0 && <div className="text-muted-foreground">⋯</div>}
-          {hunk.lines.map((line, lineIndex) => (
-            <div
-              // A diff line has no identity beyond its position.
-              // eslint-disable-next-line @eslint-react/no-array-index-key
-              key={lineIndex}
-              className={
-                line.startsWith('+')
-                  ? 'bg-diff-added-surface text-diff-added-foreground'
-                  : line.startsWith('-')
-                    ? 'bg-diff-removed-surface text-diff-removed-foreground'
-                    : 'text-muted-foreground'
-              }
-            >
-              {line}
-            </div>
-          ))}
-        </div>
-      ))}
+      {hunks.map((hunk, index) => {
+        const ticked = selected[index] ?? []
+        return (
+          // A hunk is identified by where it starts and how far it runs.
+          <div key={`${hunk.oldStart}:${hunk.newStart}:${hunk.lines.length}`}>
+            {index > 0 && <div className="text-muted-foreground">⋯</div>}
+            {attach && (
+              <div className="flex flex-wrap items-center gap-1 pb-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`Attach hunk ${String(index + 1)} of ${attach.path}`}
+                  onClick={() => attach.onAttachHunk(index)}
+                >
+                  <MessageSquarePlus aria-hidden="true" className="size-3" />
+                  Attach hunk {index + 1}
+                </Button>
+                {ticked.length > 0 && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Attach ${String(ticked.length)} selected ${ticked.length === 1 ? 'line' : 'lines'} of ${attach.path}`}
+                    onClick={() => {
+                      attach.onAttachLines(index, ticked)
+                      setSelected((current) => ({ ...current, [index]: [] }))
+                    }}
+                  >
+                    Attach {ticked.length} selected {ticked.length === 1 ? 'line' : 'lines'}
+                  </Button>
+                )}
+              </div>
+            )}
+            {hunk.lines.map((line, lineIndex) => (
+              <div
+                // A diff line has no identity beyond its position.
+                // eslint-disable-next-line @eslint-react/no-array-index-key
+                key={lineIndex}
+                className={cn(
+                  'flex items-start gap-1.5',
+                  line.startsWith('+')
+                    ? 'bg-diff-added-surface text-diff-added-foreground'
+                    : line.startsWith('-')
+                      ? 'bg-diff-removed-surface text-diff-removed-foreground'
+                      : 'text-muted-foreground'
+                )}
+              >
+                {attach && (
+                  <label className="shrink-0 cursor-pointer pt-0.5">
+                    <span className="sr-only">
+                      {/* Which side it is, and where it sits: a removed line
+                          and the line replacing it share a number, and two
+                          controls with one name are two nobody can tell apart.
+                          The line's text is not repeated — it is already read
+                          out beside the control. */}
+                      {`Select ${lineSide(line)} line ${String(newFileLine(hunk, lineIndex))} of hunk ${String(index + 1)} in ${attach.path}, row ${String(lineIndex + 1)}`}
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={ticked.includes(lineIndex)}
+                      onChange={(event) =>
+                        setSelected((current) => {
+                          const now = current[index] ?? []
+                          return {
+                            ...current,
+                            [index]: event.target.checked
+                              ? [...now, lineIndex]
+                              : now.filter((value) => value !== lineIndex)
+                          }
+                        })
+                      }
+                      className="size-3 accent-foreground"
+                    />
+                  </label>
+                )}
+                <span className="min-w-0">{line}</span>
+              </div>
+            ))}
+          </div>
+        )
+      })}
     </pre>
   )
+}
+
+/** What a patch line is: added, removed, or carried through unchanged. */
+function lineSide(line: string): string {
+  if (line.startsWith('+')) return 'added'
+  if (line.startsWith('-')) return 'removed'
+  return 'unchanged'
+}
+
+/** Which line of the new file a patch line is, as the reader would count it. */
+function newFileLine(hunk: DiffHunk, lineIndex: number): number {
+  let cursor = hunk.newStart
+  for (let index = 0; index < lineIndex; index += 1) {
+    if (!hunk.lines[index]?.startsWith('-')) cursor += 1
+  }
+  return cursor
 }

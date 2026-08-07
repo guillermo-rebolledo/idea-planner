@@ -1,7 +1,10 @@
 import { z } from 'zod'
 import { proposedRuleSchema } from './approval'
 import { harnessIdSchema } from './readiness'
+import { MAX_REVIEW_ATTACHMENTS, reviewAttachmentSchema } from './review-attachment'
 import { permissionModeSchema, runActivityKindSchema, skillNameSchema } from './run'
+
+export { redactCredentials } from './redaction'
 
 /**
  * The Conversation is the Session's one permanent, user-visible history, and
@@ -283,13 +286,6 @@ export type ConversationRecovery = z.infer<typeof conversationRecoverySchema>
 export const queuedSubmissionStatusSchema = z.enum(['pending', 'claimed', 'sent', 'cancelled'])
 export type QueuedSubmissionStatus = z.infer<typeof queuedSubmissionStatusSchema>
 
-/** A file explicitly attached for the next review-oriented submission. */
-export const reviewAttachmentSchema = z.object({
-  path: z.string().min(1),
-  name: z.string().min(1).max(500).optional()
-})
-export type ReviewAttachment = z.infer<typeof reviewAttachmentSchema>
-
 export const queuedSubmissionEntrySchema = z.object({
   kind: z.literal('queued-submission'),
   /** Stable across every replacement written for this Queued Submission. */
@@ -303,7 +299,8 @@ export const queuedSubmissionEntrySchema = z.object({
   effort: z.string().min(1).max(50).nullable(),
   skill: skillNameSchema.nullable(),
   permissionMode: permissionModeSchema,
-  reviewAttachments: z.array(reviewAttachmentSchema).max(50).default([]),
+  /** The exact reviewed code this submission carries, kept as it was read. */
+  reviewAttachments: z.array(reviewAttachmentSchema).max(MAX_REVIEW_ATTACHMENTS).default([]),
   status: queuedSubmissionStatusSchema,
   /** Explicit order among all non-terminal items. */
   position: z.number().int().nonnegative()
@@ -370,6 +367,13 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     source: z.enum(['composer', 'suggested-response', 'harness']),
     /** Present on user messages: the stable id that makes resending safe. */
     submissionId: z.string().min(1).nullable().default(null),
+    /**
+     * The reviewed code the person attached to this message. Kept beside the
+     * prose rather than inside it: the Conversation shows what they wrote,
+     * and only the Harness prompt carries the snapshots. Messages written
+     * before attachments existed read back with none, which is what they had.
+     */
+    reviewAttachments: z.array(reviewAttachmentSchema).max(MAX_REVIEW_ATTACHMENTS).default([]),
     /** Offered only from Harness-native structured choices. */
     suggestedResponses: z.array(suggestedResponseSchema).default([]),
     /**
@@ -628,9 +632,10 @@ export const submitConversationMessageInputSchema = z.object({
     .max(200)
     .regex(/^[a-zA-Z0-9._:-]+$/),
   text: z.string().min(1).max(100_000),
-  source: z.enum(['composer', 'suggested-response'])
+  source: z.enum(['composer', 'suggested-response']),
+  reviewAttachments: z.array(reviewAttachmentSchema).max(MAX_REVIEW_ATTACHMENTS).default([])
 })
-export type SubmitConversationMessageInput = z.infer<typeof submitConversationMessageInputSchema>
+export type SubmitConversationMessageInput = z.input<typeof submitConversationMessageInputSchema>
 
 /**
  * How a message is answered: everything chosen in a composer's chip row. The
@@ -647,9 +652,8 @@ export const runRequestSchema = z.object({
 })
 export type RunRequest = z.infer<typeof runRequestSchema>
 
-export const enqueueQueuedSubmissionInputSchema = submitConversationMessageInputSchema
-  .merge(runRequestSchema)
-  .extend({ reviewAttachments: z.array(reviewAttachmentSchema).max(50).default([]) })
+export const enqueueQueuedSubmissionInputSchema =
+  submitConversationMessageInputSchema.merge(runRequestSchema)
 export type EnqueueQueuedSubmissionInput = z.input<typeof enqueueQueuedSubmissionInputSchema>
 
 export const editQueuedSubmissionInputSchema = z.object({
@@ -721,7 +725,7 @@ export type QueuedSubmissionChange = z.infer<typeof queuedSubmissionChangeSchema
 /** The Renderer's one command for developing a Session through a Conversation. */
 export const developSessionInputSchema =
   submitConversationMessageInputSchema.merge(runRequestSchema)
-export type DevelopSessionInput = z.infer<typeof developSessionInputSchema>
+export type DevelopSessionInput = z.input<typeof developSessionInputSchema>
 
 /**
  * The submission identity of the message that created a Session. Named here
@@ -789,14 +793,6 @@ const ENUMERATED_OPTION = /^\s*(?:[-*+]\s+|\(?\d{1,2}[.)]\s+|[a-d][.)]\s+)\S/
 export function hasPlainOptions(text: string): boolean {
   const lines = text.split('\n').filter((line) => ENUMERATED_OPTION.test(line))
   return lines.length >= 2
-}
-
-/** Removes credential-shaped text before anything is stored or presented. */
-export function redactCredentials(value: string): string {
-  return value.replace(
-    /(api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi,
-    '$1=[REDACTED: credential]'
-  )
 }
 
 export function emptyUsage(): HarnessUsage {

@@ -54,6 +54,8 @@ import {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 16: messages and Queued Submissions carry Review Attachments — the exact
+ *     reviewed code, snapshotted when it was selected.
  * 15: Conversation pushes carry explicit Mailbox lifecycle invalidation.
  * 14: deep Run lifecycle opening and terminal observations cross the boundary.
  * 13: isolated Checkout bootstrap results and retry/continue cross the boundary.
@@ -65,7 +67,7 @@ import {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 15
+export const CONTRACT_VERSION = 16
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -555,4 +557,5 @@ export * from './conversation'
 export * from './model'
 export * from './project'
 export * from './readiness'
+export * from './review-attachment'
 export * from './run'

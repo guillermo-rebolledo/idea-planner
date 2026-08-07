@@ -8,6 +8,7 @@ import type {
   QueuedSubmissionLaunchPlan,
   QueuedSubmissionLaunchResult
 } from '@shared/conversation'
+import { harnessPromptWithReviewAttachments } from '@shared/review-attachment'
 import { PROJECT_SKILL_TRUST_FAILURE, type RunSnapshot } from '@shared/run'
 import type { ConversationEffects } from './conversation'
 
@@ -32,11 +33,7 @@ export interface QueuedSubmissionLifecycle {
 }
 
 function promptFor(item: QueuedSubmission): string {
-  return item.reviewAttachments.length === 0
-    ? item.text
-    : `${item.text}\n\nReview attachments:\n${item.reviewAttachments
-        .map((attachment) => `- ${attachment.path}`)
-        .join('\n')}`
+  return harnessPromptWithReviewAttachments(item.text, item.reviewAttachments)
 }
 
 function attemptsFor(item: QueuedSubmission, runs: RunSnapshot[]): RunSnapshot[] {

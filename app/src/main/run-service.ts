@@ -35,6 +35,7 @@ import {
   type QueuedSubmissionLaunchPlan,
   type UnfinishedRun
 } from '@shared/conversation'
+import { harnessPromptWithReviewAttachments } from '@shared/review-attachment'
 import { proposeStandingApproval, ruleText } from '@shared/approval'
 import {
   resolveApprovalInputSchema,
@@ -439,14 +440,17 @@ export class RunService {
         sessionId: input.sessionId,
         submissionId: input.submissionId,
         text: input.text,
-        source: input.source
+        source: input.source,
+        reviewAttachments: input.reviewAttachments
       }
     })
     try {
       await this.start({
         submissionId: input.submissionId,
         sessionId: input.sessionId,
-        prompt: input.text,
+        // The Conversation keeps the person's own words; the Harness is the
+        // only place the reviewed snapshots are spelled out.
+        prompt: harnessPromptWithReviewAttachments(input.text, input.reviewAttachments),
         harness: input.harness,
         model: input.model,
         effort: input.effort,
