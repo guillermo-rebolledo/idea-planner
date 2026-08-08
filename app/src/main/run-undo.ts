@@ -3,6 +3,8 @@ import { checkoutDirectory, type SessionSummary } from '@shared/contract'
 import { MAX_UNDO_OUTCOMES, type UndoOutcome } from '@shared/conversation'
 import {
   applyRunUndoInputSchema,
+  isRestored,
+  OUTCOME_OF_CLASSIFICATION,
   prepareRunUndoInputSchema,
   type ApplyRunUndoInput,
   type PrepareRunUndoInput,
@@ -27,6 +29,15 @@ import type { SessionSnapshotStore } from './snapshot-store'
 
 /** How much of the patch crosses to the window. Applying uses the whole one. */
 const MAX_SHOWN_PATCH_BYTES = 512 * 1024
+
+/**
+ * How many reviews may stand at once. Each holds a whole patch, and opening
+ * the dialog and closing it again is free — so without a bound, reading what
+ * several Runs would undo would keep every one of those patches alive for the
+ * life of the process. The oldest goes first; a review that has aged out is
+ * refused as stale, which is what it is.
+ */
+const MAX_PENDING_REVIEWS = 8
 
 /** One reviewed restoration, waiting for a confirmation that may never come. */
 interface PendingUndo {
@@ -122,6 +133,12 @@ export class RunUndoService {
     const mode: UndoMode =
       session.checkout.kind === 'worktree' && everyPathSafe ? 'direct' : 'review'
     const operationId = (this.deps.newOperationId ?? randomUUID)()
+    // Insertion order is age order, so the first key is the oldest review.
+    while (this.pending.size >= MAX_PENDING_REVIEWS) {
+      const oldest = this.pending.keys().next()
+      if (oldest.done) break
+      this.pending.delete(oldest.value)
+    }
     this.pending.set(operationId, {
       sessionId: input.sessionId,
       runId: input.runId,
@@ -184,31 +201,37 @@ export class RunUndoService {
       store: operation.store,
       patch: operation.patch
     })
+    // Refused means git wrote nothing, which is the same thing the person
+    // needs to hear as a stale review: look again. Failed means it started and
+    // did not finish, and there is no honest way to describe the tree.
     if (applied.status === 'refused') return { status: 'stale' }
+    if (applied.status === 'failed') return { status: 'failed' }
 
     const outcomes: UndoOutcome[] = operation.paths.map((path) => ({
       path: path.path,
-      outcome:
-        path.classification === 'safe'
-          ? 'restored'
-          : path.classification === 'diverged'
-            ? 'skipped-diverged'
-            : 'skipped-already-restored'
+      outcome: OUTCOME_OF_CLASSIFICATION[path.classification]
     }))
     const listed = outcomes.slice(0, MAX_UNDO_OUTCOMES)
-    // Said out loud even when the append fails: the files moved, and a record
-    // that could not be written is not a reason to report that they did not.
+    // The record is written under the operation id, so appending it twice is
+    // appending it once — which makes one retry free. Past that the files have
+    // still moved, and a record that could not be written is not a reason to
+    // report that they did not.
+    const record = {
+      sessionId: operation.sessionId,
+      operationId: input.operationId,
+      sourceRunId: operation.runId,
+      outcomes: listed,
+      unlisted: outcomes.length - listed.length
+    }
     await this.deps
-      .recordAppAction({
-        sessionId: operation.sessionId,
-        operationId: input.operationId,
-        sourceRunId: operation.runId,
-        outcomes: listed,
-        unlisted: outcomes.length - listed.length
-      })
+      .recordAppAction(record)
+      .catch(() => this.deps.recordAppAction(record))
       .catch(() => undefined)
     return {
-      status: outcomes.every((outcome) => outcome.outcome === 'restored') ? 'restored' : 'partial',
+      // Partial means something was left undone, which is only ever a diverged
+      // path. A path that was already back is not a shortfall — reporting
+      // "1 of 2" for it would invent a failure nobody had.
+      status: outcomes.every((outcome) => isRestored(outcome.outcome)) ? 'restored' : 'partial',
       runId: operation.runId,
       outcomes: listed
     }

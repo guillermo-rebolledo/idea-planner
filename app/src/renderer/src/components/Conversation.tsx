@@ -2025,6 +2025,9 @@ function AppActionNote({ entry }: { entry: AppActionEntry }): React.JSX.Element 
   const restored = entry.outcomes.filter((one) => one.outcome === 'restored')
   const diverged = entry.outcomes.filter((one) => one.outcome === 'skipped-diverged')
   const already = entry.outcomes.filter((one) => one.outcome === 'skipped-already-restored')
+  // Named by what happened rather than by count, so a Run whose every path was
+  // left alone does not read as one that was undone.
+  const nothingMoved = restored.length === 0
   return (
     <section
       aria-label="Undo"
@@ -2032,7 +2035,9 @@ function AppActionNote({ entry }: { entry: AppActionEntry }): React.JSX.Element 
     >
       <p className="flex items-center gap-1.5 text-muted-foreground">
         <Undo2 aria-hidden="true" className="size-3 shrink-0" />
-        You undid an earlier Run.
+        {nothingMoved
+          ? 'You asked to undo an earlier Run; nothing was put back.'
+          : 'You undid an earlier Run.'}
       </p>
       <ul className="mt-1 space-y-0.5 text-2xs text-muted-foreground">
         {restored.length > 0 && (

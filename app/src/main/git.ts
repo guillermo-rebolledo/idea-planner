@@ -453,7 +453,10 @@ export async function planRestoration(
     const paths: UndoPath[] = affected.map((change) => ({
       path: change.path,
       changeKind: change.changeKind,
-      classification: classify(movedSinceRun.has(change.path), movedSinceBaseline.has(change.path))
+      classification: classifyPath({
+        matchesWhatTheRunLeft: !movedSinceRun.has(change.path),
+        matchesWhatWasThereBefore: !movedSinceBaseline.has(change.path)
+      })
     }))
     const safe = paths.filter((path) => path.classification === 'safe').map((path) => path.path)
     const patch = safe.length === 0 ? '' : await inversePatch(input, env, safe)
@@ -465,9 +468,17 @@ export async function planRestoration(
   }
 }
 
-function classify(movedSinceRun: boolean, movedSinceBaseline: boolean): UndoPathClassification {
-  if (!movedSinceRun) return 'safe'
-  return movedSinceBaseline ? 'diverged' : 'already-restored'
+/**
+ * Where one path stands, from the two comparisons that place it. Named
+ * arguments rather than positional booleans: swapping these two silently would
+ * classify a file the person has just edited as safe to write over.
+ */
+function classifyPath(against: {
+  matchesWhatTheRunLeft: boolean
+  matchesWhatWasThereBefore: boolean
+}): UndoPathClassification {
+  if (against.matchesWhatTheRunLeft) return 'safe'
+  return against.matchesWhatWasThereBefore ? 'already-restored' : 'diverged'
 }
 
 /**
@@ -515,8 +526,20 @@ export async function currentTreeDigest(
 
 export type PatchApplication =
   | { status: 'applied' }
-  /** `git apply --check` refused it. Nothing was written. */
+  /**
+   * Refused before anything was written — `git apply --check` said no, or the
+   * Checkout was not in a state to be written to. Nothing was touched, and
+   * that is a promise the caller may repeat to the person.
+   */
   | { status: 'refused' }
+  /**
+   * `--check` passed and the apply that followed did not. Rare, and the one
+   * case where what the working tree now holds is genuinely unknown, so it is
+   * kept distinct from `refused` rather than folded into it: telling somebody
+   * nothing was touched when something might have been is the worst answer
+   * available.
+   */
+  | { status: 'failed' }
 
 /**
  * Applies an inverse patch to the working tree, and only to the working tree.
@@ -541,19 +564,27 @@ export async function applyInversePatch(
   }
   await mkdir(join(input.store, SCRATCH), { recursive: true })
   const file = join(input.store, SCRATCH, `restore-${randomUUID()}.patch`)
+  const env = environment(options)
+  const args = ['apply', '--binary', '--whitespace=nowarn']
   try {
-    await writeFile(file, input.patch, { mode: 0o600 })
-    const env = environment(options)
-    const args = ['apply', '--binary', '--whitespace=nowarn']
-    await run('git', [...args, '--check', file], {
-      cwd: input.checkout,
-      env,
-      timeout: TIMEOUT_MS
-    })
-    await run('git', [...args, file], { cwd: input.checkout, env, timeout: TIMEOUT_MS })
-    return { status: 'applied' }
-  } catch {
-    return { status: 'refused' }
+    try {
+      await writeFile(file, input.patch, { mode: 0o600 })
+      await run('git', [...args, '--check', file], {
+        cwd: input.checkout,
+        env,
+        timeout: TIMEOUT_MS
+      })
+    } catch {
+      // Staging the patch or checking it. Either way git has not been asked to
+      // write anything yet.
+      return { status: 'refused' }
+    }
+    try {
+      await run('git', [...args, file], { cwd: input.checkout, env, timeout: TIMEOUT_MS })
+      return { status: 'applied' }
+    } catch {
+      return { status: 'failed' }
+    }
   } finally {
     await rm(file, { force: true }).catch(() => undefined)
   }

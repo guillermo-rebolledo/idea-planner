@@ -89,31 +89,8 @@ export class SessionSnapshotStore {
   }
 
   /** What was captured for one Run, or nothing anybody can act on. */
-  async read(sessionId: string, runId: string): Promise<RunSnapshotRecord | null> {
-    const text = await readFile(this.recordPath(sessionId, runId), 'utf8').catch(() => '')
-    if (!text) return null
-    let written: unknown
-    try {
-      written = JSON.parse(text)
-    } catch {
-      return null
-    }
-    const parsed = runSnapshotRecordSchema.safeParse(written)
-    return parsed.success ? parsed.data : null
-  }
-
-  /** Every Run this Session captured anything for, newest capture last. */
-  async list(sessionId: string): Promise<RunSnapshotRecord[]> {
-    const directory = join(this.directoryFor(sessionId), RUNS)
-    const entries = await readdir(directory).catch(() => [] as string[])
-    const records = await Promise.all(
-      entries
-        .filter((name) => name.endsWith('.json'))
-        .map((name) => this.readPath(join(directory, name)))
-    )
-    return records
-      .flatMap((record) => (record ? [record] : []))
-      .sort((left, right) => left.capturedAt.localeCompare(right.capturedAt))
+  read(sessionId: string, runId: string): Promise<RunSnapshotRecord | null> {
+    return this.readPath(this.recordPath(sessionId, runId))
   }
 
   /**
@@ -152,6 +129,11 @@ export class SessionSnapshotStore {
     return join(this.directoryFor(sessionId), RUNS, `${encodeURIComponent(runId)}.json`)
   }
 
+  /**
+   * One record, or nothing. A record that is absent, unreadable, or not the
+   * shape it claims is all the same answer here: there is nothing to restore
+   * from, which is reported as undo being unavailable rather than guessed at.
+   */
   private async readPath(path: string): Promise<RunSnapshotRecord | null> {
     const text = await readFile(path, 'utf8').catch(() => '')
     if (!text) return null

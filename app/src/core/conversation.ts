@@ -45,6 +45,7 @@ import {
   type SuggestedResponse
 } from '@shared/conversation'
 import { reviewAttachmentsRefusal, type ReviewAttachment } from '@shared/review-attachment'
+import { isRestored } from '@shared/run-undo'
 import type { HarnessId } from '@shared/readiness'
 import type { RunActivityKind, SkillName } from '@shared/run'
 import { createCodexAdapter, type HarnessAdapter } from './harness/codex'
@@ -1803,9 +1804,7 @@ function summarize(
       for (const outcome of entry.outcomes) {
         const known = changed.get(outcome.path)
         if (!known) continue
-        // "Already restored" is restored: the file holds its pre-Run content,
-        // and the only difference is that this undo was not what put it there.
-        changed.set(outcome.path, { ...known, restored: outcome.outcome !== 'skipped-diverged' })
+        changed.set(outcome.path, { ...known, restored: isRestored(outcome.outcome) })
       }
     }
   }

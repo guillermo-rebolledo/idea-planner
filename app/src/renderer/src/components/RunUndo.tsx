@@ -65,6 +65,8 @@ function appliedText(applied: RunUndoApplication): string {
     }
     case 'stale':
       return 'Something changed while you were reading this, so nothing was touched. Ask again to see where things stand now.'
+    case 'failed':
+      return 'Git accepted the change and then could not finish applying it. Some files may have moved and some may not — check the Checkout in git before doing anything else.'
     case 'blocked':
       return `This Checkout is mid-operation (${applied.state}), so nothing was touched.`
     case 'unavailable':
@@ -158,7 +160,7 @@ export function RunUndoDialog({
         <>
           <p className="mt-1 text-xs text-muted-foreground">
             {ready.mode === 'direct'
-              ? 'This Session works in an isolated Checkout, and every file this Run changed is still exactly as it left it. They will be put back the way they were before the Run.'
+              ? 'This Session works in a Worktree, and every file this Run changed is still exactly as it left it. They will be put back the way they were before the Run.'
               : 'Each file is listed with what will happen to it. Files changed since the Run are never written to. Anything you have staged in git stays exactly as it is.'}
           </p>
           <UndoPathList paths={ready.paths} />

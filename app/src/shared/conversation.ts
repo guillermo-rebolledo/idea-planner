@@ -877,7 +877,6 @@ export const queuedSubmissionChangeSchema = z.discriminatedUnion('type', [
 ])
 export type QueuedSubmissionChange = z.infer<typeof queuedSubmissionChangeSchema>
 
-/** The Renderer's one command for developing a Session through a Conversation. */
 /**
  * What the app did to the Checkout on the person's behalf, for the record.
  *
@@ -894,6 +893,7 @@ export const recordAppActionInputSchema = z.object({
 })
 export type RecordAppActionInput = z.input<typeof recordAppActionInputSchema>
 
+/** The Renderer's one command for developing a Session through a Conversation. */
 export const developSessionInputSchema =
   submitConversationMessageInputSchema.merge(runRequestSchema)
 export type DevelopSessionInput = z.input<typeof developSessionInputSchema>

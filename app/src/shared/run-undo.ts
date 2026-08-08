@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { changeKindSchema, undoOutcomeSchema } from './conversation'
+import { changeKindSchema, undoOutcomeSchema, type UndoOutcome } from './conversation'
 import { checkoutStateSchema } from './checkout'
 
 /**
@@ -24,6 +24,26 @@ export const undoPathClassificationSchema = z.enum([
   'already-restored'
 ])
 export type UndoPathClassification = z.infer<typeof undoPathClassificationSchema>
+
+/**
+ * What each classification becomes once the restoration has run. Stated once,
+ * because it is the same rule everywhere it is needed — deciding what to write
+ * down, and deciding whether a row in the Files panel is back — and two
+ * statements of it are two rules free to disagree.
+ *
+ * "Already restored" counts as restored: the file holds its pre-Run content,
+ * and the only difference is that this undo was not what put it there.
+ */
+export const OUTCOME_OF_CLASSIFICATION: Record<UndoPathClassification, UndoOutcome['outcome']> = {
+  safe: 'restored',
+  diverged: 'skipped-diverged',
+  'already-restored': 'skipped-already-restored'
+}
+
+/** Whether an outcome leaves the file holding what it held before the Run. */
+export function isRestored(outcome: UndoOutcome['outcome']): boolean {
+  return outcome !== 'skipped-diverged'
+}
 
 /** One path the Run changed, and what undoing it would mean now. */
 export const undoPathSchema = z.object({
@@ -101,6 +121,13 @@ export const runUndoApplicationSchema = z.discriminatedUnion('status', [
    * person is asked to look again rather than shown a guess.
    */
   z.object({ status: z.literal('stale') }),
+  /**
+   * Git accepted the patch and then failed to apply it. What the working tree
+   * holds now is genuinely unknown, so this says exactly that rather than
+   * claiming either outcome. Kept apart from `stale`, which is a promise that
+   * nothing was touched.
+   */
+  z.object({ status: z.literal('failed') }),
   z.object({ status: z.literal('blocked'), state: checkoutStateSchema }),
   z.object({ status: z.literal('unavailable'), reason: undoUnavailableReasonSchema })
 ])

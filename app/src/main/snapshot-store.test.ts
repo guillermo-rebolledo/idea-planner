@@ -119,16 +119,4 @@ describe('a Session’s snapshot store', () => {
     // The objects and the record it captured are untouched by the sweep.
     expect((await store.read('s', 'r'))?.before).toEqual(expect.any(String))
   })
-
-  it('lists every Run it captured anything for, oldest capture first', async () => {
-    let tick = 0
-    const clocked = new SessionSnapshotStore(
-      privateRoot,
-      () => new Date(Date.parse('2026-08-07T12:00:00.000Z') + ++tick * 1000)
-    )
-    await clocked.capture({ sessionId: 's', runId: 'first', checkout, phase: 'before' })
-    await clocked.capture({ sessionId: 's', runId: 'second', checkout, phase: 'before' })
-
-    expect((await clocked.list('s')).map((record) => record.runId)).toEqual(['first', 'second'])
-  })
 })

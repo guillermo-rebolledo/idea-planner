@@ -58,6 +58,7 @@ function claudeDeps(root: string, broker: ReturnType<typeof fakeBroker>) {
     },
     homeDirectory: root,
     privateRoot: join(root, 'private'),
+    snapshots: new SessionSnapshotStore(join(root, 'private')),
     proxyExecutable: '/usr/bin/true',
     proxyScript: '/tmp/mcp-proxy.js',
     claudeOauthToken: fakeClaudeOauthToken,
@@ -284,6 +285,7 @@ describe('Run service', () => {
       },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       claudeOauthToken: fakeClaudeOauthToken,
@@ -373,6 +375,7 @@ describe('Run service', () => {
       },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       claudeOauthToken: fakeClaudeOauthToken,
@@ -494,6 +497,7 @@ describe('Run service', () => {
       },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -536,6 +540,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -563,6 +568,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -622,6 +628,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: (requestedRoot, harness) => {
@@ -662,6 +669,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -703,6 +711,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -732,6 +741,7 @@ describe('Run service', () => {
       readiness: { refresh: vi.fn(() => Promise.resolve({ harnesses: [] })) },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -767,6 +777,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -803,6 +814,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root),
@@ -854,6 +866,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root),
@@ -942,6 +955,7 @@ describe('Run service', () => {
       },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root),
@@ -990,6 +1004,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -1022,6 +1037,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -1047,6 +1063,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -1087,6 +1104,7 @@ describe('Run service', () => {
       },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -1376,6 +1394,25 @@ describe('a Run the app never got to finish', () => {
 
     expect(await snapshots.read('session', 'run-abandoned')).not.toBeNull()
     expect(await snapshots.read('a-session-since-deleted', 'run-gone')).toBeNull()
+  })
+
+  it('keeps the snapshots of a damaged Session rather than pruning it as gone', async () => {
+    const root = await readyClaudeRoot('run-service-damaged-')
+    const checkout = await project(root)
+    const deps = claudeDeps(root, fakeBroker())
+    const snapshots = await abandon(deps, checkout, 'damaged-session')
+    // Core reports a Session whose record could not be read separately, so it
+    // can be shown rather than inferred. It is not a Session that has gone.
+    const send = deps.core.send.getMockImplementation() as (command: {
+      type: string
+    }) => Promise<unknown>
+    deps.core.send.mockImplementation((command: { type: string }) =>
+      command.type === 'session/list-damaged' ? Promise.resolve(['damaged-session']) : send(command)
+    )
+
+    await new RunService(deps).recoverUnfinishedWork()
+
+    expect(await snapshots.read('damaged-session', 'run-abandoned')).not.toBeNull()
   })
 
   it('keeps Checkout evidence when Core cannot confirm the recovered ending', async () => {

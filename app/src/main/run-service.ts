@@ -57,7 +57,7 @@ import {
 } from '@shared/run-lifecycle'
 import type { SkillCatalog } from '@shared/skill'
 import { diffSnapshots, observeCheckoutState, type CheckoutSnapshot } from './git'
-import { SessionSnapshotStore } from './snapshot-store'
+import type { SessionSnapshotStore } from './snapshot-store'
 import { HARNESS_SPECS } from './readiness'
 import { ToolHost, type ApprovalRequest } from './tool-host'
 import type { RunProcessBroker } from './run-process-broker'
@@ -99,12 +99,11 @@ interface RunServiceDeps {
   homeDirectory: string
   privateRoot: string
   /**
-   * Where each Session's before/after Run trees are kept (ADR 0006). Shared
-   * with whatever else reads them — undo above all — rather than made here, so
-   * there is one store per app rather than one per collaborator. Defaults to
-   * the store under `privateRoot`, which is the only place it has ever been.
+   * Where each Session's before/after Run trees are kept (ADR 0006). Passed in
+   * rather than made here, because undo reads the same store: two stores over
+   * one directory would be two answers to "what did this Run change".
    */
-  snapshots?: SessionSnapshotStore
+  snapshots: SessionSnapshotStore
   proxyExecutable: string
   proxyScript: string
   claudeOauthToken?: () => Promise<string>
@@ -175,7 +174,6 @@ type RequestProposal = AdapterRequestProposal
  * or terminal lifecycle request to Core; it never sequences Core persistence.
  */
 export class RunService {
-  private readonly snapshots: SessionSnapshotStore
   private readonly queueCoordinator: QueueCoordinator
   private readonly toolHosts = new Map<string, ToolHost>()
   /** The last failure a Run's Harness reported, used when the Run ends. */
@@ -213,7 +211,6 @@ export class RunService {
   private readonly adapters = new Map<string, HarnessAdapter>()
 
   constructor(private readonly deps: RunServiceDeps) {
-    this.snapshots = deps.snapshots ?? new SessionSnapshotStore(deps.privateRoot)
     this.queueCoordinator = new QueueCoordinator({
       queue: {
         next: (sessionId) => deps.core.send({ type: 'conversation/queue-next', sessionId }),
@@ -334,7 +331,7 @@ export class RunService {
     sessionId: string,
     runId: string
   ): Promise<CheckoutBaseline | undefined> {
-    const record = await this.snapshots.read(sessionId, runId)
+    const record = await this.deps.snapshots.read(sessionId, runId)
     if (!record?.before) return undefined
     return {
       sessionId,
@@ -354,11 +351,22 @@ export class RunService {
    * by a Session that has since gone.
    */
   private async discardOrphanedSnapshots(): Promise<void> {
-    const sessions = sessionSummarySchema
-      .array()
-      .parse(await this.deps.core.send({ type: 'session/list' }))
-    await this.snapshots.pruneUnknown(new Set(sessions.map((session) => session.id)))
-    for (const session of sessions) await this.snapshots.clearScratch(session.id)
+    const [intact, damaged] = await Promise.all([
+      this.deps.core
+        .send({ type: 'session/list' })
+        .then((result) => sessionSummarySchema.array().parse(result)),
+      // A Session whose record could not be read is damaged, not gone: Core
+      // reports it so the loss can be shown rather than inferred, and it may
+      // yet be repaired. Pruning on "not in the intact list" would quietly
+      // destroy its snapshots — the one thing this sweep must never do.
+      this.deps.core
+        .send({ type: 'session/list-damaged' })
+        .then((result) => z.array(z.string()).parse(result))
+        .catch(() => [] as string[])
+    ])
+    const claimed = new Set([...intact.map((session) => session.id), ...damaged])
+    await this.deps.snapshots.pruneUnknown(claimed)
+    for (const session of intact) await this.deps.snapshots.clearScratch(session.id)
   }
 
   /**
@@ -808,7 +816,7 @@ export class RunService {
         sessionId: accepted.sessionId,
         runId: accepted.id,
         checkout,
-        snapshot: await this.snapshots
+        snapshot: await this.deps.snapshots
           .capture({
             sessionId: accepted.sessionId,
             runId: accepted.id,
@@ -1390,7 +1398,7 @@ export class RunService {
     // when the comparison below cannot be made: the after tree is half of what
     // undoing this Run needs, and a Run whose diff failed to render is not a
     // Run whose state should become unrecoverable.
-    const after = await this.snapshots.capture({
+    const after = await this.deps.snapshots.capture({
       sessionId: baseline.sessionId,
       runId: baseline.runId,
       checkout: baseline.checkout,
@@ -1398,7 +1406,7 @@ export class RunService {
     })
     const comparison = await diffSnapshots(
       baseline.checkout,
-      this.snapshots.directoryFor(baseline.sessionId),
+      this.deps.snapshots.directoryFor(baseline.sessionId),
       baseline.snapshot,
       after
     )

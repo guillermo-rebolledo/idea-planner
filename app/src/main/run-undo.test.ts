@@ -218,6 +218,45 @@ describe('applying an undo', () => {
     expect(recorded).toHaveLength(1)
   })
 
+  it('calls a restoration complete when the only path it skipped was already back', async () => {
+    await store.capture({ sessionId: SESSION, runId: RUN, checkout: root, phase: 'before' })
+    await writeFile(join(root, 'tracked.ts'), 'agent\n')
+    await writeFile(join(root, 'also.ts'), 'agent\n')
+    await store.capture({ sessionId: SESSION, runId: RUN, checkout: root, phase: 'after' })
+    // Put back by hand before asking. Nothing is left undone by the undo.
+    await writeFile(join(root, 'tracked.ts'), 'base\n')
+
+    const undo = service()
+    const prepared = await undo.prepare({ sessionId: SESSION, runId: RUN })
+    if (prepared.status !== 'ready') throw new Error('expected a plan')
+    const applied = await undo.apply({ sessionId: SESSION, operationId: prepared.operationId })
+
+    expect(applied.status).toBe('restored')
+    if (applied.status !== 'restored') throw new Error('expected a complete restore')
+    expect(applied.outcomes).toEqual(
+      expect.arrayContaining([
+        { path: 'tracked.ts', outcome: 'skipped-already-restored' },
+        { path: 'also.ts', outcome: 'restored' }
+      ])
+    )
+  })
+
+  it('lets go of the oldest review rather than holding every patch it ever built', async () => {
+    await ranAndChanged()
+    const undo = service()
+    const first = await undo.prepare({ sessionId: SESSION, runId: RUN })
+    if (first.status !== 'ready') throw new Error('expected a plan')
+    // Eight more reviews of the same Run push the first one out.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await undo.prepare({ sessionId: SESSION, runId: RUN })
+    }
+
+    await expect(
+      undo.apply({ sessionId: SESSION, operationId: first.operationId })
+    ).resolves.toEqual({ status: 'stale' })
+    await expect(readFile(join(root, 'tracked.ts'), 'utf8')).resolves.toBe('agent\n')
+  })
+
   it('refuses without touching a file when the tree moved between review and apply', async () => {
     await ranAndChanged()
     const undo = service()
