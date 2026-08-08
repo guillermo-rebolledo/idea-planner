@@ -69,6 +69,8 @@ const api: ShellApi = {
   sendQueuedSubmissionNow: (input) =>
     ipcRenderer.invoke(IPC_CHANNELS.sendQueuedSubmissionNow, input),
   resolveApproval: (input) => ipcRenderer.invoke(IPC_CHANNELS.resolveApproval, input),
+  prepareRunUndo: (input) => ipcRenderer.invoke(IPC_CHANNELS.prepareRunUndo, input),
+  applyRunUndo: (input) => ipcRenderer.invoke(IPC_CHANNELS.applyRunUndo, input),
   onConversationEvent: (listener) => {
     const subscription = (_event: unknown, streamed: ConversationStreamEvent): void =>
       listener(streamed)

@@ -29,6 +29,11 @@ app offers `git init` instead.
 (see [ADR 0002](./0002-app-owned-session-state.md)), and does not gate changes
 per hunk.
 
+Amended by [ADR 0006](./0006-app-owned-git-snapshots-and-guarded-undo.md): Git
+is still the mechanism, but Argos retains Session-owned Git objects for each
+Run's before/after trees and applies guarded inverse patches from them. Per-hunk
+application stays rejected.
+
 ## Considered options
 
 - **Isolated checkouts as the baseline.** Rejected for a _local_ app. Isolation

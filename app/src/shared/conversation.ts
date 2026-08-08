@@ -80,6 +80,30 @@ export const MAX_SUBAGENT_TEXT = 8_000
 export const changeKindSchema = z.enum(['added', 'changed', 'deleted'])
 export type ChangeKind = z.infer<typeof changeKindSchema>
 
+/**
+ * What actually happened to one path when a Run was undone. Kept here because
+ * it is a durable Conversation shape before it is anything else: what the app
+ * did, in the app's own record, path by path.
+ */
+export const undoOutcomeSchema = z.object({
+  path: z.string().min(1),
+  outcome: z.enum([
+    /** Put back the way it was before the Run. */
+    'restored',
+    /** Left alone because it had changed since the Run. */
+    'skipped-diverged',
+    /** Left alone because it was already back the way it was. */
+    'skipped-already-restored'
+  ])
+})
+export type UndoOutcome = z.infer<typeof undoOutcomeSchema>
+
+/**
+ * How many paths one undo names. A codemod can touch thousands, and a list
+ * beyond this is not one anybody reads; the count of the rest is still told.
+ */
+export const MAX_UNDO_OUTCOMES = 500
+
 /** One contiguous run of changed lines, as the Harness computed it. */
 export const diffHunkSchema = z.object({
   oldStart: z.number().int().nonnegative(),
@@ -630,6 +654,34 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     steps: z.number().int().nonnegative().nullable().default(null),
     durationMs: z.number().int().nonnegative().nullable().default(null)
   }),
+  /**
+   * Something the app itself did to the Checkout, at the person's explicit
+   * request. Only undoing a Run is one of these today.
+   *
+   * It is an entry of its own rather than a rewrite of the Run it undoes:
+   * the Run happened, its diff is what happened, and a Conversation that
+   * edited itself to say otherwise would be a record nobody could trust
+   * (ADR 0006). The Run stays exactly as it was written, and this says what
+   * was done about it afterwards — including which paths were left alone.
+   *
+   * It belongs to no Run: nothing was running when the person asked for it.
+   */
+  z.object({
+    kind: z.literal('app-action'),
+    id: z.string().min(1),
+    at: z.string().datetime(),
+    action: z.literal('run-undo'),
+    /** The Run that was put back, so the record names where this came from. */
+    sourceRunId: z.string().min(1),
+    /** Every path considered, and what actually happened to it. */
+    outcomes: z.array(undoOutcomeSchema).max(MAX_UNDO_OUTCOMES),
+    /**
+     * How many paths were considered, when more were considered than are
+     * listed. Zero means the list is everything: a cap nobody is told about
+     * turns a partial answer into a wrong one.
+     */
+    unlisted: z.number().int().nonnegative().default(0)
+  }),
   queuedSubmissionEntrySchema,
   queueStateEntrySchema,
   queueOutcomeEntrySchema
@@ -657,7 +709,17 @@ export const changedFileSchema = z.object({
    * comparing the Checkout before and after the Run — the change happened,
    * and nothing in the Conversation accounts for it.
    */
-  reported: z.boolean()
+  reported: z.boolean(),
+  /**
+   * True when the app has since put this file back (ADR 0006). The row stays,
+   * and so do the Run and the diff behind it: the change did happen, and the
+   * honest thing to say is that it happened and was then undone — not to
+   * quietly delete the evidence of either.
+   *
+   * Rows written before undo existed read back as not restored, which is
+   * exactly what they were.
+   */
+  restored: z.boolean().default(false)
 })
 export type ChangedFile = z.infer<typeof changedFileSchema>
 
@@ -816,6 +878,22 @@ export const queuedSubmissionChangeSchema = z.discriminatedUnion('type', [
 export type QueuedSubmissionChange = z.infer<typeof queuedSubmissionChangeSchema>
 
 /** The Renderer's one command for developing a Session through a Conversation. */
+/**
+ * What the app did to the Checkout on the person's behalf, for the record.
+ *
+ * The operation id is the entry's identity, so a restoration whose record
+ * failed to append and was retried is written once rather than twice.
+ */
+export const recordAppActionInputSchema = z.object({
+  sessionId: z.string().min(1),
+  operationId: z.string().min(1).max(200),
+  action: z.literal('run-undo'),
+  sourceRunId: z.string().min(1),
+  outcomes: z.array(undoOutcomeSchema).max(MAX_UNDO_OUTCOMES),
+  unlisted: z.number().int().nonnegative().default(0)
+})
+export type RecordAppActionInput = z.input<typeof recordAppActionInputSchema>
+
 export const developSessionInputSchema =
   submitConversationMessageInputSchema.merge(runRequestSchema)
 export type DevelopSessionInput = z.input<typeof developSessionInputSchema>

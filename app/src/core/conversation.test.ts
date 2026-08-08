@@ -1433,6 +1433,131 @@ describe('what this Session changed', () => {
   })
 })
 
+describe('undoing a Run in the record', () => {
+  const hunk = (lines: string[]): DiffHunk => ({
+    oldStart: 1,
+    oldLines: 1,
+    newStart: 1,
+    newLines: lines.length,
+    lines
+  })
+
+  /** One Run that changed two files, which is what an undo has to speak about. */
+  async function ranAndChangedTwo(): Promise<string> {
+    const runId = await startRun('Do the thing', 'submission-undo')
+    for (const path of ['kept.ts', 'putback.ts']) {
+      await core.applyHarnessEvent({
+        sessionId,
+        runId,
+        event: {
+          type: 'file-change',
+          path: `${projectRoot}/${path}`,
+          hunks: [hunk(['+const a = 1'])]
+        }
+      })
+    }
+    return runId
+  }
+
+  it('appends what the app did without rewriting the Run it undid', async () => {
+    const runId = await ranAndChangedTwo()
+    const before = (await core.getConversation(sessionId)).entries.filter(
+      (entry) => entry.kind === 'file-change'
+    )
+
+    await core.recordAppAction({
+      sessionId,
+      operationId: 'operation-1',
+      action: 'run-undo',
+      sourceRunId: runId,
+      outcomes: [
+        { path: 'putback.ts', outcome: 'restored' },
+        { path: 'kept.ts', outcome: 'skipped-diverged' }
+      ]
+    })
+
+    const snapshot = await makeCore().getConversation(sessionId)
+    // The Run, its steps and its diffs are exactly as they were written.
+    expect(snapshot.entries.filter((entry) => entry.kind === 'file-change')).toEqual(before)
+    expect(snapshot.entries.filter((entry) => entry.kind === 'app-action')).toMatchObject([
+      {
+        action: 'run-undo',
+        sourceRunId: runId,
+        outcomes: [
+          { path: 'putback.ts', outcome: 'restored' },
+          { path: 'kept.ts', outcome: 'skipped-diverged' }
+        ],
+        unlisted: 0
+      }
+    ])
+  })
+
+  it('marks the restored rows in the Files projection and leaves the rest alone', async () => {
+    const runId = await ranAndChangedTwo()
+
+    await core.recordAppAction({
+      sessionId,
+      operationId: 'operation-1',
+      action: 'run-undo',
+      sourceRunId: runId,
+      outcomes: [
+        { path: 'putback.ts', outcome: 'restored' },
+        { path: 'kept.ts', outcome: 'skipped-diverged' }
+      ]
+    })
+
+    expect((await makeCore().getConversation(sessionId)).changedFiles).toMatchObject([
+      { path: 'kept.ts', restored: false, changes: 1 },
+      { path: 'putback.ts', restored: true, changes: 1 }
+    ])
+  })
+
+  it('stops calling a file restored once something changes it again', async () => {
+    const runId = await ranAndChangedTwo()
+    await core.recordAppAction({
+      sessionId,
+      operationId: 'operation-1',
+      action: 'run-undo',
+      sourceRunId: runId,
+      outcomes: [{ path: 'putback.ts', outcome: 'restored' }]
+    })
+
+    const later = await startRun('Do it again', 'submission-again')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId: later,
+      event: {
+        type: 'file-change',
+        path: `${projectRoot}/putback.ts`,
+        hunks: [hunk(['+const b = 2'])]
+      }
+    })
+
+    const changed = (await makeCore().getConversation(sessionId)).changedFiles
+    expect(changed.find((file) => file.path === 'putback.ts')).toMatchObject({ restored: false })
+  })
+
+  it('writes one entry however many times the same restoration is recorded', async () => {
+    const runId = await ranAndChangedTwo()
+    const input = {
+      sessionId,
+      operationId: 'operation-1',
+      action: 'run-undo' as const,
+      sourceRunId: runId,
+      outcomes: [{ path: 'putback.ts', outcome: 'restored' as const }]
+    }
+
+    await core.recordAppAction(input)
+    await core.recordAppAction(input)
+
+    expect(
+      (await makeCore().getConversation(sessionId)).entries.filter(
+        (entry) => entry.kind === 'app-action'
+      )
+    ).toHaveLength(1)
+  })
+})
+
 describe('what a diff is allowed to carry', () => {
   it('redacts a credential the Harness has just written into a file', async () => {
     const runId = await startRun('Add the key', 'submission-secret')

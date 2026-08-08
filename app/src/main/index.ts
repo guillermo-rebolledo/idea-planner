@@ -32,6 +32,10 @@ import {
   trustProjectSkillsInputSchema,
   type SkillCatalog,
   resolveApprovalInputSchema,
+  applyRunUndoInputSchema,
+  prepareRunUndoInputSchema,
+  runUndoApplicationSchema,
+  runUndoPreparationSchema,
   revokeStandingApprovalInputSchema,
   runSnapshotSchema,
   standingApprovalSchema,
@@ -93,6 +97,8 @@ import { ReadinessService } from './readiness-service'
 import { SettingsStore } from './settings'
 import { createMainEffectRuntime, RunProcessBroker } from './run-process-broker'
 import { RunService } from './run-service'
+import { RunUndoService } from './run-undo'
+import { SessionSnapshotStore } from './snapshot-store'
 import { bootstrapWorktree } from './worktree-bootstrap'
 
 /**
@@ -137,6 +143,9 @@ let mainWindow: BrowserWindow | null = null
 let settings: SettingsStore
 let readiness: ReadinessService
 let runService: RunService
+let runUndo: RunUndoService
+/** The one store of app-owned Run snapshots; Runs write it, undo reads it. */
+let snapshots: SessionSnapshotStore
 let shutdownStarted = false
 let quitPromptOpen = false
 let servicesReady = false
@@ -525,9 +534,13 @@ function registerIpc(): void {
   )
 
   // Forgetting a Session is app state only: the Project it worked in keeps
-  // every file, because that is where the work lives (ADR 0002).
+  // every file, because that is where the work lives (ADR 0002). The Git
+  // objects the app kept for it go too — they follow Session lifetime exactly,
+  // and Delete is the one act that means gone (ADR 0006).
   handleInvoke(IPC_CHANNELS.deleteSession, z.string().min(1), async (sessionId) => {
     await coreClient.send({ type: 'session/delete', sessionId })
+    runUndo.forget(sessionId)
+    await snapshots.forget(sessionId)
   })
 
   handleInvoke(IPC_CHANNELS.setThemePreference, themePreferenceSchema, (preference) => {
@@ -707,6 +720,16 @@ function registerIpc(): void {
   )
   handleInvoke(IPC_CHANNELS.resolveApproval, resolveApprovalInputSchema, async (input) =>
     conversationSnapshotSchema.parse(await runService.resolveApproval(input))
+  )
+
+  // Two calls, deliberately. Preparing reads and writes nothing; applying is
+  // the destructive half, and it revalidates before it does anything (ADR
+  // 0006). Neither is reachable from ambient ⌘Z.
+  handleInvoke(IPC_CHANNELS.prepareRunUndo, prepareRunUndoInputSchema, async (input) =>
+    runUndoPreparationSchema.parse(await runUndo.prepare(input))
+  )
+  handleInvoke(IPC_CHANNELS.applyRunUndo, applyRunUndoInputSchema, async (input) =>
+    runUndoApplicationSchema.parse(await runUndo.apply(input))
   )
 }
 
@@ -947,8 +970,10 @@ void app.whenReady().then(() => {
     testPathOverride:
       !app.isPackaged && testReadinessPath !== undefined ? testReadinessPath : undefined
   })
+  snapshots = new SessionSnapshotStore(join(app.getPath('userData'), 'runs'))
   runService = new RunService({
     core: coreClient,
+    snapshots,
     broker: new RunProcessBroker(mainEffectRuntime),
     readiness,
     homeDirectory: app.getPath('home'),
@@ -963,6 +988,17 @@ void app.whenReady().then(() => {
     onConversationEvent: (event) => {
       mainWindow?.webContents.send(IPC_CHANNELS.conversationEvent, event)
       void notifyWhileAway(event).catch(() => undefined)
+    }
+  })
+  runUndo = new RunUndoService({
+    store: snapshots,
+    session: async (sessionId) =>
+      sessionSummarySchema.parse(await coreClient.send({ type: 'session/get', sessionId })),
+    recordAppAction: async (input) => {
+      await coreClient.send({
+        type: 'conversation/app-action',
+        input: { ...input, action: 'run-undo' }
+      })
     }
   })
   servicesReady = true

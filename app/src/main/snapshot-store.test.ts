@@ -1,0 +1,134 @@
+import { access, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { SessionSnapshotStore } from './snapshot-store'
+import { testGit as git } from './git-test-support'
+
+let checkout: string
+let privateRoot: string
+let store: SessionSnapshotStore
+
+beforeEach(async () => {
+  checkout = await mkdtemp(join(tmpdir(), 'snapshot-store-checkout-'))
+  privateRoot = await mkdtemp(join(tmpdir(), 'snapshot-store-private-'))
+  store = new SessionSnapshotStore(privateRoot)
+  await git('git', ['init', '--quiet', '-b', 'main'], { cwd: checkout })
+  await writeFile(join(checkout, 'tracked.ts'), 'base\n')
+  await git('git', ['add', '-A'], { cwd: checkout })
+  await git(
+    'git',
+    ['-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '--quiet', '-m', 'init'],
+    { cwd: checkout }
+  )
+})
+
+afterEach(async () => {
+  await Promise.all([
+    rm(checkout, { recursive: true, force: true }),
+    rm(privateRoot, { recursive: true, force: true })
+  ])
+})
+
+describe('a Session’s snapshot store', () => {
+  it('keeps both halves of a Run under one record', async () => {
+    await store.capture({ sessionId: 's', runId: 'r', checkout, phase: 'before' })
+    await writeFile(join(checkout, 'tracked.ts'), 'agent\n')
+    await store.capture({ sessionId: 's', runId: 'r', checkout, phase: 'after' })
+
+    const record = await store.read('s', 'r')
+    expect(record).toMatchObject({ sessionId: 's', runId: 'r', checkout })
+    expect(record?.before).toEqual(expect.any(String))
+    expect(record?.after).toEqual(expect.any(String))
+    expect(record?.before).not.toBe(record?.after)
+  })
+
+  it('stores one copy of content two Runs left identical', async () => {
+    await store.capture({ sessionId: 's', runId: 'one', checkout, phase: 'before' })
+    await store.capture({ sessionId: 's', runId: 'two', checkout, phase: 'before' })
+
+    const one = await store.read('s', 'one')
+    const two = await store.read('s', 'two')
+    // Content-addressed by construction: the same tree is the same object id.
+    expect(one?.before).toBe(two?.before)
+  })
+
+  it('says nothing rather than something wrong when a record cannot be read', async () => {
+    await expect(store.read('s', 'never-ran')).resolves.toBeNull()
+    await store.capture({ sessionId: 's', runId: 'r', checkout, phase: 'before' })
+    await writeFile(
+      join(privateRoot, 'session-snapshots', 's', 'runs', 'r.json'),
+      'not json at all'
+    )
+    await expect(store.read('s', 'r')).resolves.toBeNull()
+  })
+
+  it('records a skipped capture as no tree, so undo is honestly unavailable', async () => {
+    const plain = await mkdtemp(join(tmpdir(), 'snapshot-store-plain-'))
+
+    await expect(
+      store.capture({ sessionId: 's', runId: 'r', checkout: plain, phase: 'before' })
+    ).resolves.toEqual({ status: 'skipped', reason: 'not-a-repository' })
+
+    expect(await store.read('s', 'r')).toMatchObject({ before: null, after: null })
+    await rm(plain, { recursive: true, force: true })
+  })
+
+  it('keeps one Session’s store when another is forgotten', async () => {
+    await store.capture({ sessionId: 'kept', runId: 'r', checkout, phase: 'before' })
+    await store.capture({ sessionId: 'deleted', runId: 'r', checkout, phase: 'before' })
+
+    await store.forget('deleted')
+
+    expect(await store.read('kept', 'r')).not.toBeNull()
+    expect(await store.read('deleted', 'r')).toBeNull()
+    await expect(access(store.directoryFor('deleted'))).rejects.toThrow()
+  })
+
+  it('forgets a Session that never had a store without complaining', async () => {
+    await expect(store.forget('never-existed')).resolves.toBeUndefined()
+  })
+
+  it('prunes only stores no Session claims', async () => {
+    await store.capture({ sessionId: 'alive', runId: 'r', checkout, phase: 'before' })
+    await store.capture({ sessionId: 'orphan', runId: 'r', checkout, phase: 'before' })
+
+    await store.pruneUnknown(new Set(['alive']))
+
+    expect(await store.read('alive', 'r')).not.toBeNull()
+    expect(await store.read('orphan', 'r')).toBeNull()
+  })
+
+  it('survives a Session id that is not a safe directory name', async () => {
+    const awkward = 'a/../b session'
+    await store.capture({ sessionId: awkward, runId: 'r/../x', checkout, phase: 'before' })
+
+    expect(await store.read(awkward, 'r/../x')).toMatchObject({ sessionId: awkward })
+    await store.pruneUnknown(new Set([awkward]))
+    expect(await store.read(awkward, 'r/../x')).not.toBeNull()
+  })
+
+  it('clears working files a crash left behind mid-capture', async () => {
+    await store.capture({ sessionId: 's', runId: 'r', checkout, phase: 'before' })
+    const scratch = join(store.directoryFor('s'), 'scratch')
+    await writeFile(join(scratch, 'index-left-over'), 'stale')
+
+    await store.clearScratch('s')
+
+    await expect(readdir(scratch)).rejects.toThrow()
+    // The objects and the record it captured are untouched by the sweep.
+    expect((await store.read('s', 'r'))?.before).toEqual(expect.any(String))
+  })
+
+  it('lists every Run it captured anything for, oldest capture first', async () => {
+    let tick = 0
+    const clocked = new SessionSnapshotStore(
+      privateRoot,
+      () => new Date(Date.parse('2026-08-07T12:00:00.000Z') + ++tick * 1000)
+    )
+    await clocked.capture({ sessionId: 's', runId: 'first', checkout, phase: 'before' })
+    await clocked.capture({ sessionId: 's', runId: 'second', checkout, phase: 'before' })
+
+    expect((await clocked.list('s')).map((record) => record.runId)).toEqual(['first', 'second'])
+  })
+})

@@ -27,6 +27,12 @@ Sessions, Conversations, and Runs are stored as **app-owned state** in
 application support. They are not user-editable files, and there is no Idea
 Library.
 
+Since [ADR 0006](./0006-app-owned-git-snapshots-and-guarded-undo.md) that state
+also holds a per-Session store of Git objects — the before/after tree of every
+Run — which exists so a Run can be undone. It follows Session lifetime exactly:
+archiving retains it, deleting a Session removes it, and losing it loses undo
+rather than work.
+
 The user's canonical, portable artifact is their git repository.
 
 Portability, if it is ever wanted, is an **export action** — not a storage
@@ -58,5 +64,6 @@ reported pain point for either.
 - What survives is the part that was never about user-visible files: the
   Conversation journal, projection and recovery in `app/src/core/conversation.ts`,
   persist-before-AI, and per-Run usage accounting.
-- Losing application support data loses conversation history. It cannot lose
-  work, because work lives in the user's repository under git.
+- Losing application support data loses conversation history, and with it the
+  ability to undo a Run. It cannot lose work, because work lives in the user's
+  repository under git.

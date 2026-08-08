@@ -177,6 +177,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
     expect(exposure.electronType).toBe('undefined')
     expect(exposure.ipcRendererType).toBe('undefined')
     expect(exposure.shellKeys).toEqual([
+      'applyRunUndo',
       'cancelQueuedSubmission',
       'chooseHarnessExecutable',
       'chooseProject',
@@ -213,6 +214,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'openInEditor',
       'pathForFile',
       'pauseConversationQueue',
+      'prepareRunUndo',
       'queryMailbox',
       'refreshReadiness',
       'removeProject',
