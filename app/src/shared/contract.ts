@@ -50,6 +50,13 @@ import {
   type StartRunInput,
   type StopRunInput
 } from './run'
+import { pullRequestSchema } from './pull-request'
+import type {
+  CreatePullRequestInput,
+  CreatePullRequestResult,
+  PreparePullRequestInput,
+  PreparePullRequestResult
+} from './pull-request'
 
 /**
  * The versioned contract shared by Core, Main, Preload, and Renderer.
@@ -61,6 +68,8 @@ import {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 18: isolated Sessions can publish a reviewed draft through the user's `gh`,
+ *     and mailbox rows carry the separately observed Pull Request state.
  * 17: a Run can be undone from app-owned Git snapshots, and the Files
  *     projection says which of its rows have been put back.
  * 16: messages and Queued Submissions carry Review Attachments — the exact
@@ -76,7 +85,7 @@ import {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 17
+export const CONTRACT_VERSION = 18
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -133,7 +142,9 @@ export const mailboxSessionSchema = sessionSummarySchema.extend({
   dormant: z.boolean(),
   status: sessionStatusSchema,
   /** What it is waiting for, when it is waiting on the person. */
-  waitingFor: z.enum(['approval', 'question']).nullable().default(null)
+  waitingFor: z.enum(['approval', 'question']).nullable().default(null),
+  /** Remote GitHub state, stored and allowed to be stale; never Session status. */
+  pullRequest: pullRequestSchema.nullable().default(null)
 })
 export type MailboxSession = z.infer<typeof mailboxSessionSchema>
 
@@ -458,7 +469,8 @@ export interface ShellApi {
   revokeStandingApproval(input: RevokeStandingApprovalInput): Promise<void>
   /**
    * Runs `git init` in a folder the user has just been offered it for, then
-   * adds it. The only Git mutation the app performs.
+   * adds it. One of the app's explicit Git mutations; the other is publishing
+   * an isolated Checkout (ADR 0007).
    */
   initializeProject(path: string): Promise<ChooseProjectResult>
   confirmProject(root: string): Promise<ChooseProjectResult>
@@ -508,6 +520,12 @@ export interface ShellApi {
   setLoginShellDiscovery(consent: boolean): Promise<ReadinessSnapshot>
   /** Opens one of the fixed readiness-guidance URLs in the default browser. */
   openExternalLink(url: string): Promise<void>
+  /** Prepares editable publishing prose without changing Git or contacting a Harness. */
+  preparePullRequest(input: PreparePullRequestInput): Promise<PreparePullRequestResult>
+  /** Explicitly commits and pushes an isolated Checkout, then creates its GitHub PR. */
+  createPullRequest(input: CreatePullRequestInput): Promise<CreatePullRequestResult>
+  /** Opens the stored PR for this Session; the Renderer never supplies a privileged URL. */
+  openPullRequest(sessionId: string): Promise<void>
   startRun(input: StartRunInput): Promise<RunSnapshot>
   listRuns(sessionId: string): Promise<RunSnapshot[]>
   stopRun(input: StopRunInput): Promise<RunSnapshot>
@@ -577,6 +595,7 @@ export * from './skill'
 export * from './conversation'
 export * from './model'
 export * from './project'
+export * from './pull-request'
 export * from './readiness'
 export * from './review-attachment'
 export * from './run'

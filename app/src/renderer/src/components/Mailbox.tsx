@@ -8,6 +8,7 @@ import {
   CircleSlash,
   FolderGit2,
   FolderTree,
+  GitPullRequest,
   Inbox,
   MoreHorizontal,
   PanelLeft,
@@ -61,6 +62,7 @@ import { useSessionChanges } from '@renderer/lib/useSessionChanges'
 import { useSelectedConversation } from '@renderer/lib/useSelectedConversation'
 import { ConversationMailboxRefresh } from '@renderer/lib/mailbox-refresh'
 import { cn } from '@renderer/lib/utils'
+import { pullRequestPresentation } from '@shared/pull-request-presentation'
 
 interface MailboxProps {
   theme: ThemeState | null
@@ -188,6 +190,12 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       effectiveQuery.search ? 120 : 0
     )
     return () => window.clearTimeout(timer)
+  }, [effectiveQuery, refreshMailbox])
+
+  useEffect(() => {
+    const refresh = () => void refreshMailbox(effectiveQuery)
+    window.addEventListener('focus', refresh)
+    return () => window.removeEventListener('focus', refresh)
   }, [effectiveQuery, refreshMailbox])
 
   // A Session's status is derived from its Conversation, so lifecycle and
@@ -557,6 +565,7 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
               onToggleFiles={() => (filesOpen ? setFilesOpen(false) : openFiles())}
               onShowFiles={() => openFiles()}
               onAnnounce={setAnnouncement}
+              onPullRequestPublished={() => void refreshMailbox(effectiveQuery)}
             />
           </div>
         )}
@@ -1009,6 +1018,9 @@ function SessionRow({
   handlers: RowHandlers
 }): React.JSX.Element {
   const dot = DOT_OF_STATUS[session.status]
+  const pullRequest = session.pullRequest
+    ? pullRequestPresentation(session.pullRequest.state)
+    : null
   const said =
     session.waitingFor === 'approval'
       ? 'Waiting for your approval'
@@ -1050,6 +1062,13 @@ function SessionRow({
             >
               Dormant
             </span>
+          )}
+          {session.pullRequest && pullRequest && (
+            <GitPullRequest
+              role="img"
+              aria-label={`${pullRequest.label}: #${String(session.pullRequest.number)}, ${session.pullRequest.title}`}
+              className={cn('size-3.5 shrink-0', pullRequest.colorClass)}
+            />
           )}
           {said && (
             // The dot yields to the quick actions: hover is for acting, and
@@ -1178,6 +1197,12 @@ function SessionMenuItems({
         <Pencil aria-hidden="true" className="size-3.5 text-muted-foreground" />
         Rename
       </MenuItem>
+      {session.pullRequest && (
+        <MenuItem onClick={() => void window.shell.openPullRequest(session.id)}>
+          <GitPullRequest aria-hidden="true" className="size-3.5 text-muted-foreground" />
+          Open PR #{String(session.pullRequest.number)}
+        </MenuItem>
+      )}
       <MenuSeparator />
       <MenuItem className="text-destructive" onClick={() => handlers.onDelete(session)}>
         <Trash2 aria-hidden="true" className="size-3.5" />

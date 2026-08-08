@@ -100,6 +100,15 @@ import { RunService } from './run-service'
 import { RunUndoService } from './run-undo'
 import { SessionSnapshotStore } from './snapshot-store'
 import { bootstrapWorktree } from './worktree-bootstrap'
+import { GitHubPullRequests } from './github'
+import { PullRequestStore } from './pull-request-store'
+import { makePullRequestService, type PullRequestService } from './pull-request-service'
+import {
+  createPullRequestInputSchema,
+  createPullRequestResultSchema,
+  preparePullRequestInputSchema,
+  preparePullRequestResultSchema
+} from '@shared/pull-request'
 
 /**
  * Thin privileged Main process: window lifecycle, native dialogs and theme,
@@ -144,6 +153,8 @@ let settings: SettingsStore
 let readiness: ReadinessService
 let runService: RunService
 let runUndo: RunUndoService
+let pullRequests: PullRequestService
+let pullRequestStore: PullRequestStore
 /** The one store of app-owned Run snapshots; Runs write it, undo reads it. */
 let snapshots: SessionSnapshotStore
 let shutdownStarted = false
@@ -152,6 +163,7 @@ let servicesReady = false
 
 interface PendingWorktreeBootstrap {
   request: StartSessionRequest
+  baseBranch: string
   path: string
   result: WorktreeBootstrapResult
 }
@@ -346,7 +358,8 @@ function registerIpc(): void {
   )
 
   // Reached only from the offer the person accepted for this exact folder.
-  // `git init` is the one Git mutation the app performs.
+  // `git init` is one of the app's two explicit Git mutations; publishing an
+  // isolated Checkout is the other (ADR 0007).
   handleInvoke(
     IPC_CHANNELS.initializeProject,
     z.string().min(1),
@@ -420,12 +433,17 @@ function registerIpc(): void {
           message: created.message
         })
       }
-      checkout = { kind: 'worktree', path: created.path }
+      checkout = {
+        kind: 'worktree',
+        path: created.path,
+        baseBranch: request.checkout.baseBranch
+      }
       worktreeBootstrap = created.bootstrap
       if (created.bootstrap.skipped.length > 0) {
         const token = randomUUID()
         pendingWorktreeBootstraps.set(token, {
           request,
+          baseBranch: request.checkout.baseBranch,
           path: created.path,
           result: created.bootstrap
         })
@@ -479,7 +497,11 @@ function registerIpc(): void {
           input: startSessionInputSchema.parse({
             projectRoot: pending.request.projectRoot,
             message: pending.request.message,
-            checkout: { kind: 'worktree', path: pending.path },
+            checkout: {
+              kind: 'worktree',
+              path: pending.path,
+              baseBranch: pending.baseBranch
+            },
             worktreeBootstrap: pending.result
           }),
           run: pending.request.run
@@ -500,14 +522,17 @@ function registerIpc(): void {
     z.array(z.string()).parse(await coreClient.send({ type: 'session/list-damaged' }))
   )
 
-  handleInvoke(IPC_CHANNELS.queryMailbox, mailboxQuerySchema, async (query) =>
-    mailboxSnapshotSchema.parse(
+  handleInvoke(IPC_CHANNELS.queryMailbox, mailboxQuerySchema, async (query) => {
+    const snapshot = mailboxSnapshotSchema.parse(
       await coreClient.send({
         type: 'mailbox/query',
         query: { ...query, dormantAfterDays: settings.get().dormantAfterDays }
       })
     )
-  )
+    return mailboxSnapshotSchema.parse(
+      await mainEffectRuntime.runPromise(pullRequests.attachToMailbox(snapshot))
+    )
+  })
 
   handleInvoke(IPC_CHANNELS.setSessionPinned, setSessionPinnedInputSchema, async (input) =>
     sessionSummarySchema.parse(
@@ -541,6 +566,7 @@ function registerIpc(): void {
     await coreClient.send({ type: 'session/delete', sessionId })
     runUndo.forget(sessionId)
     await snapshots.forget(sessionId)
+    await mainEffectRuntime.runPromise(pullRequests.forget(sessionId))
   })
 
   handleInvoke(IPC_CHANNELS.setThemePreference, themePreferenceSchema, (preference) => {
@@ -639,6 +665,49 @@ function registerIpc(): void {
       throw new Error('Refused to open an unapproved external link')
     }
     await shell.openExternal(parsed.toString())
+  })
+
+  handleInvoke(IPC_CHANNELS.preparePullRequest, preparePullRequestInputSchema, async (input) => {
+    const session = sessionSummarySchema.parse(
+      await coreClient.send({ type: 'session/get', sessionId: input.sessionId })
+    )
+    const conversation = conversationSnapshotSchema.parse(
+      await coreClient.send({ type: 'conversation/get', sessionId: input.sessionId })
+    )
+    const checkout = checkoutDirectory(session.projectRoot, session.checkout)
+    const comparison = await snapshots.compareCurrent(session.id, checkout)
+    return preparePullRequestResultSchema.parse(
+      await mainEffectRuntime.runPromise(
+        pullRequests.prepare(session, {
+          changedFiles:
+            comparison?.changes ??
+            conversation.changedFiles
+              .filter((file) => !file.restored)
+              .map(({ path, changeKind }) => ({ path, changeKind })),
+          unlisted: comparison?.unlisted ?? 0,
+          messages: conversation.entries.flatMap((entry) =>
+            entry.kind === 'message' && entry.role === 'user' ? [entry.text] : []
+          )
+        })
+      )
+    )
+  })
+
+  handleInvoke(IPC_CHANNELS.createPullRequest, createPullRequestInputSchema, async (input) => {
+    const session = sessionSummarySchema.parse(
+      await coreClient.send({ type: 'session/get', sessionId: input.sessionId })
+    )
+    return createPullRequestResultSchema.parse(
+      await mainEffectRuntime.runPromise(pullRequests.create(session, input))
+    )
+  })
+
+  handleInvoke(IPC_CHANNELS.openPullRequest, z.string().min(1), async (sessionId) => {
+    const pullRequest = await pullRequestStore.read(sessionId)
+    if (!pullRequest) throw new Error('This Session has no Pull Request to open')
+    const url = new URL(pullRequest.url)
+    if (url.protocol !== 'https:') throw new Error('Refused a non-HTTPS Pull Request link')
+    await shell.openExternal(url.toString())
   })
 
   handleInvoke(IPC_CHANNELS.startRun, startRunInputSchema, (input) => runService.start(input))
@@ -962,7 +1031,7 @@ function createWindow(): void {
   }
 }
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
   settings = new SettingsStore(app.getPath('userData'))
   readiness = new ReadinessService({
     settings,
@@ -971,6 +1040,11 @@ void app.whenReady().then(() => {
       !app.isPackaged && testReadinessPath !== undefined ? testReadinessPath : undefined
   })
   snapshots = new SessionSnapshotStore(join(app.getPath('userData'), 'runs'))
+  pullRequestStore = new PullRequestStore(join(app.getPath('userData'), 'runs'))
+  const github = await mainEffectRuntime.runPromise(GitHubPullRequests.live)
+  pullRequests = await mainEffectRuntime.runPromise(
+    makePullRequestService({ github, store: pullRequestStore })
+  )
   runService = new RunService({
     core: coreClient,
     snapshots,
@@ -1015,6 +1089,19 @@ void app.whenReady().then(() => {
 
   hardenSession()
   coreClient.start()
+  void coreClient
+    .send({ type: 'session/list' })
+    .then((sessions) =>
+      pullRequestStore.pruneUnknown(
+        new Set(
+          sessionSummarySchema
+            .array()
+            .parse(sessions)
+            .map((session) => session.id)
+        )
+      )
+    )
+    .catch(() => undefined)
   registerIpc()
 
   // Keep both surfaces in step when the resolved appearance changes, whether

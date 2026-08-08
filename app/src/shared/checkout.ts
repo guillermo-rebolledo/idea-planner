@@ -13,7 +13,12 @@ import { suggestSessionTitle } from './title'
  */
 export const checkoutSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('local') }),
-  z.object({ kind: z.literal('worktree'), path: z.string().min(1) })
+  z.object({
+    kind: z.literal('worktree'),
+    path: z.string().min(1),
+    /** The chosen PR target. Absent only on Sessions written before ADR 0007. */
+    baseBranch: z.string().min(1).max(200).optional()
+  })
 ])
 export type Checkout = z.infer<typeof checkoutSchema>
 

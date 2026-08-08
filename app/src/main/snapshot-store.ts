@@ -1,7 +1,12 @@
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { snapshotCheckout, type CheckoutSnapshot } from './git'
+import {
+  diffSnapshots,
+  snapshotCheckout,
+  type CheckoutSnapshot,
+  type SnapshotComparison
+} from './git'
 
 /**
  * The Git objects this app keeps for itself, one store per Session (ADR 0006).
@@ -91,6 +96,34 @@ export class SessionSnapshotStore {
   /** What was captured for one Run, or nothing anybody can act on. */
   read(sessionId: string, runId: string): Promise<RunSnapshotRecord | null> {
     return this.readPath(this.recordPath(sessionId, runId))
+  }
+
+  /** Compares the Session's original baseline with the publishable Checkout now. */
+  async compareCurrent(sessionId: string, checkout: string): Promise<SnapshotComparison | null> {
+    try {
+      const runs = join(this.directoryFor(sessionId), RUNS)
+      const records = (
+        await Promise.all(
+          (await readdir(runs, { withFileTypes: true }))
+            .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+            .map((entry) => this.readPath(join(runs, entry.name)))
+        )
+      )
+        .filter((record): record is RunSnapshotRecord => record !== null)
+        .filter((record) => record.checkout === checkout && record.before !== null)
+        .sort((left, right) => left.capturedAt.localeCompare(right.capturedAt))
+      const baseline = records[0]?.before
+      if (!baseline) return null
+      const current = await snapshotCheckout(checkout, this.directoryFor(sessionId))
+      return await diffSnapshots(
+        checkout,
+        this.directoryFor(sessionId),
+        { status: 'taken', tree: baseline },
+        current
+      )
+    } catch {
+      return null
+    }
   }
 
   /**

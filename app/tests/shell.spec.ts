@@ -183,6 +183,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'chooseProject',
       'clearHarnessExecutable',
       'confirmProject',
+      'createPullRequest',
       'deleteSession',
       'developSession',
       'editQueuedSubmission',
@@ -212,8 +213,10 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'onUndoShortcut',
       'openExternalLink',
       'openInEditor',
+      'openPullRequest',
       'pathForFile',
       'pauseConversationQueue',
+      'preparePullRequest',
       'prepareRunUndo',
       'queryMailbox',
       'refreshReadiness',
@@ -1260,6 +1263,56 @@ test('the title bar states where a Session works — Local, or an isolated Workt
     const chips = page.getByRole('button', { name: /Project card for/ })
     await expect(chips).toContainText('trunk')
     await expect(chips).toContainText('Local')
+    await expect(page.getByRole('button', { name: 'Create a Pull Request' })).toBeDisabled()
+
+    // The public IPC path enforces the same Worktree-only boundary even when
+    // called directly; a disabled Renderer control is never the authority.
+    const localPublishing = await page.evaluate(async () => {
+      const session = (await window.shell.listSessions())[0]
+      if (!session) throw new Error('The Local Session was not stored')
+      return {
+        prepared: await window.shell.preparePullRequest({ sessionId: session.id }),
+        created: await window.shell.createPullRequest({
+          sessionId: session.id,
+          baseBranch: 'trunk',
+          title: 'Must not publish',
+          body: '## Summary\n\n- Must not publish'
+        }),
+        sessionId: session.id
+      }
+    })
+    expect(localPublishing.prepared).toEqual({
+      status: 'unavailable',
+      reason: 'local-checkout'
+    })
+    expect(localPublishing.created).toMatchObject({ status: 'failed' })
+
+    // A persisted association is visible after navigating away and back; the
+    // link is not merely state held by the component that created it.
+    const pullRequestDirectory = join(
+      sandbox.appDataDir,
+      'com.memojiinc.argos',
+      'runs',
+      'pull-requests'
+    )
+    await mkdir(pullRequestDirectory, { recursive: true })
+    await writeFile(
+      join(pullRequestDirectory, `${encodeURIComponent(localPublishing.sessionId)}.json`),
+      JSON.stringify({
+        number: 9,
+        url: 'https://github.com/example/argos/pull/9',
+        title: 'Stored PR',
+        state: 'merged'
+      })
+    )
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await expect(page.getByRole('img', { name: 'PR merged: #9, Stored PR' })).toBeVisible()
+    await page.getByRole('button', { name: 'New Session', exact: true }).click()
+    await page
+      .getByRole('navigation', { name: 'Session inbox' })
+      .getByRole('button', { name: /^Local facts PR merged/ })
+      .click()
+    await expect(page.getByRole('button', { name: 'Open PR #9' })).toBeVisible()
 
     // Clicking them opens the Project card (2b) with every fact on it.
     await chips.click()
@@ -1304,6 +1357,7 @@ test('the title bar states where a Session works — Local, or an isolated Workt
     // from the message that started the Session.
     await expect(chips).toContainText('Worktree')
     await expect(chips).toContainText('fix-the-location-crash')
+    await expect(page.getByRole('button', { name: 'Create a Pull Request' })).toBeEnabled()
     await chips.click()
     await expect(card.getByText(/worktrees/)).toBeVisible()
     await expect(card.getByText('working copy')).toHaveCount(0)

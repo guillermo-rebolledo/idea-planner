@@ -43,6 +43,19 @@ describe('a Session’s snapshot store', () => {
     expect(record?.before).not.toBe(record?.after)
   })
 
+  it('compares the original Session baseline with the publishable Checkout now', async () => {
+    await store.capture({ sessionId: 's', runId: 'r', checkout, phase: 'before' })
+    await writeFile(join(checkout, 'tracked.ts'), 'temporary\n')
+    await store.capture({ sessionId: 's', runId: 'r', checkout, phase: 'after' })
+    await writeFile(join(checkout, 'tracked.ts'), 'base\n')
+    await writeFile(join(checkout, 'published.ts'), 'ship this\n')
+
+    await expect(store.compareCurrent('s', checkout)).resolves.toMatchObject({
+      changes: [{ path: 'published.ts', changeKind: 'added' }],
+      unlisted: 0
+    })
+  })
+
   it('stores one copy of content two Runs left identical', async () => {
     await store.capture({ sessionId: 's', runId: 'one', checkout, phase: 'before' })
     await store.capture({ sessionId: 's', runId: 'two', checkout, phase: 'before' })

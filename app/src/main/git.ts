@@ -140,8 +140,8 @@ export async function resolveProjectRoot(
 }
 
 /**
- * Turns a folder into a repository. This is the only Git mutation the app
- * performs, and it happens only after the user asks for it.
+ * Turns a folder into a repository. Like isolated Checkout publishing (ADR
+ * 0007), it is a Git mutation performed only after the user asks for it.
  */
 export async function initRepository(
   path: string,

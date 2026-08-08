@@ -15,7 +15,8 @@ The app **shells out to git**, and treats the git binary as a required external 
 
 A folder becomes a Project only if `git rev-parse --show-toplevel` succeeds, and the path it returns — not the path the user picked — is the Project's root and its identity. Picking any folder inside a repository therefore adds that repository, once.
 
-A folder that is not a repository is refused, with an offer to run `git init`. That remains the only Git mutation the app performs.
+A folder that is not a repository is refused, with an offer to run `git init`. Publishing an isolated
+Checkout is the other explicit Git mutation; see ADR 0007.
 
 Spawning belongs to Main, per the follow-up decision in [ADR 0001](./0001-adopt-effect-in-core.md). Main runs the probe and hands Core the resolved root; Core validates it, decides identity, and persists. Main does not own the state transition.
 
