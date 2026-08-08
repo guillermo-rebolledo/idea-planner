@@ -42,18 +42,34 @@ describe('the Session pull request workflow', () => {
     ).toContain('- Changed `app/src/github.ts`\n- 2 more changed files not listed')
   })
 
-  it('refuses a Local Checkout before running GitHub commands', async () => {
-    const readiness = vi.fn()
+  it('prepares a Local Checkout only with a reviewed safety token', async () => {
     const service = await makeService({
-      github: { readiness } as never,
-      store: {} as never
+      github: {
+        readiness: vi.fn(() => Effect.succeed({ status: 'ready' })),
+        defaultBranch: vi.fn(() => Effect.succeed('main'))
+      } as never,
+      store: {} as never,
+      observeState: vi.fn().mockResolvedValue({ status: 'observed', state: 'clean' }),
+      readBranch: vi.fn().mockResolvedValue('feature/local')
     })
 
-    await expect(Effect.runPromise(service.prepare(localSession))).resolves.toEqual({
-      status: 'unavailable',
-      reason: 'local-checkout'
+    await expect(
+      Effect.runPromise(
+        service.prepare(localSession, {
+          changedFiles: [],
+          unlisted: 0,
+          messages: [],
+          localSafety: {
+            status: 'safe',
+            expectedTree: '1111111111111111111111111111111111111111'
+          }
+        })
+      )
+    ).resolves.toMatchObject({
+      status: 'ready',
+      publishMode: 'local',
+      expectedTree: '1111111111111111111111111111111111111111'
     })
-    expect(readiness).not.toHaveBeenCalled()
   })
 
   it('prepares an editable draft only for a clean Worktree Checkout', async () => {
@@ -77,6 +93,8 @@ describe('the Session pull request workflow', () => {
       )
     ).resolves.toEqual({
       status: 'ready',
+      publishMode: 'worktree',
+      expectedTree: null,
       baseBranch: 'main',
       headBranch: 'feature/github',
       title: 'Add GitHub publishing',

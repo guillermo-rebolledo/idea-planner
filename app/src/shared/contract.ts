@@ -85,7 +85,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 18
+export const CONTRACT_VERSION = 19
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */

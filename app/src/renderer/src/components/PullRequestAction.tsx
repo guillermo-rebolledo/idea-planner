@@ -55,7 +55,9 @@ export function PullRequestAction({
         sessionId: session.id,
         baseBranch: draft.baseBranch,
         title: draft.title,
-        body: draft.body
+        body: draft.body,
+        publishMode: draft.publishMode,
+        expectedTree: draft.expectedTree
       })
       if (result.status === 'failed') {
         setDialog({ kind: 'unavailable', detail: result.detail })
@@ -74,19 +76,12 @@ export function PullRequestAction({
     }
   }
 
-  const unavailable = session.checkout.kind !== 'worktree'
   return (
     <>
       <button
         type="button"
-        disabled={unavailable || dialog.kind === 'preparing' || dialog.kind === 'publishing'}
-        title={
-          unavailable
-            ? 'Create Pull Request is available for Worktree Sessions only.'
-            : pullRequest
-              ? `Open PR #${String(pullRequest.number)}`
-              : 'Create a Pull Request'
-        }
+        disabled={dialog.kind === 'preparing' || dialog.kind === 'publishing'}
+        title={pullRequest ? `Open PR #${String(pullRequest.number)}` : 'Create a Pull Request'}
         aria-label={
           pullRequest ? `Open PR #${String(pullRequest.number)}` : 'Create a Pull Request'
         }
@@ -163,9 +158,16 @@ function PullRequestDraft({
         Create Pull Request
       </h2>
       <p className="mt-1 text-xs text-muted-foreground">
-        Review the prose first. Publishing commits this Worktree, pushes {draft.headBranch}, and
-        opens a PR into {draft.baseBranch}.
+        Review the prose first. Publishing commits this{' '}
+        {draft.publishMode === 'local' ? 'Local Checkout' : 'Worktree'}, pushes {draft.headBranch},
+        and opens a PR into {draft.baseBranch}.
       </p>
+      {draft.publishMode === 'local' && (
+        <p className="mt-3 rounded-md border border-border bg-muted/40 p-2 text-xs leading-relaxed text-muted-foreground">
+          Local Checkout safety: Argos will commit only the exact tree reviewed here. Existing
+          staged work, a dirty Session baseline, or edits made after this dialog opened are refused.
+        </p>
+      )}
       <label className="mt-4 block text-xs font-medium">
         Title
         <input
@@ -221,6 +223,7 @@ function PullRequestDraft({
 
 function unavailableMessage(reason: string): string {
   if (reason === 'local-checkout') return 'Use an isolated Worktree Session to publish a PR.'
+  if (reason === 'local-unsafe') return 'The Local Checkout could not be verified safely.'
   if (reason === 'detached-head') return 'Check out a branch before publishing.'
   if (reason === 'checkout-busy') return 'Finish the current Git operation before publishing.'
   if (reason === 'gh-unavailable') return 'Install the GitHub CLI, then try again.'

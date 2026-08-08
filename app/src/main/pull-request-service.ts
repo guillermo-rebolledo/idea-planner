@@ -35,6 +35,8 @@ export interface PullRequestDraftContext {
   changedFiles: { path: string; changeKind: 'added' | 'changed' | 'deleted' }[]
   unlisted: number
   messages: string[]
+  localSafety?:
+    { status: 'safe'; expectedTree: string | null } | { status: 'unavailable'; detail: string }
 }
 
 const MAX_DESCRIPTION_CONTEXT = 80_000
@@ -129,9 +131,6 @@ export class PullRequestService {
   ): Effect.Effect<PreparePullRequestResult> {
     const { github, observeState, readBranch } = this
     return Effect.gen(function* () {
-      if (session.checkout.kind !== 'worktree') {
-        return { status: 'unavailable' as const, reason: 'local-checkout' as const }
-      }
       const checkout = checkoutDirectory(session.projectRoot, session.checkout)
       const state = yield* Effect.promise(() => observeState(checkout))
       if (state.status !== 'observed' || state.state !== 'clean') {
@@ -146,6 +145,15 @@ export class PullRequestService {
       }
       const branch = yield* Effect.promise(() => readBranch(checkout))
       if (!branch) return { status: 'unavailable' as const, reason: 'detached-head' as const }
+      if (session.checkout.kind === 'local' && context?.localSafety?.status !== 'safe') {
+        return {
+          status: 'unavailable' as const,
+          reason: 'local-unsafe' as const,
+          detail:
+            context?.localSafety?.detail ??
+            'The Local Checkout could not be verified for a safe commit.'
+        }
+      }
       const readiness = yield* github.readiness(checkout)
       if (readiness.status !== 'ready') {
         const reason =
@@ -156,7 +164,9 @@ export class PullRequestService {
               : ('github-unavailable' as const)
         return { status: 'unavailable' as const, reason, detail: readiness.detail }
       }
-      const baseBranch = session.checkout.baseBranch ?? (yield* github.defaultBranch(checkout))
+      const selectedBase =
+        session.checkout.kind === 'worktree' ? session.checkout.baseBranch : undefined
+      const baseBranch = selectedBase ?? (yield* github.defaultBranch(checkout))
       if (!baseBranch) {
         return {
           status: 'unavailable' as const,
@@ -166,6 +176,11 @@ export class PullRequestService {
       }
       return {
         status: 'ready' as const,
+        publishMode: session.checkout.kind,
+        expectedTree:
+          session.checkout.kind === 'local' && context?.localSafety?.status === 'safe'
+            ? context.localSafety.expectedTree
+            : null,
         baseBranch,
         headBranch: branch,
         title: session.title.slice(0, 200),
@@ -180,10 +195,10 @@ export class PullRequestService {
   ): Effect.Effect<CreatePullRequestResult> {
     const { cache, github, now, observeState, store } = this
     return Effect.gen(function* () {
-      if (session.checkout.kind !== 'worktree') {
+      if (input.publishMode !== session.checkout.kind) {
         return {
           status: 'failed' as const,
-          detail: 'Pull Requests are available for Worktree Sessions only.'
+          detail: 'The Checkout changed after this Pull Request was reviewed.'
         }
       }
       const checkout = checkoutDirectory(session.projectRoot, session.checkout)
@@ -198,7 +213,9 @@ export class PullRequestService {
         checkout,
         baseBranch: input.baseBranch,
         title: input.title,
-        body: input.body
+        body: input.body,
+        publishMode: input.publishMode,
+        expectedTree: input.expectedTree
       })
       if (result.status !== 'failed') {
         yield* Effect.promise(() => store.write(session.id, result.pullRequest))

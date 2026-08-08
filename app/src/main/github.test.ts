@@ -110,6 +110,9 @@ describe('GitHub pull requests', () => {
         if (signature === 'git status --porcelain=v1 -z') {
           return { stdout: ' M app.ts\0', stderr: '' }
         }
+        if (signature === 'git write-tree') {
+          return { stdout: '1111111111111111111111111111111111111111\n', stderr: '' }
+        }
         if (signature.startsWith('git rev-parse --abbrev-ref')) {
           throw Object.assign(new Error('no upstream'), { stderr: 'fatal: no upstream' })
         }
@@ -133,7 +136,9 @@ describe('GitHub pull requests', () => {
         checkout: '/worktree',
         baseBranch: 'main',
         title: 'Ship GitHub',
-        body: '## Summary\n\n- Ship it\n\n## Testing\n\n- Unit tests'
+        body: '## Summary\n\n- Ship it\n\n## Testing\n\n- Unit tests',
+        publishMode: 'worktree',
+        expectedTree: null
       })
     )
 
@@ -159,6 +164,46 @@ describe('GitHub pull requests', () => {
     expect(create?.args).toContain('--body-file')
     if (result.status === 'failed') throw new Error(result.detail)
     expect(create?.args).not.toContain(result.pullRequest.title + result.pullRequest.url)
+  })
+
+  it('unstages and refuses when a Local Checkout no longer matches the reviewed tree', async () => {
+    const calls: string[] = []
+    const client = await github({
+      run: vi.fn(async (command: string, args: string[]) => {
+        await Promise.resolve()
+        const signature = `${command} ${args.join(' ')}`
+        calls.push(signature)
+        if (signature === 'git symbolic-ref --short --quiet HEAD') {
+          return { stdout: 'feature/local\n', stderr: '' }
+        }
+        if (signature === 'git status --porcelain=v1 -z') {
+          return { stdout: ' M app.ts\0', stderr: '' }
+        }
+        if (signature === 'git write-tree') {
+          return { stdout: '2222222222222222222222222222222222222222\n', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      })
+    })
+
+    await expect(
+      Effect.runPromise(
+        client.create({
+          checkout: '/local',
+          baseBranch: 'main',
+          title: 'Ship safely',
+          body: 'Reviewed',
+          publishMode: 'local',
+          expectedTree: '1111111111111111111111111111111111111111'
+        })
+      )
+    ).resolves.toEqual({
+      status: 'failed',
+      detail: 'The Local Checkout changed after this Pull Request was reviewed.'
+    })
+    expect(calls).toContain('git read-tree HEAD')
+    expect(calls).not.toContain('git commit --message Ship safely')
+    expect(calls.some((call) => call.startsWith('git push'))).toBe(false)
   })
 })
 

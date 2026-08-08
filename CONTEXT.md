@@ -39,7 +39,7 @@ Putting one Run's file changes back, from its Run Snapshot. Never automatic and 
 _Avoid_: Revert, rollback, discard, restore point
 
 **Pull Request**:
-The GitHub proposal created when a person explicitly publishes one Worktree Session. Publishing is a reviewed staircase — commit, push, then create — driven through the person's authenticated `gh`; Argos stores only its link and remotely observed draft, open, merged, or closed state. The state is an inbox adornment, never what the Session is doing, and Archive keeps it while Delete removes it.
+The GitHub proposal created when a person explicitly publishes a Session. Publishing is a reviewed staircase — commit, push, then create — driven through the person's authenticated `gh`; Worktrees commit their isolated changes, while Local Checkouts require a clean original baseline, an unstaged index, and an unchanged reviewed tree. Argos stores only the PR link and remotely observed draft, open, merged, or closed state. The state is an inbox adornment, never what the Session is doing, and Archive keeps it while Delete removes it.
 _Avoid_: Change Request, merge request, PR status as Session status
 
 ### Conversation

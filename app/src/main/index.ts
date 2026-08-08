@@ -675,7 +675,14 @@ function registerIpc(): void {
       await coreClient.send({ type: 'conversation/get', sessionId: input.sessionId })
     )
     const checkout = checkoutDirectory(session.projectRoot, session.checkout)
-    const comparison = await snapshots.compareCurrent(session.id, checkout)
+    const localSafety =
+      session.checkout.kind === 'local'
+        ? await snapshots.localPublishSafety(session.id, checkout)
+        : undefined
+    const comparison =
+      localSafety?.status === 'safe'
+        ? localSafety.comparison
+        : await snapshots.compareCurrent(session.id, checkout)
     return preparePullRequestResultSchema.parse(
       await mainEffectRuntime.runPromise(
         pullRequests.prepare(session, {
@@ -685,6 +692,7 @@ function registerIpc(): void {
               .filter((file) => !file.restored)
               .map(({ path, changeKind }) => ({ path, changeKind })),
           unlisted: comparison?.unlisted ?? 0,
+          localSafety,
           messages: conversation.entries.flatMap((entry) =>
             entry.kind === 'message' && entry.role === 'user' ? [entry.text] : []
           )
@@ -697,6 +705,18 @@ function registerIpc(): void {
     const session = sessionSummarySchema.parse(
       await coreClient.send({ type: 'session/get', sessionId: input.sessionId })
     )
+    if (session.checkout.kind === 'local') {
+      const safety = await snapshots.localPublishSafety(session.id, session.projectRoot)
+      if (safety.status !== 'safe') {
+        return createPullRequestResultSchema.parse({ status: 'failed', detail: safety.detail })
+      }
+      if (input.publishMode !== 'local' || input.expectedTree !== safety.expectedTree) {
+        return createPullRequestResultSchema.parse({
+          status: 'failed',
+          detail: 'The Local Checkout changed after this Pull Request was reviewed.'
+        })
+      }
+    }
     return createPullRequestResultSchema.parse(
       await mainEffectRuntime.runPromise(pullRequests.create(session, input))
     )

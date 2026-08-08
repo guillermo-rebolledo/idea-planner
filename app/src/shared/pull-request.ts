@@ -17,6 +17,7 @@ export type PreparePullRequestInput = z.infer<typeof preparePullRequestInputSche
 
 export const pullRequestUnavailableReasonSchema = z.enum([
   'local-checkout',
+  'local-unsafe',
   'detached-head',
   'checkout-busy',
   'gh-unavailable',
@@ -28,6 +29,12 @@ export type PullRequestUnavailableReason = z.infer<typeof pullRequestUnavailable
 export const preparePullRequestResultSchema = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('ready'),
+    publishMode: z.enum(['local', 'worktree']),
+    /** Reviewed Local Checkout tree; null means there is no uncommitted work. */
+    expectedTree: z
+      .string()
+      .regex(/^[0-9a-f]{40,64}$/u)
+      .nullable(),
     baseBranch: z.string().min(1).max(500),
     headBranch: z.string().min(1).max(500),
     title: z.string().min(1).max(200),
@@ -45,7 +52,12 @@ export const createPullRequestInputSchema = z.object({
   sessionId: z.string().min(1),
   baseBranch: z.string().trim().min(1).max(500),
   title: z.string().trim().min(1).max(200),
-  body: z.string().trim().min(1).max(100_000)
+  body: z.string().trim().min(1).max(100_000),
+  publishMode: z.enum(['local', 'worktree']),
+  expectedTree: z
+    .string()
+    .regex(/^[0-9a-f]{40,64}$/u)
+    .nullable()
 })
 export type CreatePullRequestInput = z.infer<typeof createPullRequestInputSchema>
 

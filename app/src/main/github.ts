@@ -204,6 +204,8 @@ export interface PublishPullRequestCommand {
   baseBranch: string
   title: string
   body: string
+  publishMode: 'local' | 'worktree'
+  expectedTree: string | null
 }
 
 export interface GitHubClient {
@@ -282,11 +284,61 @@ export class GitHubPullRequests implements GitHubClient {
         return { status: 'failed' as const, detail: 'The Checkout has no branch to publish.' }
       }
 
-      const dirty = (yield* execute('git', ['status', '--porcelain=v1', '-z'], input.checkout))
-        .stdout.length
-      if (dirty > 0) {
-        yield* execute('git', ['add', '--all'], input.checkout)
-        yield* execute('git', ['commit', '--message', input.title], input.checkout)
+      const status = (yield* execute('git', ['status', '--porcelain=v1', '-z'], input.checkout))
+        .stdout
+      if (status.length > 0) {
+        if (input.publishMode === 'local') {
+          if (!input.expectedTree) {
+            return {
+              status: 'failed' as const,
+              detail: 'The Local Checkout changed after this Pull Request was reviewed.'
+            }
+          }
+          const staged = status
+            .split('\0')
+            .filter(Boolean)
+            .some((entry) => !entry.startsWith(' ') && !entry.startsWith('?'))
+          if (staged) {
+            return {
+              status: 'failed' as const,
+              detail: 'Unstage your existing changes before publishing from the Local Checkout.'
+            }
+          }
+          const localCommit = Effect.gen(function* () {
+            yield* execute('git', ['add', '--all'], input.checkout)
+            const reviewedTree = (yield* execute(
+              'git',
+              ['write-tree'],
+              input.checkout
+            )).stdout.trim()
+            if (reviewedTree !== input.expectedTree) {
+              return yield* Effect.fail(
+                new GitHubCommandError({
+                  cause: new Error(
+                    'The Local Checkout changed after this Pull Request was reviewed.'
+                  )
+                })
+              )
+            }
+            yield* execute('git', ['commit', '--message', input.title], input.checkout)
+          }).pipe(
+            Effect.catchAll((error) =>
+              execute('git', ['read-tree', 'HEAD'], input.checkout).pipe(
+                Effect.catchAll(() => Effect.void),
+                Effect.zipRight(Effect.fail(error))
+              )
+            )
+          )
+          yield* localCommit
+        } else {
+          yield* execute('git', ['add', '--all'], input.checkout)
+          yield* execute('git', ['commit', '--message', input.title], input.checkout)
+        }
+      } else if (input.publishMode === 'local' && input.expectedTree !== null) {
+        return {
+          status: 'failed' as const,
+          detail: 'The Local Checkout changed after this Pull Request was reviewed.'
+        }
       }
 
       const hasUpstream = yield* execute(

@@ -1263,29 +1263,27 @@ test('the title bar states where a Session works — Local, or an isolated Workt
     const chips = page.getByRole('button', { name: /Project card for/ })
     await expect(chips).toContainText('trunk')
     await expect(chips).toContainText('Local')
-    await expect(page.getByRole('button', { name: 'Create a Pull Request' })).toBeDisabled()
+    await expect(page.getByRole('button', { name: 'Create a Pull Request' })).toBeEnabled()
 
-    // The public IPC path enforces the same Worktree-only boundary even when
-    // called directly; a disabled Renderer control is never the authority.
     const localPublishing = await page.evaluate(async () => {
       const session = (await window.shell.listSessions())[0]
       if (!session) throw new Error('The Local Session was not stored')
       return {
-        prepared: await window.shell.preparePullRequest({ sessionId: session.id }),
-        created: await window.shell.createPullRequest({
+        refusedDrift: await window.shell.createPullRequest({
           sessionId: session.id,
           baseBranch: 'trunk',
-          title: 'Must not publish',
-          body: '## Summary\n\n- Must not publish'
+          title: 'Must match the review',
+          body: '## Summary\n\n- Must match the review',
+          publishMode: 'local',
+          expectedTree: '1111111111111111111111111111111111111111'
         }),
         sessionId: session.id
       }
     })
-    expect(localPublishing.prepared).toEqual({
-      status: 'unavailable',
-      reason: 'local-checkout'
+    expect(localPublishing.refusedDrift).toEqual({
+      status: 'failed',
+      detail: 'The Local Checkout changed after this Pull Request was reviewed.'
     })
-    expect(localPublishing.created).toMatchObject({ status: 'failed' })
 
     // A persisted association is visible after navigating away and back; the
     // link is not merely state held by the component that created it.

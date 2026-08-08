@@ -6,8 +6,9 @@ Date: 2026-08-07
 Amends [ADR 0004](./0004-in-place-primary-checkout.md) and extends
 [ADR 0002](./0002-app-owned-session-state.md).
 
-Publishing is the sole exception to the no-commit rule below, and only for an explicit action in an
-isolated Checkout; see [ADR 0007](./0007-user-triggered-worktree-publishing.md).
+Publishing is the sole exception to the no-commit rule below, and only for an explicit action against
+a reviewed Checkout tree; Local publishing adds the fail-closed baseline, index, and tree-token guards
+defined by [ADR 0007](./0007-user-triggered-worktree-publishing.md).
 
 ## Context
 

@@ -31,10 +31,21 @@ describe('the pull request contract', () => {
     ).toBe(false)
   })
 
-  it('names local Checkout refusal instead of presenting a draft', () => {
+  it('carries the reviewed Local tree across the publish boundary', () => {
     expect(
-      preparePullRequestResultSchema.parse({ status: 'unavailable', reason: 'local-checkout' })
-    ).toEqual({ status: 'unavailable', reason: 'local-checkout' })
+      preparePullRequestResultSchema.parse({
+        status: 'ready',
+        publishMode: 'local',
+        expectedTree: '1111111111111111111111111111111111111111',
+        baseBranch: 'main',
+        headBranch: 'feature/local',
+        title: 'Publish safely',
+        body: '## Summary\n\n- Publish safely'
+      })
+    ).toMatchObject({
+      publishMode: 'local',
+      expectedTree: '1111111111111111111111111111111111111111'
+    })
   })
 
   it('defaults the mailbox adornment for Sessions written before the integration', () => {

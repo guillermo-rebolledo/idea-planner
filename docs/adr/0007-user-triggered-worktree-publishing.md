@@ -1,7 +1,8 @@
-# ADR 0007: User-triggered publishing may commit an isolated Checkout
+# ADR 0007: User-triggered publishing may commit a reviewed Checkout
 
 Status: accepted
 Date: 2026-08-07
+Amended: 2026-08-07
 
 Amends [ADR 0006](./0006-app-owned-git-snapshots-and-guarded-undo.md).
 
@@ -19,9 +20,12 @@ GitHub CLI authentication.
 
 - Argos may commit and push only when the person presses **Commit, push & create PR** after reviewing
   the title and description.
-- Publishing is available only for an isolated Worktree Checkout. A Local Checkout is refused, so
-  Argos cannot sweep unfinished work from the person's primary working copy into a commit.
-- The sequence is explicit and fixed: commit all Worktree changes when present, push the current
+- Publishing is available for Worktree and Local Checkouts. A Worktree may commit all of its changes.
+  A Local Checkout may commit only when its first app-owned Session snapshot equals the current HEAD
+  tree, its real index has no staged paths, and the tree staged at confirmation exactly matches the
+  tree the person reviewed. A missing baseline, pre-existing dirty state, staged work, branch movement,
+  or post-review edit fails closed without committing.
+- The sequence is explicit and fixed: commit the reviewed Checkout changes when present, push the current
   branch (setting its `origin` upstream when absent), then invoke `gh pr create`.
 - Pull Request descriptions are passed through a mode-`0600` temporary `--body-file`, removed on every
   outcome. They are never placed in process arguments.
@@ -44,5 +48,7 @@ GitHub CLI authentication.
   is reported plainly; those completed Git steps are not rolled back.
 - `gh` must be installed and authenticated independently. Argos never installs it or signs in for the
   person.
-- Local Checkout publishing, merging, review comments, CI/check status, stored credentials, and
-  speculative repository-wide PR discovery remain out of scope.
+- Local publishing is intentionally conservative. Existing work must be committed or unstaged by the
+  person first; Argos does not guess which pre-existing or staged changes belong to a Session.
+- Merging, review comments, CI/check status, stored credentials, and speculative repository-wide PR
+  discovery remain out of scope.
