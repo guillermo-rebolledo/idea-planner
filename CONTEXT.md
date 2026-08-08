@@ -27,8 +27,16 @@ Setting a Session aside while keeping everything it owns. An archived Session le
 _Avoid_: Delete, hide, close
 
 **Delete**:
-Permanently removing a Session and its Conversation. The one destructive act in the app, and the only one that asks for confirmation. Files the Session changed stay on disk in its Checkout — git, not the app, is the undo for those.
+Permanently removing a Session, its Conversation, and the Run Snapshots kept for it. The one destructive act in the app, and the only one that asks for confirmation. Files the Session changed stay on disk in its Checkout — git, not the app, is the undo for those.
 _Avoid_: Archive, remove, clear
+
+**Run Snapshot**:
+The Checkout as it stood before and after one Run, held as Git objects the app owns rather than anything written into the Project. Kept for as long as its Session is, which is what makes **Run Undo** possible; Archive keeps it and Delete removes it. A Run from before snapshots were kept simply reports undo unavailable.
+_Avoid_: Backup, version, checkpoint, commit
+
+**Run Undo**:
+Putting one Run's file changes back, from its Run Snapshot. Never automatic and never ⌘Z: the person asks for it on the Run. A **Worktree** Checkout may be restored **directly**, and only when every path it changed still holds exactly what the Run left there; anything else — every **Local** Checkout, and any Worktree where something has moved — is a **review**, where the inverse patch is read first and one confirmation applies only the **safe** paths. A path is safe, **diverged** (changed since, and never written to), or **already restored**. Undo appends to the Conversation and never rewrites it: the Run and its diff stay exactly as they were recorded.
+_Avoid_: Revert, rollback, discard, restore point
 
 ### Conversation
 

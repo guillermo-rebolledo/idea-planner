@@ -4,6 +4,7 @@ import {
   harnessEventSchema,
   queuedSubmissionChangeSchema,
   queuedSubmissionLaunchObservationSchema,
+  recordAppActionInputSchema,
   runRequestSchema,
   submitConversationMessageInputSchema,
   type ConversationSnapshot,
@@ -36,6 +37,12 @@ import {
 } from './checkout'
 import { completeRunLifecycleInputSchema, openRunLifecycleInputSchema } from './run-lifecycle'
 import type { EditorCatalog, OpenInEditorInput } from './editor'
+import type {
+  ApplyRunUndoInput,
+  PrepareRunUndoInput,
+  RunUndoApplication,
+  RunUndoPreparation
+} from './run-undo'
 import {
   recordRunEventInputSchema,
   type ResolveApprovalInput,
@@ -54,6 +61,8 @@ import {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 17: a Run can be undone from app-owned Git snapshots, and the Files
+ *     projection says which of its rows have been put back.
  * 16: messages and Queued Submissions carry Review Attachments — the exact
  *     reviewed code, snapshotted when it was selected.
  * 15: Conversation pushes carry explicit Mailbox lifecycle invalidation.
@@ -67,7 +76,7 @@ import {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 16
+export const CONTRACT_VERSION = 17
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -347,6 +356,7 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('run/event'), input: recordRunEventInputSchema }),
   z.object({ type: z.literal('conversation/get'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('conversation/submit'), input: submitConversationMessageInputSchema }),
+  z.object({ type: z.literal('conversation/app-action'), input: recordAppActionInputSchema }),
   z.object({ type: z.literal('conversation/queue-change'), input: queuedSubmissionChangeSchema }),
   z.object({ type: z.literal('conversation/queue-next'), sessionId: z.string().min(1) }),
   z.object({
@@ -521,6 +531,17 @@ export interface ShellApi {
    * proceed; denying hands it the message and it carries on without.
    */
   resolveApproval(input: ResolveApprovalInput): Promise<ConversationSnapshot>
+  /**
+   * What undoing a Run would mean right now: every path it changed, how each
+   * one stands against what the Run left there, and the inverse patch. Reads
+   * only — nothing is written until the operation it answers with is applied.
+   */
+  prepareRunUndo(input: PrepareRunUndoInput): Promise<RunUndoPreparation>
+  /**
+   * Carries out a reviewed restoration. The tree is measured again first, so a
+   * review the world has moved past is refused without touching a file.
+   */
+  applyRunUndo(input: ApplyRunUndoInput): Promise<RunUndoApplication>
   /** Assistant text and control events, delivered ahead of durable projection. */
   onConversationEvent(listener: (event: ConversationStreamEvent) => void): () => void
   /**
@@ -559,3 +580,4 @@ export * from './project'
 export * from './readiness'
 export * from './review-attachment'
 export * from './run'
+export * from './run-undo'

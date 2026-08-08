@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -12,7 +12,7 @@ import {
 import { LOCAL_CHECKOUT, startingSubmissionId, type SessionSummary } from '@shared/contract'
 import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
 import type { RunLaunch } from './run-process-broker'
-import { snapshotCheckout } from './git'
+import { SessionSnapshotStore } from './snapshot-store'
 import { testGit as git } from './git-test-support'
 import { RunService } from './run-service'
 import { discoverSkills } from './skills'
@@ -58,6 +58,7 @@ function claudeDeps(root: string, broker: ReturnType<typeof fakeBroker>) {
     },
     homeDirectory: root,
     privateRoot: join(root, 'private'),
+    snapshots: new SessionSnapshotStore(join(root, 'private')),
     proxyExecutable: '/usr/bin/true',
     proxyScript: '/tmp/mcp-proxy.js',
     claudeOauthToken: fakeClaudeOauthToken,
@@ -284,6 +285,7 @@ describe('Run service', () => {
       },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       claudeOauthToken: fakeClaudeOauthToken,
@@ -373,6 +375,7 @@ describe('Run service', () => {
       },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       claudeOauthToken: fakeClaudeOauthToken,
@@ -494,6 +497,7 @@ describe('Run service', () => {
       },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -536,6 +540,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -563,6 +568,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -622,6 +628,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: (requestedRoot, harness) => {
@@ -662,6 +669,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -703,6 +711,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -732,6 +741,7 @@ describe('Run service', () => {
       readiness: { refresh: vi.fn(() => Promise.resolve({ harnesses: [] })) },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -767,6 +777,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -803,6 +814,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root),
@@ -854,6 +866,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root),
@@ -942,6 +955,7 @@ describe('Run service', () => {
       },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root),
@@ -990,6 +1004,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -1022,6 +1037,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -1047,6 +1063,7 @@ describe('Run service', () => {
       readiness: readyReadiness(join(root, 'claude')),
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -1087,6 +1104,7 @@ describe('Run service', () => {
       },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
       proxyExecutable: '/usr/bin/true',
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
@@ -1311,18 +1329,22 @@ describe('a Run the app never got to finish', () => {
     return checkout
   }
 
-  it('reports what it changed on the next start, and cleans up after itself', async () => {
+  /** A Run that started and never concluded: the app was quit, or it crashed. */
+  async function abandon(
+    deps: ReturnType<typeof claudeDeps>,
+    checkout: string,
+    sessionId = 'session'
+  ): Promise<SessionSnapshotStore> {
+    const snapshots = new SessionSnapshotStore(deps.privateRoot)
+    await snapshots.capture({ sessionId, runId: 'run-abandoned', checkout, phase: 'before' })
+    return snapshots
+  }
+
+  it('reports what it changed on the next start, and keeps the snapshot for undo', async () => {
     const root = await readyClaudeRoot('run-service-abandoned-')
     const checkout = await project(root)
     const deps = claudeDeps(root, fakeBroker())
-    // A Run that started, changed something, and never concluded: the app was
-    // quit or it crashed, so nothing compared its Checkout.
-    const abandoned = join(deps.privateRoot, 'checkout-snapshots', 'run-key')
-    const snapshot = await snapshotCheckout(checkout, abandoned)
-    await writeFile(
-      join(abandoned, 'baseline.json'),
-      JSON.stringify({ sessionId: 'session', runId: 'run-abandoned', checkout, snapshot })
-    )
+    const snapshots = await abandon(deps, checkout)
     await writeFile(join(checkout, 'tracked.ts'), 'changed by the agent\n')
     deps.core.unfinished = [{ sessionId: 'session', runId: 'run-abandoned' }]
 
@@ -1346,32 +1368,58 @@ describe('a Run the app never got to finish', () => {
     expect(terminal?.input?.checkoutObservation?.changes?.map((file) => file.path)).toEqual([
       'tracked.ts'
     ])
-    await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([])
+    // Both halves are now on record, so the recovered Run can still be undone
+    // (ADR 0006). Recovery observed and recorded; it applied nothing.
+    const record = await snapshots.read('session', 'run-abandoned')
+    expect(record?.before).toEqual(expect.any(String))
+    expect(record?.after).toEqual(expect.any(String))
+    await expect(readFile(join(checkout, 'tracked.ts'), 'utf8')).resolves.toBe(
+      'changed by the agent\n'
+    )
   })
 
-  it('throws away a snapshot it cannot make sense of, rather than keeping it forever', async () => {
+  it('keeps a Session’s snapshots and removes only stores no Session claims', async () => {
     const root = await readyClaudeRoot('run-service-rubbish-')
+    const checkout = await project(root)
     const deps = claudeDeps(root, fakeBroker())
-    const rubbish = join(deps.privateRoot, 'checkout-snapshots', 'run-key')
-    await mkdir(rubbish, { recursive: true })
-    await writeFile(join(rubbish, 'baseline.json'), 'not json at all')
+    const snapshots = await abandon(deps, checkout)
+    await snapshots.capture({
+      sessionId: 'a-session-since-deleted',
+      runId: 'run-gone',
+      checkout,
+      phase: 'before'
+    })
 
-    const service = new RunService(deps)
-    await service.recoverUnfinishedWork()
+    await new RunService(deps).recoverUnfinishedWork()
 
-    await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([])
+    expect(await snapshots.read('session', 'run-abandoned')).not.toBeNull()
+    expect(await snapshots.read('a-session-since-deleted', 'run-gone')).toBeNull()
+  })
+
+  it('keeps the snapshots of a damaged Session rather than pruning it as gone', async () => {
+    const root = await readyClaudeRoot('run-service-damaged-')
+    const checkout = await project(root)
+    const deps = claudeDeps(root, fakeBroker())
+    const snapshots = await abandon(deps, checkout, 'damaged-session')
+    // Core reports a Session whose record could not be read separately, so it
+    // can be shown rather than inferred. It is not a Session that has gone.
+    const send = deps.core.send.getMockImplementation() as (command: {
+      type: string
+    }) => Promise<unknown>
+    deps.core.send.mockImplementation((command: { type: string }) =>
+      command.type === 'session/list-damaged' ? Promise.resolve(['damaged-session']) : send(command)
+    )
+
+    await new RunService(deps).recoverUnfinishedWork()
+
+    expect(await snapshots.read('damaged-session', 'run-abandoned')).not.toBeNull()
   })
 
   it('keeps Checkout evidence when Core cannot confirm the recovered ending', async () => {
     const root = await readyClaudeRoot('run-service-recovery-failed-')
     const checkout = await project(root)
     const deps = claudeDeps(root, fakeBroker())
-    const abandoned = join(deps.privateRoot, 'checkout-snapshots', 'run-key')
-    const snapshot = await snapshotCheckout(checkout, abandoned)
-    await writeFile(
-      join(abandoned, 'baseline.json'),
-      JSON.stringify({ sessionId: 'session', runId: 'run-abandoned', checkout, snapshot })
-    )
+    const snapshots = await abandon(deps, checkout)
     deps.core.unfinished = [{ sessionId: 'session', runId: 'run-abandoned' }]
     const send = deps.core.send.getMockImplementation() as (command: {
       type: string
@@ -1384,21 +1432,14 @@ describe('a Run the app never got to finish', () => {
 
     await new RunService(deps).recoverUnfinishedWork()
 
-    await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([
-      'run-key'
-    ])
+    expect((await snapshots.read('session', 'run-abandoned'))?.before).toEqual(expect.any(String))
   })
 
   it('keeps Checkout evidence when Core cannot list recovery work', async () => {
     const root = await readyClaudeRoot('run-service-recovery-query-failed-')
     const checkout = await project(root)
     const deps = claudeDeps(root, fakeBroker())
-    const abandoned = join(deps.privateRoot, 'checkout-snapshots', 'run-key')
-    const snapshot = await snapshotCheckout(checkout, abandoned)
-    await writeFile(
-      join(abandoned, 'baseline.json'),
-      JSON.stringify({ sessionId: 'session', runId: 'run-abandoned', checkout, snapshot })
-    )
+    const snapshots = await abandon(deps, checkout)
     const send = deps.core.send.getMockImplementation() as (command: {
       type: string
     }) => Promise<unknown>
@@ -1410,9 +1451,7 @@ describe('a Run the app never got to finish', () => {
 
     await expect(new RunService(deps).recoverUnfinishedWork()).rejects.toThrow('Core unavailable')
 
-    await expect(readdir(join(deps.privateRoot, 'checkout-snapshots'))).resolves.toEqual([
-      'run-key'
-    ])
+    expect((await snapshots.read('session', 'run-abandoned'))?.before).toEqual(expect.any(String))
   })
 })
 

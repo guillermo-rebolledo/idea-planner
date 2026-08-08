@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
-import { access, mkdir, realpath } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { access, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { ChangeKind } from '@shared/conversation'
 import type {
@@ -7,6 +8,7 @@ import type {
   CheckoutStateObservation,
   WorktreeBootstrapResult
 } from '@shared/checkout'
+import type { UndoPath, UndoPathClassification } from '@shared/run-undo'
 import { promisify } from 'node:util'
 import { bootstrapWorktree } from './worktree-bootstrap'
 
@@ -340,9 +342,19 @@ export async function snapshotCheckout(
   if (observation.state === 'unsafe-root') {
     return { status: 'skipped', reason: 'checkout-state', state: observation.state }
   }
+  let scratch: string | undefined
   try {
-    const env = await snapshotEnvironment(checkout, appOwnedDirectory, options)
     await mkdir(join(appOwnedDirectory, OBJECTS), { recursive: true })
+    await mkdir(join(appOwnedDirectory, SCRATCH), { recursive: true })
+    // A fresh index per capture, never a file two captures share. Snapshots of
+    // one Session are now retained for its whole life (ADR 0006), so a
+    // long-lived index would be state two Runs could disagree about — and one
+    // left behind by a crash would seed the next capture with stale entries.
+    scratch = await mkdtemp(join(appOwnedDirectory, SCRATCH, 'index-'))
+    const env = {
+      ...(await readEnvironment(checkout, appOwnedDirectory, options)),
+      GIT_INDEX_FILE: join(scratch, 'index')
+    }
     const latest = await observeCheckoutState(checkout, options)
     if (latest.status !== 'observed') {
       return { status: 'skipped', reason: latest.status }
@@ -364,7 +376,233 @@ export async function snapshotCheckout(
     return (await isGitMissing(options))
       ? { status: 'skipped', reason: 'git-unavailable' }
       : { status: 'skipped', reason: 'not-a-repository' }
+  } finally {
+    if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => undefined)
   }
+}
+
+/**
+ * What undoing a Run would mean right now: every path it changed, measured
+ * against what the Checkout holds at this moment, and the patch that would put
+ * the safe ones back.
+ *
+ * Nothing here writes. The plan is something to read and confirm, and the
+ * digest it carries is what makes confirming it safe — the tree is measured
+ * again immediately before anything is applied, and a plan computed against a
+ * different tree is refused rather than adapted.
+ */
+export interface RestorationPlan {
+  paths: UndoPath[]
+  /**
+   * The inverse patch, from what the Run left back to what was there before,
+   * restricted to the safe paths. Binary-capable, so a changed image is put
+   * back rather than reported as unrepresentable.
+   */
+  patch: string
+  /** The tree this was computed against, which is what staleness is measured by. */
+  treeDigest: string
+}
+
+export type RestorationPlanning =
+  | { status: 'planned'; plan: RestorationPlan }
+  | { status: 'skipped'; reason: 'git-unavailable' | 'not-a-repository' }
+  | { status: 'skipped'; reason: 'checkout-state'; state: CheckoutState }
+
+/**
+ * Classifies every path a Run changed and builds the inverse patch for the
+ * ones still exactly as it left them.
+ *
+ * Three answers per path, and the difference between them is the whole point:
+ * a path that still matches the Run's own output can be put back mechanically;
+ * one that already matches its pre-Run content has nothing to put back; and
+ * anything else has been touched since — by the person, their editor, or a
+ * later Run — and is never written to.
+ */
+export async function planRestoration(
+  input: {
+    checkout: string
+    /** The app-owned store holding both trees, and where scratch files go. */
+    store: string
+    /** The Checkout as it was before the Run. */
+    before: string
+    /** The Checkout as the Run left it. */
+    after: string
+  },
+  options: GitOptions = {}
+): Promise<RestorationPlanning> {
+  const current = await snapshotCheckout(input.checkout, input.store, options)
+  if (current.status !== 'taken') return current
+  try {
+    const env = await readEnvironment(input.checkout, input.store, options)
+    const affected = await namedChanges(input.checkout, env, [input.before, input.after])
+    if (affected.length === 0) {
+      return {
+        status: 'planned',
+        plan: { paths: [], patch: '', treeDigest: current.tree }
+      }
+    }
+    // Two comparisons rather than a blob read per path: git already walks both
+    // trees in one pass, and a path absent from a comparison is a path the two
+    // trees agree about.
+    const [fromAfter, fromBefore] = await Promise.all([
+      namedChanges(input.checkout, env, [input.after, current.tree]),
+      namedChanges(input.checkout, env, [input.before, current.tree])
+    ])
+    const movedSinceRun = new Set(fromAfter.map((change) => change.path))
+    const movedSinceBaseline = new Set(fromBefore.map((change) => change.path))
+    const paths: UndoPath[] = affected.map((change) => ({
+      path: change.path,
+      changeKind: change.changeKind,
+      classification: classifyPath({
+        matchesWhatTheRunLeft: !movedSinceRun.has(change.path),
+        matchesWhatWasThereBefore: !movedSinceBaseline.has(change.path)
+      })
+    }))
+    const safe = paths.filter((path) => path.classification === 'safe').map((path) => path.path)
+    const patch = safe.length === 0 ? '' : await inversePatch(input, env, safe)
+    return { status: 'planned', plan: { paths, patch, treeDigest: current.tree } }
+  } catch {
+    return (await isGitMissing(options))
+      ? { status: 'skipped', reason: 'git-unavailable' }
+      : { status: 'skipped', reason: 'not-a-repository' }
+  }
+}
+
+/**
+ * Where one path stands, from the two comparisons that place it. Named
+ * arguments rather than positional booleans: swapping these two silently would
+ * classify a file the person has just edited as safe to write over.
+ */
+function classifyPath(against: {
+  matchesWhatTheRunLeft: boolean
+  matchesWhatWasThereBefore: boolean
+}): UndoPathClassification {
+  if (against.matchesWhatTheRunLeft) return 'safe'
+  return against.matchesWhatWasThereBefore ? 'already-restored' : 'diverged'
+}
+
+/**
+ * The patch that turns what the Run left back into what was there before it.
+ * The trees are named in that order — after, then before — because that is
+ * literally the direction of travel; nothing is reversed after the fact.
+ */
+async function inversePatch(
+  input: { checkout: string; before: string; after: string },
+  env: NodeJS.ProcessEnv,
+  paths: string[]
+): Promise<string> {
+  const { stdout } = await run(
+    'git',
+    [
+      'diff-tree',
+      '-r',
+      '-p',
+      '--binary',
+      '--no-color',
+      '--no-ext-diff',
+      input.after,
+      input.before,
+      '--',
+      ...paths
+    ],
+    { cwd: input.checkout, env, timeout: TIMEOUT_MS, maxBuffer: MAX_DIFF_BYTES }
+  )
+  return stdout
+}
+
+/**
+ * Whether a restoration is still the one that was reviewed. Cheap on purpose:
+ * it is asked again in the moment between the person confirming and anything
+ * being written, and the only honest answer at that point is a fresh one.
+ */
+export async function currentTreeDigest(
+  checkout: string,
+  store: string,
+  options: GitOptions = {}
+): Promise<string | null> {
+  const snapshot = await snapshotCheckout(checkout, store, options)
+  return snapshot.status === 'taken' ? snapshot.tree : null
+}
+
+export type PatchApplication =
+  | { status: 'applied' }
+  /**
+   * Refused before anything was written — `git apply --check` said no, or the
+   * Checkout was not in a state to be written to. Nothing was touched, and
+   * that is a promise the caller may repeat to the person.
+   */
+  | { status: 'refused' }
+  /**
+   * `--check` passed and the apply that followed did not. Rare, and the one
+   * case where what the working tree now holds is genuinely unknown, so it is
+   * kept distinct from `refused` rather than folded into it: telling somebody
+   * nothing was touched when something might have been is the worst answer
+   * available.
+   */
+  | { status: 'failed' }
+
+/**
+ * Applies an inverse patch to the working tree, and only to the working tree.
+ *
+ * `--check` first, so a patch that would not apply cleanly is refused before
+ * a single file is touched: `git apply` is all-or-nothing per invocation, and
+ * checking first turns "half the files moved" into "nothing moved".
+ *
+ * Neither call is given `--index` or `--cached`, so the person's staging area
+ * is exactly as they left it afterwards. The patch is handed over as a file
+ * rather than on stdin so nothing about it depends on how a shell would quote
+ * it.
+ */
+export async function applyInversePatch(
+  input: { checkout: string; store: string; patch: string },
+  options: GitOptions = {}
+): Promise<PatchApplication> {
+  if (input.patch === '') return { status: 'applied' }
+  const observation = await observeCheckoutState(input.checkout, options)
+  if (observation.status !== 'observed' || observation.state !== 'clean') {
+    return { status: 'refused' }
+  }
+  await mkdir(join(input.store, SCRATCH), { recursive: true })
+  const file = join(input.store, SCRATCH, `restore-${randomUUID()}.patch`)
+  const env = environment(options)
+  const args = ['apply', '--binary', '--whitespace=nowarn']
+  try {
+    try {
+      await writeFile(file, input.patch, { mode: 0o600 })
+      await run('git', [...args, '--check', file], {
+        cwd: input.checkout,
+        env,
+        timeout: TIMEOUT_MS
+      })
+    } catch {
+      // Staging the patch or checking it. Either way git has not been asked to
+      // write anything yet.
+      return { status: 'refused' }
+    }
+    try {
+      await run('git', [...args, file], { cwd: input.checkout, env, timeout: TIMEOUT_MS })
+      return { status: 'applied' }
+    } catch {
+      return { status: 'failed' }
+    }
+  } finally {
+    await rm(file, { force: true }).catch(() => undefined)
+  }
+}
+
+/** The paths two trees disagree about, and what happened to each. */
+async function namedChanges(
+  checkout: string,
+  env: NodeJS.ProcessEnv,
+  trees: string[]
+): Promise<SnapshotChange[]> {
+  const { stdout } = await run('git', ['diff-tree', '-r', '--name-status', '-z', ...trees], {
+    cwd: checkout,
+    env,
+    timeout: TIMEOUT_MS,
+    maxBuffer: MAX_DIFF_BYTES
+  })
+  return readNameStatus(stdout)
 }
 
 /**
@@ -382,7 +620,7 @@ export async function diffSnapshots(
   const nothing: SnapshotComparison = { changes: [], unlisted: 0 }
   if (before.status !== 'taken' || after.status !== 'taken') return nothing
   if (before.tree === after.tree) return nothing
-  const env = await snapshotEnvironment(checkout, appOwnedDirectory, options)
+  const env = await readEnvironment(checkout, appOwnedDirectory, options)
   const trees = [before.tree, after.tree]
   let named: SnapshotChange[]
   try {
@@ -463,18 +701,27 @@ async function patchBodies(
   }
 }
 
-async function snapshotEnvironment(
+/**
+ * Where git reads and writes objects for everything the app does with trees:
+ * the app's own object directory, with the Project's added only as a
+ * **read-only alternate**. Every blob and tree this app creates therefore
+ * lands in app-owned state, and the person's repository is only ever read
+ * from (ADR 0006).
+ *
+ * No index. Staging needs one and asks for a fresh one of its own; reading
+ * trees needs none, and an index named here would be one more file that could
+ * be stale.
+ */
+async function readEnvironment(
   checkout: string,
   appOwnedDirectory: string,
   options: GitOptions
 ): Promise<NodeJS.ProcessEnv> {
   return {
     ...environment(options),
-    GIT_INDEX_FILE: join(appOwnedDirectory, 'index'),
     GIT_OBJECT_DIRECTORY: join(appOwnedDirectory, OBJECTS),
-    // Read-only access to what the repository already has, so this rehashes
-    // nothing it can borrow. Asked for rather than assumed: in a linked
-    // worktree or a submodule `.git` is a file and the objects are elsewhere.
+    // Asked for rather than assumed: in a linked worktree or a submodule
+    // `.git` is a file and the objects are elsewhere.
     GIT_ALTERNATE_OBJECT_DIRECTORIES: await objectDirectory(checkout, options)
   }
 }
@@ -490,6 +737,9 @@ async function objectDirectory(checkout: string, options: GitOptions): Promise<s
 
 /** Where the objects this writes go, which is never the person's repository. */
 const OBJECTS = 'objects'
+
+/** Short-lived working files — a capture's index, a patch about to be applied. */
+const SCRATCH = 'scratch'
 
 /** A diff larger than this is not one anybody was going to read. */
 const MAX_DIFF_BYTES = 8 * 1024 * 1024

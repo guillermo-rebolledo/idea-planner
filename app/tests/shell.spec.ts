@@ -177,6 +177,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
     expect(exposure.electronType).toBe('undefined')
     expect(exposure.ipcRendererType).toBe('undefined')
     expect(exposure.shellKeys).toEqual([
+      'applyRunUndo',
       'cancelQueuedSubmission',
       'chooseHarnessExecutable',
       'chooseProject',
@@ -213,6 +214,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'openInEditor',
       'pathForFile',
       'pauseConversationQueue',
+      'prepareRunUndo',
       'queryMailbox',
       'refreshReadiness',
       'removeProject',
@@ -970,6 +972,81 @@ const EDITING_CLAUDE_FAKE = `case "$1" in
     /bin/sleep 1
     exit 0;;
 esac`
+
+/**
+ * The same Run, except it really writes the file. Every other editing fake
+ * only *reports* an edit, which is enough for the Conversation but not for
+ * undo: putting a Run back is measured against the Checkout itself.
+ */
+const WRITING_CLAUDE_FAKE = `case "$1" in
+  --version) echo "2.1.220 (Claude Code)"; exit 0;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  --print)
+    printf 'export const greeting = "goodbye"\\n' > greeting.ts
+    echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
+    echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}]},"session_id":"thread-1"}'
+    echo '{"type":"result","subtype":"success","is_error":false,"session_id":"thread-1","result":"Done.","usage":{"input_tokens":12,"output_tokens":2}}'
+    /bin/sleep 1
+    exit 0;;
+esac`
+
+test('a Run can be put back, after a review that says what each file will get', async () => {
+  await installFakeHarness('claude', WRITING_CLAUDE_FAKE)
+  await writeFile(join(sandbox.projectDir, 'greeting.ts'), 'export const greeting = "hello"\n')
+  await git('git', ['add', '-A'], { cwd: sandbox.projectDir })
+  await git(
+    'git',
+    ['-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '--quiet', '-m', 'init'],
+    { cwd: sandbox.projectDir }
+  )
+
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Change the greeting')
+
+    const history = page.getByRole('log', { name: 'Conversation history' })
+    await expect(history.getByText('Done.')).toBeVisible()
+    await expect(readFile(join(sandbox.projectDir, 'greeting.ts'), 'utf8')).resolves.toContain(
+      'goodbye'
+    )
+
+    // Undo is on the Run itself, never on ⌘Z: it writes over source files.
+    await history.getByRole('button', { name: 'Undo this Run' }).click()
+
+    // A Local Checkout always reviews, and every classification is in words.
+    const dialog = page.getByRole('alertdialog')
+    await expect(dialog).toContainText('Review what undoing this Run would do')
+    await expect(dialog).toContainText('greeting.ts')
+    await expect(dialog).toContainText('will be put back')
+    // Focus is inside the dialog the moment it opens, so Escape and Tab are
+    // already speaking to it rather than to the page behind.
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused()
+    await expect(dialog.getByText('Show the patch that would be applied')).toBeVisible()
+
+    await dialog.getByRole('button', { name: /^Put back 1 file$/ }).click()
+    await expect(dialog).toContainText('Put back 1 file.')
+    await expect(readFile(join(sandbox.projectDir, 'greeting.ts'), 'utf8')).resolves.toContain(
+      'hello'
+    )
+
+    // Closing gives focus back to what opened the dialog.
+    await dialog.getByRole('button', { name: 'Close' }).click()
+    await expect(page.getByRole('alertdialog')).toHaveCount(0)
+
+    // The Conversation gained a line and lost nothing: the Run it undid still
+    // says what it did, and the Files row is marked rather than deleted.
+    await expect(history.getByRole('region', { name: 'Undo' })).toContainText(
+      'You undid an earlier Run.'
+    )
+    await page.getByRole('button', { name: /Files this Session changed/ }).click()
+    const panel = page.getByRole('complementary', { name: 'Files this Session changed' })
+    await expect(panel.getByRole('button', { name: /greeting\.ts/ })).toContainText('put back')
+  } finally {
+    await app.close()
+  }
+})
 
 test('a Session says which files it changed, and offers nothing to accept', async () => {
   await installFakeHarness('claude', EDITING_CLAUDE_FAKE)

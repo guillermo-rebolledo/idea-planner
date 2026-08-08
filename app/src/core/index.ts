@@ -114,6 +114,8 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.getConversation(command.sessionId)
     case 'conversation/submit':
       return core.submitConversationMessage(command.input)
+    case 'conversation/app-action':
+      return core.recordAppAction(command.input)
     case 'conversation/queue-change':
       return core.changeQueuedSubmissions(command.input)
     case 'conversation/queue-next':

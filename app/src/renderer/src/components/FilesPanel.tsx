@@ -185,7 +185,7 @@ function FileRow({
         type="button"
         aria-expanded={focused}
         onClick={onClick}
-        title={`${file.path} — ${CHANGE_WORD[file.changeKind]}${file.reported ? '' : ', not reported by the agent'}`}
+        title={`${file.path} — ${CHANGE_WORD[file.changeKind]}${file.reported ? '' : ', not reported by the agent'}${file.restored ? ', since put back' : ''}`}
         className={cn(
           'flex w-full items-center gap-2 px-4 py-1.5 text-left font-mono text-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring',
           focused && 'bg-accent'
@@ -201,6 +201,9 @@ function FileRow({
         >
           {file.path}
         </span>
+        {/* A row that has been put back keeps its counts — the change did
+            happen — and says so in words rather than by disappearing. */}
+        {file.restored && <span className="shrink-0 text-2xs text-muted-foreground">put back</span>}
         {textless ? (
           <span className="shrink-0 text-2xs text-muted-foreground">
             {file.shortened ? 'diff not kept' : 'no text change'}
@@ -313,6 +316,12 @@ function FocusedDiff({
           <p className="px-1 py-1 text-xs text-muted-foreground">
             Found on disk with nothing in the Conversation accounting for it: a command the agent
             ran changed this, and said nothing.
+          </p>
+        )}
+        {file.restored && (
+          <p className="px-1 py-1 text-xs text-muted-foreground">
+            You have since put this file back. The change above is kept as the record of what the
+            Run did; it is no longer what is on disk.
           </p>
         )}
       </div>

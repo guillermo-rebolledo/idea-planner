@@ -32,6 +32,7 @@ import type {
   QueuedSubmissionLaunchObservation,
   QueuedSubmissionLaunchPlan,
   QueuedSubmissionLaunchResult,
+  RecordAppActionInput,
   SubmitConversationMessageInput,
   UnfinishedRun
 } from '@shared/conversation'
@@ -110,6 +111,7 @@ export interface Core {
   recordRunEvent(input: RecordRunEventInput): Promise<RunSnapshot>
   getConversation(sessionId: string): Promise<ConversationSnapshot>
   submitConversationMessage(input: SubmitConversationMessageInput): Promise<ConversationSnapshot>
+  recordAppAction(input: RecordAppActionInput): Promise<ConversationSnapshot>
   changeQueuedSubmissions(input: QueuedSubmissionChange): Promise<ConversationSnapshot>
   nextQueuedSubmission(sessionId: string): Promise<QueuedSubmissionLaunchPlan | null>
   observeQueuedSubmissionLaunch(
@@ -163,6 +165,7 @@ export interface CoreEffects {
   submitConversationMessage(
     input: SubmitConversationMessageInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
+  recordAppAction(input: RecordAppActionInput): Effect.Effect<ConversationSnapshot, CoreError>
   changeQueuedSubmissions(
     input: QueuedSubmissionChange
   ): Effect.Effect<ConversationSnapshot, CoreError>
@@ -785,6 +788,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     recordRunEvent,
     getConversation: (sessionId) => conversation.get(sessionId),
     submitConversationMessage: (input) => conversation.submit(input),
+    recordAppAction: (input) => conversation.recordAppAction(input),
     changeQueuedSubmissions: (input) => queuedSubmissions.change(input),
     nextQueuedSubmission: (sessionId) => queuedSubmissions.next(sessionId),
     observeQueuedSubmissionLaunch: (input) => queuedSubmissions.observeLaunch(input),
@@ -927,6 +931,7 @@ export function createCore(deps: CoreDeps = {}): Core {
     recordRunEvent: (input) => run(core.recordRunEvent(input)),
     getConversation: (sessionId) => run(core.getConversation(sessionId)),
     submitConversationMessage: (input) => run(core.submitConversationMessage(input)),
+    recordAppAction: (input) => run(core.recordAppAction(input)),
     changeQueuedSubmissions: (input) => run(core.changeQueuedSubmissions(input)),
     nextQueuedSubmission: (sessionId) => run(core.nextQueuedSubmission(sessionId)),
     observeQueuedSubmissionLaunch: (input) => run(core.observeQueuedSubmissionLaunch(input)),

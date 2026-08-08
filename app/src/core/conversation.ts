@@ -18,7 +18,9 @@ import {
   queuedSubmissionEntrySchema,
   queueOutcomeEntrySchema,
   isActiveQueuedSubmission,
+  recordAppActionInputSchema,
   setConversationQueuePausedInputSchema,
+  type RecordAppActionInput,
   type ChangedFile,
   type DiffHunk,
   submitConversationMessageInputSchema,
@@ -43,6 +45,7 @@ import {
   type SuggestedResponse
 } from '@shared/conversation'
 import { reviewAttachmentsRefusal, type ReviewAttachment } from '@shared/review-attachment'
+import { isRestored } from '@shared/run-undo'
 import type { HarnessId } from '@shared/readiness'
 import type { RunActivityKind, SkillName } from '@shared/run'
 import { createCodexAdapter, type HarnessAdapter } from './harness/codex'
@@ -238,6 +241,8 @@ export interface ConversationEffects {
   ingest(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
   /** Records changes found by comparing the Checkout, which nobody reported. */
   finalize(input: FinalizeRunInput): Effect.Effect<ConversationSnapshot, CoreError>
+  /** Appends what the app itself did to the Checkout, without rewriting a Run. */
+  recordAppAction(input: RecordAppActionInput): Effect.Effect<ConversationSnapshot, CoreError>
 }
 
 /**
@@ -1495,6 +1500,41 @@ export function createConversationEffects(options: ConversationOptions): Convers
       )
     })
 
+  /**
+   * Writes down what the app did to the Checkout, at the person's request.
+   *
+   * It appends and only appends. The Run it names keeps its boundary, its
+   * steps, and its diffs — undoing a Run is a second thing that happened, not
+   * a reason to pretend the first one did not (ADR 0006).
+   */
+  const recordAppAction = (
+    input: RecordAppActionInput
+  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+    Effect.gen(function* () {
+      const parsed = recordAppActionInputSchema.parse(input)
+      const sessionDir = yield* sessionDirectory(parsed.sessionId)
+      return yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const now = yield* options.clock
+          yield* append(
+            sessionDir,
+            conversationEntrySchema.parse({
+              kind: 'app-action',
+              // The operation is the identity: a record whose append failed
+              // and was retried lands once, under the same name.
+              id: `app-action:${parsed.operationId}`,
+              at: now.toISOString(),
+              action: parsed.action,
+              sourceRunId: parsed.sourceRunId,
+              outcomes: parsed.outcomes,
+              unlisted: parsed.unlisted
+            })
+          )
+          return yield* snapshot(parsed.sessionId, sessionDir)
+        })
+      )
+    })
+
   const adapterFor = (
     runId: string,
     harness: HarnessId,
@@ -1574,7 +1614,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
     answer,
     interrupt,
     ingest,
-    finalize
+    finalize,
+    recordAppAction
   }
 }
 
@@ -1709,7 +1750,11 @@ function tally(
     shortened: (known?.shortened ?? false) || entry.shortened,
     // One report from the agent is enough to account for the file; a Checkout
     // comparison only ever adds what nothing accounted for.
-    reported: (known?.reported ?? false) || entry.source === 'harness'
+    reported: (known?.reported ?? false) || entry.source === 'harness',
+    // A later write to a file that was put back means it is no longer put
+    // back: the row describes what the file is now, and something has since
+    // changed it again.
+    restored: false
   }
 }
 
@@ -1751,6 +1796,17 @@ function summarize(
     }
     if (entry.kind === 'thread') harnessThreads[entry.harness] = entry.threadId
     if (entry.kind === 'file-change') changed.set(entry.path, tally(changed.get(entry.path), entry))
+    // Folded in the order things happened, so a file put back and then
+    // changed again by a later Run reads as changed, not as restored. The
+    // file-change entries themselves are never touched: the Run that made the
+    // change, and the diff it made, stay exactly as they were recorded.
+    if (entry.kind === 'app-action') {
+      for (const outcome of entry.outcomes) {
+        const known = changed.get(outcome.path)
+        if (!known) continue
+        changed.set(outcome.path, { ...known, restored: isRestored(outcome.outcome) })
+      }
+    }
   }
   return {
     sessionId,

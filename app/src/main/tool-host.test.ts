@@ -58,7 +58,8 @@ const conversation: ConversationSnapshot = {
       removed: 1,
       changeKind: 'changed',
       shortened: true,
-      reported: true
+      reported: true,
+      restored: false
     }
   ],
   activeRunId: 'run-2',

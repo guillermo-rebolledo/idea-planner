@@ -17,6 +17,7 @@ import {
   Square,
   Terminal,
   TriangleAlert,
+  Undo2,
   X
 } from 'lucide-react'
 import {
@@ -60,6 +61,7 @@ import {
 import { displayCommand } from '@shared/command'
 import { TurnRail, type TurnStep, type TurnSummary } from '@renderer/components/TurnRail'
 import { SubagentDock, SubagentPill } from '@renderer/components/SubagentDock'
+import { RunUndoDialog, UndoRunButton } from '@renderer/components/RunUndo'
 import { fleetOf } from '@renderer/lib/selected-conversation-read-model'
 import type { FleetMember } from '@renderer/lib/subagent-fleet'
 import {
@@ -207,6 +209,9 @@ export function Conversation({
   const [queuedEdit, setQueuedEdit] = useState('')
   const [queueAnnouncement, setQueueAnnouncement] = useState('')
   const [inspectedAttachmentId, setInspectedAttachmentId] = useState<string | null>(null)
+  // The Run whose undo is open, if any. Only ever set by the explicit button:
+  // undoing a Run writes over source files, and ADR 0006 keeps it off ⌘Z.
+  const [undoingRunId, setUndoingRunId] = useState<string | null>(null)
   // No Skill by default. Most messages are not asking for a methodology, and
   // one applied because it happened to be selected is one nobody chose.
   const [skill, setSkill] = useState<string | null>(null)
@@ -595,7 +600,16 @@ export function Conversation({
   )
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="relative flex h-full min-h-0">
+      {undoingRunId !== null && (
+        <RunUndoDialog
+          key={undoingRunId}
+          sessionId={sessionId}
+          runId={undoingRunId}
+          onClose={() => setUndoingRunId(null)}
+          onApplied={() => void refresh()}
+        />
+      )}
       <div className="flex h-full min-w-0 flex-1 flex-col">
         {/* The reader's place is the scroller's to keep (mock 1a). A new turn
           anchors near the top with a peek of what came before it, the reply
@@ -659,6 +673,9 @@ export function Conversation({
                       </p>
                     )
                   }
+                  if (item.type === 'app-action') {
+                    return row(item.entry.id, <AppActionNote entry={item.entry} />)
+                  }
                   return row(
                     item.runId,
                     <RunSection
@@ -678,6 +695,7 @@ export function Conversation({
                       }}
                       onOpenFile={onOpenFile}
                       onContinue={() => composerRef.current?.focus()}
+                      onUndo={setUndoingRunId}
                     />
                   )
                 })}
@@ -1678,7 +1696,8 @@ function RunOutcome({
   startedAt,
   steps,
   onOpenFile,
-  onContinue
+  onContinue,
+  onUndo
 }: {
   group: RunGroup
   run: RunSnapshot | null
@@ -1686,6 +1705,7 @@ function RunOutcome({
   steps: StepEntry[]
   onOpenFile: (path: string) => void
   onContinue: () => void
+  onUndo: (runId: string) => void
 }): React.JSX.Element | null {
   const changes = steps.flatMap((step) => (step.kind === 'file-change' ? [step] : []))
   const failed =
@@ -1693,7 +1713,12 @@ function RunOutcome({
   const stopped = group.ended?.boundary === 'run-stopped' || run?.status === 'stopped'
   if (!failed && !stopped) {
     return changes.length > 0 ? (
-      <ChangedFilesSummary changes={changes} onOpenFile={onOpenFile} />
+      <div className="flex flex-col gap-1.5">
+        <ChangedFilesSummary changes={changes} onOpenFile={onOpenFile} />
+        <div className="flex justify-end">
+          <UndoRunButton runId={group.runId} onOpen={onUndo} />
+        </div>
+      </div>
     ) : null
   }
 
@@ -1742,6 +1767,7 @@ function RunOutcome({
               Review files
             </Button>
           )}
+          {changes.length > 0 && <UndoRunButton runId={group.runId} onOpen={onUndo} />}
           <Button size="sm" variant="ghost" onClick={onContinue}>
             Continue
           </Button>
@@ -1985,10 +2011,64 @@ interface RunGroup {
   approvals: ApprovalEntry[]
 }
 
+type AppActionEntry = Extract<ConversationEntry, { kind: 'app-action' }>
+
+/**
+ * What the app did to the Checkout, on the person's say-so, after the Run it
+ * names. Stated in the transcript as its own line rather than folded into that
+ * Run: the Run happened, and this is what was done about it (ADR 0006).
+ *
+ * Every path it left alone is named, because "put some of them back" is a
+ * sentence nobody can act on without knowing which.
+ */
+function AppActionNote({ entry }: { entry: AppActionEntry }): React.JSX.Element {
+  const restored = entry.outcomes.filter((one) => one.outcome === 'restored')
+  const diverged = entry.outcomes.filter((one) => one.outcome === 'skipped-diverged')
+  const already = entry.outcomes.filter((one) => one.outcome === 'skipped-already-restored')
+  // Named by what happened rather than by count, so a Run whose every path was
+  // left alone does not read as one that was undone.
+  const nothingMoved = restored.length === 0
+  return (
+    <section
+      aria-label="Undo"
+      className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs"
+    >
+      <p className="flex items-center gap-1.5 text-muted-foreground">
+        <Undo2 aria-hidden="true" className="size-3 shrink-0" />
+        {nothingMoved
+          ? 'You asked to undo an earlier Run; nothing was put back.'
+          : 'You undid an earlier Run.'}
+      </p>
+      <ul className="mt-1 space-y-0.5 text-2xs text-muted-foreground">
+        {restored.length > 0 && (
+          <li>
+            Put back:{' '}
+            <span className="font-mono">{restored.map((one) => one.path).join(', ')}</span>
+          </li>
+        )}
+        {diverged.length > 0 && (
+          <li>
+            Changed since the Run, so left alone:{' '}
+            <span className="font-mono">{diverged.map((one) => one.path).join(', ')}</span>
+          </li>
+        )}
+        {already.length > 0 && (
+          <li>
+            Already back:{' '}
+            <span className="font-mono">{already.map((one) => one.path).join(', ')}</span>
+          </li>
+        )}
+        {entry.unlisted > 0 && <li>{entry.unlisted} more files are not listed here.</li>}
+      </ul>
+    </section>
+  )
+}
+
 type ConversationItem =
   | { type: 'user'; entry: MessageEntry }
   | { type: 'assistant'; entry: MessageEntry }
   | { type: 'note'; entry: BoundaryEntry }
+  | { type: 'app-action'; entry: AppActionEntry }
   | RunGroup
 
 /**
@@ -2037,6 +2117,12 @@ function groupEntries(entries: ConversationEntry[]): ConversationItem[] {
         break
       // A subagent is not a row of the transcript: the dock holds the fleet,
       // and the Run's pill is drawn from it rather than from this grouping.
+      // What the app did, at the person's request, after the Run it names.
+      // It is its own row rather than part of that Run's group: the Run is
+      // over, and its record is not rewritten by what happened next.
+      case 'app-action':
+        items.push({ type: 'app-action', entry })
+        break
       case 'subagent':
       case 'usage':
       case 'thread':
@@ -2076,7 +2162,7 @@ function summarizeTurns(items: ConversationItem[]): TurnSummary[] {
       continue
     }
     const turn = turns.at(-1)
-    if (turn === undefined || item.type === 'note') continue
+    if (turn === undefined || item.type === 'note' || item.type === 'app-action') continue
     if (item.type === 'assistant') {
       if (turn.reply === '') turn.reply = previewText(item.entry.text)
       continue
@@ -2349,7 +2435,8 @@ function RunSection({
   fleetShown,
   onToggleFleet,
   onOpenFile,
-  onContinue
+  onContinue,
+  onUndo
 }: {
   group: RunGroup
   run: RunSnapshot | null
@@ -2363,6 +2450,8 @@ function RunSection({
   onToggleFleet: () => void
   onOpenFile: (path: string) => void
   onContinue: () => void
+  /** Opens the guarded undo for this Run. Never reachable from ⌘Z. */
+  onUndo: (runId: string) => void
 }): React.JSX.Element {
   const startedAt = group.started?.at ?? run?.acceptedAt ?? null
   const duration =
@@ -2434,6 +2523,7 @@ function RunSection({
           steps={group.steps}
           onOpenFile={onOpenFile}
           onContinue={onContinue}
+          onUndo={onUndo}
         />
       )}
     </div>

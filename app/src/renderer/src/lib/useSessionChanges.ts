@@ -50,7 +50,10 @@ export function sessionChanges(
       removed: (known?.removed ?? 0) + entry.removed,
       changeKind: entry.changeKind,
       shortened: known?.shortened ?? false,
-      reported: true
+      reported: true,
+      // A live write to a file that was put back means it is no longer put
+      // back: something has just changed it again.
+      restored: false
     })
   }
   const files = [...filesByPath.values()]
