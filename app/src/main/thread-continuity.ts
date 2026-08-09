@@ -1,4 +1,9 @@
-import type { Compaction, ConversationEntry, ConversationSnapshot } from '@shared/conversation'
+import type {
+  Compaction,
+  ConversationEntry,
+  ConversationSnapshot,
+  Rewind
+} from '@shared/conversation'
 import type { HarnessId } from '@shared/readiness'
 
 /**
@@ -21,7 +26,7 @@ const HANDOFF_TURNS = 8
  * a tail alone. Asking by shape keeps every one of them on the same path.
  */
 export interface ConversationSeedRequest {
-  shape: 'handoff' | 'compaction'
+  shape: 'handoff' | 'compaction' | 'rewind'
   /** The Skill in force for the Run being seeded, or null when there is none. */
   skill: string | null
 }
@@ -47,7 +52,8 @@ const SEEDS: Record<
   (conversation: ConversationSnapshot, request: ConversationSeedRequest) => string
 > = {
   handoff: (conversation, request) => handoffSeed(conversation, request.skill),
-  compaction: (conversation, request) => compactionSeed(conversation, request.skill)
+  compaction: (conversation, request) => compactionSeed(conversation, request.skill),
+  rewind: (conversation, request) => rewindSeed(conversation, request.skill)
 }
 
 /** The Skill in force and the turns immediately before the new Thread. */
@@ -98,6 +104,35 @@ export function latestCompaction(conversation: ConversationSnapshot): Compaction
   return boundary?.kind === 'boundary' ? (boundary.compaction ?? null) : null
 }
 
+/** The newest app-owned context boundary decides the seed shape. */
+export function conversationSeedShape(
+  conversation: ConversationSnapshot
+): ConversationSeedRequest['shape'] {
+  const boundary = conversation.entries.findLast(
+    (entry) =>
+      entry.kind === 'boundary' &&
+      (entry.rewind !== undefined || (entry.compaction !== undefined && !entry.compaction.native))
+  )
+  if (boundary?.kind !== 'boundary') return 'handoff'
+  return boundary.rewind ? 'rewind' : 'compaction'
+}
+
+/** The readable tail left by the latest rewind, with no summary of discarded turns. */
+function rewindSeed(conversation: ConversationSnapshot, skill: string | null): string {
+  const rewind = latestRewind(conversation)
+  if (!rewind) return handoffSeed(conversation, skill)
+  const from = conversation.entries.findIndex((entry) => entry.id === rewind.tailFromEntryId)
+  const tail = turns(from === -1 ? conversation.entries : conversation.entries.slice(from))
+  return [...(skill ? [`Skill: ${skill}`] : []), 'Recent turns:', tail || '(none)'].join('\n')
+}
+
+function latestRewind(conversation: ConversationSnapshot): Rewind | null {
+  const boundary = conversation.entries.findLast(
+    (entry) => entry.kind === 'boundary' && entry.rewind !== undefined
+  )
+  return boundary?.kind === 'boundary' ? (boundary.rewind ?? null) : null
+}
+
 /** Message entries as the two speakers, one per line. */
 function turns(entries: ConversationEntry[]): string {
   return entries
@@ -127,7 +162,8 @@ export type ContinuityBreak = (entry: BoundaryEntry) => boolean
  * compacting it was for.
  */
 export const breaksContinuity: ContinuityBreak = (entry) =>
-  entry.boundary === 'compacted' && entry.compaction?.native !== true
+  entry.boundary === 'rewound' ||
+  (entry.boundary === 'compacted' && entry.compaction?.native !== true)
 
 /**
  * The Run a Harness can only have produced this entry while answering in, or

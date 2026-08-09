@@ -20,11 +20,13 @@ import {
   isActiveQueuedSubmission,
   recordAppActionInputSchema,
   recordCompactionInputSchema,
+  recordRewindInputSchema,
   setConversationQueuePausedInputSchema,
   MAX_COMPACTION_SUMMARY,
   type CompactionPlan,
   type RecordAppActionInput,
   type RecordCompactionInput,
+  type RecordRewindInput,
   type ChangedFile,
   type DiffHunk,
   submitConversationMessageInputSchema,
@@ -61,6 +63,7 @@ import {
   readSessionState,
   stateFile,
   writeState,
+  visibleConversationEntries,
   type SessionState
 } from './session-state'
 import { createClaudeAdapter } from './harness/claude'
@@ -258,6 +261,8 @@ export interface ConversationEffects {
   compactionPlan(sessionId: string): Effect.Effect<CompactionPlan, CoreError>
   /** Records that the agent's memory of the turns before the tail is now a summary. */
   compact(input: RecordCompactionInput): Effect.Effect<ConversationSnapshot, CoreError>
+  /** Sets aside the chosen message and everything after it from the readable Conversation. */
+  rewind(input: RecordRewindInput): Effect.Effect<ConversationSnapshot, CoreError>
 }
 
 /**
@@ -337,10 +342,13 @@ export function createConversationEffects(options: ConversationOptions): Convers
       // between them leaves a projection that is behind rather than ahead.
       // Being behind is seen and repaired; being ahead would be a status the
       // Conversation never said (ticket 12f).
-      yield* writeState(sessionDir, {
-        ...entries.reduce(advance, known),
-        journalBytes: before + Buffer.byteLength(text, 'utf8')
-      }).pipe(Effect.catchAll(() => Effect.void))
+      const journalBytes = before + Buffer.byteLength(text, 'utf8')
+      const projected = entries.some(
+        (entry) => entry.kind === 'boundary' && entry.boundary === 'rewound'
+      )
+        ? deriveState(yield* readEntries(sessionDir), journalBytes)
+        : { ...entries.reduce(advance, known), journalBytes }
+      yield* writeState(sessionDir, projected).pipe(Effect.catchAll(() => Effect.void))
     })
 
   const append = (sessionDir: string, entry: ConversationEntry): Effect.Effect<void, CoreError> =>
@@ -1615,7 +1623,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
   const compactionPlan = (sessionId: string): Effect.Effect<CompactionPlan, CoreError> =>
     Effect.gen(function* () {
       const sessionDir = yield* sessionDirectory(sessionId)
-      const entries = yield* readEntries(sessionDir)
+      const entries = visibleConversationEntries(yield* readEntries(sessionDir))
       // A Run stopped in front of an Approval Request is a Run mid-decision.
       // Replacing what the agent remembers while it waits would answer the
       // question for it, from a context it can no longer see.
@@ -1723,6 +1731,69 @@ export function createConversationEffects(options: ConversationOptions): Convers
       )
     })
 
+  const rewind = (rawInput: RecordRewindInput): Effect.Effect<ConversationSnapshot, CoreError> =>
+    Effect.gen(function* () {
+      const parsed = recordRewindInputSchema.safeParse(rawInput)
+      if (!parsed.success) {
+        return yield* Effect.fail(
+          new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid rewind')
+        )
+      }
+      const input = parsed.data
+      const sessionDir = yield* sessionDirectory(input.sessionId)
+      return yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const entries = yield* readEntries(sessionDir)
+          const id = `boundary:rewound:${input.operationId}`
+          if (entries.some((entry) => entry.id === id)) {
+            return yield* snapshot(input.sessionId, sessionDir)
+          }
+          const visible = visibleConversationEntries(entries)
+          const activeRunId = deriveState(entries, 0).activeRunId
+          if (activeRunId !== null) {
+            return yield* Effect.fail(
+              new CoreError(
+                'INVALID_INPUT',
+                `Run ${activeRunId} is active; stop it before rewinding this Conversation`
+              )
+            )
+          }
+          const targetIndex = visible.findIndex((entry) => entry.id === input.targetEntryId)
+          const target = visible[targetIndex]
+          if (target?.kind !== 'message' || target.role !== 'user') {
+            return yield* Effect.fail(
+              new CoreError('INVALID_INPUT', 'The rewind point is not a visible user message')
+            )
+          }
+          const opening = visible.find(
+            (entry) =>
+              entry.kind === 'boundary' &&
+              entry.boundary === 'run-started' &&
+              entry.submissionId === target.submissionId
+          )
+          if (opening?.kind !== 'boundary') {
+            return yield* Effect.fail(
+              new CoreError('INVALID_INPUT', 'The chosen message has no Run to rewind')
+            )
+          }
+          const kept = visible.slice(0, targetIndex)
+          const keptMessages = kept.filter((entry) => entry.kind === 'message')
+          const tailFrom = keptMessages.at(-8)?.id ?? id
+          const entry = conversationEntrySchema.parse({
+            kind: 'boundary',
+            id,
+            at: (yield* options.clock).toISOString(),
+            runId: opening.runId,
+            boundary: 'rewound',
+            summary: 'The Conversation was rewound; files were not changed',
+            rewind: { rewoundToEntryId: target.id, tailFromEntryId: tailFrom }
+          })
+          yield* append(sessionDir, entry)
+          return yield* snapshot(input.sessionId, sessionDir)
+        })
+      )
+    })
+
   const adapterFor = (
     runId: string,
     harness: HarnessId,
@@ -1805,7 +1876,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
     finalize,
     recordAppAction,
     compactionPlan,
-    compact
+    compact,
+    rewind
   }
 }
 
@@ -2040,6 +2112,8 @@ function summarize(
   // What the Session is doing is one rule, and it lives with the projection
   // the inbox reads (ticket 12f). Stating it twice would be two answers to
   // one question, free to disagree.
+  const rawEntries = entries
+  entries = visibleConversationEntries(rawEntries)
   const state = deriveState(entries, 0)
   let latestRunUsage: HarnessUsage | null = null
   let sessionUsage = emptyUsage()
@@ -2054,7 +2128,7 @@ function summarize(
   const active = queued.filter(isActiveQueuedSubmission)
   const paused = active.length > 0 ? (queuePausedOverride ?? true) : true
   const outcome = entries.findLast((entry) => entry.kind === 'queue-outcome')
-  for (const entry of entries) {
+  for (const entry of rawEntries) {
     if (entry.kind === 'usage') {
       sessionUsage = addUsage(sessionUsage, entry.usage)
       latestRunUsage = entry.usage

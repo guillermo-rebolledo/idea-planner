@@ -543,6 +543,75 @@ describe('Run service', () => {
     })
   })
 
+  it('rewinds through Core without touching the Checkout, snapshots, or Harness process', async () => {
+    const root = await readyClaudeRoot('run-claude-rewind-')
+    const projectRoot = join(root, 'a-project')
+    await mkdir(projectRoot, { recursive: true })
+    await writeFile(join(projectRoot, 'kept.ts'), 'export const kept = true\n')
+    const core = fakeCore(projectRoot)
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
+    })
+
+    await service.rewind({
+      sessionId: 'session',
+      operationId: 'rewind-1',
+      targetEntryId: 'user:submission-1'
+    })
+
+    expect(core.commands).toEqual(['conversation/rewind'])
+    expect(broker.start).not.toHaveBeenCalled()
+    expect(broker.stop).not.toHaveBeenCalled()
+    expect(broker.write).not.toHaveBeenCalled()
+    expect(await readFile(join(projectRoot, 'kept.ts'), 'utf8')).toBe('export const kept = true\n')
+  })
+
+  it('returns Core idempotently when a restored rewind message is sent unchanged', async () => {
+    const root = await readyClaudeRoot('run-claude-rewind-replay-')
+    const core = fakeCore(join(root, 'a-project'))
+    const broker = fakeBroker()
+    const readiness = readyReadiness(join(root, 'claude'))
+    const service = new RunService({
+      core,
+      broker,
+      readiness,
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
+    })
+
+    await service.develop({
+      sessionId: 'session',
+      submissionId: 'submission-original',
+      text: 'The original message',
+      source: 'composer',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      permissionMode: 'auto',
+      replayExistingSubmission: true
+    })
+
+    expect(core.commands).toContain('conversation/submit')
+    expect(core.commands).not.toContain('run/lifecycle-open')
+    expect(readiness.refresh).not.toHaveBeenCalled()
+    expect(broker.start).not.toHaveBeenCalled()
+  })
+
   it('hands a second compaction the summary in force, to be rewritten rather than nested', async () => {
     const root = await readyClaudeRoot('run-claude-recompaction-')
     const core = fakeCore(join(root, 'a-project'))
@@ -827,6 +896,105 @@ describe('Run service', () => {
     expect(args.at(-1)).toContain('User: Where did we get to?')
     // The turns the summary stands in for are not sent again beside it.
     expect(args.at(-1)).not.toContain('Receipts render offline now')
+  })
+
+  it('starts a fresh Thread from the tail alone after a rewind', async () => {
+    const root = await readyClaudeRoot('run-claude-rewound-')
+    const core = fakeCore(join(root, 'a-project'))
+    core.conversation = {
+      ...core.conversation,
+      harnessThreads: { claude: 'saved-thread' },
+      entries: [
+        {
+          kind: 'boundary',
+          id: 'boundary:old:started',
+          at: '2026-07-31T12:00:00.000Z',
+          runId: 'old',
+          boundary: 'run-started',
+          summary: 'Wayfinder via Claude',
+          submissionId: 'old-submission',
+          recovery: null,
+          harness: 'claude',
+          skill: 'wayfinder',
+          model: 'claude-sonnet-4-5'
+        },
+        {
+          kind: 'message',
+          id: 'message:old',
+          at: '2026-07-31T12:00:01.000Z',
+          runId: 'old',
+          role: 'assistant',
+          text: 'Discarded understanding',
+          completeness: 'complete',
+          source: 'harness',
+          submissionId: null,
+          reviewAttachments: [],
+          suggestedResponses: [],
+          plainOptions: false
+        },
+        {
+          kind: 'message',
+          id: 'message:tail',
+          at: '2026-07-31T12:00:02.000Z',
+          runId: null,
+          role: 'user',
+          text: 'The part that remains',
+          completeness: 'complete',
+          source: 'composer',
+          submissionId: 'tail-submission',
+          reviewAttachments: [],
+          suggestedResponses: [],
+          plainOptions: false
+        },
+        {
+          kind: 'boundary',
+          id: 'boundary:rewound:rewind-1',
+          at: '2026-07-31T12:00:03.000Z',
+          runId: 'old',
+          boundary: 'rewound',
+          summary: 'Rewound',
+          submissionId: null,
+          recovery: null,
+          rewind: {
+            rewoundToEntryId: 'message:discarded-prompt',
+            tailFromEntryId: 'message:tail'
+          }
+        }
+      ]
+    }
+    const projectKey = join(root, 'a-project').replaceAll('/', '-')
+    await mkdir(join(root, '.claude', 'projects', projectKey), { recursive: true })
+    await writeFile(join(root, '.claude', 'projects', projectKey, 'saved-thread.jsonl'), '{}\n')
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
+    })
+
+    await service.start({
+      submissionId: 'submission-1',
+      sessionId: 'session',
+      prompt: 'Continue',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      skill: 'wayfinder',
+      permissionMode: 'auto'
+    })
+
+    const args = broker.launch?.args ?? []
+    expect(args).not.toContain('--resume')
+    expect(args.at(-1)).toContain('User: The part that remains')
+    expect(args.at(-1)).not.toContain('Discarded understanding')
+    expect(args.at(-1)).not.toContain('Summary of this Conversation')
   })
 
   it('freezes executable and Skill provenance into the durable lifecycle', async () => {

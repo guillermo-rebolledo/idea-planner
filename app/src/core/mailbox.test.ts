@@ -237,9 +237,10 @@ describe('search', () => {
 })
 
 /** Puts a Session mid-Run, as developing one does. */
-async function beginRun(sessionId: string): Promise<string> {
+async function beginRun(sessionId: string, conversationSubmissionId?: string): Promise<string> {
   const opened = await core.openRunLifecycle({
     submissionId: `submission-${sessionId}`,
+    ...(conversationSubmissionId ? { conversationSubmissionId } : {}),
     sessionId,
     prompt: 'Change the greeting',
     configuration: {
@@ -561,5 +562,35 @@ describe('what is waiting for me', () => {
     // one the inbox lies about.
     expect(row(snapshot, 'Compacted and resting')).toMatchObject({ status: 'idle' })
     expect(row(snapshot, 'Compacted mid-thought')).toMatchObject({ status: 'running' })
+  })
+
+  it('reports the state at the rewind point instead of a discarded failure', async () => {
+    const session = await start('Wrong turn in the inbox')
+    await core.submitConversationMessage({
+      sessionId: session.id,
+      submissionId: 'rewind-mailbox-message',
+      text: 'This is the wrong turn',
+      source: 'composer'
+    })
+    const runId = await beginRun(session.id, 'rewind-mailbox-message')
+    await finishRun({
+      sessionId: session.id,
+      runId,
+      outcome: 'failed',
+      category: 'process-crash',
+      summary: 'The discarded Run failed'
+    })
+    expect(row(await core.queryMailbox(query()), session.title)).toMatchObject({ status: 'failed' })
+
+    await core.rewindConversation({
+      sessionId: session.id,
+      operationId: 'rewind-mailbox',
+      targetEntryId: 'user:rewind-mailbox-message'
+    })
+
+    expect(row(await core.queryMailbox(query()), session.title)).toMatchObject({
+      status: 'idle',
+      waitingFor: null
+    })
   })
 })

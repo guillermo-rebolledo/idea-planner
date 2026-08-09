@@ -399,7 +399,9 @@ export const conversationBoundarySchema = z.enum([
    * them — and it changes only what the Harness is told next. Everything the
    * person can read is untouched.
    */
-  'compacted'
+  'compacted',
+  /** The chosen message and every turn after it were set aside from the readable thread. */
+  'rewound'
 ])
 export type ConversationBoundaryKind = z.infer<typeof conversationBoundarySchema>
 
@@ -420,6 +422,13 @@ export const compactionSchema = z.object({
   native: z.boolean()
 })
 export type Compaction = z.infer<typeof compactionSchema>
+
+/** What one rewind set aside, and where the tail for the next fresh Thread begins. */
+export const rewindSchema = z.object({
+  rewoundToEntryId: z.string().min(1),
+  tailFromEntryId: z.string().min(1)
+})
+export type Rewind = z.infer<typeof rewindSchema>
 
 /**
  * How little headroom is left before a Session is compacted without being
@@ -613,7 +622,9 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     /** Exact terminal activity projection, so restart does not rewrite its meaning. */
     terminalActivityKind: runActivityKindSchema.optional(),
     /** What was summarized, and from where the turns are carried whole. */
-    compaction: compactionSchema.optional()
+    compaction: compactionSchema.optional(),
+    /** Present only on a rewind boundary. */
+    rewind: rewindSchema.optional()
   }),
   z.object({
     kind: z.literal('usage'),
@@ -1081,6 +1092,14 @@ export const recordCompactionInputSchema = z.object({
 })
 export type RecordCompactionInput = z.input<typeof recordCompactionInputSchema>
 
+/** Appends one rewind boundary without deleting any journal entry. */
+export const recordRewindInputSchema = z.object({
+  sessionId: z.string().min(1),
+  operationId: z.string().min(1).max(200),
+  targetEntryId: z.string().min(1)
+})
+export type RecordRewindInput = z.infer<typeof recordRewindInputSchema>
+
 /**
  * The Renderer asking for a Session to be compacted now, rather than waiting
  * for its headroom to run out. Nothing else is chosen here: the Harness asked
@@ -1090,9 +1109,17 @@ export type RecordCompactionInput = z.input<typeof recordCompactionInputSchema>
 export const compactSessionInputSchema = z.object({ sessionId: z.string().min(1) })
 export type CompactSessionInput = z.infer<typeof compactSessionInputSchema>
 
+/** The Renderer choosing the user message it wants returned to the composer. */
+export const rewindSessionInputSchema = recordRewindInputSchema
+export type RewindSessionInput = z.infer<typeof rewindSessionInputSchema>
+
 /** The Renderer's one command for developing a Session through a Conversation. */
-export const developSessionInputSchema =
-  submitConversationMessageInputSchema.merge(runRequestSchema)
+export const developSessionInputSchema = submitConversationMessageInputSchema
+  .merge(runRequestSchema)
+  .extend({
+    /** True only when an unchanged rewind draft reuses its original identity. */
+    replayExistingSubmission: z.boolean().default(false)
+  })
 export type DevelopSessionInput = z.input<typeof developSessionInputSchema>
 
 /**
@@ -1107,7 +1134,7 @@ export function startingSubmissionId(sessionId: string): string {
 
 /** App-owned Run boundaries that no Harness Adapter can report for itself. */
 export const conversationLifecycleEventSchema = z.object({
-  type: z.enum(['started', 'stopped'])
+  type: z.enum(['started', 'stopped', 'rewound'])
 })
 export type ConversationLifecycleEvent = z.infer<typeof conversationLifecycleEventSchema>
 

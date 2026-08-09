@@ -544,6 +544,10 @@ export function Mailbox({
 
   const snapshot = mailbox.state === 'ready' ? mailbox.snapshot : null
   const compactProjects = snapshot === null ? [] : projectsForCompactRail(snapshot)
+  const composerProjectKey = `${surface.kind === 'new-chat' ? (surface.projectRoot ?? 'any-project') : 'session'}:${snapshot?.projects
+    .map((project) => project.root)
+    .sort()
+    .join('\0')}`
 
   const rowHandlers: RowHandlers = {
     selectedId: selectedSession?.id,
@@ -705,7 +709,7 @@ export function Mailbox({
             />
           ) : (
             <Composer
-              key={surface.projectRoot ?? 'any-project'}
+              key={composerProjectKey}
               boundProjectRoot={surface.projectRoot}
               onStarted={handleStarted}
               onOpenSession={openSession}

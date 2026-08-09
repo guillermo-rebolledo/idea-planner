@@ -83,6 +83,7 @@ const api: ShellApi = {
   getConversation: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.getConversation, sessionId),
   developSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.developSession, input),
   compactSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.compactSession, input),
+  rewindSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.rewindSession, input),
   enqueueQueuedSubmission: (input) =>
     ipcRenderer.invoke(IPC_CHANNELS.enqueueQueuedSubmission, input),
   editQueuedSubmission: (input) => ipcRenderer.invoke(IPC_CHANNELS.editQueuedSubmission, input),
