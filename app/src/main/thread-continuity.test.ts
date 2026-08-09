@@ -75,9 +75,45 @@ function ended(runId: string, boundaryKind: ConversationBoundaryKind): Conversat
   }
 }
 
+/** What only the Harness could have written, and only once it had a Thread. */
+function answered(runId: string): ConversationEntry {
+  return {
+    kind: 'message',
+    id: `message:${runId}`,
+    at: '2026-08-09T12:00:00.000Z',
+    runId,
+    role: 'assistant',
+    text: 'Here is where we got to',
+    completeness: 'complete',
+    source: 'harness',
+    submissionId: null,
+    reviewAttachments: [],
+    suggestedResponses: [],
+    plainOptions: false
+  }
+}
+
+/** What the person asked, which is written as the Run opens. */
+function asked(runId: string): ConversationEntry {
+  return {
+    kind: 'message',
+    id: `message:asked:${runId}`,
+    at: '2026-08-09T12:00:00.000Z',
+    runId,
+    role: 'user',
+    text: 'Where did we get to?',
+    completeness: 'complete',
+    source: 'composer',
+    submissionId: null,
+    reviewAttachments: [],
+    suggestedResponses: [],
+    plainOptions: false
+  }
+}
+
 /** A Run of this Harness that ran, answered, and saved its Thread. */
 function ranAndSaved(runId: string, harness: 'codex' | 'claude'): ConversationEntry[] {
-  return [opened(runId, harness), ended(runId, 'run-completed')]
+  return [opened(runId, harness), answered(runId), ended(runId, 'run-completed')]
 }
 
 describe('what a new Harness Thread is seeded with', () => {
@@ -157,28 +193,44 @@ describe('a Conversation fact that vetoes Harness Thread reuse', () => {
   })
 
   it('stands until a Run of this Harness actually saves a Thread past it', () => {
-    // The Run after the break never reached the Harness, so the Thread behind
-    // this Conversation is still the one the break invalidated.
-    const entries = [
-      ...ranAndSaved('run-1', 'claude'),
-      ended('run-2', 'configuration'),
-      opened('run-3', 'claude'),
-      ended('run-3', 'run-failed')
-    ]
-    expect(threadReuseVetoed(conversation(entries), 'claude', new Set(['configuration']))).toBe(
-      true
-    )
+    // Neither Run after the break heard back from the Harness, so the Thread
+    // behind this Conversation is still the one the break invalidated —
+    // however each of them ended.
+    for (const ending of ['run-failed', 'run-stopped'] as const) {
+      const entries = [
+        ...ranAndSaved('run-1', 'claude'),
+        ended('run-2', 'configuration'),
+        opened('run-3', 'claude'),
+        ended('run-3', ending)
+      ]
+      expect(threadReuseVetoed(conversation(entries), 'claude', new Set(['configuration']))).toBe(
+        true
+      )
+    }
   })
 
-  it('is lifted by a Run the person stopped, which had a Thread of its own', () => {
+  it('is lifted by a Run the person stopped once the Harness had answered in it', () => {
     const entries = [
       ...ranAndSaved('run-1', 'claude'),
       ended('run-2', 'configuration'),
       opened('run-3', 'claude'),
+      answered('run-3'),
       ended('run-3', 'run-stopped')
     ]
     expect(threadReuseVetoed(conversation(entries), 'claude', new Set(['configuration']))).toBe(
       false
+    )
+  })
+
+  it('is not lifted by the person’s own message, which is written as the Run opens', () => {
+    const entries = [
+      ...ranAndSaved('run-1', 'claude'),
+      ended('run-2', 'configuration'),
+      opened('run-3', 'claude'),
+      asked('run-3')
+    ]
+    expect(threadReuseVetoed(conversation(entries), 'claude', new Set(['configuration']))).toBe(
+      true
     )
   })
 

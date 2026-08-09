@@ -1,4 +1,8 @@
-import type { ConversationBoundaryKind, ConversationSnapshot } from '@shared/conversation'
+import type {
+  ConversationBoundaryKind,
+  ConversationEntry,
+  ConversationSnapshot
+} from '@shared/conversation'
 import type { HarnessId } from '@shared/readiness'
 
 /**
@@ -69,16 +73,40 @@ function handoffSeed(conversation: ConversationSnapshot, skill: string | null): 
 export const CONTINUITY_BREAKING_BOUNDARIES: ReadonlySet<ConversationBoundaryKind> = new Set()
 
 /**
- * How a Run has to have ended for a Harness Thread to be behind it. A Run that
- * completed or that the person stopped was answering, so it had a Thread; one
- * that failed may never have reached the Harness at all, and reading it as
- * proof of a Thread would let a failed start bury a break the Conversation
- * declared before it.
+ * The Run a Harness can only have produced this entry while answering in, or
+ * null for everything the app records on its own behalf.
+ *
+ * How a Run ended says nothing about whether it had a Thread: a Run stopped or
+ * failed during startup never heard back from the Harness, and reading either
+ * ending as proof of a Thread would let such a Run bury a break the
+ * Conversation declared before it. What the Harness itself produced is proof,
+ * because a Harness names its Thread before it says anything else. A user's
+ * own message is not — it is written as the Run opens — and a change found by
+ * comparing the Checkout is not either, since the person's own edits are seen
+ * the same way.
  */
-const THREAD_SAVING_ENDINGS: ReadonlySet<ConversationBoundaryKind> = new Set([
-  'run-completed',
-  'run-stopped'
-])
+function answeringRun(entry: ConversationEntry): string | null {
+  switch (entry.kind) {
+    case 'message':
+      return entry.role === 'assistant' ? entry.runId : null
+    case 'command':
+    case 'read':
+    case 'approval':
+    case 'subagent':
+    case 'plan':
+      return entry.runId
+    case 'file-change':
+      return entry.source === 'harness' ? entry.runId : null
+    case 'boundary':
+    case 'usage':
+    case 'thread':
+    case 'app-action':
+    case 'queued-submission':
+    case 'queue-state':
+    case 'queue-outcome':
+      return null
+  }
+}
 
 /**
  * Whether a fact in the Conversation forbids reusing this Harness's saved
@@ -86,15 +114,16 @@ const THREAD_SAVING_ENDINGS: ReadonlySet<ConversationBoundaryKind> = new Set([
  * Skill, the model, and whether the Harness still holds the rollout — which
  * cannot express a break the Conversation itself declared.
  *
- * The saved Thread is placed by the last Run of this Harness that got far
- * enough to have one, because that Run is what wrote it: the `thread` entries
+ * The saved Thread is placed by the last Run of this Harness the Harness
+ * itself answered in, because that Run is what wrote it: the `thread` entries
  * themselves do not survive the Conversation projection, which folds them into
  * `harnessThreads` with no position of their own. A break recorded after that
  * Run is a break the Thread cannot have been told about; anything before it,
  * the Thread already outlived and is entitled to.
  *
- * When no Run can be found to place it — every one since failed, or the
- * openings predate this journal — the whole Conversation is read instead, so
+ * When no Run can be found to place it — none since the break heard back from
+ * the Harness, or the openings predate this journal — the whole Conversation
+ * is read instead, so
  * an unplaceable Thread is refused rather than assumed innocent. The cost of
  * refusing wrongly is one re-seeded Thread; the cost of allowing wrongly is a
  * Harness answering from turns the Conversation no longer has.
@@ -107,20 +136,13 @@ export function threadReuseVetoed(
   harness: HarnessId,
   breaking: ReadonlySet<ConversationBoundaryKind> = CONTINUITY_BREAKING_BOUNDARIES
 ): boolean {
-  const ranFarEnough = new Set(
-    conversation.entries
-      .filter(
-        (entry): entry is Extract<typeof entry, { kind: 'boundary' }> =>
-          entry.kind === 'boundary' && THREAD_SAVING_ENDINGS.has(entry.boundary)
-      )
-      .map((entry) => entry.runId)
-  )
+  const answered = new Set(conversation.entries.flatMap((entry) => answeringRun(entry) ?? []))
   const savedAt = conversation.entries.findLastIndex(
     (entry) =>
       entry.kind === 'boundary' &&
       entry.harness === harness &&
       !breaking.has(entry.boundary) &&
-      ranFarEnough.has(entry.runId)
+      answered.has(entry.runId)
   )
   // No such Run leaves `savedAt` at -1, which reads the Conversation whole.
   return conversation.entries
