@@ -213,6 +213,8 @@
 
   --default-transition-duration: 120ms;
   --default-transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 html,
@@ -279,6 +281,82 @@ body {
    viewport. Named here because viewport policy belongs to the shell system. */
 .dialog-viewport {
   max-height: calc(100% - 3rem);
+}
+
+.modal-backdrop {
+  animation: modal-backdrop-enter 200ms var(--ease-out) both;
+}
+
+.modal-panel {
+  transform-origin: center;
+  animation: modal-panel-enter 200ms var(--ease-out) both;
+}
+
+@keyframes modal-backdrop-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.files-panel-enter {
+  transform-origin: right center;
+  animation: files-panel-enter 220ms var(--ease-drawer) both;
+}
+
+@keyframes files-panel-enter {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.outcome-notice {
+  animation: outcome-notice-enter 180ms var(--ease-out) both;
+}
+
+.outcome-notice[data-exiting='true'] {
+  animation: outcome-notice-exit 160ms var(--ease-out) both;
+  pointer-events: none;
+}
+
+@keyframes outcome-notice-enter {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes outcome-notice-exit {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(100%);
+  }
 }
 
 /* Text the app is still producing: a highlight band sweeping across letters

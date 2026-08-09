@@ -76,6 +76,13 @@ type CenterSurface =
 type MailboxData =
   { state: 'reading' } | { state: 'ready'; snapshot: MailboxSnapshot } | { state: 'failed' }
 
+interface OutcomeNotice {
+  text: string
+  undoable: boolean
+  at: number
+  exiting: boolean
+}
+
 /** What the rail asks for: every active Session, narrowed by nothing. */
 const RAIL_QUERY: MailboxQuery = { search: '', view: 'active' }
 
@@ -114,15 +121,23 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
   // visibly and is itself the polite live region, so a failed action never
   // reads as an ignored click and the ⌘Z hint is discoverable by sight.
   // `at` retriggers the auto-hide when the same words are said again.
-  const [notice, setNotice] = useState<{ text: string; undoable: boolean; at: number } | null>(null)
+  const [notice, setNotice] = useState<OutcomeNotice | null>(null)
   const setAnnouncement = useCallback(
-    (text: string, undoable = false) => setNotice({ text, undoable, at: Date.now() }),
+    (text: string, undoable = false) =>
+      setNotice({ text, undoable, at: Date.now(), exiting: false }),
     []
   )
   // Long enough to read and reach the Undo, short enough to never be chrome.
   useEffect(() => {
-    if (notice === null) return
-    const timer = window.setTimeout(() => setNotice(null), 6_000)
+    if (notice === null || notice.exiting) return
+    const noticeAt = notice.at
+    const timer = window.setTimeout(
+      () =>
+        setNotice((current) =>
+          current?.at === noticeAt ? { ...current, exiting: true } : current
+        ),
+      5_840
+    )
     return () => window.clearTimeout(timer)
   }, [notice])
   const [query, setQuery] = useState<MailboxQuery>({ search: '', view: 'active' })
@@ -711,8 +726,15 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
       >
         {notice && (
           <div
+            key={notice.at}
+            data-exiting={notice.exiting}
+            onAnimationEnd={(event) => {
+              if (event.animationName !== 'outcome-notice-exit') return
+              const noticeAt = notice.at
+              setNotice((current) => (current?.at === noticeAt && current.exiting ? null : current))
+            }}
             className={cn(
-              'pointer-events-auto flex items-center gap-2 rounded-full border border-border bg-surface-raised py-1.5 text-xs shadow-md',
+              'outcome-notice pointer-events-auto flex items-center gap-2 rounded-full border border-border bg-surface-raised py-1.5 text-xs shadow-md',
               notice.undoable ? 'pr-1.5 pl-3.5' : 'px-3.5'
             )}
           >
