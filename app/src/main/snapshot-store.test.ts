@@ -93,6 +93,35 @@ describe('a Session’s snapshot store', () => {
     expect(safety.detail).toContain('Unstage')
   })
 
+  // A shell that came from a git hook exports `GIT_DIR` and `GIT_INDEX_FILE`,
+  // and an app launched from one inherits them. Both answers behind this
+  // decision are about the person's Checkout, so neither may be given by
+  // whatever repository the environment happens to point at.
+  it('asks about the Checkout even when the environment points somewhere else', async () => {
+    const elsewhere = await mkdtemp(join(tmpdir(), 'snapshot-store-elsewhere-'))
+    try {
+      await git('git', ['init', '--quiet', '-b', 'main'], { cwd: elsewhere })
+      await writeFile(join(elsewhere, 'theirs.ts'), 'staged over there\n')
+      await git('git', ['add', '-A'], { cwd: elsewhere })
+      await store.capture({ sessionId: 's', runId: 'r', checkout, phase: 'before' })
+      await writeFile(join(checkout, 'published.ts'), 'ship this\n')
+
+      process.env['GIT_DIR'] = join(elsewhere, '.git')
+      process.env['GIT_INDEX_FILE'] = join(elsewhere, '.git', 'index')
+      const safety = await store.localPublishSafety('s', checkout)
+
+      expect(safety.status).toBe('safe')
+      if (safety.status !== 'safe') throw new Error(safety.detail)
+      expect(safety.comparison).toMatchObject({
+        changes: [{ path: 'published.ts', changeKind: 'added' }]
+      })
+    } finally {
+      delete process.env['GIT_DIR']
+      delete process.env['GIT_INDEX_FILE']
+      await rm(elsewhere, { recursive: true, force: true })
+    }
+  })
+
   it('stores one copy of content two Runs left identical', async () => {
     await store.capture({ sessionId: 's', runId: 'one', checkout, phase: 'before' })
     await store.capture({ sessionId: 's', runId: 'two', checkout, phase: 'before' })

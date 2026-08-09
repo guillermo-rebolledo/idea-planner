@@ -5,6 +5,7 @@ import { promisify } from 'node:util'
 import { z } from 'zod'
 import {
   diffSnapshots,
+  environment,
   snapshotCheckout,
   type CheckoutSnapshot,
   type SnapshotComparison
@@ -139,7 +140,14 @@ export class SessionSnapshotStore {
             'This Session has no original Checkout snapshot. Start a new Session to publish safely.'
         }
       }
-      const staged = await run('git', ['diff', '--cached', '--name-only', '-z'], { cwd: checkout })
+      // Like every other git call in the app, these two ask about the Checkout
+      // `cwd` names and nothing else: an inherited `GIT_DIR` or `GIT_INDEX_FILE`
+      // would otherwise answer for a repository nobody asked about, and both
+      // answers here decide whether a commit is safe to make.
+      const staged = await run('git', ['diff', '--cached', '--name-only', '-z'], {
+        cwd: checkout,
+        env: environment()
+      })
       if (staged.stdout.length > 0) {
         return {
           status: 'unavailable',
@@ -156,7 +164,9 @@ export class SessionSnapshotStore {
         { status: 'taken', tree: baseline },
         current
       )
-      const head = (await run('git', ['rev-parse', 'HEAD^{tree}'], { cwd: checkout })).stdout.trim()
+      const head = (
+        await run('git', ['rev-parse', 'HEAD^{tree}'], { cwd: checkout, env: environment() })
+      ).stdout.trim()
       if (current.tree !== head && head !== baseline) {
         return {
           status: 'unavailable',

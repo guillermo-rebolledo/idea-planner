@@ -89,6 +89,7 @@ import {
   refreshReadinessInputSchema
 } from '@shared/readiness'
 import { PRODUCT_NAME, stateDirectory } from './identity'
+import { unpackedPath } from './packaging'
 import {
   confirmProjectSkillsTrust,
   diffProjectSkillManifests,
@@ -150,12 +151,18 @@ const testChooseExecutable = process.env['APP_TEST_CHOOSE_EXECUTABLE']
 const testBackground = !app.isPackaged && process.env['APP_TEST_BACKGROUND'] === '1'
 const devServerUrl = process.env['ELECTRON_RENDERER_URL']
 
-// Who the app says it is, before anything reads it: the menu bar, the About
-// panel and the window all take the name from here, and the state directory
-// takes the identifier rather than the name so renaming the product later
-// cannot orphan a person's history (ADR 0002).
-app.setName(PRODUCT_NAME)
-app.setAboutPanelOptions({ applicationName: PRODUCT_NAME, applicationVersion: app.getVersion() })
+// Who the app says it is, before anything reads it. Packaged, the bundle
+// already says it: the packager writes the name and the version into
+// `Info.plist` from this same identity, macOS titles the application menu from
+// there before a line of this runs, and the About panel reads them — repeating
+// it here could only make the two disagree. Unpackaged the bundle is
+// Electron's own, so say it by hand. Either way the state directory takes the
+// identifier rather than the name, so renaming the product later cannot orphan
+// a person's history (ADR 0002).
+if (!app.isPackaged) {
+  app.setName(PRODUCT_NAME)
+  app.setAboutPanelOptions({ applicationName: PRODUCT_NAME, applicationVersion: app.getVersion() })
+}
 // A packaged build wears the icon baked into its bundle by the packager
 // (`build/icon.icns`). Unpackaged, the Dock would show Electron's own icon
 // instead, so point it at the same artwork by hand. `build/` sits beside the
@@ -1210,7 +1217,7 @@ void app.whenReady().then(async () => {
     homeDirectory: app.getPath('home'),
     privateRoot: join(app.getPath('userData'), 'runs'),
     proxyExecutable: process.execPath,
-    proxyScript: join(__dirname, 'mcp-proxy.js'),
+    proxyScript: unpackedPath(join(__dirname, 'mcp-proxy.js')),
     runEffect: (effect) => mainEffectRuntime.runPromise(effect),
     skills: skillsFor,
     // Assistant text and control events take the direct path to the window so
