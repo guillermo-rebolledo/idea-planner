@@ -24,6 +24,7 @@ type BoundaryEntry = Extract<ConversationEntry, { kind: 'boundary' }>
 function conversation(entries: ConversationEntry[]): ConversationSnapshot {
   return {
     sessionId: 'session',
+    journalPosition: 0,
     entries,
     usage: { run: null, session: emptyUsage() },
     recovery: null,

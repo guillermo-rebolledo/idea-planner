@@ -85,7 +85,8 @@ interface CorePort {
 /** What Core hands back for one pass of protocol: events, and any reply owed. */
 const harnessStreamSchema = z.object({
   events: harnessEventSchema.array(),
-  outgoing: z.array(z.string())
+  outgoing: z.array(z.string()),
+  journalPositions: z.array(z.number().int().nonnegative())
 })
 interface ReadinessPort {
   refresh(harness?: HarnessId): Promise<{
@@ -770,9 +771,11 @@ export class RunService {
     }
     // Main owns the moment a Run starts. Publish it only after Core has made
     // the boundary durable, so a listener can immediately read `running`.
+    const started = await this.readConversation(input.sessionId)
     this.deps.onConversationEvent?.({
       sessionId: input.sessionId,
       runId: accepted.id,
+      journalPosition: Math.max(0, started.journalPosition - 1),
       invalidation: 'mailbox',
       event: { type: 'started' }
     })
@@ -1089,7 +1092,7 @@ export class RunService {
     // Whatever the Harness is owed in reply. Only Core knows the protocol, so
     // Main writes what Core hands it and reads none of it.
     this.writeFrames(run.id, stream.outgoing)
-    for (const event of stream.events) {
+    for (const [index, event] of stream.events.entries()) {
       if (event.type === 'failed') this.failures.set(run.id, event.category)
       // Harness terminal frames are inputs to Main's conclusion, not durable
       // Conversation boundaries yet. `conclude` publishes the one terminal
@@ -1099,6 +1102,7 @@ export class RunService {
         this.deps.onConversationEvent?.({
           sessionId: run.sessionId,
           runId: run.id,
+          journalPosition: stream.journalPositions[index] ?? 0,
           invalidation: conversationInvalidation(event),
           event
         })
@@ -1173,15 +1177,22 @@ export class RunService {
         value: redactCredentials(option.value)
       }))
     }
-    await this.deps.core.send({
-      type: 'conversation/apply',
-      sessionId: run.sessionId,
-      runId: run.id,
-      event
-    })
+    const journalPosition = z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(
+        await this.deps.core.send({
+          type: 'conversation/apply',
+          sessionId: run.sessionId,
+          runId: run.id,
+          event
+        })
+      )
     this.deps.onConversationEvent?.({
       sessionId: run.sessionId,
       runId: run.id,
+      journalPosition,
       invalidation: conversationInvalidation(event),
       event
     })
@@ -1229,15 +1240,22 @@ export class RunService {
       detail: sanitize(described.detail, projectRoot).slice(0, MAX_APPROVAL_DETAIL),
       proposedRule
     }
-    await this.deps.core.send({
-      type: 'conversation/apply',
-      sessionId: run.sessionId,
-      runId: run.id,
-      event
-    })
+    const journalPosition = z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(
+        await this.deps.core.send({
+          type: 'conversation/apply',
+          sessionId: run.sessionId,
+          runId: run.id,
+          event
+        })
+      )
     this.deps.onConversationEvent?.({
       sessionId: run.sessionId,
       runId: run.id,
+      journalPosition,
       invalidation: conversationInvalidation(event),
       event
     })
@@ -1298,15 +1316,22 @@ export class RunService {
       message: allowed ? '' : redactCredentials(denialMessage).slice(0, 2_000),
       remembered
     }
-    await this.deps.core.send({
-      type: 'conversation/apply',
-      sessionId: input.sessionId,
-      runId: input.runId,
-      event
-    })
+    const journalPosition = z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(
+        await this.deps.core.send({
+          type: 'conversation/apply',
+          sessionId: input.sessionId,
+          runId: input.runId,
+          event
+        })
+      )
     this.deps.onConversationEvent?.({
       sessionId: input.sessionId,
       runId: input.runId,
+      journalPosition,
       invalidation: conversationInvalidation(event),
       event
     })
@@ -1452,6 +1477,7 @@ export class RunService {
     this.deps.onConversationEvent?.({
       sessionId: sessionId,
       runId: plan.runId,
+      journalPosition: Math.max(0, snapshot.journalPosition - 1),
       invalidation: 'mailbox',
       event: { type: 'context-compacted', summary }
     })
@@ -1567,6 +1593,7 @@ export class RunService {
     this.deps.onConversationEvent?.({
       sessionId: run.sessionId,
       runId: run.id,
+      journalPosition: Math.max(0, terminal.conversation.journalPosition - 1),
       invalidation: 'mailbox',
       event:
         terminal.run.status === 'completed'

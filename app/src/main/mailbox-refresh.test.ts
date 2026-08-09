@@ -10,6 +10,7 @@ describe('renderer mailbox refreshes', () => {
     const streamed: ConversationStreamEvent = {
       sessionId: 'session',
       runId: 'run',
+      journalPosition: 0,
       invalidation: 'none',
       event: { type: 'assistant-message', id: 'message', text: 'One', complete: false }
     }
@@ -30,6 +31,7 @@ describe('renderer mailbox refreshes', () => {
     refresh.handle({
       sessionId: 'session',
       runId: 'run',
+      journalPosition: 0,
       invalidation: 'mailbox',
       event: { type: 'started' }
     })

@@ -106,6 +106,7 @@ describe('submitting to the Conversation', () => {
   it('starts with the message that created the Session and nothing else', async () => {
     const snapshot = await core.getConversation(sessionId)
     expect(messages(snapshot.entries)).toMatchObject([{ role: 'user', text: STARTING_MESSAGE }])
+    expect(snapshot.journalPosition).toBeGreaterThan(0)
     expect(snapshot.activeRunId).toBeNull()
     expect(snapshot.usage.session.totalTokens).toBe(0)
   })
@@ -598,6 +599,21 @@ describe('streaming a Run into the Conversation', () => {
       text: 'Grill me',
       source: 'composer'
     })
+  })
+
+  it('positions a live event immediately before the durable snapshot that contains it', async () => {
+    const runId = await startRun('Track the event cursor', 'submission-1')
+    const before = await core.getConversation(sessionId)
+
+    const journalPosition = await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: { type: 'assistant-message', id: 'cursor-message', text: 'Settled', complete: true }
+    })
+    const after = await core.getConversation(sessionId)
+
+    expect(journalPosition).toBe(before.journalPosition)
+    expect(after.journalPosition).toBeGreaterThan(journalPosition)
   })
 
   it('marks the Run boundary and reports the Run as active', async () => {

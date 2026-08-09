@@ -52,11 +52,10 @@ export function useSelectedConversation(sessionId: string | null): SelectedConve
       cancelRefresh: (handle) => window.clearTimeout(handle as number)
     })
     ownerRef.current = owner
-    void owner.requestRefresh()
-
     const stop = window.shell.onConversationEvent((streamed) => {
       owner.push(streamed)
     })
+    void owner.requestRefresh()
     return () => {
       isCurrentOwner = false
       stop()

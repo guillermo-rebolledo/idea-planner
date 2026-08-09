@@ -28,10 +28,12 @@ async function rendererSourceFiles(directory = RENDERER_ROOT): Promise<string[]>
 
 function conversation(
   activeRunId: string | null,
-  entries: ConversationSnapshot['entries'] = []
+  entries: ConversationSnapshot['entries'] = [],
+  journalPosition = 0
 ): ConversationSnapshot {
   return {
     sessionId: 'session',
+    journalPosition,
     entries,
     usage: {
       run: null,
@@ -77,6 +79,14 @@ describe('selected Conversation refreshes', () => {
       'lib/useSelectedConversation.ts:getConversation',
       'lib/useSelectedConversation.ts:listRuns'
     ])
+  })
+
+  it('subscribes before requesting the initial durable snapshot', async () => {
+    const source = await readFile(join(RENDERER_ROOT, 'lib/useSelectedConversation.ts'), 'utf8')
+
+    expect(source.indexOf('const stop = window.shell.onConversationEvent')).toBeLessThan(
+      source.indexOf('void owner.requestRefresh()')
+    )
   })
 
   it('does not expose the previous Session snapshot during a selection change', () => {
@@ -207,6 +217,7 @@ describe('selected Conversation refreshes', () => {
     refresh.push({
       sessionId: 'session',
       runId: 'run',
+      journalPosition: 0,
       invalidation: 'mailbox',
       event: { type: 'started' }
     })
@@ -278,7 +289,13 @@ describe('selected Conversation refreshes', () => {
       cancelPaint: vi.fn()
     })
     const pushed = (event: ConversationStreamEvent['event']): void =>
-      refresh.push({ sessionId: 'session', runId: 'run', invalidation: 'none', event })
+      refresh.push({
+        sessionId: 'session',
+        runId: 'run',
+        journalPosition: 0,
+        invalidation: 'none',
+        event
+      })
 
     await refresh.requestRefresh()
     readConversation.mockClear()
@@ -303,6 +320,57 @@ describe('selected Conversation refreshes', () => {
     })
   })
 
+  it('keeps an event arriving during the snapshot and drops it once that event is durable', async () => {
+    const firstRead = deferred<ConversationSnapshot>()
+    const settled = conversation(
+      'run',
+      [
+        {
+          kind: 'message',
+          id: 'assistant:run:message',
+          at: AT,
+          runId: 'run',
+          role: 'assistant',
+          text: 'Arrived in between',
+          completeness: 'complete',
+          source: 'harness',
+          reviewAttachments: [],
+          submissionId: null,
+          suggestedResponses: [],
+          plainOptions: false
+        }
+      ],
+      11
+    )
+    const snapshots = [firstRead.promise, Promise.resolve(settled)]
+    const refresh = new SelectedConversationReadModel('session', {
+      readConversation: vi.fn(() => snapshots.shift() ?? Promise.resolve(conversation('run'))),
+      readRuns: vi.fn(() => Promise.resolve([])),
+      publish: vi.fn()
+    })
+
+    const reading = refresh.requestRefresh()
+    refresh.push({
+      sessionId: 'session',
+      runId: 'run',
+      journalPosition: 10,
+      invalidation: 'none',
+      event: {
+        type: 'assistant-message',
+        id: 'message',
+        text: 'Arrived in between',
+        complete: false
+      }
+    })
+    firstRead.resolve(conversation('run', [], 10))
+
+    expect((await reading)?.live?.messages).toEqual([{ id: 'message', text: 'Arrived in between' }])
+
+    const durable = await refresh.requestRefresh()
+    expect(durable?.conversation.entries).toHaveLength(1)
+    expect(durable?.live?.messages ?? []).toEqual([])
+  })
+
   it('reconciles live state against the active durable Run identity', async () => {
     const snapshots = [conversation('run'), conversation(null)]
     const publish = vi.fn()
@@ -321,6 +389,7 @@ describe('selected Conversation refreshes', () => {
     refresh.push({
       sessionId: 'session',
       runId: 'run',
+      journalPosition: 0,
       invalidation: 'none',
       event: { type: 'assistant-message', id: 'message', text: 'Live', complete: false }
     })
@@ -352,6 +421,7 @@ describe('selected Conversation refreshes', () => {
     refresh.push({
       sessionId: 'session',
       runId: 'run',
+      journalPosition: 0,
       invalidation: 'mailbox',
       event: { type: 'failed', category: 'process-crash', summary: 'The Harness exited' }
     })
@@ -383,6 +453,7 @@ describe('selected Conversation refreshes', () => {
     refresh.push({
       sessionId: 'session',
       runId: 'run',
+      journalPosition: 0,
       invalidation: 'none',
       event: {
         type: 'file-change',
