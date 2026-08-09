@@ -22,6 +22,7 @@ import {
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@renderer/components/ui/menu'
 import { PermissionModePicker } from '@renderer/components/PermissionModePicker'
 import {
+  focusSkillSuggestion,
   focusTextareaAtEnd,
   SkillAwareTextarea,
   SkillSuggestions,
@@ -80,6 +81,7 @@ export function Composer({
   } | null>(null)
   const messageId = useId()
   const messageRef = useRef<HTMLTextAreaElement>(null)
+  const skillSuggestionsRef = useRef<HTMLUListElement>(null)
   // Guards the send itself rather than the rendered state, so two keystrokes
   // in one batch cannot both start a Session.
   const sendingRef = useRef(false)
@@ -268,7 +270,11 @@ export function Composer({
 
       <div className="flex flex-col gap-2">
         {matchingSkills !== null && (
-          <SkillSuggestions matching={matchingSkills} onChoose={chooseSkill} />
+          <SkillSuggestions
+            matching={matchingSkills}
+            onChoose={chooseSkill}
+            listRef={skillSuggestionsRef}
+          />
         )}
         <div className="rounded-xl border border-border bg-surface focus-within:ring-2 focus-within:ring-ring">
           <Label htmlFor={messageId} className="sr-only">
@@ -286,6 +292,22 @@ export function Composer({
               setError(null)
             }}
             onKeyDown={(event) => {
+              if (
+                matchingSkills?.length &&
+                (event.key === 'ArrowDown' || event.key === 'ArrowUp') &&
+                !event.nativeEvent.isComposing &&
+                !event.shiftKey &&
+                !event.altKey &&
+                !event.ctrlKey &&
+                !event.metaKey
+              ) {
+                event.preventDefault()
+                focusSkillSuggestion(
+                  skillSuggestionsRef,
+                  event.key === 'ArrowDown' ? 'first' : 'last'
+                )
+                return
+              }
               if (
                 matchingSkills?.[0] &&
                 (event.key === 'Enter' || event.key === 'Tab') &&
