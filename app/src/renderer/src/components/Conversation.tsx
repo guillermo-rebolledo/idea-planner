@@ -1,14 +1,16 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import Markdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ThinkingOrb } from 'thinking-orbs'
 import {
   ArrowUp,
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
   FileDiff,
   FileText,
+  ListChecks,
   LoaderCircle,
   Pause,
   Pencil,
@@ -31,6 +33,7 @@ import {
   type ConversationEntry,
   type ConversationRecovery,
   type PermissionMode,
+  type PlanStep,
   type QueueOutcome,
   reviewAttachmentLabel,
   reviewAttachmentsRefusal,
@@ -62,7 +65,7 @@ import { displayCommand } from '@shared/command'
 import { TurnRail, type TurnStep, type TurnSummary } from '@renderer/components/TurnRail'
 import { SubagentDock, SubagentPill } from '@renderer/components/SubagentDock'
 import { RunUndoDialog, UndoRunButton } from '@renderer/components/RunUndo'
-import { fleetOf } from '@renderer/lib/selected-conversation-read-model'
+import { fleetOf, planOf } from '@renderer/lib/selected-conversation-read-model'
 import type { FleetMember } from '@renderer/lib/subagent-fleet'
 import {
   ChainOfThought,
@@ -526,6 +529,15 @@ export function Conversation({
     if (live !== null && live.subagents.length > 0) runIds.add(live.runId)
     return new Map([...runIds].map((runId) => [runId, fleetOf(durableEntries, live, runId)]))
   }, [durableEntries, live])
+  // Every Run's Plan, read the same way and for the same reason: a Run draws
+  // its own, and the one in flight is ahead of the journal behind it.
+  const plans = useMemo(() => {
+    const runIds = new Set(
+      durableEntries.filter((entry) => entry.kind === 'plan').map((entry) => entry.runId)
+    )
+    if (live?.plan != null) runIds.add(live.runId)
+    return new Map([...runIds].map((runId) => [runId, planOf(durableEntries, live, runId)]))
+  }, [durableEntries, live])
   // Which fleet the dock is showing. The newest by default; a pill claims it.
   const [chosenFleetRun, setChosenFleetRun] = useState<string | null>(null)
   const [dockExpanded, setDockExpanded] = useState(false)
@@ -682,6 +694,7 @@ export function Conversation({
                       waiting={pendingApproval?.runId === item.runId}
                       live={liveForActiveRun?.runId === item.runId ? liveForActiveRun : null}
                       fleet={fleets.get(item.runId) ?? []}
+                      plan={plans.get(item.runId) ?? null}
                       fleetShown={dockExpanded && fleetRunId === item.runId}
                       onToggleFleet={() => {
                         dockClaimedRef.current = true
@@ -1505,6 +1518,156 @@ function Spinner(): React.JSX.Element {
   )
 }
 
+/** The Plan a Run is working through, as the surface needs it. */
+interface RunPlanView {
+  explanation: string | null
+  steps: PlanStep[]
+}
+
+/** What each state of a step says out loud, for anyone not reading the mark. */
+const PLAN_STEP_TEXT: Record<PlanStep['status'], string> = {
+  pending: 'Not started',
+  'in-progress': 'In progress',
+  completed: 'Done'
+}
+
+/**
+ * The checklist the agent wrote for itself, in one block of its Run.
+ *
+ * It opens by default and folds to its header, which keeps the count and
+ * promotes the step being worked on. A fold that left only the word "Plan"
+ * would cost the reader the one thing they were most likely looking for.
+ *
+ * There is deliberately no progress bar. `3 of 7` is honest — the agent named
+ * the denominator, unlike a subagent's — but the steps are not equal-sized,
+ * and a bar advancing over them would imply a rate that is not there.
+ */
+function RunPlan({ plan, live }: { plan: RunPlanView; live: boolean }): React.JSX.Element {
+  const [open, setOpen] = useState(true)
+  const listId = useId()
+  const done = plan.steps.filter((step) => step.status === 'completed').length
+  const running = plan.steps.find((step) => step.status === 'in-progress') ?? null
+  return (
+    <section aria-label="Plan" className="rounded-lg border border-border bg-surface px-3 py-2.5">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={listId}
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2 text-left text-xs"
+      >
+        <ListChecks aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+        {open ? (
+          <span className="flex-1 text-muted-foreground">Plan</span>
+        ) : (
+          <span className="min-w-0 flex-1 truncate">
+            {running !== null ? (
+              // `activeForm` is Claude's present-continuous phrasing. Codex
+              // sends none, and the step itself is said rather than a tense
+              // invented for it.
+              <span className={cn('text-foreground', live && 'shimmer')}>
+                {running.activeForm ?? running.step}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">
+                {done === plan.steps.length ? 'Plan complete' : 'Plan'}
+              </span>
+            )}
+          </span>
+        )}
+        <span className="shrink-0 font-mono text-2xs text-muted-foreground tabular-nums">
+          {done}/{plan.steps.length}
+        </span>
+        <ChevronDown
+          aria-hidden="true"
+          className={cn(
+            'size-3.5 shrink-0 text-muted-foreground transition-transform',
+            open && 'rotate-180'
+          )}
+        />
+      </button>
+      <div id={listId} hidden={!open}>
+        {plan.explanation !== null && (
+          <p className="pt-2 text-2xs text-muted-foreground italic">{plan.explanation}</p>
+        )}
+        {/* Ordered, because the steps are. Keyed by the step's own text, never
+            by its index and never by anything carrying its status: both
+            Harnesses rewrite the whole list, and a key that moved with the
+            status would remount every row the moment it changed — losing the
+            one transition worth animating. */}
+        <ol className="flex flex-col gap-1.5 pt-2">
+          {plan.steps.map((step, index) => (
+            <PlanStepRow
+              key={planStepKey(plan.steps, index)}
+              step={step}
+              live={live && step.status === 'in-progress'}
+            />
+          ))}
+        </ol>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * What a row keeps its identity by across a wholesale rewrite: the step's own
+ * text. A repeated text is told apart by which occurrence it is, rather than
+ * by falling back to the index — an index key re-keys every row after an
+ * inserted step, which is exactly when an agent revises its Plan.
+ */
+function planStepKey(steps: PlanStep[], index: number): string {
+  const step = steps[index]
+  if (step === undefined) return String(index)
+  const occurrence = steps.slice(0, index).filter((other) => other.step === step.step).length
+  return occurrence === 0 ? step.step : `${step.step}#${String(occurrence + 1)}`
+}
+
+/**
+ * One step. A completed one is struck through and muted rather than coloured:
+ * green is an addition in this app and red is a deletion or a failure, and
+ * spending either on "finished" would make a Plan read like a diff.
+ */
+function PlanStepRow({ step, live }: { step: PlanStep; live: boolean }): React.JSX.Element {
+  return (
+    <li className="flex items-start gap-2 text-xs transition-colors duration-200">
+      {step.status === 'completed' ? (
+        <Check aria-hidden="true" className="mt-px size-3.5 shrink-0 text-muted-foreground/70" />
+      ) : step.status === 'in-progress' ? (
+        <span
+          aria-hidden="true"
+          className="mt-1 grid size-3.5 shrink-0 place-items-center text-status-running"
+        >
+          <span
+            className={cn(
+              'size-2 rounded-full bg-current',
+              live && 'animate-pulse motion-reduce:animate-none'
+            )}
+          />
+        </span>
+      ) : (
+        <span
+          aria-hidden="true"
+          className="mt-1 size-3.5 shrink-0 rounded-full border border-border"
+        />
+      )}
+      <span
+        className={cn(
+          'min-w-0',
+          step.status === 'completed' && 'text-muted-foreground line-through',
+          step.status === 'pending' && 'text-muted-foreground',
+          step.status === 'in-progress' && 'text-foreground',
+          live && 'shimmer'
+        )}
+      >
+        {step.step}
+      </span>
+      {/* The state in words as well as in the mark: a row that says it only in
+          colour and shape says it to nobody using a screen reader. */}
+      <span className="sr-only">{PLAN_STEP_TEXT[step.status]}</span>
+    </li>
+  )
+}
+
 /**
  * What a Run in flight shows: the composing orb, the current step
  * shimmering as it streams, and how long the Run has been at it. One quiet
@@ -1514,10 +1677,13 @@ function Spinner(): React.JSX.Element {
 function RunWorkingIndicator({
   steps,
   live,
+  plan,
   startedAt
 }: {
   steps: StepEntry[]
   live: LiveRun | null
+  /** The Run's Plan, when it kept one. Its own words for what it is doing. */
+  plan: RunPlanView | null
   startedAt: string | null
 }): React.JSX.Element {
   const runningCommand =
@@ -1526,11 +1692,18 @@ function RunWorkingIndicator({
   const lastWrite =
     (live?.changes ?? []).at(-1) ??
     steps.flatMap((step) => (step.kind === 'file-change' ? [step] : [])).at(-1)
-  const current = runningCommand
-    ? displayCommand(runningCommand.command)
-    : lastWrite
-      ? `Wrote ${lastWrite.path}`
-      : 'Working…'
+  // The Plan's own step first. This row asks what the Run is doing now, and a
+  // step the agent named answers that better than the last command it ran —
+  // and it is the answer the person still needs once the Plan block, which
+  // stays where it first appeared, has been scrolled past.
+  const planStep = plan?.steps.find((step) => step.status === 'in-progress') ?? null
+  const current = planStep
+    ? (planStep.activeForm ?? planStep.step)
+    : runningCommand
+      ? displayCommand(runningCommand.command)
+      : lastWrite
+        ? `Wrote ${lastWrite.path}`
+        : 'Working…'
   return (
     <div role="status" className="flex items-center gap-2.5 font-mono text-xs">
       <ThinkingOrb
@@ -2110,14 +2283,18 @@ function groupEntries(entries: ConversationEntry[]): ConversationItem[] {
       case 'approval':
         groupFor(entry.runId).approvals.push(entry)
         break
-      // A subagent is not a row of the transcript: the dock holds the fleet,
-      // and the Run's pill is drawn from it rather than from this grouping.
       // What the app did, at the person's request, after the Run it names.
       // It is its own row rather than part of that Run's group: the Run is
       // over, and its record is not rewritten by what happened next.
       case 'app-action':
         items.push({ type: 'app-action', entry })
         break
+      // A subagent is not a row of the transcript: the dock holds the fleet,
+      // and the Run's pill is drawn from it rather than from this grouping.
+      // A Plan is not a row either — it is one block of its Run, drawn once at
+      // a fixed place in the group, and `planOf` reads it straight from the
+      // entries so that a rewrite cannot move it.
+      case 'plan':
       case 'subagent':
       case 'usage':
       case 'thread':
@@ -2427,6 +2604,7 @@ function RunSection({
   waiting,
   live,
   fleet,
+  plan,
   fleetShown,
   onToggleFleet,
   onOpenFile,
@@ -2440,6 +2618,8 @@ function RunSection({
   live: LiveRun | null
   /** The subagents this Run dispatched, which are shown in the dock. */
   fleet: FleetMember[]
+  /** The checklist this Run is working through. Null for a Run that kept none. */
+  plan: RunPlanView | null
   /** True when the dock is open on this Run's fleet rather than another's. */
   fleetShown: boolean
   onToggleFleet: () => void
@@ -2497,6 +2677,12 @@ function RunSection({
       {fleet.length > 0 && (
         <SubagentPill fleet={fleet} expanded={fleetShown} onToggle={onToggleFleet} />
       )}
+      {/* The checklist the Run is working through, drawn once here rather than
+          once per rewrite. Both Harnesses resend the whole list every time they
+          change it, and a block per resend would push the same list down the
+          transcript after every message and every command — a diff log of a
+          list instead of a record of work. It stays where it first appeared. */}
+      {plan !== null && <RunPlan plan={plan} live={active} />}
       {/* Everything the Run did, in the order it did it, behind one line
           saying what it amounted to. It sits under the prose that announced it
           and above the line saying what is happening now. */}
@@ -2504,7 +2690,7 @@ function RunSection({
       {/* In flight: one pulsing line about the current step. At rest: only
           changed files or an interrupted Run need an outcome surface. */}
       {active && !waiting && (
-        <RunWorkingIndicator steps={group.steps} live={live} startedAt={startedAt} />
+        <RunWorkingIndicator steps={group.steps} live={live} plan={plan} startedAt={startedAt} />
       )}
       {/* The sanitized activity log surfaces only when a Run ended badly —
           that is exactly when the detail matters, and it belongs to the Run

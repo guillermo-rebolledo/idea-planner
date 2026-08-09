@@ -6,6 +6,7 @@ import type { ConversationSnapshot, ConversationStreamEvent, RunSnapshot } from 
 import {
   SelectedConversationReadModel,
   conversationSelectedFor,
+  planOf,
   type SelectedConversationSnapshot
 } from '../renderer/src/lib/selected-conversation-read-model'
 import { sessionChanges } from '../renderer/src/lib/useSessionChanges'
@@ -400,5 +401,58 @@ describe('selected Conversation refreshes', () => {
       entries: [{ id: 'file-change:run:1', path: 'src/index.ts' }],
       totals: { added: 2, removed: 1 }
     })
+  })
+})
+
+describe('the Plan a Run is working through', () => {
+  const plan = (steps: { step: string; status: string }[]): ConversationSnapshot['entries'] => [
+    {
+      kind: 'plan',
+      id: 'plan:run',
+      at: AT,
+      startedAt: AT,
+      runId: 'run',
+      explanation: null,
+      steps: steps.map((step) => ({
+        step: step.step,
+        activeForm: null,
+        status: step.status as 'pending' | 'in-progress' | 'completed'
+      }))
+    }
+  ]
+
+  it('reads the journal when nothing is streaming', () => {
+    expect(
+      planOf(plan([{ step: 'Map the seams', status: 'completed' }]), null, 'run')
+    ).toMatchObject({ steps: [{ step: 'Map the seams', status: 'completed' }] })
+  })
+
+  it('lets the live report win outright, because both carry the whole list', () => {
+    const live = {
+      runId: 'run',
+      messages: [],
+      changes: [],
+      fileChangeOrdinal: 0,
+      commands: [],
+      subagents: [],
+      plan: {
+        explanation: 'Revised.',
+        steps: [
+          { step: 'Map the seams', activeForm: null, status: 'completed' as const },
+          { step: 'Draw the indicator', activeForm: null, status: 'in-progress' as const }
+        ]
+      },
+      suggestedResponses: []
+    }
+    // The durable entry still says one step; merging the two would show a step
+    // from one snapshot beside a step from another.
+    expect(planOf(plan([{ step: 'Map the seams', status: 'in-progress' }]), live, 'run')).toEqual(
+      live.plan
+    )
+  })
+
+  it('says nothing for a Run that kept no Plan, which is most of them', () => {
+    expect(planOf([], null, 'run')).toBeNull()
+    expect(planOf(plan([{ step: 'Map the seams', status: 'completed' }]), null, 'other')).toBeNull()
   })
 })

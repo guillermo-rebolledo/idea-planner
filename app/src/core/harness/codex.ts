@@ -1,9 +1,11 @@
 import { z } from 'zod'
 import {
+  MAX_PLAN_STEPS,
   redactCredentials,
   type ChangeKind,
   type HarnessEvent,
   type HarnessFailureCategory,
+  type PlanStepStatus,
   type SubagentStatus
 } from '@shared/conversation'
 import type { StandingApprovalKind } from '@shared/approval'
@@ -172,14 +174,15 @@ const APPROVAL_METHODS: Record<string, StandingApprovalKind> = {
  * Protocol this Adapter understands and deliberately shows nothing for, so
  * genuinely unknown protocol stays distinguishable from what was skipped.
  * `turn/diff/updated` is the whole turn's diff, which the Conversation already
- * holds file by file.
+ * holds file by file. `item/plan/delta` is Plan mode rather than the
+ * checklist — a different thing that shares a word — and its own bindings warn
+ * that concatenated deltas need not match the finished item.
  */
 const IGNORED_METHODS = new Set([
   'thread/started',
   'thread/status/changed',
   'turn/started',
   'turn/diff/updated',
-  'turn/plan/updated',
   'item/reasoning/summaryTextDelta',
   'item/reasoning/summaryPartAdded',
   'item/commandExecution/outputDelta',
@@ -194,6 +197,25 @@ const IGNORED_METHODS = new Set([
   'configWarning',
   'deprecationNotice'
 ])
+
+/**
+ * The checklist Codex keeps for the turn, as `turn/plan/updated` carries it.
+ * Shaped after the generated `TurnPlanStep` bindings rather than parsed with
+ * them: ts-rs emits types, and this is the wire being read.
+ */
+const planSchema = z.array(
+  z.object({
+    step: z.string().min(1),
+    status: z.enum(['pending', 'inProgress', 'completed'])
+  })
+)
+
+/** Codex's spelling of a step's state, in this app's. */
+const PLAN_STEP_STATUS: Record<'pending' | 'inProgress' | 'completed', PlanStepStatus> = {
+  pending: 'pending',
+  inProgress: 'in-progress',
+  completed: 'completed'
+}
 
 /** Items worth showing the moment they begin rather than when they end. */
 const STARTED_ITEMS = new Set(['commandExecution', 'subAgentActivity'])
@@ -579,6 +601,25 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
         }
       ]
     }
+    if (method === 'turn/plan/updated') {
+      const plan = planSchema.safeParse(params['plan'])
+      // A Plan of nothing is not a Plan. Codex can send an empty list, and a
+      // surface that drew one would be announcing a checklist with no steps.
+      if (!plan.success || plan.data.length === 0) return []
+      return [
+        {
+          type: 'plan',
+          explanation: nullableText(params['explanation']),
+          steps: plan.data.slice(0, MAX_PLAN_STEPS).map((step) => ({
+            step: redactCredentials(step.step).slice(0, 500),
+            // Codex carries no present-continuous form, and inventing one
+            // would put words in the agent's mouth.
+            activeForm: null,
+            status: PLAN_STEP_STATUS[step.status]
+          }))
+        }
+      ]
+    }
     if (method === 'turn/completed') return [{ type: 'completed' }]
     if (method === 'turn/failed' || method === 'error') {
       const summary = text(object(params['error'])['message']) || text(params['message'])
@@ -772,4 +813,10 @@ function object(value: unknown): Record<string, unknown> {
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+/** Text the Harness may legitimately have omitted, kept apart from empty text. */
+function nullableText(value: unknown): string | null {
+  const said = text(value).trim()
+  return said ? redactCredentials(said).slice(0, 2_000) : null
 }

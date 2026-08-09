@@ -7,6 +7,7 @@ import type {
   CheckoutChange,
   DiffHunk,
   HarnessEvent,
+  PlanStep,
   SubagentStatus
 } from '@shared/conversation'
 import { createCore, type Core } from './core'
@@ -1775,6 +1776,100 @@ describe('what a command step records', () => {
     const [only] = reloaded.entries.filter((entry) => entry.kind === 'subagent')
     if (only?.kind !== 'subagent') throw new Error('expected a subagent entry')
     expect(only).toMatchObject({ status: 'working', result: null, durationMs: null, brief: null })
+  })
+
+  it('keeps one Plan per Run, dated from when it first appeared, however often it is rewritten', async () => {
+    const runId = await startRun('Wire the checklist through', 'submission-plan')
+    const plan = (steps: PlanStep[], explanation: string | null = null) =>
+      core.applyHarnessEvent({
+        sessionId,
+        runId,
+        event: { type: 'plan', explanation, steps }
+      })
+
+    await plan([
+      { step: 'Map the seams', activeForm: 'Mapping the seams', status: 'in-progress' },
+      { step: 'Record a fixture', activeForm: null, status: 'pending' }
+    ])
+    // The agent revises the list: a step is inserted and the first is done.
+    await plan(
+      [
+        { step: 'Map the seams', activeForm: 'Mapping the seams', status: 'completed' },
+        { step: 'Read the Task tools', activeForm: null, status: 'in-progress' },
+        { step: 'Record a fixture', activeForm: null, status: 'pending' }
+      ],
+      'The Claude side needs its own step.'
+    )
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    const plans = reloaded.entries.filter((entry) => entry.kind === 'plan')
+    // Two rewrites, one Plan: the transcript holds a checklist, not a diff log.
+    expect(plans).toHaveLength(1)
+    const [only] = plans
+    if (only?.kind !== 'plan') throw new Error('expected a plan entry')
+    expect(only).toMatchObject({
+      runId,
+      explanation: 'The Claude side needs its own step.',
+      steps: [
+        { step: 'Map the seams', status: 'completed' },
+        { step: 'Read the Task tools', status: 'in-progress' },
+        { step: 'Record a fixture', status: 'pending' }
+      ]
+    })
+    // Dated from the first sighting rather than from the newest rewrite, so a
+    // Plan written early and revised late does not read as one just thought of.
+    expect(Date.parse(only.startedAt)).toBeLessThan(Date.parse(only.at))
+    const firstSeen = only.startedAt
+
+    // And the same holds after a restart, when the projection is rebuilt.
+    const restarted = makeCore()
+    await restarted.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'plan',
+        explanation: null,
+        steps: [
+          { step: 'Map the seams', activeForm: null, status: 'completed' },
+          { step: 'Read the Task tools', activeForm: null, status: 'completed' },
+          { step: 'Record a fixture', activeForm: null, status: 'completed' }
+        ]
+      }
+    })
+    const [reread] = (await makeCore().getConversation(sessionId)).entries.filter(
+      (entry) => entry.kind === 'plan'
+    )
+    if (reread?.kind !== 'plan') throw new Error('expected a plan entry')
+    expect(reread.startedAt).toBe(firstSeen)
+  })
+
+  it('gives each Run its own Plan rather than carrying one across them', async () => {
+    const first = await startRun('First ask', 'submission-plan-first')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId: first,
+      event: {
+        type: 'plan',
+        explanation: null,
+        steps: [{ step: 'Map the seams', activeForm: null, status: 'completed' }]
+      }
+    })
+    const second = await startRun('Second ask', 'submission-plan-second')
+    await core.applyHarnessEvent({
+      sessionId,
+      runId: second,
+      event: {
+        type: 'plan',
+        explanation: null,
+        steps: [{ step: 'Draw the indicator', activeForm: null, status: 'in-progress' }]
+      }
+    })
+
+    const reloaded = await makeCore().getConversation(sessionId)
+    expect(reloaded.entries.filter((entry) => entry.kind === 'plan')).toMatchObject([
+      { runId: first, steps: [{ step: 'Map the seams' }] },
+      { runId: second, steps: [{ step: 'Draw the indicator' }] }
+    ])
   })
 
   it('measures no duration for an interrupted command, whose result never arrived', async () => {

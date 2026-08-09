@@ -3,6 +3,7 @@ import type {
   ConversationSnapshot,
   ConversationStreamEvent,
   HarnessEvent,
+  PlanStep,
   RunSnapshot,
   SuggestedResponse
 } from '@shared/contract'
@@ -18,6 +19,15 @@ export type LiveFileChange = Extract<ConversationEntry, { kind: 'file-change' }>
  */
 export type LiveSubagent = Omit<Extract<HarnessEvent, { type: 'subagent' }>, 'type'>
 
+/**
+ * The Plan as the Run is reporting it right now, ahead of the durable entry
+ * behind it. A Plan is rewritten a handful of times in a Run rather than many
+ * times a minute, but the step it says is being worked on is the most current
+ * thing on screen, and a checklist a paint behind is a checklist saying the
+ * agent is on a step it has finished.
+ */
+export type LivePlan = Omit<Extract<HarnessEvent, { type: 'plan' }>, 'type'>
+
 /** Streamed state for the Run in flight, ahead of its durable projection. */
 export interface LiveRun {
   runId: string
@@ -26,6 +36,8 @@ export interface LiveRun {
   fileChangeOrdinal: number
   commands: { id: string; command: string; output: string; failed: boolean; running: boolean }[]
   subagents: LiveSubagent[]
+  /** Null until the agent writes one, which most Runs never do. */
+  plan: LivePlan | null
   suggestedResponses: SuggestedResponse[]
 }
 
@@ -277,6 +289,26 @@ export function fleetOf(
   return [...fleet.values()]
 }
 
+/**
+ * The Plan a Run is working through: what the stream last said if it is still
+ * running, and what the journal kept otherwise.
+ *
+ * The live report simply wins where there is one. Unlike a subagent, a Plan
+ * has no field the record knows and the report does not — both carry the whole
+ * list — so there is nothing to merge, and merging would only risk showing a
+ * step from one snapshot beside a step from another.
+ */
+export function planOf(
+  entries: ConversationEntry[],
+  live: LiveRun | null,
+  runId: string
+): { explanation: string | null; steps: PlanStep[] } | null {
+  if (live?.runId === runId && live.plan !== null) return live.plan
+  const durable = entries.find((entry) => entry.kind === 'plan' && entry.runId === runId)
+  if (durable?.kind !== 'plan' || durable.steps.length === 0) return null
+  return { explanation: durable.explanation, steps: durable.steps }
+}
+
 function emptyLiveRun(runId: string): LiveRun {
   return {
     runId,
@@ -285,6 +317,7 @@ function emptyLiveRun(runId: string): LiveRun {
     fileChangeOrdinal: 0,
     commands: [],
     subagents: [],
+    plan: null,
     suggestedResponses: []
   }
 }
@@ -321,6 +354,12 @@ function applyLiveEvent(
         }
       ]
     }
+  }
+  if (event.type === 'plan') {
+    // The whole Plan travels every time, so the newest one replaces the one
+    // before it rather than being merged into it.
+    const { type: _type, ...plan } = event
+    return { ...base, plan }
   }
   if (event.type === 'subagent') {
     // Keyed by the Harness's own dispatch id, exactly as the durable entry is:

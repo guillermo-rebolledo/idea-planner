@@ -76,6 +76,37 @@ export type SubagentStatus = z.infer<typeof subagentStatusSchema>
  */
 export const MAX_SUBAGENT_TEXT = 8_000
 
+/**
+ * What a step of the agent's Plan is: not reached, being worked on, or done.
+ *
+ * Kebab-case because that is this app's spelling and neither vendor's is.
+ * Codex says `inProgress` and Claude says `in_progress`; adopting either would
+ * imply the value travels through untouched, which it does not.
+ */
+export const planStepStatusSchema = z.enum(['pending', 'in-progress', 'completed'])
+export type PlanStepStatus = z.infer<typeof planStepStatusSchema>
+
+/** One step of a Plan, as the agent wrote it. */
+export const planStepSchema = z.object({
+  /** What the step is, imperative. */
+  step: z.string().min(1).max(500),
+  /**
+   * What to call it while it is the one being worked on. Claude supplies a
+   * present-continuous form of its own; Codex supplies none, and the step
+   * itself is what the surface says rather than inventing a tense for it.
+   */
+  activeForm: z.string().max(500).nullable().default(null),
+  status: planStepStatusSchema
+})
+export type PlanStep = z.infer<typeof planStepSchema>
+
+/**
+ * How many steps of a Plan are kept. Both Harnesses ask their models for a
+ * short list of short steps, and a checklist longer than this is not one
+ * anybody reads — the same judgement `MAX_UNDO_OUTCOMES` makes.
+ */
+export const MAX_PLAN_STEPS = 50
+
 /** What happened to a file: it appeared, its text changed, or it went. */
 export const changeKindSchema = z.enum(['added', 'changed', 'deleted'])
 export type ChangeKind = z.infer<typeof changeKindSchema>
@@ -221,6 +252,22 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
     /** How many steps it has taken, when the Harness counts them. */
     steps: z.number().int().nonnegative().nullable().default(null),
     durationMs: z.number().int().nonnegative().nullable().default(null)
+  }),
+  /**
+   * The checklist the agent is working through, whole. It makes the same
+   * bargain `subagent` does, and for the same reason: neither Harness says
+   * what changed about a Plan, only what the Plan now is. So a later event
+   * supersedes an earlier one and nothing is assembled from deltas.
+   *
+   * This is the agent's own todo list, not Plan mode. Codex is explicit that
+   * the two are unrelated — `update_plan` is a checklist tool and does not
+   * enter or leave Plan mode — and Claude keeps them in separate tools too.
+   */
+  z.object({
+    type: z.literal('plan'),
+    /** Why the Plan changed, when the Harness says. Codex's `explanation`. */
+    explanation: z.string().max(2_000).nullable().default(null),
+    steps: z.array(planStepSchema).min(1).max(MAX_PLAN_STEPS)
   }),
   z.object({
     type: z.literal('choices'),
@@ -653,6 +700,33 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     result: z.string().max(MAX_SUBAGENT_TEXT).nullable().default(null),
     steps: z.number().int().nonnegative().nullable().default(null),
     durationMs: z.number().int().nonnegative().nullable().default(null)
+  }),
+  /**
+   * The Plan a Run worked through. Durable rather than live-only for the same
+   * reason a subagent is: what the agent set out to do, and how much of it it
+   * finished, is part of what happened in the Conversation and is worth
+   * re-reading once the Run that wrote it is gone.
+   *
+   * One entry per Run, rewritten in place. Every rewrite the agent makes is
+   * the same Plan changing, not a new one, and a Conversation that grew a row
+   * per rewrite would be a diff log of a list rather than a record of work.
+   *
+   * Codex does not persist Plans — it classifies them transient — so this is
+   * the only place one survives a restart.
+   */
+  z.object({
+    kind: z.literal('plan'),
+    id: z.string().min(1),
+    at: z.string().datetime(),
+    /**
+     * When the Plan first appeared, kept through every rewrite. `at` moves
+     * with each one, and without this a Plan written early and revised late
+     * would read as one the agent only just thought of.
+     */
+    startedAt: z.string().datetime(),
+    runId: z.string().min(1),
+    explanation: z.string().max(2_000).nullable().default(null),
+    steps: z.array(planStepSchema).max(MAX_PLAN_STEPS)
   }),
   /**
    * Something the app itself did to the Checkout, at the person's explicit

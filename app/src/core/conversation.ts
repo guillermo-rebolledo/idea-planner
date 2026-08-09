@@ -1311,6 +1311,36 @@ export function createConversationEffects(options: ConversationOptions): Convers
               )
               return
             }
+            case 'plan': {
+              // One entry per Run, rewritten in place. Every rewrite is the
+              // same Plan changing rather than a new one, and a row per
+              // rewrite would make the Conversation a diff log of a list.
+              const id = `plan:${input.runId}`
+              const existing = (yield* readEntries(sessionDir)).find(
+                (entry) => entry.kind === 'plan' && entry.id === id
+              )
+              yield* append(
+                sessionDir,
+                conversationEntrySchema.parse({
+                  kind: 'plan',
+                  id,
+                  at: now.toISOString(),
+                  // Kept from the first sighting: `at` moves with every
+                  // rewrite, and a Plan written early and revised late would
+                  // otherwise read as one the agent only just thought of.
+                  startedAt: existing?.kind === 'plan' ? existing.startedAt : now.toISOString(),
+                  runId: input.runId,
+                  explanation: event.explanation,
+                  steps: event.steps.map((step) => ({
+                    step: redactCredentials(step.step),
+                    activeForm:
+                      step.activeForm === null ? null : redactCredentials(step.activeForm),
+                    status: step.status
+                  }))
+                })
+              )
+              return
+            }
             case 'reasoning':
             case 'retrying':
             case 'completed':

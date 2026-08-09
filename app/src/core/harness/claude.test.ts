@@ -452,3 +452,230 @@ describe('a command that is still running', () => {
     })
   })
 })
+
+/**
+ * The two ways Claude keeps a checklist. Hand-written frames rather than a
+ * recording: no fixture in this directory contains either tool — the recorded
+ * turns were too short to earn one — and `claude-subagent.jsonl` shows why
+ * both matter, since its `system/init` lists the Task tools and no
+ * `TodoWrite`. `TodoWrite` has been off by default since claude 2.1.142, and
+ * this app's supported band straddles that version.
+ */
+describe('the plan', () => {
+  function assistant(content: unknown[]): string {
+    return `${JSON.stringify({
+      type: 'assistant',
+      message: { id: 'msg_plan', role: 'assistant', content }
+    })}\n`
+  }
+
+  function toolResult(toolUseId: string, result: unknown): string {
+    return `${JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId }] },
+      tool_use_result: result
+    })}\n`
+  }
+
+  describe('as TodoWrite writes it', () => {
+    it('reads the whole list, keeping the phrasing for the step in flight', () => {
+      const adapter = createClaudeAdapter()
+      const [plan] = adapter.ingest(
+        assistant([
+          {
+            type: 'tool_use',
+            id: 'toolu_todo',
+            name: 'TodoWrite',
+            input: {
+              todos: [
+                { content: 'Map the seams', status: 'completed', activeForm: 'Mapping the seams' },
+                {
+                  content: 'Normalise both Harnesses',
+                  status: 'in_progress',
+                  activeForm: 'Normalising both Harnesses'
+                },
+                {
+                  content: 'Record a fixture',
+                  status: 'pending',
+                  activeForm: 'Recording a fixture'
+                }
+              ]
+            }
+          }
+        ])
+      )
+      expect(plan).toEqual({
+        type: 'plan',
+        // Only Codex says why a plan changed.
+        explanation: null,
+        steps: [
+          { step: 'Map the seams', activeForm: 'Mapping the seams', status: 'completed' },
+          {
+            step: 'Normalise both Harnesses',
+            activeForm: 'Normalising both Harnesses',
+            status: 'in-progress'
+          },
+          { step: 'Record a fixture', activeForm: 'Recording a fixture', status: 'pending' }
+        ]
+      })
+    })
+
+    it('replaces the list rather than adding to it, because that is what the tool does', () => {
+      const adapter = createClaudeAdapter()
+      adapter.ingest(
+        assistant([
+          {
+            type: 'tool_use',
+            id: 'toolu_a',
+            name: 'TodoWrite',
+            input: { todos: [{ content: 'First shape', status: 'in_progress' }] }
+          }
+        ])
+      )
+      const [plan] = adapter.ingest(
+        assistant([
+          {
+            type: 'tool_use',
+            id: 'toolu_b',
+            name: 'TodoWrite',
+            input: { todos: [{ content: 'Second shape', status: 'in_progress' }] }
+          }
+        ])
+      )
+      expect(plan).toMatchObject({ steps: [{ step: 'Second shape', status: 'in-progress' }] })
+    })
+
+    it('says nothing for an empty list, and never reports the call as a tool step', () => {
+      const adapter = createClaudeAdapter()
+      const events = adapter.ingest(
+        assistant([
+          { type: 'tool_use', id: 'toolu_empty', name: 'TodoWrite', input: { todos: [] } }
+        ])
+      )
+      expect(events).toEqual([])
+    })
+  })
+
+  describe('as the Task tools write it', () => {
+    /** A create, then the result frame that is the only place its id appears. */
+    function create(toolUseId: string, subject: string, taskId: string): string[] {
+      return [
+        assistant([
+          {
+            type: 'tool_use',
+            id: toolUseId,
+            name: 'TaskCreate',
+            input: { subject, activeForm: `${subject}…` }
+          }
+        ]),
+        toolResult(toolUseId, { task: { id: taskId, subject } })
+      ]
+    }
+
+    it('assembles a list from calls that each describe only a change', () => {
+      const adapter = createClaudeAdapter()
+      let plan: HarnessEvent | undefined
+      for (const line of [
+        ...create('toolu_1', 'Map the seams', 'task-1'),
+        ...create('toolu_2', 'Record a fixture', 'task-2')
+      ]) {
+        plan = adapter.ingest(line).at(-1) ?? plan
+      }
+      expect(plan).toMatchObject({
+        type: 'plan',
+        steps: [
+          { step: 'Map the seams', activeForm: 'Map the seams…', status: 'pending' },
+          { step: 'Record a fixture', activeForm: 'Record a fixture…', status: 'pending' }
+        ]
+      })
+    })
+
+    it('moves a step by the id its result frame gave it', () => {
+      const adapter = createClaudeAdapter()
+      for (const line of create('toolu_1', 'Map the seams', 'task-1')) adapter.ingest(line)
+      const [plan] = adapter.ingest(
+        assistant([
+          {
+            type: 'tool_use',
+            id: 'toolu_move',
+            name: 'TaskUpdate',
+            input: { taskId: 'task-1', status: 'in_progress' }
+          }
+        ])
+      )
+      expect(plan).toMatchObject({ steps: [{ step: 'Map the seams', status: 'in-progress' }] })
+    })
+
+    it('reads the raw keys the model emits, which the CLI only repairs after streaming', () => {
+      const adapter = createClaudeAdapter()
+      for (const line of create('toolu_1', 'Map the seams', 'task-1')) adapter.ingest(line)
+      const [plan] = adapter.ingest(
+        assistant([
+          {
+            type: 'tool_use',
+            id: 'toolu_snake',
+            name: 'TaskUpdate',
+            // `task_id` and `active_form` as the model wrote them.
+            input: { task_id: 'task-1', status: 'completed', active_form: 'Mapping the seams' }
+          }
+        ])
+      )
+      expect(plan).toMatchObject({
+        steps: [{ step: 'Map the seams', activeForm: 'Mapping the seams', status: 'completed' }]
+      })
+    })
+
+    it('drops a deleted step rather than leaving it on the plan', () => {
+      const adapter = createClaudeAdapter()
+      for (const line of [
+        ...create('toolu_1', 'Map the seams', 'task-1'),
+        ...create('toolu_2', 'Record a fixture', 'task-2')
+      ]) {
+        adapter.ingest(line)
+      }
+      const [plan] = adapter.ingest(
+        assistant([
+          {
+            type: 'tool_use',
+            id: 'toolu_del',
+            name: 'TaskUpdate',
+            input: { taskId: 'task-1', status: 'deleted' }
+          }
+        ])
+      )
+      expect(plan).toMatchObject({ steps: [{ step: 'Record a fixture' }] })
+    })
+
+    it('ignores an update naming a task it never saw created', () => {
+      const adapter = createClaudeAdapter()
+      expect(
+        adapter.ingest(
+          assistant([
+            {
+              type: 'tool_use',
+              id: 'toolu_orphan',
+              name: 'TaskUpdate',
+              input: { taskId: 'task-nobody-saw', status: 'completed' }
+            }
+          ])
+        )
+      ).toEqual([])
+    })
+  })
+
+  it('is a normalized event either way, and never a tool step of its own', () => {
+    const adapter = createClaudeAdapter()
+    const events = adapter.ingest(
+      assistant([
+        {
+          type: 'tool_use',
+          id: 'toolu_todo',
+          name: 'TodoWrite',
+          input: { todos: [{ content: 'Only step', status: 'in_progress' }] }
+        }
+      ])
+    )
+    expect(events.map((event) => event.type)).toEqual(['plan'])
+    expect(harnessEventSchema.safeParse(events[0]).success).toBe(true)
+  })
+})
