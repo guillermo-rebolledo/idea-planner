@@ -48,6 +48,17 @@ export function focusTextareaAtEnd(ref: RefObject<HTMLTextAreaElement | null>): 
   })
 }
 
+/** Moves keyboard focus from the textarea into one edge of its open Skill list. */
+export function focusSkillSuggestion(
+  ref: RefObject<HTMLUListElement | null>,
+  edge: 'first' | 'last'
+): boolean {
+  const suggestions = ref.current?.querySelectorAll<HTMLButtonElement>('[data-skill-suggestion]')
+  if (!suggestions?.length) return false
+  suggestions[edge === 'first' ? 0 : suggestions.length - 1]?.focus()
+  return true
+}
+
 /**
  * The Skills a draft is asking to see. `/` at the start of an otherwise empty
  * message asks what methodologies there are; anywhere else it is just a
@@ -65,26 +76,48 @@ export function skillsMatching(
 /** The list `/` opens, above the field it belongs to. */
 export function SkillSuggestions({
   matching,
-  onChoose
+  onChoose,
+  listRef
 }: {
   matching: SkillCatalog['available']
   onChoose: (name: string) => void
+  listRef?: Ref<HTMLUListElement>
 }): React.JSX.Element {
   return (
     <div className="overflow-hidden rounded-md border border-border bg-popover shadow-sm">
       <PopoverHeading>Skills</PopoverHeading>
-      <ul aria-label="Skills" className="max-h-40 overflow-y-auto px-1 pb-1">
+      <ul ref={listRef} aria-label="Skills" className="max-h-40 overflow-y-auto px-1 pb-1">
         {matching.length === 0 && (
           <li className="px-1.5 py-1.5 text-xs text-muted-foreground">
             No installed Skill matches. Keep typing your message — a Skill is optional.
           </li>
         )}
-        {matching.map((entry) => (
+        {matching.map((entry, index) => (
           <li key={`${entry.source}:${entry.name}`}>
             <button
               type="button"
+              data-skill-suggestion
               className="flex w-full flex-col items-start rounded-md px-1.5 py-1.5 text-left hover:bg-muted/60"
               onClick={() => onChoose(entry.name)}
+              onKeyDown={(event) => {
+                const unmodified =
+                  !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey
+                if (unmodified && (event.key === 'Enter' || event.key === 'Tab')) {
+                  event.preventDefault()
+                  onChoose(entry.name)
+                  return
+                }
+                if (unmodified && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+                  event.preventDefault()
+                  const suggestions = event.currentTarget
+                    .closest('ul')
+                    ?.querySelectorAll<HTMLButtonElement>('[data-skill-suggestion]')
+                  if (!suggestions?.length) return
+                  const offset = event.key === 'ArrowDown' ? 1 : -1
+                  const nextIndex = (index + offset + suggestions.length) % suggestions.length
+                  suggestions[nextIndex]?.focus()
+                }
+              }}
             >
               <span className="text-xs font-medium">
                 {entry.name}

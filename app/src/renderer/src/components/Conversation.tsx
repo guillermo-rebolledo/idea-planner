@@ -74,6 +74,7 @@ import {
   type ChainStepStatus
 } from '@renderer/components/ui/chain-of-thought'
 import {
+  focusSkillSuggestion,
   focusTextareaAtEnd,
   SkillAwareTextarea,
   SkillSuggestions,
@@ -453,6 +454,7 @@ export function Conversation({
   // they are ready.
   const approvalCardRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
+  const skillSuggestionsRef = useRef<HTMLUListElement>(null)
   const pendingApprovalId = pendingApproval?.id ?? null
   useEffect(() => {
     if (pendingApprovalId === null) return
@@ -1306,7 +1308,11 @@ export function Conversation({
                 Your message
               </label>
               {matchingSkills !== null && (
-                <SkillSuggestions matching={matchingSkills} onChoose={chooseSkill} />
+                <SkillSuggestions
+                  matching={matchingSkills}
+                  onChoose={chooseSkill}
+                  listRef={skillSuggestionsRef}
+                />
               )}
               {/* One card, as the mock draws it: the field and everything the
               next message is configured with, in the same box. The Skill is
@@ -1329,6 +1335,35 @@ export function Conversation({
                     setDraft(nextDraft)
                   }}
                   onKeyDown={(event) => {
+                    if (
+                      matchingSkills?.length &&
+                      (event.key === 'ArrowDown' || event.key === 'ArrowUp') &&
+                      !event.nativeEvent.isComposing &&
+                      !event.shiftKey &&
+                      !event.altKey &&
+                      !event.ctrlKey &&
+                      !event.metaKey
+                    ) {
+                      event.preventDefault()
+                      focusSkillSuggestion(
+                        skillSuggestionsRef,
+                        event.key === 'ArrowDown' ? 'first' : 'last'
+                      )
+                      return
+                    }
+                    if (
+                      matchingSkills?.[0] &&
+                      (event.key === 'Enter' || event.key === 'Tab') &&
+                      !event.nativeEvent.isComposing &&
+                      !event.shiftKey &&
+                      !event.altKey &&
+                      !event.ctrlKey &&
+                      !event.metaKey
+                    ) {
+                      event.preventDefault()
+                      chooseSkill(matchingSkills[0].name)
+                      return
+                    }
                     if (event.key !== 'Enter') return
                     // Mid-composition Enter belongs to the input method.
                     if (event.nativeEvent.isComposing) return
