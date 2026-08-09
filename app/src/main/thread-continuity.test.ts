@@ -24,6 +24,7 @@ type BoundaryEntry = Extract<ConversationEntry, { kind: 'boundary' }>
 function conversation(entries: ConversationEntry[]): ConversationSnapshot {
   return {
     sessionId: 'session',
+    journalPosition: 0,
     entries,
     usage: { run: null, session: emptyUsage() },
     recovery: null,
@@ -143,6 +144,20 @@ function compacted(
   }
 }
 
+function rewound(runId: string, target: string, tail: string): BoundaryEntry {
+  return {
+    kind: 'boundary',
+    id: `boundary:rewound:${runId}`,
+    at: '2026-08-09T12:00:00.000Z',
+    runId,
+    boundary: 'rewound',
+    summary: 'Rewound',
+    submissionId: null,
+    recovery: null,
+    rewind: { rewoundToEntryId: target, tailFromEntryId: tail }
+  }
+}
+
 describe('what a new Harness Thread is seeded with', () => {
   it('hands off the Skill in force and the last eight turns, byte for byte', () => {
     const entries = Array.from({ length: 10 }, (_, index) =>
@@ -232,13 +247,47 @@ describe('what a new Harness Thread is seeded with', () => {
       'Recent turns:\nUser: what changed?\nAssistant: this and that'
     )
   })
+
+  it('carries only the untouched tail after a rewind', () => {
+    const entries = [
+      message('old context'),
+      message('kept question'),
+      message('kept answer', 'assistant'),
+      rewound('run-2', 'message:bad prompt', 'message:kept question')
+    ]
+    expect(conversationSeed(conversation(entries), { shape: 'rewind', skill: 'wayfinder' })).toBe(
+      ['Skill: wayfinder', 'Recent turns:', 'User: kept question', 'Assistant: kept answer'].join(
+        '\n'
+      )
+    )
+  })
+
+  it('does not duplicate the current prompt that the adapter receives separately', () => {
+    const current = message('replacement prompt')
+    if (current.kind !== 'message') throw new Error('message helper returned a non-message')
+    current.id = 'user:replacement'
+    current.submissionId = 'replacement'
+    const entries = [
+      message('kept question'),
+      message('kept answer', 'assistant'),
+      rewound('run-2', 'message:bad prompt', 'message:kept question'),
+      current
+    ]
+    expect(
+      conversationSeed(conversation(entries), {
+        shape: 'rewind',
+        skill: null,
+        excludeSubmissionId: 'replacement'
+      })
+    ).toBe('Recent turns:\nUser: kept question\nAssistant: kept answer')
+  })
 })
 
 describe('a Conversation fact that vetoes Harness Thread reuse', () => {
   it('is a compaction this app performed, and only that', () => {
     for (const kind of conversationBoundarySchema.options) {
       expect(breaksContinuity({ ...ended('run-1', kind), boundary: kind })).toBe(
-        kind === 'compacted'
+        kind === 'compacted' || kind === 'rewound'
       )
     }
     expect(
@@ -246,6 +295,14 @@ describe('a Conversation fact that vetoes Harness Thread reuse', () => {
         compacted('run-1', { summary: 'kept', tailFromEntryId: 'message:x', native: true })
       )
     ).toBe(false)
+  })
+
+  it('vetoes the Thread whose later turns were rewound', () => {
+    const entries = [
+      ...ranAndSaved('run-1', 'claude'),
+      rewound('run-1', 'message:bad prompt', 'message:run-1')
+    ]
+    expect(threadReuseVetoed(conversation(entries), 'claude')).toBe(true)
   })
 
   it('vetoes reuse of the Thread the compaction declined to resume', () => {
@@ -280,7 +337,7 @@ describe('a Conversation fact that vetoes Harness Thread reuse', () => {
   it('is found nowhere in a Conversation of ordinary Runs', () => {
     const entries = [message('hello'), ...ranAndSaved('run-1', 'claude'), message('and again')]
     for (const kind of conversationBoundarySchema.options) {
-      if (kind === 'compacted') continue
+      if (kind === 'compacted' || kind === 'rewound') continue
       expect(threadReuseVetoed(conversation([...entries, ended('run-2', kind)]), 'claude')).toBe(
         false
       )

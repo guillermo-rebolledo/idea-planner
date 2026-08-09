@@ -216,10 +216,13 @@ async function settled(read: () => Promise<string>): Promise<string> {
 
 /** Past onboarding, on the launch screen, with a Project to work in. */
 async function openTheApp(page: Awaited<ReturnType<ElectronApplication['firstWindow']>>) {
-  await page.getByRole('button', { name: 'Choose project folder…' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Add Project' })
+  await dialog.getByRole('button', { name: 'Choose project folder…' }).click()
   // The sandbox reaches the folder through a symlink, so git names a root the
   // person did not pick and the app confirms it first.
-  await page.getByRole('alert').getByRole('button', { name: 'Add this Project' }).click()
+  const confirmation = dialog.getByRole('alert')
+  await expect(confirmation).toBeVisible()
+  await confirmation.getByRole('button', { name: 'Add this Project' }).click()
   const composer = page.getByRole('form', { name: 'New chat' })
   await composer.waitFor()
   return composer

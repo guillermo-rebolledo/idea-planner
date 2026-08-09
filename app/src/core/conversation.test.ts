@@ -134,6 +134,7 @@ describe('submitting to the Conversation', () => {
   it('starts with the message that created the Session and nothing else', async () => {
     const snapshot = await core.getConversation(sessionId)
     expect(messages(snapshot.entries)).toMatchObject([{ role: 'user', text: STARTING_MESSAGE }])
+    expect(snapshot.journalPosition).toBeGreaterThan(0)
     expect(snapshot.activeRunId).toBeNull()
     expect(snapshot.usage.session.totalTokens).toBe(0)
   })
@@ -183,9 +184,10 @@ describe('submitting to the Conversation', () => {
       source: 'composer' as const
     }
     await core.submitConversationMessage(input)
-    const snapshot = await core.submitConversationMessage(input)
+    const replay = await core.submitConversationMessageWithResult(input)
+    expect(replay.disposition).toBe('visible-replay')
     // The starting message, and the resent one recorded once.
-    expect(messages(snapshot.entries)).toHaveLength(2)
+    expect(messages(replay.snapshot.entries)).toHaveLength(2)
   })
 
   it('rejects reusing a submission id for different content', async () => {
@@ -510,6 +512,39 @@ describe('mid-Run delivery admission', () => {
     )
   })
 
+  it('preserves a rejected correction when the queue is full', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    await openCodexTurn(runId, 'Change the API')
+    await Promise.all(
+      Array.from({ length: 50 }, (_, index) =>
+        core.changeQueuedSubmissions({
+          type: 'enqueue',
+          input: {
+            ...correction(runId),
+            submissionId: `queued-${String(index)}`,
+            text: `Message ${String(index)}`
+          }
+        })
+      )
+    )
+    const input = correction(runId)
+    await core.admitRunSteer(input)
+    expect((await core.steerHarness(input, input.text)).steered).toBe(true)
+
+    await core.ingestHarnessOutput({
+      sessionId,
+      runId,
+      harness: 'codex',
+      chunk: `${JSON.stringify({ id: 5, error: { code: -32602, message: 'turn ended' } })}\n`
+    })
+
+    const snapshot = await core.getConversation(sessionId)
+    expect(snapshot.queue.items).toHaveLength(51)
+    expect(snapshot.queue.items).toContainEqual(
+      expect.objectContaining({ submissionId: 'correction-1', text: input.text })
+    )
+  })
+
   it('queues an unacknowledged correction before finalizing its Run', async () => {
     const runId = await startRun('Change the API', 'submission-1')
     await openCodexTurn(runId, 'Change the API')
@@ -806,6 +841,54 @@ describe('streaming a Run into the Conversation', () => {
       text: 'Grill me',
       source: 'composer'
     })
+  })
+
+  it('positions a live event at the durable snapshot that contains it', async () => {
+    const runId = await startRun('Track the event cursor', 'submission-1')
+    const before = await core.getConversation(sessionId)
+
+    const journalPosition = await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: { type: 'assistant-message', id: 'cursor-message', text: 'Settled', complete: true }
+    })
+    const after = await core.getConversation(sessionId)
+
+    expect(after.journalPosition).toBeGreaterThan(before.journalPosition)
+    expect(journalPosition).toBe(after.journalPosition)
+  })
+
+  it('leaves a coalesced live event unpositioned until it reaches the journal', async () => {
+    const runId = await startRun('Track a transient event cursor', 'submission-1')
+    const fixedNow = new Date(Date.UTC(2026, 6, 31, 12, 1))
+    core = createCore({
+      stateDirectory: stateDir,
+      now: () => fixedNow,
+      randomId: () => 'unused-id'
+    })
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'assistant-message',
+        id: 'cursor-message',
+        text: 'Still',
+        complete: false
+      }
+    })
+
+    const journalPosition = await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'assistant-message',
+        id: 'cursor-message',
+        text: 'Still typing',
+        complete: false
+      }
+    })
+
+    expect(journalPosition).toBeNull()
   })
 
   it('marks the Run boundary and reports the Run as active', async () => {
@@ -2581,5 +2664,252 @@ describe('surviving the context window', () => {
     expect(rebuilt.entries.map((entry) => entry.id)).toEqual(
       trusted.entries.map((entry) => entry.id)
     )
+  })
+})
+
+describe('rewinding the Conversation', () => {
+  async function completedTurn(
+    prompt: string,
+    submissionId: string,
+    answer: string
+  ): Promise<string> {
+    await core.submitConversationMessage({
+      sessionId,
+      submissionId,
+      text: prompt,
+      source: 'composer'
+    })
+    const runId = await startRun(prompt, submissionId)
+    await stream(runId, [
+      { type: 'assistant-message', id: `answer-${submissionId}`, text: answer, complete: true }
+    ])
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness completed the turn'
+    })
+    return runId
+  }
+
+  it('reads as though the chosen message and later turns are absent while keeping the journal whole', async () => {
+    await completedTurn('Take the wrong path', 'submission-wrong', 'I took the wrong path')
+    await completedTurn('Keep going', 'submission-later', 'Still going the wrong way')
+
+    const snapshot = await core.rewindConversation({
+      sessionId,
+      operationId: 'rewind-1',
+      targetEntryId: 'user:submission-wrong'
+    })
+
+    expect(messages(snapshot.entries).map((entry) => entry.text)).toEqual([STARTING_MESSAGE])
+    expect(snapshot.entries.at(-1)).toMatchObject({
+      kind: 'boundary',
+      boundary: 'rewound',
+      rewind: { rewoundToEntryId: 'user:submission-wrong' }
+    })
+    const stored = await readFile(
+      join(stateDir, 'sessions', sessionId, 'conversation.jsonl'),
+      'utf8'
+    )
+    expect(stored).toContain('Take the wrong path')
+    expect(stored).toContain('Still going the wrong way')
+  })
+
+  it('keeps submission idempotency for an unchanged resend and accepts an edited resend as new', async () => {
+    await completedTurn('Take the wrong path', 'submission-wrong', 'Done')
+    await core.rewindConversation({
+      sessionId,
+      operationId: 'rewind-1',
+      targetEntryId: 'user:submission-wrong'
+    })
+
+    const unchanged = await core.submitConversationMessageWithResult({
+      sessionId,
+      submissionId: 'submission-wrong',
+      text: 'Take the wrong path',
+      source: 'composer'
+    })
+    expect(unchanged.disposition).toBe('rewound-replay')
+    expect(messages(unchanged.snapshot.entries).map((entry) => entry.text)).toEqual([
+      STARTING_MESSAGE
+    ])
+
+    const edited = await core.submitConversationMessageWithResult({
+      sessionId,
+      submissionId: 'submission-edited',
+      text: 'Take the better path',
+      source: 'composer'
+    })
+    expect(edited.disposition).toBe('accepted')
+    expect(messages(edited.snapshot.entries).map((entry) => entry.text)).toEqual([
+      STARTING_MESSAGE,
+      'Take the better path'
+    ])
+  })
+
+  it('refuses to rewind beneath an active Run and names it', async () => {
+    await core.submitConversationMessage({
+      sessionId,
+      submissionId: 'submission-active',
+      text: 'Still working',
+      source: 'composer'
+    })
+    const runId = await startRun('Still working', 'submission-active')
+
+    await expect(
+      core.rewindConversation({
+        sessionId,
+        operationId: 'rewind-active',
+        targetEntryId: 'user:submission-active'
+      })
+    ).rejects.toThrow(runId)
+  })
+
+  it('sets aside queued submissions after the rewind point so they cannot launch', async () => {
+    await completedTurn('Take the wrong path', 'submission-wrong', 'Done')
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: {
+        sessionId,
+        submissionId: 'queued-after-rewind',
+        text: 'Keep following the discarded path',
+        source: 'composer',
+        harness: 'claude',
+        model: 'claude-sonnet-4-5',
+        effort: 'medium',
+        permissionMode: 'ask',
+        reviewAttachments: []
+      }
+    })
+
+    const snapshot = await core.rewindConversation({
+      sessionId,
+      operationId: 'rewind-queue',
+      targetEntryId: 'user:submission-wrong'
+    })
+
+    expect(snapshot.queue).toMatchObject({ paused: true, items: [] })
+    expect(await core.nextQueuedSubmission(sessionId)).toBeNull()
+  })
+
+  it('restores retained queue records when their later edits and pause are rewound', async () => {
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: {
+        sessionId,
+        submissionId: 'queued-before-rewind',
+        text: 'Original queued work',
+        source: 'composer',
+        harness: 'claude',
+        model: 'claude-sonnet-4-5',
+        effort: 'medium',
+        permissionMode: 'ask',
+        reviewAttachments: []
+      }
+    })
+    await completedTurn('Take the wrong path', 'submission-wrong', 'Done')
+    await core.changeQueuedSubmissions({
+      type: 'edit',
+      input: {
+        sessionId,
+        submissionId: 'queued-before-rewind',
+        text: 'Edited after the wrong turn'
+      }
+    })
+    await core.changeQueuedSubmissions({ type: 'pause', sessionId })
+
+    const snapshot = await core.rewindConversation({
+      sessionId,
+      operationId: 'rewind-queue-updates',
+      targetEntryId: 'user:submission-wrong'
+    })
+
+    expect(snapshot.queue).toMatchObject({
+      paused: false,
+      items: [{ submissionId: 'queued-before-rewind', text: 'Original queued work' }]
+    })
+    await expect(core.nextQueuedSubmission(sessionId)).resolves.toMatchObject({
+      item: { text: 'Original queued work' }
+    })
+  })
+
+  it('performs no Project file operation and keeps rewound Run changes in the Files projection', async () => {
+    await core.submitConversationMessage({
+      sessionId,
+      submissionId: 'submission-files',
+      text: 'Change the file',
+      source: 'composer'
+    })
+    const runId = await startRun('Change the file', 'submission-files')
+    await stream(runId, [
+      {
+        type: 'file-change',
+        path: `${projectRoot}/kept.ts`,
+        hunks: [
+          {
+            oldStart: 0,
+            oldLines: 0,
+            newStart: 1,
+            newLines: 1,
+            lines: ['+export const kept = true']
+          }
+        ]
+      }
+    ])
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness completed the turn'
+    })
+    await writeFile(join(projectRoot, 'kept.ts'), 'export const kept = true\n')
+
+    const snapshot = await core.rewindConversation({
+      sessionId,
+      operationId: 'rewind-files',
+      targetEntryId: 'user:submission-files'
+    })
+
+    expect(await readFile(join(projectRoot, 'kept.ts'), 'utf8')).toBe('export const kept = true\n')
+    expect(snapshot.changedFiles).toMatchObject([{ path: 'kept.ts', added: 1 }])
+  })
+
+  it('can rewind twice and rebuilds the same answer from a stale byte watermark', async () => {
+    await completedTurn('First wrong turn', 'submission-first', 'First answer')
+    await completedTurn('Second wrong turn', 'submission-second', 'Second answer')
+    await core.rewindConversation({
+      sessionId,
+      operationId: 'rewind-1',
+      targetEntryId: 'user:submission-second'
+    })
+    await completedTurn('Replacement turn', 'submission-replacement', 'Replacement answer')
+    const trusted = await core.rewindConversation({
+      sessionId,
+      operationId: 'rewind-2',
+      targetEntryId: 'user:submission-first'
+    })
+
+    await writeFile(
+      join(stateDir, 'sessions', sessionId, 'state.json'),
+      JSON.stringify({
+        activeRunId: 'run-that-never-was',
+        openApprovals: [],
+        lastMessage: null,
+        recentMessageIds: [],
+        recovery: null,
+        runningCommands: {},
+        subagentDispatchedAt: {},
+        runSteps: { read: 0, 'file-change': 0 },
+        journalBytes: 1
+      })
+    )
+
+    const rebuilt = await makeCore().getConversation(sessionId)
+    expect(rebuilt.entries).toEqual(trusted.entries)
+    expect(rebuilt.activeRunId).toBeNull()
+    expect(messages(rebuilt.entries).map((entry) => entry.text)).toEqual([STARTING_MESSAGE])
   })
 })

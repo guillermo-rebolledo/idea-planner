@@ -5,6 +5,7 @@ import type { z } from 'zod'
 import { CoreError } from '@shared/contract'
 import {
   MAX_APPROVAL_DETAIL,
+  CONVERSATION_TAIL_MESSAGES,
   addUsage,
   conversationEntrySchema,
   countDiffLines,
@@ -23,11 +24,13 @@ import {
   recordCompactionInputSchema,
   runSteerAdmissionInputSchema,
   steerDispositionEntrySchema,
+  recordRewindInputSchema,
   setConversationQueuePausedInputSchema,
   MAX_COMPACTION_SUMMARY,
   type CompactionPlan,
   type RecordAppActionInput,
   type RecordCompactionInput,
+  type RecordRewindInput,
   type ChangedFile,
   type DiffHunk,
   submitConversationMessageInputSchema,
@@ -52,9 +55,10 @@ import {
   type RunSteerAdmissionResult,
   type SteerDispositionEntry,
   type SetConversationQueuePausedInput,
+  type SubmitConversationMessageResult,
   type SuggestedResponse
 } from '@shared/conversation'
-import { reviewAttachmentsRefusal, type ReviewAttachment } from '@shared/review-attachment'
+import { reviewAttachmentsRefusal, sameReviewAttachments } from '@shared/review-attachment'
 import { isRestored } from '@shared/run-undo'
 import type { HarnessId } from '@shared/readiness'
 import type { RunActivityKind, SkillName } from '@shared/run'
@@ -67,6 +71,7 @@ import {
   readSessionState,
   stateFile,
   writeState,
+  visibleConversationEntries,
   type SessionState
 } from './session-state'
 import { createClaudeAdapter } from './harness/claude'
@@ -223,6 +228,7 @@ export interface ConversationEffects {
    */
   state(sessionId: string): Effect.Effect<SessionState, CoreError>
   submit(input: unknown): Effect.Effect<ConversationSnapshot, CoreError>
+  submitWithResult(input: unknown): Effect.Effect<SubmitConversationMessageResult, CoreError>
   enqueue(input: EnqueueQueuedSubmissionInput): Effect.Effect<ConversationSnapshot, CoreError>
   admitRunSteer(input: RunSteerAdmissionInput): Effect.Effect<RunSteerAdmissionResult, CoreError>
   editQueued(input: EditQueuedSubmissionInput): Effect.Effect<ConversationSnapshot, CoreError>
@@ -237,7 +243,7 @@ export interface ConversationEffects {
     input: QueuedSubmissionDispositionObservation
   ): Effect.Effect<QueuedSubmissionLaunchResult, CoreError>
   begin(input: BeginConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
-  apply(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
+  apply(input: ApplyHarnessEventInput): Effect.Effect<number | null, CoreError>
   /**
    * Prepares the Adapter for a Run and returns whatever the Harness must be
    * told before it will say anything. Codex speaks only when spoken to.
@@ -278,6 +284,8 @@ export interface ConversationEffects {
   compactionPlan(sessionId: string): Effect.Effect<CompactionPlan, CoreError>
   /** Records that the agent's memory of the turns before the tail is now a summary. */
   compact(input: RecordCompactionInput): Effect.Effect<ConversationSnapshot, CoreError>
+  /** Sets aside the chosen message and everything after it from the readable Conversation. */
+  rewind(input: RecordRewindInput): Effect.Effect<ConversationSnapshot, CoreError>
 }
 
 /**
@@ -312,12 +320,14 @@ export function createConversationEffects(options: ConversationOptions): Convers
 
   const sessionDirectory = options.directoryFor
 
-  const readEntries = (sessionDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
+  const readJournal = (
+    sessionDir: string
+  ): Effect.Effect<{ entries: ConversationEntry[]; journalPosition: number }, CoreError> =>
     Effect.tryPromise({
       try: async () => {
-        const raw = await readFile(join(sessionDir, JOURNAL), 'utf8').catch(() => '')
-        const byId = new Map<string, ConversationEntry>()
-        for (const line of raw.split('\n')) {
+        const raw = await readFile(join(sessionDir, JOURNAL)).catch(() => Buffer.alloc(0))
+        const entries: ConversationEntry[] = []
+        for (const line of raw.toString('utf8').split('\n')) {
           if (!line.trim()) continue
           let parsed
           try {
@@ -327,12 +337,26 @@ export function createConversationEffects(options: ConversationOptions): Convers
             // lose the Conversation before it.
             continue
           }
-          if (parsed.success) byId.set(parsed.data.id, parsed.data)
+          if (parsed.success) entries.push(parsed.data)
         }
-        return [...byId.values()]
+        return { entries, journalPosition: raw.byteLength }
       },
       catch: () => new CoreError('IO_ERROR', 'The Conversation history could not be read')
     })
+
+  const latestEntries = (entries: ConversationEntry[]): ConversationEntry[] => {
+    const byId = new Map<string, ConversationEntry>()
+    for (const entry of entries) byId.set(entry.id, entry)
+    return [...byId.values()]
+  }
+
+  const readEntries = (sessionDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
+    readJournal(sessionDir).pipe(Effect.map(({ entries }) => latestEntries(entries)))
+
+  const readVisibleEntries = (sessionDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
+    readJournal(sessionDir).pipe(
+      Effect.map(({ entries }) => latestEntries(visibleConversationEntries(entries)))
+    )
 
   const appendMany = (
     sessionDir: string,
@@ -357,10 +381,13 @@ export function createConversationEffects(options: ConversationOptions): Convers
       // between them leaves a projection that is behind rather than ahead.
       // Being behind is seen and repaired; being ahead would be a status the
       // Conversation never said (ticket 12f).
-      yield* writeState(sessionDir, {
-        ...entries.reduce(advance, known),
-        journalBytes: before + Buffer.byteLength(text, 'utf8')
-      }).pipe(Effect.catchAll(() => Effect.void))
+      const journalBytes = before + Buffer.byteLength(text, 'utf8')
+      const projected = entries.some(
+        (entry) => entry.kind === 'boundary' && entry.boundary === 'rewound'
+      )
+        ? deriveState(yield* readEntries(sessionDir), journalBytes)
+        : { ...entries.reduce(advance, known), journalBytes }
+      yield* writeState(sessionDir, projected).pipe(Effect.catchAll(() => Effect.void))
     })
 
   const append = (sessionDir: string, entry: ConversationEntry): Effect.Effect<void, CoreError> =>
@@ -455,8 +482,16 @@ export function createConversationEffects(options: ConversationOptions): Convers
     sessionId: string,
     sessionDir: string
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
-    Effect.all([readEntries(sessionDir), Ref.get(queuePauseOverrides)]).pipe(
-      Effect.map(([entries, overrides]) => summarize(sessionId, entries, overrides.get(sessionId)))
+    Effect.all([readJournal(sessionDir), Ref.get(queuePauseOverrides)]).pipe(
+      Effect.map(([journal, overrides]) =>
+        summarize(
+          sessionId,
+          latestEntries(journal.entries),
+          latestEntries(visibleConversationEntries(journal.entries)),
+          journal.journalPosition,
+          overrides.get(sessionId)
+        )
+      )
     )
 
   const state = (sessionId: string): Effect.Effect<SessionState, CoreError> =>
@@ -467,7 +502,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
       Effect.flatMap((sessionDir) => snapshot(sessionId, sessionDir))
     )
 
-  const submit = (rawInput: unknown): Effect.Effect<ConversationSnapshot, CoreError> =>
+  const submitWithResult = (
+    rawInput: unknown
+  ): Effect.Effect<SubmitConversationMessageResult, CoreError> =>
     Effect.gen(function* () {
       const parsed = submitConversationMessageInputSchema.safeParse(rawInput)
       if (!parsed.success) {
@@ -493,7 +530,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             if (
               existing.kind !== 'message' ||
               existing.text !== input.text ||
-              !sameAttachments(existing.reviewAttachments, input.reviewAttachments)
+              !sameReviewAttachments(existing.reviewAttachments, input.reviewAttachments)
             ) {
               return yield* Effect.fail(
                 new CoreError(
@@ -502,8 +539,14 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 )
               )
             }
-            const paused = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId)
-            return summarize(input.sessionId, entries, paused)
+            return {
+              snapshot: yield* snapshot(input.sessionId, sessionDir),
+              disposition: (yield* readVisibleEntries(sessionDir)).some(
+                (entry) => entry.id === existing.id
+              )
+                ? ('visible-replay' as const)
+                : ('rewound-replay' as const)
+            }
           }
           const at = (yield* options.clock).toISOString()
           const entry = conversationEntrySchema.parse({
@@ -521,11 +564,16 @@ export function createConversationEffects(options: ConversationOptions): Convers
             plainOptions: false
           })
           yield* append(sessionDir, entry)
-          const paused = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId)
-          return summarize(input.sessionId, [...entries, entry], paused)
+          return {
+            snapshot: yield* snapshot(input.sessionId, sessionDir),
+            disposition: 'accepted' as const
+          }
         })
       )
     })
+
+  const submit = (rawInput: unknown): Effect.Effect<ConversationSnapshot, CoreError> =>
+    submitWithResult(rawInput).pipe(Effect.map((result) => result.snapshot))
 
   const queuedEntry = (
     entries: ConversationEntry[],
@@ -549,14 +597,6 @@ export function createConversationEffects(options: ConversationOptions): Convers
       submissionId
     })
 
-  const queueSnapshot = (
-    sessionId: string,
-    entries: ConversationEntry[]
-  ): Effect.Effect<ConversationSnapshot> =>
-    Ref.get(queuePauseOverrides).pipe(
-      Effect.map((overrides) => summarize(sessionId, entries, overrides.get(sessionId)))
-    )
-
   const enqueueLocked = (
     input: ValidatedQueuedSubmissionInput,
     sessionDir: string,
@@ -574,7 +614,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
           existing.skill === (input.skill ?? null) &&
           existing.permissionMode === input.permissionMode &&
           existing.source === input.source &&
-          sameAttachments(existing.reviewAttachments, input.reviewAttachments)
+          sameReviewAttachments(existing.reviewAttachments, input.reviewAttachments)
         if (!same) {
           return yield* Effect.fail(
             new CoreError(
@@ -583,7 +623,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             )
           )
         }
-        return yield* queueSnapshot(input.sessionId, entries)
+        return yield* snapshot(input.sessionId, sessionDir)
       }
       const active = entries.filter(
         (entry): entry is QueuedSubmission =>
@@ -630,7 +670,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
         )
       }
       yield* appendMany(sessionDir, additions)
-      return summarize(input.sessionId, replaceEntries(entries, additions), pauseOverride ?? false)
+      return yield* snapshot(input.sessionId, sessionDir)
     })
 
   const enqueue = (
@@ -652,7 +692,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entries = yield* readEntries(sessionDir)
+          const entries = yield* readVisibleEntries(sessionDir)
           return yield* enqueueLocked(input, sessionDir, entries)
         })
       )
@@ -695,7 +735,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
         yield* enqueueLocked(
           enqueueQueuedSubmissionInputSchema.parse({ ...input, sessionId: input.sessionId }),
           sessionDir,
-          yield* readEntries(sessionDir),
+          yield* readVisibleEntries(sessionDir),
           'steer-fallback'
         )
         yield* append(
@@ -721,7 +761,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entries = yield* readEntries(sessionDir)
+          const entries = yield* readVisibleEntries(sessionDir)
           if (deriveState(entries, 0).activeRunId !== input.runId) {
             const conversation = yield* enqueueLocked(input, sessionDir, entries, 'steer-fallback')
             return { delivery: 'queue' as const, conversation }
@@ -732,7 +772,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             if (
               existing.kind !== 'message' ||
               existing.text !== input.text ||
-              !sameAttachments(existing.reviewAttachments, input.reviewAttachments)
+              !sameReviewAttachments(existing.reviewAttachments, input.reviewAttachments)
             ) {
               return yield* Effect.fail(
                 new CoreError(
@@ -743,7 +783,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             }
             return {
               delivery: 'steer' as const,
-              conversation: yield* queueSnapshot(input.sessionId, entries)
+              conversation: yield* snapshot(input.sessionId, sessionDir)
             }
           }
           const entry = conversationEntrySchema.parse({
@@ -763,7 +803,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
           yield* appendMany(sessionDir, [entry, steerDisposition(input, 'pending', entry.at)])
           return {
             delivery: 'steer' as const,
-            conversation: yield* queueSnapshot(input.sessionId, [...entries, entry])
+            conversation: yield* snapshot(input.sessionId, sessionDir)
           }
         })
       )
@@ -797,7 +837,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entries = yield* readEntries(sessionDir)
+          const entries = yield* readVisibleEntries(sessionDir)
           const item = queuedEntry(entries, input.submissionId)
           const paused = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId) ?? true
           if (
@@ -829,11 +869,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             )
           }
           yield* appendMany(sessionDir, additions)
-          return summarize(
-            input.sessionId,
-            replaceEntries(entries, additions),
-            pauseAfterChange ? true : paused
-          )
+          return yield* snapshot(input.sessionId, sessionDir)
         })
       )
     })
@@ -896,7 +932,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entries = yield* readEntries(sessionDir)
+          const entries = yield* readVisibleEntries(sessionDir)
           const active = entries
             .filter(
               (entry): entry is QueuedSubmission =>
@@ -941,7 +977,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
           yield* Ref.update(queuePauseOverrides, (current) =>
             new Map(current).set(input.sessionId, false)
           )
-          return summarize(input.sessionId, replaceEntries(entries, additions), false)
+          return yield* snapshot(input.sessionId, sessionDir)
         })
       )
     })
@@ -966,7 +1002,6 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entries = yield* readEntries(sessionDir)
           const entry = conversationEntrySchema.parse({
             kind: 'queue-state',
             id: 'queue-state',
@@ -978,7 +1013,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
           yield* Ref.update(queuePauseOverrides, (current) =>
             new Map(current).set(input.sessionId, input.paused)
           )
-          return summarize(input.sessionId, replaceEntries(entries, [entry, outcome]), input.paused)
+          return yield* snapshot(input.sessionId, sessionDir)
         })
       )
     })
@@ -988,7 +1023,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const sessionDir = yield* sessionDirectory(sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entries = yield* readEntries(sessionDir)
+          const entries = yield* readVisibleEntries(sessionDir)
           const paused = (yield* Ref.get(queuePauseOverrides)).get(sessionId) ?? true
           if (paused || deriveState(entries, 0).activeRunId !== null) return null
           const claimed = entries.find(
@@ -1008,7 +1043,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
           if (
             message?.kind === 'message' &&
             (message.text !== item.text ||
-              !sameAttachments(message.reviewAttachments, item.reviewAttachments))
+              !sameReviewAttachments(message.reviewAttachments, item.reviewAttachments))
           ) {
             return yield* Effect.fail(
               new CoreError(
@@ -1192,11 +1227,15 @@ export function createConversationEffects(options: ConversationOptions): Convers
       )
     })
 
-  const apply = (input: ApplyHarnessEventInput): Effect.Effect<void, CoreError> =>
+  const apply = (input: ApplyHarnessEventInput): Effect.Effect<number | null, CoreError> =>
     Effect.gen(function* () {
       const sessionDir = yield* sessionDirectory(input.sessionId)
+      const journalPath = join(sessionDir, JOURNAL)
+      let before = 0
+      let journalPosition: number | null = null
       yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
+          before = yield* journalSize(journalPath)
           const now = yield* options.clock
           const event = input.event
           switch (event.type) {
@@ -1349,7 +1388,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
               yield* enqueueLocked(
                 enqueueQueuedSubmissionInputSchema.parse(fallbackInput),
                 sessionDir,
-                entries,
+                yield* readVisibleEntries(sessionDir),
                 'steer-fallback'
               )
               yield* append(
@@ -1572,8 +1611,16 @@ export function createConversationEffects(options: ConversationOptions): Convers
               // only.
               return
           }
-        })
+        }).pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              const after = yield* journalSize(journalPath)
+              journalPosition = after > before ? after : null
+            })
+          )
+        )
       )
+      return journalPosition
     })
 
   /**
@@ -1793,7 +1840,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
   const compactionPlan = (sessionId: string): Effect.Effect<CompactionPlan, CoreError> =>
     Effect.gen(function* () {
       const sessionDir = yield* sessionDirectory(sessionId)
-      const entries = yield* readEntries(sessionDir)
+      const entries = yield* readVisibleEntries(sessionDir)
       // A Run stopped in front of an Approval Request is a Run mid-decision.
       // Replacing what the agent remembers while it waits would answer the
       // question for it, from a context it can no longer see.
@@ -1901,6 +1948,78 @@ export function createConversationEffects(options: ConversationOptions): Convers
       )
     })
 
+  const rewind = (rawInput: RecordRewindInput): Effect.Effect<ConversationSnapshot, CoreError> =>
+    Effect.gen(function* () {
+      const parsed = recordRewindInputSchema.safeParse(rawInput)
+      if (!parsed.success) {
+        return yield* Effect.fail(
+          new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid rewind')
+        )
+      }
+      const input = parsed.data
+      const sessionDir = yield* sessionDirectory(input.sessionId)
+      return yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const entries = yield* readEntries(sessionDir)
+          const id = `boundary:rewound:${input.operationId}`
+          if (entries.some((entry) => entry.id === id)) {
+            return yield* snapshot(input.sessionId, sessionDir)
+          }
+          const visible = yield* readVisibleEntries(sessionDir)
+          const activeRunId = deriveState(entries, 0).activeRunId
+          if (activeRunId !== null) {
+            return yield* Effect.fail(
+              new CoreError(
+                'INVALID_INPUT',
+                `Run ${activeRunId} is active; stop it before rewinding this Conversation`
+              )
+            )
+          }
+          const targetIndex = visible.findIndex((entry) => entry.id === input.targetEntryId)
+          const target = visible[targetIndex]
+          if (target?.kind !== 'message' || target.role !== 'user') {
+            return yield* Effect.fail(
+              new CoreError('INVALID_INPUT', 'The rewind point is not a visible user message')
+            )
+          }
+          const opening = visible.find(
+            (entry) =>
+              entry.kind === 'boundary' &&
+              entry.boundary === 'run-started' &&
+              entry.submissionId === target.submissionId
+          )
+          if (opening?.kind !== 'boundary') {
+            return yield* Effect.fail(
+              new CoreError('INVALID_INPUT', 'The chosen message has no Run to rewind')
+            )
+          }
+          const kept = visible.slice(0, targetIndex)
+          const keptMessages = kept.filter((entry) => entry.kind === 'message')
+          const tailFrom = keptMessages.at(-CONVERSATION_TAIL_MESSAGES)?.id ?? id
+          const entry = conversationEntrySchema.parse({
+            kind: 'boundary',
+            id,
+            at: (yield* options.clock).toISOString(),
+            runId: opening.runId,
+            boundary: 'rewound',
+            summary: 'The Conversation was rewound; files were not changed',
+            rewind: { rewoundToEntryId: target.id, tailFromEntryId: tailFrom }
+          })
+          yield* append(sessionDir, entry)
+          const queueState = (yield* readVisibleEntries(sessionDir)).findLast(
+            (candidate) => candidate.kind === 'queue-state'
+          )
+          yield* Ref.update(queuePauseOverrides, (current) =>
+            new Map(current).set(
+              input.sessionId,
+              queueState?.kind === 'queue-state' ? queueState.paused : true
+            )
+          )
+          return yield* snapshot(input.sessionId, sessionDir)
+        })
+      )
+    })
+
   const adapterFor = (
     runId: string,
     harness: HarnessId,
@@ -1966,7 +2085,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
         const sessionDir = yield* sessionDirectory(validated.sessionId)
         const conversation = yield* writeLock.withPermits(1)(
           Effect.gen(function* () {
-            const entries = yield* readEntries(sessionDir)
+            const entries = yield* readVisibleEntries(sessionDir)
             const queued = yield* enqueueLocked(validated, sessionDir, entries, 'steer-fallback')
             yield* append(
               sessionDir,
@@ -1984,16 +2103,20 @@ export function createConversationEffects(options: ConversationOptions): Convers
     Effect.gen(function* () {
       const adapter = yield* adapterFor(input.runId, input.harness)
       const events = adapter.ingest(input.chunk)
+      const journalPositions: (number | null)[] = []
       for (const event of events) {
-        yield* apply({ sessionId: input.sessionId, runId: input.runId, event })
+        journalPositions.push(
+          yield* apply({ sessionId: input.sessionId, runId: input.runId, event })
+        )
       }
-      return { events, outgoing: adapter.takeOutgoing() }
+      return { events, outgoing: adapter.takeOutgoing(), journalPositions }
     })
 
   return {
     get,
     state,
     submit,
+    submitWithResult,
     enqueue,
     admitRunSteer,
     editQueued,
@@ -2013,17 +2136,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
     finalize,
     recordAppAction,
     compactionPlan,
-    compact
+    compact,
+    rewind
   }
-}
-
-/**
- * Whether two sets of Review Attachments are the same reviewed code. Identity
- * reuse is refused on any difference: a submission id that answers about
- * different code is a different submission wearing the same name.
- */
-function sameAttachments(left: ReviewAttachment[], right: ReviewAttachment[]): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 /**
@@ -2232,18 +2347,11 @@ function tally(
   }
 }
 
-function replaceEntries(
-  entries: ConversationEntry[],
-  replacements: ConversationEntry[]
-): ConversationEntry[] {
-  const byId = new Map(entries.map((entry) => [entry.id, entry]))
-  for (const entry of replacements) byId.set(entry.id, entry)
-  return [...byId.values()]
-}
-
 function summarize(
   sessionId: string,
+  rawEntries: ConversationEntry[],
   entries: ConversationEntry[],
+  journalPosition: number,
   queuePausedOverride?: boolean
 ): ConversationSnapshot {
   // What the Session is doing is one rule, and it lives with the projection
@@ -2263,7 +2371,7 @@ function summarize(
   const active = queued.filter(isActiveQueuedSubmission)
   const paused = active.length > 0 ? (queuePausedOverride ?? true) : true
   const outcome = entries.findLast((entry) => entry.kind === 'queue-outcome')
-  for (const entry of entries) {
+  for (const entry of rawEntries) {
     if (entry.kind === 'usage') {
       sessionUsage = addUsage(sessionUsage, entry.usage)
       latestRunUsage = entry.usage
@@ -2284,6 +2392,7 @@ function summarize(
   }
   return {
     sessionId,
+    journalPosition,
     entries: entries.filter(
       (entry) =>
         entry.kind !== 'usage' &&

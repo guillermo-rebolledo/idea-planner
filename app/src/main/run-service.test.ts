@@ -100,6 +100,7 @@ interface FakeCore {
   unfinished: { sessionId: string; runId: string }[]
   /** What Core would answer a compaction plan with, or nothing to refuse it. */
   compactionPlan?: CompactionPlan
+  submitDisposition: 'accepted' | 'visible-replay' | 'rewound-replay'
 }
 
 let nextRunId = 0
@@ -127,6 +128,7 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     events: [],
     conversation: {
       sessionId: 'session',
+      journalPosition: 0,
       entries: [],
       usage: { run: null, session: emptyUsage() },
       recovery: null,
@@ -138,7 +140,8 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     },
     standingRules: [],
     unfinished: [],
-    compactionPlan: undefined
+    compactionPlan: undefined,
+    submitDisposition: 'accepted'
   }
   const run: RunSnapshot = {
     id: runId,
@@ -175,7 +178,14 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       return Promise.resolve({ answered: true, outgoing: ['{"id":7,"result":{}}'] })
     }
     if (command.type === 'conversation/ingest') {
-      return Promise.resolve({ events: state.events, outgoing: [] })
+      return Promise.resolve({
+        events: state.events,
+        outgoing: [],
+        journalPositions: state.events.map(() => state.conversation.journalPosition)
+      })
+    }
+    if (command.type === 'conversation/apply') {
+      return Promise.resolve(state.conversation.journalPosition)
     }
     if (command.type === 'conversation/unfinished') return Promise.resolve(state.unfinished)
     if (command.type === 'conversation/queue-launch-observed') {
@@ -199,6 +209,12 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       return Promise.resolve(state.compactionPlan)
     }
     if (command.type === 'conversation/compact') return Promise.resolve(state.conversation)
+    if (command.type === 'conversation/submit') {
+      return Promise.resolve({
+        snapshot: state.conversation,
+        disposition: state.submitDisposition
+      })
+    }
     if (command.type.startsWith('conversation/')) return Promise.resolve(state.conversation)
     return Promise.resolve({ ...run, status: 'running' })
   })
@@ -543,6 +559,75 @@ describe('Run service', () => {
     })
   })
 
+  it('rewinds through Core without touching the Checkout, snapshots, or Harness process', async () => {
+    const root = await readyClaudeRoot('run-claude-rewind-')
+    const projectRoot = join(root, 'a-project')
+    await mkdir(projectRoot, { recursive: true })
+    await writeFile(join(projectRoot, 'kept.ts'), 'export const kept = true\n')
+    const core = fakeCore(projectRoot)
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
+    })
+
+    await service.rewind({
+      sessionId: 'session',
+      operationId: 'rewind-1',
+      targetEntryId: 'user:submission-1'
+    })
+
+    expect(core.commands).toEqual(['conversation/rewind'])
+    expect(broker.start).not.toHaveBeenCalled()
+    expect(broker.stop).not.toHaveBeenCalled()
+    expect(broker.write).not.toHaveBeenCalled()
+    expect(await readFile(join(projectRoot, 'kept.ts'), 'utf8')).toBe('export const kept = true\n')
+  })
+
+  it('returns Core idempotently when a restored rewind message is sent unchanged', async () => {
+    const root = await readyClaudeRoot('run-claude-rewind-replay-')
+    const core = fakeCore(join(root, 'a-project'))
+    core.submitDisposition = 'rewound-replay'
+    const broker = fakeBroker()
+    const readiness = readyReadiness(join(root, 'claude'))
+    const service = new RunService({
+      core,
+      broker,
+      readiness,
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
+    })
+
+    await service.develop({
+      sessionId: 'session',
+      submissionId: 'submission-original',
+      text: 'The original message',
+      source: 'composer',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      permissionMode: 'auto'
+    })
+
+    expect(core.commands).toContain('conversation/submit')
+    expect(core.commands).not.toContain('run/lifecycle-open')
+    expect(readiness.refresh).not.toHaveBeenCalled()
+    expect(broker.start).not.toHaveBeenCalled()
+  })
+
   it('hands a second compaction the summary in force, to be rewritten rather than nested', async () => {
     const root = await readyClaudeRoot('run-claude-recompaction-')
     const core = fakeCore(join(root, 'a-project'))
@@ -829,6 +914,120 @@ describe('Run service', () => {
     expect(args.at(-1)).not.toContain('Receipts render offline now')
   })
 
+  it('starts a fresh Thread from the tail alone after a rewind', async () => {
+    const root = await readyClaudeRoot('run-claude-rewound-')
+    const core = fakeCore(join(root, 'a-project'))
+    core.conversation = {
+      ...core.conversation,
+      harnessThreads: { claude: 'saved-thread' },
+      entries: [
+        {
+          kind: 'boundary',
+          id: 'boundary:old:started',
+          at: '2026-07-31T12:00:00.000Z',
+          runId: 'old',
+          boundary: 'run-started',
+          summary: 'Wayfinder via Claude',
+          submissionId: 'old-submission',
+          recovery: null,
+          harness: 'claude',
+          skill: 'wayfinder',
+          model: 'claude-sonnet-4-5'
+        },
+        {
+          kind: 'message',
+          id: 'message:old',
+          at: '2026-07-31T12:00:01.000Z',
+          runId: 'old',
+          role: 'assistant',
+          text: 'Discarded understanding',
+          completeness: 'complete',
+          source: 'harness',
+          submissionId: null,
+          reviewAttachments: [],
+          suggestedResponses: [],
+          plainOptions: false
+        },
+        {
+          kind: 'message',
+          id: 'message:tail',
+          at: '2026-07-31T12:00:02.000Z',
+          runId: null,
+          role: 'user',
+          text: 'The part that remains',
+          completeness: 'complete',
+          source: 'composer',
+          submissionId: 'tail-submission',
+          reviewAttachments: [],
+          suggestedResponses: [],
+          plainOptions: false
+        },
+        {
+          kind: 'boundary',
+          id: 'boundary:rewound:rewind-1',
+          at: '2026-07-31T12:00:03.000Z',
+          runId: 'old',
+          boundary: 'rewound',
+          summary: 'Rewound',
+          submissionId: null,
+          recovery: null,
+          rewind: {
+            rewoundToEntryId: 'message:discarded-prompt',
+            tailFromEntryId: 'message:tail'
+          }
+        },
+        {
+          kind: 'message',
+          id: 'user:submission-1',
+          at: '2026-07-31T12:00:04.000Z',
+          runId: null,
+          role: 'user',
+          text: 'Continue',
+          completeness: 'complete',
+          source: 'composer',
+          submissionId: 'submission-1',
+          reviewAttachments: [],
+          suggestedResponses: [],
+          plainOptions: false
+        }
+      ]
+    }
+    const projectKey = join(root, 'a-project').replaceAll('/', '-')
+    await mkdir(join(root, '.claude', 'projects', projectKey), { recursive: true })
+    await writeFile(join(root, '.claude', 'projects', projectKey, 'saved-thread.jsonl'), '{}\n')
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
+    })
+
+    await service.start({
+      submissionId: 'submission-1',
+      sessionId: 'session',
+      prompt: 'Continue',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      skill: 'wayfinder',
+      permissionMode: 'auto'
+    })
+
+    const args = broker.launch?.args ?? []
+    expect(args).not.toContain('--resume')
+    expect(args.at(-1)).toContain('User: The part that remains')
+    expect(args.at(-1)?.match(/Continue/g)).toHaveLength(1)
+    expect(args.at(-1)).not.toContain('Discarded understanding')
+    expect(args.at(-1)).not.toContain('Summary of this Conversation')
+  })
+
   it('freezes executable and Skill provenance into the durable lifecycle', async () => {
     const root = await mkdtemp(join(tmpdir(), 'run-service-'))
     temporaryDirectories.push(root)
@@ -857,6 +1056,7 @@ describe('Run service', () => {
         if (command.type === 'conversation/get') {
           return Promise.resolve({
             sessionId: 'session',
+            journalPosition: 0,
             entries: [],
             usage: { run: null, session: emptyUsage() },
             recovery: null,
@@ -890,6 +1090,7 @@ describe('Run service', () => {
                 run: next,
                 conversation: {
                   sessionId: 'session',
+                  journalPosition: 0,
                   entries: [],
                   usage: { run: null, session: emptyUsage() },
                   recovery: null,
@@ -1443,6 +1644,7 @@ describe('Run service', () => {
   it('streams normalized events to the window and keeps assistant text out of activity', async () => {
     const root = await readyHarnessRoot('run-stream-')
     const core = fakeCore(join(root, 'a-project'))
+    core.conversation = { ...core.conversation, journalPosition: 42 }
     core.events = [
       { type: 'assistant-message', id: 'item_0', text: 'Who is this for?', complete: true },
       { type: 'reasoning', summary: 'Reading the Session first.' },
@@ -1482,6 +1684,7 @@ describe('Run service', () => {
       'tool'
     ])
     expect(streamed.map((entry) => entry.invalidation)).toEqual(['mailbox', 'none', 'none', 'none'])
+    expect(streamed.map((entry) => entry.journalPosition)).toEqual([42, 42, 42, 42])
     const activity = (core.send.mock.calls as [{ type: string; input?: unknown }][])
       .filter(([command]) => command.type === 'run/event')
       .map(([command]) => command.input as { kind: string; summary: string })

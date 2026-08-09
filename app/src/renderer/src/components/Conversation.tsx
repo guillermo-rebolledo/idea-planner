@@ -20,6 +20,7 @@ import {
   Square,
   Terminal,
   TriangleAlert,
+  History,
   Undo2,
   X
 } from 'lucide-react'
@@ -38,6 +39,7 @@ import {
   type QueueOutcome,
   reviewAttachmentLabel,
   reviewAttachmentsRefusal,
+  sameReviewAttachments,
   type ReviewAttachment,
   type RunSnapshot,
   type SessionSummary,
@@ -67,6 +69,7 @@ import { displayCommand } from '@shared/command'
 import { TurnRail, type TurnStep, type TurnSummary } from '@renderer/components/TurnRail'
 import { SubagentDock, SubagentPill } from '@renderer/components/SubagentDock'
 import { RunUndoDialog, UndoRunButton } from '@renderer/components/RunUndo'
+import { ConversationRewindDialog } from '@renderer/components/ConversationRewind'
 import { fleetOf, planOf } from '@renderer/lib/selected-conversation-read-model'
 import type { FleetMember } from '@renderer/lib/subagent-fleet'
 import type { MessageDeliveryIntent } from '@shared/conversation'
@@ -199,7 +202,8 @@ export function Conversation({
   onOpenFile,
   reviewAttachments,
   onRemoveReviewAttachment,
-  onClearReviewAttachments
+  onClearReviewAttachments,
+  onRestoreReviewAttachments
 }: {
   session: SessionSummary
   conversation: SelectedConversation
@@ -210,6 +214,8 @@ export function Conversation({
   onRemoveReviewAttachment: (id: string) => void
   /** The message carrying them was committed, so the composer is empty again. */
   onClearReviewAttachments: () => void
+  /** Rewind restores the exact reviewed code carried by the selected message. */
+  onRestoreReviewAttachments: (attachments: ReviewAttachment[]) => void
 }): React.JSX.Element {
   const sessionId = session.id
   const { phase, runs, live, failureSummary, refresh, adopt: adoptSnapshot } = conversation
@@ -221,6 +227,12 @@ export function Conversation({
   // The Run whose undo is open, if any. Only ever set by the explicit button:
   // undoing a Run writes over source files, and ADR 0006 keeps it off ⌘Z.
   const [undoingRunId, setUndoingRunId] = useState<string | null>(null)
+  const [rewindingMessage, setRewindingMessage] = useState<MessageEntry | null>(null)
+  const [rewoundSubmission, setRewoundSubmission] = useState<{
+    text: string
+    submissionId: string
+    reviewAttachments: ReviewAttachment[]
+  } | null>(null)
   // One choice, not three: the model carries the Harness that reaches it.
   const { models, readiness } = useModelCatalog()
   const [chosen, setChosen] = useState<ModelChoice | null>(null)
@@ -332,8 +344,14 @@ export function Conversation({
     ) => {
       if (!chosenHarness) return
       const messageSkill = queuedSkill === undefined ? chosenSkill : queuedSkill
-      const resolvedSubmissionId = submissionId ?? crypto.randomUUID()
       const ownsComposer = source === 'composer' && !submissionId && queuedSkill === undefined
+      const restoredSubmissionId =
+        ownsComposer &&
+        rewoundSubmission?.text === text &&
+        sameReviewAttachments(rewoundSubmission.reviewAttachments, reviewAttachments)
+          ? rewoundSubmission.submissionId
+          : undefined
+      const resolvedSubmissionId = submissionId ?? restoredSubmissionId ?? crypto.randomUUID()
       // Only a message being written now carries what is attached now. A
       // resend answers under an identity already used, and changing what it
       // says would be a different message wearing the same name.
@@ -382,6 +400,7 @@ export function Conversation({
         })
         adoptSnapshot(next)
         setOptimisticMessage(null)
+        if (ownsComposer) setRewoundSubmission(null)
         if (ownsComposer && attached.length > 0) onClearReviewAttachments()
       } catch {
         // The message was accepted durably before the Run was attempted, so
@@ -416,7 +435,8 @@ export function Conversation({
       refresh,
       adoptSnapshot,
       reviewAttachments,
-      onClearReviewAttachments
+      onClearReviewAttachments,
+      rewoundSubmission
     ]
   )
 
@@ -563,6 +583,19 @@ export function Conversation({
   )
   const items = useMemo(() => groupEntries(visibleEntries), [visibleEntries])
   const turns = useMemo(() => summarizeTurns(items), [items])
+  const rewindableSubmissions = useMemo(
+    () =>
+      new Set(
+        durableEntries.flatMap((entry) =>
+          entry.kind === 'boundary' &&
+          entry.boundary === 'run-started' &&
+          entry.submissionId !== null
+            ? [entry.submissionId]
+            : []
+        )
+      ),
+    [durableEntries]
+  )
   // Every Run's fleet, so a pill can say what its own Run dispatched while the
   // dock shows whichever fleet is being read.
   const fleets = useMemo(() => {
@@ -667,6 +700,32 @@ export function Conversation({
           onApplied={() => void refresh()}
         />
       )}
+      {rewindingMessage?.submissionId != null && (
+        <ConversationRewindDialog
+          key={rewindingMessage.id}
+          message={rewindingMessage.text}
+          onClose={() => setRewindingMessage(null)}
+          onConfirm={async () => {
+            const message = rewindingMessage
+            if (message.submissionId === null) return
+            const next = await window.shell.rewindSession({
+              sessionId,
+              operationId: crypto.randomUUID(),
+              targetEntryId: message.id
+            })
+            adoptSnapshot(next)
+            setDraft(message.text)
+            setRewoundSubmission({
+              text: message.text,
+              submissionId: message.submissionId,
+              reviewAttachments: message.reviewAttachments
+            })
+            onRestoreReviewAttachments(message.reviewAttachments)
+            setRewindingMessage(null)
+            window.requestAnimationFrame(() => focusTextareaAtEnd(composerRef))
+          }}
+        />
+      )}
       <div className="flex h-full min-w-0 flex-1 flex-col">
         {/* The reader's place is the scroller's to keep (mock 1a). A new turn
           anchors near the top with a peek of what came before it, the reply
@@ -720,6 +779,13 @@ export function Conversation({
                       <UserBubble
                         entry={item.entry}
                         pending={optimisticVisible && item.entry.id === optimisticMessageId}
+                        onRewind={
+                          activeRunId === null &&
+                          item.entry.submissionId !== null &&
+                          rewindableSubmissions.has(item.entry.submissionId)
+                            ? () => setRewindingMessage(item.entry)
+                            : undefined
+                        }
                       />,
                       true
                     )
@@ -744,6 +810,9 @@ export function Conversation({
                   }
                   if (item.type === 'compaction') {
                     return row(item.entry.id, <CompactionNote entry={item.entry} />)
+                  }
+                  if (item.type === 'rewind') {
+                    return row(item.entry.id, <RewindNote />)
                   }
                   if (item.type === 'app-action') {
                     return row(item.entry.id, <AppActionNote entry={item.entry} />)
@@ -2378,6 +2447,23 @@ function CompactionNote({ entry }: { entry: BoundaryEntry }): React.JSX.Element 
   )
 }
 
+function RewindNote(): React.JSX.Element {
+  return (
+    <section
+      aria-label="Conversation rewind"
+      className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs"
+    >
+      <p className="flex items-center gap-1.5 text-muted-foreground">
+        <History aria-hidden="true" className="size-3 shrink-0" />
+        The Conversation was rewound here.
+      </p>
+      <p className="mt-1 text-2xs text-muted-foreground">
+        Later turns are set aside. Files were not changed or undone.
+      </p>
+    </section>
+  )
+}
+
 function AppActionNote({ entry }: { entry: AppActionEntry }): React.JSX.Element {
   const restored = entry.outcomes.filter((one) => one.outcome === 'restored')
   const diverged = entry.outcomes.filter((one) => one.outcome === 'skipped-diverged')
@@ -2426,6 +2512,7 @@ type ConversationItem =
   | { type: 'assistant'; entry: MessageEntry }
   | { type: 'note'; entry: BoundaryEntry }
   | { type: 'compaction'; entry: BoundaryEntry }
+  | { type: 'rewind'; entry: BoundaryEntry }
   | { type: 'app-action'; entry: AppActionEntry }
   | RunGroup
 
@@ -2466,6 +2553,7 @@ function groupEntries(entries: ConversationEntry[]): ConversationItem[] {
         // A compaction belongs to no Run's group: it is a thing that happened
         // between them, and the Run it names is not rewritten by it.
         else if (entry.boundary === 'compacted') items.push({ type: 'compaction', entry })
+        else if (entry.boundary === 'rewound') items.push({ type: 'rewind', entry })
         else groupFor(entry.runId).ended = entry
         break
       case 'command':
@@ -2532,6 +2620,7 @@ function summarizeTurns(items: ConversationItem[]): TurnSummary[] {
       turn === undefined ||
       item.type === 'note' ||
       item.type === 'compaction' ||
+      item.type === 'rewind' ||
       item.type === 'app-action'
     ) {
       continue
@@ -2633,10 +2722,12 @@ function formatClock(at: string): string {
 
 function UserBubble({
   entry,
-  pending = false
+  pending = false,
+  onRewind
 }: {
   entry: MessageEntry
   pending?: boolean
+  onRewind?: () => void
 }): React.JSX.Element {
   return (
     <div className="flex flex-col items-end gap-1">
@@ -2644,6 +2735,12 @@ function UserBubble({
         {entry.text}
       </p>
       {entry.reviewAttachments.length > 0 && <SentReviewAttachments entry={entry} />}
+      {!pending && onRewind && (
+        <Button type="button" size="sm" variant="ghost" onClick={onRewind}>
+          <History aria-hidden="true" className="size-3" />
+          Rewind to before this message
+        </Button>
+      )}
       {pending && (
         <span
           role="status"

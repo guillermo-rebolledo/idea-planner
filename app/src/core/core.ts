@@ -37,7 +37,9 @@ import type {
   RecordCompactionInput,
   RunSteerAdmissionInput,
   RunSteerAdmissionResult,
+  RecordRewindInput,
   SubmitConversationMessageInput,
+  SubmitConversationMessageResult,
   UnfinishedRun
 } from '@shared/conversation'
 import type { ProjectSkillsTrust, ProjectView } from '@shared/project'
@@ -116,15 +118,19 @@ export interface Core {
   getConversation(sessionId: string): Promise<ConversationSnapshot>
   submitConversationMessage(input: SubmitConversationMessageInput): Promise<ConversationSnapshot>
   admitRunSteer(input: RunSteerAdmissionInput): Promise<RunSteerAdmissionResult>
+  submitConversationMessageWithResult(
+    input: SubmitConversationMessageInput
+  ): Promise<SubmitConversationMessageResult>
   recordAppAction(input: RecordAppActionInput): Promise<ConversationSnapshot>
   planCompaction(sessionId: string): Promise<CompactionPlan>
   compactConversation(input: RecordCompactionInput): Promise<ConversationSnapshot>
+  rewindConversation(input: RecordRewindInput): Promise<ConversationSnapshot>
   changeQueuedSubmissions(input: QueuedSubmissionChange): Promise<ConversationSnapshot>
   nextQueuedSubmission(sessionId: string): Promise<QueuedSubmissionLaunchPlan | null>
   observeQueuedSubmissionLaunch(
     input: QueuedSubmissionLaunchObservation
   ): Promise<QueuedSubmissionLaunchResult>
-  applyHarnessEvent(input: ApplyHarnessEventInput): Promise<void>
+  applyHarnessEvent(input: ApplyHarnessEventInput): Promise<number | null>
   openHarness(input: OpenHarnessInput): Promise<HarnessStream>
   answerHarnessApproval(
     input: AnswerHarnessInput
@@ -181,9 +187,13 @@ export interface CoreEffects {
     input: SubmitConversationMessageInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
   admitRunSteer(input: RunSteerAdmissionInput): Effect.Effect<RunSteerAdmissionResult, CoreError>
+  submitConversationMessageWithResult(
+    input: SubmitConversationMessageInput
+  ): Effect.Effect<SubmitConversationMessageResult, CoreError>
   recordAppAction(input: RecordAppActionInput): Effect.Effect<ConversationSnapshot, CoreError>
   planCompaction(sessionId: string): Effect.Effect<CompactionPlan, CoreError>
   compactConversation(input: RecordCompactionInput): Effect.Effect<ConversationSnapshot, CoreError>
+  rewindConversation(input: RecordRewindInput): Effect.Effect<ConversationSnapshot, CoreError>
   changeQueuedSubmissions(
     input: QueuedSubmissionChange
   ): Effect.Effect<ConversationSnapshot, CoreError>
@@ -193,7 +203,7 @@ export interface CoreEffects {
   observeQueuedSubmissionLaunch(
     input: QueuedSubmissionLaunchObservation
   ): Effect.Effect<QueuedSubmissionLaunchResult, CoreError>
-  applyHarnessEvent(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
+  applyHarnessEvent(input: ApplyHarnessEventInput): Effect.Effect<number | null, CoreError>
   openHarness(input: OpenHarnessInput): Effect.Effect<HarnessStream, CoreError>
   answerHarnessApproval(
     input: AnswerHarnessInput
@@ -816,9 +826,11 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     getConversation: (sessionId) => conversation.get(sessionId),
     submitConversationMessage: (input) => conversation.submit(input),
     admitRunSteer: (input) => conversation.admitRunSteer(input),
+    submitConversationMessageWithResult: (input) => conversation.submitWithResult(input),
     recordAppAction: (input) => conversation.recordAppAction(input),
     planCompaction: (sessionId) => conversation.compactionPlan(sessionId),
     compactConversation: (input) => conversation.compact(input),
+    rewindConversation: (input) => conversation.rewind(input),
     changeQueuedSubmissions: (input) => queuedSubmissions.change(input),
     nextQueuedSubmission: (sessionId) => queuedSubmissions.next(sessionId),
     observeQueuedSubmissionLaunch: (input) => queuedSubmissions.observeLaunch(input),
@@ -963,9 +975,12 @@ export function createCore(deps: CoreDeps = {}): Core {
     getConversation: (sessionId) => run(core.getConversation(sessionId)),
     submitConversationMessage: (input) => run(core.submitConversationMessage(input)),
     admitRunSteer: (input) => run(core.admitRunSteer(input)),
+    submitConversationMessageWithResult: (input) =>
+      run(core.submitConversationMessageWithResult(input)),
     recordAppAction: (input) => run(core.recordAppAction(input)),
     planCompaction: (sessionId) => run(core.planCompaction(sessionId)),
     compactConversation: (input) => run(core.compactConversation(input)),
+    rewindConversation: (input) => run(core.rewindConversation(input)),
     changeQueuedSubmissions: (input) => run(core.changeQueuedSubmissions(input)),
     nextQueuedSubmission: (sessionId) => run(core.nextQueuedSubmission(sessionId)),
     observeQueuedSubmissionLaunch: (input) => run(core.observeQueuedSubmissionLaunch(input)),

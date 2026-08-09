@@ -113,7 +113,7 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
     case 'conversation/get':
       return core.getConversation(command.sessionId)
     case 'conversation/submit':
-      return core.submitConversationMessage(command.input)
+      return core.submitConversationMessageWithResult(command.input)
     case 'conversation/admit-steer':
       return core.admitRunSteer(command.input)
     case 'conversation/app-action':
@@ -122,6 +122,8 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.planCompaction(command.sessionId)
     case 'conversation/compact':
       return core.compactConversation(command.input)
+    case 'conversation/rewind':
+      return core.rewindConversation(command.input)
     case 'conversation/queue-change':
       return core.changeQueuedSubmissions(command.input)
     case 'conversation/queue-next':

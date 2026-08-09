@@ -78,6 +78,7 @@ export class SelectedConversationReadModel {
   private latest: SelectedConversationSnapshot | null = null
   private live: LiveRun | null = null
   private pendingLive: LiveRun | null = null
+  private streamed: ConversationStreamEvent[] = []
   private failureSummary: string | null = null
   private runsForActiveRun: string | null | typeof RUN_HISTORY_NOT_READ = RUN_HISTORY_NOT_READ
   private revision = 0
@@ -110,7 +111,7 @@ export class SelectedConversationReadModel {
     ) {
       this.failureSummary = null
     }
-    this.reconcileLive(conversation.activeRunId)
+    this.reconcileLive(conversation)
     this.latest = {
       conversation,
       runs: this.latest?.runs ?? [],
@@ -126,8 +127,36 @@ export class SelectedConversationReadModel {
     // Lifecycle invalidation is published only after its durable write. Any
     // read already in flight therefore predates this push and must lose.
     if (streamed.invalidation === 'mailbox') this.revision += 1
+    // A rewind carries no live Run content. Its durable snapshot is the whole
+    // answer; folding it as a Run event would briefly invent activity for the
+    // old Run it names.
+    if (streamed.event.type === 'rewound') {
+      if (streamed.invalidation === 'mailbox') this.invalidateDurableRead()
+      return
+    }
     if (streamed.event.type === 'started') this.failureSummary = null
     if (streamed.event.type === 'failed') this.failureSummary = streamed.event.summary
+    if (streamed.event.type === 'assistant-message') {
+      const messageId = streamed.event.id
+      this.streamed = this.streamed.filter(
+        (existing) =>
+          existing.runId !== streamed.runId ||
+          existing.event.type !== 'assistant-message' ||
+          existing.event.id !== messageId
+      )
+    }
+    this.streamed.push(streamed)
+    if (
+      this.latest !== null &&
+      streamed.journalPosition !== null &&
+      streamed.journalPosition <= this.latest.conversation.journalPosition
+    ) {
+      this.streamed.pop()
+      this.reconcileLive(this.latest.conversation)
+      this.publishCurrent()
+      if (streamed.invalidation === 'mailbox') this.invalidateDurableRead()
+      return
+    }
     const durableFileChanges =
       this.latest?.conversation.entries.filter(
         (entry) => entry.kind === 'file-change' && entry.runId === streamed.runId
@@ -183,7 +212,7 @@ export class SelectedConversationReadModel {
           this.runsForActiveRun = conversation.activeRunId
         }
 
-        this.reconcileLive(conversation.activeRunId)
+        this.reconcileLive(conversation)
         this.latest = {
           conversation,
           runs,
@@ -208,9 +237,23 @@ export class SelectedConversationReadModel {
     this.dependencies.publish(this.latest)
   }
 
-  private reconcileLive(activeRunId: string | null): void {
-    if (this.live?.runId !== activeRunId) this.live = null
-    if (this.pendingLive?.runId !== activeRunId) this.pendingLive = null
+  private reconcileLive(conversation: ConversationSnapshot): void {
+    const activeRunId = conversation.activeRunId
+    this.streamed = this.streamed.filter(
+      (streamed) =>
+        (streamed.journalPosition === null ||
+          streamed.journalPosition > conversation.journalPosition) &&
+        activeRunId !== null &&
+        streamed.runId === activeRunId
+    )
+    const durableFileChanges = conversation.entries.filter(
+      (entry) => entry.kind === 'file-change' && entry.runId === activeRunId
+    ).length
+    this.live = this.streamed.reduce<LiveRun | null>(
+      (live, streamed) => applyLiveEvent(live, streamed, durableFileChanges),
+      null
+    )
+    if (this.paintHandle !== null) this.pendingLive = this.live
   }
 
   private invalidateDurableRead(): void {

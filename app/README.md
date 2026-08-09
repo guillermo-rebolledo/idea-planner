@@ -27,6 +27,26 @@ Sessions, Conversations, Runs, settings — lives in
 `~/Library/Application Support/com.memojiinc.argos` (ADR 0002), and a build is signed and
 notarized under it.
 
+## Packaging
+
+`pnpm package` builds and produces a `dmg` and a `zip` for `arm64` and `x64` under `dist/`.
+Argos is a Developer ID app distributed outside the App Store, hardened, with the
+entitlements in `build/entitlements.mac.plist` — see
+[ADR 0008](../docs/adr/0008-developer-id-distribution.md) for why.
+
+Signing and notarization credentials are read from the environment and are named nowhere in
+the repository. Without them the command still produces a bundle that launches locally; the
+packager says plainly that it skipped both.
+
+```bash
+CSC_LINK, CSC_KEY_PASSWORD                              # the Developer ID certificate
+APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID    # notarization, or:
+APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER       # an App Store Connect key
+```
+
+A packaged build keeps its state where an unpackaged one does, so a Session made before
+packaging is there after it. Windows and Linux are deferred.
+
 ## Visual identity
 
 `src/renderer/src/styles.css` holds the whole identity in two layers: families
@@ -46,6 +66,7 @@ Geist and Geist Mono are self-hosted under `src/renderer/src/assets/fonts`
 pnpm dev          # run the app with hot reload
 pnpm build        # build main, preload, core, and renderer bundles
 pnpm start        # preview the built app
+pnpm package      # build and package a signed, notarized macOS app into dist/
 pnpm typecheck    # typecheck node and web code
 pnpm test:core    # Core-interface and title tests (Vitest)
 pnpm test:shell   # packaged-shell acceptance tests (Playwright + Electron)

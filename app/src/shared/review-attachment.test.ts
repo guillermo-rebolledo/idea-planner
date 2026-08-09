@@ -6,6 +6,7 @@ import {
   harnessPromptWithReviewAttachments,
   reviewAttachmentLabel,
   reviewAttachmentsRefusal,
+  sameReviewAttachments,
   serializeReviewAttachments,
   type ReviewAttachment,
   type ReviewHunk
@@ -48,6 +49,14 @@ const source = {
 }
 
 describe('capturing reviewed code', () => {
+  it('treats the exact attachment snapshots as part of submission identity', () => {
+    const attachment = captureReviewAttachment(source, { scope: 'file' }, AT)
+    expect(sameReviewAttachments([attachment], [{ ...attachment }])).toBe(true)
+    expect(sameReviewAttachments([attachment], [{ ...attachment, lines: ['different'] }])).toBe(
+      false
+    )
+  })
+
   it('copies the whole recorded change, with its provenance', () => {
     const attachment = captureReviewAttachment(source, { scope: 'file' }, AT)
 

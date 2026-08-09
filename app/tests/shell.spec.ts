@@ -104,8 +104,17 @@ async function completeOnboarding(page: Page): Promise<void> {
   const dialog = page.getByRole('dialog', { name: 'Add Project' })
   await dialog.getByRole('button', { name: 'Choose project folder…' }).click()
   const confirmation = dialog.getByRole('alert')
-  await confirmation.getByRole('button', { name: 'Add this Project' }).click()
-  await page.getByRole('form', { name: 'New chat' }).waitFor()
+  const newSession = page.getByRole('button', { name: 'New Session', exact: true })
+  // Project identity is observed asynchronously. Wait until it either needs
+  // the resolved-root confirmation or has already added the Project; checking
+  // the alert in the same tick as the picker races that observation.
+  await expect
+    .poll(async () => (await confirmation.isVisible()) || (await newSession.isVisible()))
+    .toBe(true)
+  if (await confirmation.isVisible()) {
+    await confirmation.getByRole('button', { name: 'Add this Project' }).click()
+  }
+  await newSession.waitFor()
 }
 
 /** Typing `/` offers what is installed; picking one is for that message only. */
@@ -131,7 +140,12 @@ async function startSession(page: Page, message: string): Promise<void> {
   })
   await expect(composer.getByRole('combobox', { name: 'Model' })).toBeVisible()
   await composer.getByLabel('Message').fill(message)
-  await page.getByRole('button', { name: 'Send' }).click()
+  const send = page.getByRole('button', { name: 'Send' })
+  if (await send.isDisabled()) {
+    await composer.getByRole('button', { name: 'Project' }).click()
+    await page.getByRole('menuitem', { name: basename(await realpath(sandbox.projectDir)) }).click()
+  }
+  await send.click()
   await expect(page.getByRole('heading', { name: message })).toBeVisible()
 }
 
@@ -244,6 +258,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'resumeConversationQueue',
       'resumeWorktreeBootstrap',
       'revokeStandingApproval',
+      'rewindSession',
       'sendQueuedSubmissionNow',
       'setAppearanceSettings',
       'setLoginShellDiscovery',
@@ -849,6 +864,62 @@ test('a person compacts a long Session and keeps working in it', async () => {
     await page.getByRole('button', { name: 'Send' }).click()
     await expect(history.getByText('Carry on from the summary', { exact: true })).toBeVisible()
     await expect(history.getByRole('region', { name: 'Compaction' })).toHaveCount(1)
+  } finally {
+    await app.close()
+  }
+})
+
+test('a person rewinds, edits the restored message, and sends it without undoing files', async () => {
+  await installFakeHarness('claude', COMPACTING_CLAUDE_FAKE)
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Take the long route')
+    const history = page.getByRole('log', { name: 'Conversation history' })
+    await expect(history.getByText('Noted.', { exact: true })).toHaveCount(1)
+
+    await page.getByLabel('Your message').fill('Keep following that route')
+    await page.getByRole('button', { name: 'Send' }).click()
+    await expect(history.getByText('Noted.', { exact: true })).toHaveCount(2)
+
+    await history
+      .getByText('Take the long route', { exact: true })
+      .locator('..')
+      .getByRole('button', { name: 'Rewind to before this message' })
+      .click()
+
+    const confirmation = page.getByRole('dialog', { name: 'Rewind the Conversation?' })
+    await expect(confirmation.getByText('Your files are not affected.')).toBeVisible()
+    await expect(confirmation).toContainText('separate from undoing a Run')
+    await expect(confirmation.getByRole('button', { name: /undo/i })).toHaveCount(0)
+    await confirmation.getByRole('button', { name: 'Rewind Conversation' }).click()
+
+    await expect(history.getByRole('region', { name: 'Conversation rewind' })).toBeVisible()
+    await expect(history.getByText('Take the long route', { exact: true })).toHaveCount(0)
+    await expect(history.getByText('Keep following that route', { exact: true })).toHaveCount(0)
+    const composer = page.getByLabel('Your message')
+    await expect(composer).toHaveValue('Take the long route')
+
+    const sessionId = await page.evaluate(async () => (await window.shell.listSessions())[0]?.id)
+    expect(sessionId).toBeTruthy()
+    const journal = await readFile(
+      join(
+        sandbox.appDataDir,
+        'com.memojiinc.argos',
+        'sessions',
+        sessionId ?? 'missing-session',
+        'conversation.jsonl'
+      ),
+      'utf8'
+    )
+    expect(journal).toContain('Take the long route')
+    expect(journal).toContain('Keep following that route')
+
+    await composer.fill('Take the direct route')
+    await page.getByRole('button', { name: 'Send' }).click()
+    await expect(history.getByText('Take the direct route', { exact: true })).toBeVisible()
+    await expect(history.getByText('Noted.', { exact: true })).toHaveCount(1)
   } finally {
     await app.close()
   }
@@ -1903,7 +1974,8 @@ test('a person adds a Project and a plain folder is refused with an offer to set
     await expect(inbox.getByText(basename(sandbox.projectDir), { exact: true })).toHaveCount(1)
     await expect(inbox.getByText(basename(sandbox.plainDir), { exact: true })).toHaveCount(1)
 
-    // The first Project remains selected for the new Session.
+    // Adding another Project does not discard the Project already selected in
+    // the composer. The person can still change it explicitly before sending.
     const composer = page.getByRole('form', { name: 'New chat' })
     await expect(composer.getByRole('button', { name: 'Project' })).toContainText(
       basename(sandbox.projectDir)

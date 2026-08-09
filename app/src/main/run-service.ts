@@ -19,6 +19,7 @@ import {
   compactSessionInputSchema,
   compactionPlanSchema,
   conversationSnapshotSchema,
+  submitConversationMessageResultSchema,
   developSessionInputSchema,
   editQueuedSubmissionInputSchema,
   enqueueQueuedSubmissionInputSchema,
@@ -27,6 +28,7 @@ import {
   moveQueuedSubmissionInputSchema,
   queuedSubmissionIdentitySchema,
   runSteerAdmissionResultSchema,
+  rewindSessionInputSchema,
   redactCredentials,
   startingSubmissionId,
   unfinishedRunSchema,
@@ -40,6 +42,7 @@ import {
   type HarnessFailureCategory,
   type RunRequest,
   type QueuedSubmissionLaunchPlan,
+  type RewindSessionInput,
   type UnfinishedRun
 } from '@shared/conversation'
 import { harnessPromptWithReviewAttachments } from '@shared/review-attachment'
@@ -77,16 +80,19 @@ import {
   type BoundedRunner,
   type HarnessAdapter
 } from './harness-adapter'
-import { conversationSeed, latestCompaction, threadReuseVetoed } from './thread-continuity'
+import { conversationSeed, conversationSeedShape, threadReuseVetoed } from './thread-continuity'
 
 interface CorePort {
   send(command: CoreCommand): Promise<unknown>
 }
 
 /** What Core hands back for one pass of protocol: events, and any reply owed. */
+const journalProjectionPositionSchema = z.number().int().nonnegative().nullable()
+
 const harnessStreamSchema = z.object({
   events: harnessEventSchema.array(),
-  outgoing: z.array(z.string())
+  outgoing: z.array(z.string()),
+  journalPositions: z.array(journalProjectionPositionSchema)
 })
 interface ReadinessPort {
   refresh(harness?: HarnessId): Promise<{
@@ -505,16 +511,22 @@ export class RunService {
       )
       return delivered.conversation ?? admission.conversation
     }
-    await this.deps.core.send({
-      type: 'conversation/submit',
-      input: {
-        sessionId: input.sessionId,
-        submissionId: input.submissionId,
-        text: input.text,
-        source: input.source,
-        reviewAttachments: input.reviewAttachments
-      }
-    })
+    const submitted = submitConversationMessageResultSchema.parse(
+      await this.deps.core.send({
+        type: 'conversation/submit',
+        input: {
+          sessionId: input.sessionId,
+          submissionId: input.submissionId,
+          text: input.text,
+          source: input.source,
+          reviewAttachments: input.reviewAttachments
+        }
+      })
+    )
+    // The unchanged message restored by rewind is the old submission again.
+    // Core owns that durable identity decision; starting a retry here would
+    // turn pressing Send without editing into a new Run under a derived id.
+    if (submitted.disposition === 'rewound-replay') return submitted.snapshot
     try {
       await this.start({
         submissionId: input.submissionId,
@@ -722,12 +734,13 @@ export class RunService {
       (await this.runEffect(adapter.threadExists(checkout, savedThread)))
     const restoreFromHistory =
       switchedHarness || (latestHarness === input.harness && !threadCompatible)
-    // A Session that has been compacted is seeded from its summary and the
-    // turns it kept whole, rather than from the last few turns alone: the
-    // summary is the whole reason the Thread was not resumed.
+    // A boundary that retires the Thread defines the seed for its successor.
+    // Compaction carries a summary; rewind intentionally carries only the
+    // retained tail so content the person removed cannot leak back in.
     const handoff = conversationSeed(conversation, {
-      shape: latestCompaction(conversation) ? 'compaction' : 'handoff',
-      skill: input.skill ?? null
+      shape: conversationSeedShape(conversation),
+      skill: input.skill ?? null,
+      excludeSubmissionId: input.submissionId
     })
     const accept = (submissionId: string): Promise<unknown> =>
       this.deps.core.send({
@@ -793,9 +806,11 @@ export class RunService {
     }
     // Main owns the moment a Run starts. Publish it only after Core has made
     // the boundary durable, so a listener can immediately read `running`.
+    const started = await this.readConversation(input.sessionId)
     this.deps.onConversationEvent?.({
       sessionId: input.sessionId,
       runId: accepted.id,
+      journalPosition: started.journalPosition,
       invalidation: 'mailbox',
       event: { type: 'started' }
     })
@@ -1112,7 +1127,7 @@ export class RunService {
     // Whatever the Harness is owed in reply. Only Core knows the protocol, so
     // Main writes what Core hands it and reads none of it.
     this.writeFrames(run.id, stream.outgoing)
-    for (const event of stream.events) {
+    for (const [index, event] of stream.events.entries()) {
       if (event.type === 'failed') this.failures.set(run.id, event.category)
       // Harness terminal frames are inputs to Main's conclusion, not durable
       // Conversation boundaries yet. `conclude` publishes the one terminal
@@ -1122,6 +1137,7 @@ export class RunService {
         this.deps.onConversationEvent?.({
           sessionId: run.sessionId,
           runId: run.id,
+          journalPosition: stream.journalPositions[index] ?? null,
           invalidation: conversationInvalidation(event),
           event
         })
@@ -1178,6 +1194,29 @@ export class RunService {
     this.finishing.delete(run.id)
   }
 
+  /** Applies one event in Core before making that exact projection visible. */
+  private async applyConversationEvent(
+    sessionId: string,
+    runId: string,
+    event: HarnessEvent
+  ): Promise<void> {
+    const journalPosition = journalProjectionPositionSchema.parse(
+      await this.deps.core.send({
+        type: 'conversation/apply',
+        sessionId,
+        runId,
+        event
+      })
+    )
+    this.deps.onConversationEvent?.({
+      sessionId,
+      runId,
+      journalPosition,
+      invalidation: conversationInvalidation(event),
+      event
+    })
+  }
+
   /**
    * Records Harness-native structured choices. Only the app's tool host sees
    * the offered options, so it is what tells the Conversation.
@@ -1196,18 +1235,7 @@ export class RunService {
         value: redactCredentials(option.value)
       }))
     }
-    await this.deps.core.send({
-      type: 'conversation/apply',
-      sessionId: run.sessionId,
-      runId: run.id,
-      event
-    })
-    this.deps.onConversationEvent?.({
-      sessionId: run.sessionId,
-      runId: run.id,
-      invalidation: conversationInvalidation(event),
-      event
-    })
+    await this.applyConversationEvent(run.sessionId, run.id, event)
   }
 
   /**
@@ -1252,18 +1280,7 @@ export class RunService {
       detail: sanitize(described.detail, projectRoot).slice(0, MAX_APPROVAL_DETAIL),
       proposedRule
     }
-    await this.deps.core.send({
-      type: 'conversation/apply',
-      sessionId: run.sessionId,
-      runId: run.id,
-      event
-    })
-    this.deps.onConversationEvent?.({
-      sessionId: run.sessionId,
-      runId: run.id,
-      invalidation: conversationInvalidation(event),
-      event
-    })
+    await this.applyConversationEvent(run.sessionId, run.id, event)
     await this.record(run, 'waiting', 'blocked', `Waiting for you to approve ${event.summary}`)
   }
 
@@ -1321,18 +1338,7 @@ export class RunService {
       message: allowed ? '' : redactCredentials(denialMessage).slice(0, 2_000),
       remembered
     }
-    await this.deps.core.send({
-      type: 'conversation/apply',
-      sessionId: input.sessionId,
-      runId: input.runId,
-      event
-    })
-    this.deps.onConversationEvent?.({
-      sessionId: input.sessionId,
-      runId: input.runId,
-      invalidation: conversationInvalidation(event),
-      event
-    })
+    await this.applyConversationEvent(input.sessionId, input.runId, event)
     // A denial is an answer, not a failure: the agent was told and carries on.
     // The Run leaves the blocked state once nothing else is outstanding.
     await this.record(
@@ -1423,6 +1429,34 @@ export class RunService {
     return await this.awaitedByNextRun(input.sessionId, this.writeCompaction(input.sessionId))
   }
 
+  /**
+   * Rewinds only the durable Conversation. This deliberately has no Checkout,
+   * snapshot, Git, or Run Undo dependency: changing files is not among the
+   * operations this path can perform.
+   */
+  async rewind(rawInput: RewindSessionInput): Promise<ConversationSnapshot> {
+    const input = rewindSessionInputSchema.parse(rawInput)
+    const snapshot = await this.queueCoordinator.exclusive(input.sessionId, async () => {
+      // If a summary is already being written, let its boundary land first so
+      // the rewind is unambiguously the newer context decision.
+      await this.settleCompaction(input.sessionId)
+      return conversationSnapshotSchema.parse(
+        await this.deps.core.send({ type: 'conversation/rewind', input })
+      )
+    })
+    const boundary = snapshot.entries.findLast(
+      (entry) => entry.kind === 'boundary' && entry.boundary === 'rewound'
+    )
+    this.deps.onConversationEvent?.({
+      sessionId: input.sessionId,
+      runId: boundary?.kind === 'boundary' ? boundary.runId : '',
+      journalPosition: snapshot.journalPosition,
+      invalidation: 'mailbox',
+      event: { type: 'rewound' }
+    })
+    return snapshot
+  }
+
   private async writeCompaction(sessionId: string): Promise<ConversationSnapshot> {
     const plan = compactionPlanSchema.parse(
       await this.deps.core.send({
@@ -1475,6 +1509,7 @@ export class RunService {
     this.deps.onConversationEvent?.({
       sessionId: sessionId,
       runId: plan.runId,
+      journalPosition: snapshot.journalPosition,
       invalidation: 'mailbox',
       event: { type: 'context-compacted', summary }
     })
@@ -1590,6 +1625,7 @@ export class RunService {
     this.deps.onConversationEvent?.({
       sessionId: run.sessionId,
       runId: run.id,
+      journalPosition: terminal.conversation.journalPosition,
       invalidation: 'mailbox',
       event:
         terminal.run.status === 'completed'
