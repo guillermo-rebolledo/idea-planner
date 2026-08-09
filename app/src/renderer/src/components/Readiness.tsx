@@ -7,8 +7,7 @@ import {
   Info,
   Minus,
   RefreshCw,
-  XCircle,
-  X
+  XCircle
 } from 'lucide-react'
 import {
   isGating,
@@ -19,7 +18,6 @@ import {
   type ReadinessSnapshot
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
-import { useDialogFocus } from '@renderer/components/ui/dialog'
 import { cn } from '@renderer/lib/utils'
 
 /**
@@ -407,61 +405,5 @@ export function LoginShellConsent({
         </Button>
       </div>
     </section>
-  )
-}
-
-interface ReadinessDialogProps {
-  onClose: () => void
-}
-
-/** The Harnesses surface reached from Settings and before a Run. */
-export function ReadinessDialog({ onClose }: ReadinessDialogProps): React.JSX.Element {
-  const panelRef = useRef<HTMLDivElement | null>(null)
-  // The same focus discipline as the shared Modal: focus in on open, Tab
-  // trapped inside, and the opener refocused on close. This dialog keeps its
-  // own richer chrome, not its own weaker manners.
-  useDialogFocus(panelRef)
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
-
-  return (
-    <div
-      className="absolute inset-0 z-50 flex items-center justify-center bg-background/60 p-6"
-      role="presentation"
-    >
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="readiness-dialog-title"
-        tabIndex={-1}
-        className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-lg border border-border bg-surface-raised shadow-lg outline-none"
-      >
-        <header className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-          <h2 id="readiness-dialog-title" className="text-base font-medium">
-            Harnesses
-          </h2>
-          <Button
-            data-autofocus=""
-            variant="ghost"
-            size="icon"
-            aria-label="Close Harnesses"
-            className="ml-auto"
-            onClick={onClose}
-          >
-            <X aria-hidden="true" className="size-4" />
-          </Button>
-        </header>
-        <div className="overflow-y-auto p-4">
-          <ReadinessPanel />
-        </div>
-      </div>
-    </div>
   )
 }

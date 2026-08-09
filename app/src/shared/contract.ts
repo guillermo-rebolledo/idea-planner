@@ -51,6 +51,15 @@ import {
   type StopRunInput
 } from './run'
 import { pullRequestSchema } from './pull-request'
+import {
+  appearanceSettingsSchema,
+  resolvedThemeSchema,
+  themePaletteSchema,
+  themePreferenceSchema,
+  type AppearanceSettings,
+  type ResolvedTheme,
+  type ThemePreference
+} from './theme'
 import type {
   CreatePullRequestInput,
   CreatePullRequestResult,
@@ -68,6 +77,8 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 20: appearance settings include persisted presets and a derived custom palette.
+ * 19: Settings exposes the persisted quit-warning preference to the Renderer.
  * 18: isolated Sessions can publish a reviewed draft through the user's `gh`,
  *     and mailbox rows carry the separately observed Pull Request state.
  * 17: a Run can be undone from app-owned Git snapshots, and the Files
@@ -85,7 +96,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 19
+export const CONTRACT_VERSION = 20
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -278,15 +289,13 @@ export const startSessionResultSchema = z.discriminatedUnion('status', [
 ])
 export type StartSessionResult = z.infer<typeof startSessionResultSchema>
 
-export const themePreferenceSchema = z.enum(['system', 'light', 'dark'])
-export type ThemePreference = z.infer<typeof themePreferenceSchema>
-
-export const resolvedThemeSchema = z.enum(['light', 'dark'])
-export type ResolvedTheme = z.infer<typeof resolvedThemeSchema>
+export { appearanceSettingsSchema, resolvedThemeSchema, themePreferenceSchema }
+export type { AppearanceSettings, ResolvedTheme, ThemePreference }
 
 export const themeStateSchema = z.object({
   preference: themePreferenceSchema,
-  resolved: resolvedThemeSchema
+  resolved: resolvedThemeSchema,
+  palette: themePaletteSchema.nullable().default(null)
 })
 export type ThemeState = z.infer<typeof themeStateSchema>
 
@@ -492,7 +501,8 @@ export interface ShellApi {
   renameSession(input: RenameSessionInput): Promise<SessionSummary>
   /** Forgets the Session and its history. The Project is never touched. */
   deleteSession(sessionId: string): Promise<void>
-  setThemePreference(preference: ThemePreference): Promise<ThemeState>
+  getAppearanceSettings(): Promise<AppearanceSettings>
+  setAppearanceSettings(settings: AppearanceSettings): Promise<ThemeState>
   onThemeChanged(listener: (theme: ThemeState) => void): () => void
   /** Whether quitting with active Runs asks first. Cleanup always runs either way. */
   getQuitWarningPreference(): Promise<boolean>

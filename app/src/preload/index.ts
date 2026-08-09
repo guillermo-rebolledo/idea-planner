@@ -32,8 +32,9 @@ const api: ShellApi = {
   setSessionArchived: (input) => ipcRenderer.invoke(IPC_CHANNELS.setSessionArchived, input),
   renameSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.renameSession, input),
   deleteSession: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.deleteSession, sessionId),
-  setThemePreference: (preference) =>
-    ipcRenderer.invoke(IPC_CHANNELS.setThemePreference, preference),
+  getAppearanceSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getAppearanceSettings),
+  setAppearanceSettings: (settings) =>
+    ipcRenderer.invoke(IPC_CHANNELS.setAppearanceSettings, settings),
   getQuitWarningPreference: () => ipcRenderer.invoke(IPC_CHANNELS.getQuitWarningPreference),
   setQuitWarningPreference: (enabled) =>
     ipcRenderer.invoke(IPC_CHANNELS.setQuitWarningPreference, enabled),

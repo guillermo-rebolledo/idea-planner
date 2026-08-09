@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { Archive, ArrowRightLeft, Bot, FolderPlus, Lock, Settings } from 'lucide-react'
 import {
   type ChooseProjectResult,
+  type AppearanceSettings,
   type ReadinessSnapshot,
   type StandingApproval,
-  type ThemePreference,
   type ThemeState
 } from '@shared/contract'
 import {
@@ -14,7 +14,7 @@ import {
 } from '@renderer/components/StandingApprovals'
 import { Button } from '@renderer/components/ui/button'
 import { Modal } from '@renderer/components/ui/dialog'
-import { SettingsDialog } from '@renderer/components/Settings'
+import { SettingsDialog, type SettingsSection } from '@renderer/components/Settings'
 import {
   Menu,
   MenuContent,
@@ -27,11 +27,10 @@ import { cn } from '@renderer/lib/utils'
 
 interface AppMenuProps {
   theme: ThemeState | null
-  onThemeChange: (preference: ThemePreference) => void
+  onAppearanceChange: (appearance: AppearanceSettings) => Promise<void>
   /** Archived Sessions across every Project; null while the mailbox reads. */
   archivedTotal: number | null
   onShowArchived: () => void
-  onOpenHarnesses: () => void
   /** Opens the ⌘K switcher — named here so the shortcut can be learned. */
   onGoToSession: () => void
   /** The mailbox re-reads after a Project is added, so its group appears. */
@@ -54,10 +53,9 @@ type RootConfirmation = Extract<ChooseProjectResult, { status: 'confirm-root' }>
  */
 export function AppMenu({
   theme,
-  onThemeChange,
+  onAppearanceChange,
   archivedTotal,
   onShowArchived,
-  onOpenHarnesses,
   onGoToSession,
   onProjectsChanged,
   onAnnounce
@@ -66,7 +64,7 @@ export function AppMenu({
   const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
   const [approvals, setApprovals] = useState<ProjectApprovals[]>([])
   const [approvalsOpen, setApprovalsOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
   const [refusal, setRefusal] = useState<Refusal | null>(null)
   const [confirmation, setConfirmation] = useState<RootConfirmation | null>(null)
   const [busy, setBusy] = useState(false)
@@ -164,7 +162,7 @@ export function AppMenu({
             <FolderPlus aria-hidden="true" className="size-3.5 text-muted-foreground" />
             Add Project…
           </MenuItem>
-          <MenuItem onClick={onOpenHarnesses}>
+          <MenuItem onClick={() => setSettingsSection('harnesses')}>
             <Bot aria-hidden="true" className="size-3.5 text-muted-foreground" />
             Harnesses
             <span className="ml-auto flex items-center gap-1.5">
@@ -193,7 +191,7 @@ export function AppMenu({
             </span>
           </MenuItem>
           <MenuSeparator />
-          <MenuItem onClick={() => setSettingsOpen(true)}>
+          <MenuItem onClick={() => setSettingsSection('general')}>
             <Settings aria-hidden="true" className="size-3.5 text-muted-foreground" />
             Settings…
           </MenuItem>
@@ -221,11 +219,12 @@ export function AppMenu({
         />
       )}
 
-      {settingsOpen && (
+      {settingsSection && (
         <SettingsDialog
           theme={theme}
-          onThemeChange={onThemeChange}
-          onDismiss={() => setSettingsOpen(false)}
+          initialSection={settingsSection}
+          onAppearanceChange={onAppearanceChange}
+          onDismiss={() => setSettingsSection(null)}
         />
       )}
 

@@ -283,6 +283,42 @@ body {
   max-height: calc(100% - 3rem);
 }
 
+/* The full Settings surface and its contextual custom-theme inspector. These
+   measurements belong to the shell layout, not to any one component theme. */
+.settings-dialog {
+  height: min(700px, calc(100vh - 3rem));
+  max-width: 1180px;
+}
+
+.settings-dialog-layout {
+  grid-template-columns: 210px minmax(0, 1fr);
+}
+
+.appearance-settings-layout {
+  grid-template-columns: minmax(0, 1fr) 0;
+  transition-property: grid-template-columns;
+}
+
+.appearance-settings-layout[data-custom-selected='true'] {
+  grid-template-columns: minmax(0, 1fr) 330px;
+}
+
+.custom-theme-editor {
+  width: 330px;
+}
+
+.theme-preview-body {
+  height: calc(100% - 28px);
+}
+
+.theme-preview-sidebar {
+  width: 30%;
+}
+
+.theme-preview-run {
+  font-size: 9px;
+}
+
 .modal-backdrop {
   animation: modal-backdrop-enter 200ms var(--ease-out) both;
 }

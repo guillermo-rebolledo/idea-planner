@@ -26,7 +26,7 @@ import {
   renameSessionInputSchema,
   setSessionArchivedInputSchema,
   setSessionPinnedInputSchema,
-  themePreferenceSchema,
+  appearanceSettingsSchema,
   listSkillsInputSchema,
   modelCatalogSchema,
   skillCatalogSchema,
@@ -64,10 +64,16 @@ import {
   type ChooseProjectResult,
   type ConversationStreamEvent,
   quitRequestResponseSchema,
+  type AppearanceSettings,
   type ThemeState
 } from '@shared/contract'
 import type { StartSessionRequest, WorktreeBootstrapResult } from '@shared/contract'
-import { WINDOW_BACKGROUND } from '@shared/theme'
+import {
+  WINDOW_BACKGROUND,
+  nativeThemeSourceFor,
+  resolveAppearance,
+  type ThemePreference
+} from '@shared/theme'
 import {
   chooseExecutableResultSchema,
   harnessIdSchema,
@@ -195,11 +201,36 @@ const coreClient = new CoreClient(
   }
 )
 
-function themeState(): ThemeState {
+function appearanceSettings(): AppearanceSettings {
   return {
     preference: settings.get().themePreference,
-    resolved: nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+    custom: settings.get().customTheme
   }
+}
+
+function themeState(): ThemeState {
+  const appearance = appearanceSettings()
+  const resolved = resolveAppearance(appearance, nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
+  return {
+    preference: appearance.preference,
+    resolved: resolved.resolved,
+    palette: resolved.palette
+  }
+}
+
+function windowBackground(state: ThemeState = themeState()): string {
+  return state.palette?.background ?? WINDOW_BACKGROUND[state.resolved]
+}
+
+function applyNativeThemeSource(preference: ThemePreference): void {
+  nativeTheme.themeSource = nativeThemeSourceFor(preference)
+}
+
+function publishTheme(): ThemeState {
+  const state = themeState()
+  mainWindow?.setBackgroundColor(windowBackground(state))
+  mainWindow?.webContents.send(IPC_CHANNELS.themeChanged, state)
+  return state
 }
 
 function isTrustedSender(event: IpcMainInvokeEvent): boolean {
@@ -579,11 +610,20 @@ function registerIpc(): void {
     await mainEffectRuntime.runPromise(pullRequests.forget(sessionId))
   })
 
-  handleInvoke(IPC_CHANNELS.setThemePreference, themePreferenceSchema, (preference) => {
-    settings.update({ themePreference: preference })
-    nativeTheme.themeSource = preference
-    return themeState()
-  })
+  handleInvoke(IPC_CHANNELS.getAppearanceSettings, z.undefined(), appearanceSettings)
+
+  handleInvoke<AppearanceSettings, ThemeState>(
+    IPC_CHANNELS.setAppearanceSettings,
+    appearanceSettingsSchema as z.ZodType<AppearanceSettings>,
+    (appearance) => {
+      settings.update({
+        themePreference: appearance.preference,
+        customTheme: appearance.custom
+      })
+      applyNativeThemeSource(appearance.preference)
+      return publishTheme()
+    }
+  )
 
   handleInvoke(
     IPC_CHANNELS.getQuitWarningPreference,
@@ -1001,7 +1041,7 @@ function createWindow(): void {
     // Centered in the 44px title bar every surface draws (h-11): the macOS
     // buttons are 12px tall, so (44 − 12) / 2 from the top.
     trafficLightPosition: { x: 18, y: 16 },
-    backgroundColor: WINDOW_BACKGROUND[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'],
+    backgroundColor: windowBackground(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
@@ -1115,7 +1155,7 @@ void app.whenReady().then(async () => {
 
   // Resolve appearance before any window exists so the first paint already
   // matches System, Light, or Dark.
-  nativeTheme.themeSource = settings.get().themePreference
+  applyNativeThemeSource(settings.get().themePreference)
 
   hardenSession()
   coreClient.start()
@@ -1137,11 +1177,7 @@ void app.whenReady().then(async () => {
   // Keep both surfaces in step when the resolved appearance changes, whether
   // from macOS System appearance or an explicit preference change.
   nativeTheme.on('updated', () => {
-    if (!mainWindow) return
-    mainWindow.setBackgroundColor(
-      WINDOW_BACKGROUND[nativeTheme.shouldUseDarkColors ? 'dark' : 'light']
-    )
-    mainWindow.webContents.send(IPC_CHANNELS.themeChanged, themeState())
+    publishTheme()
   })
 
   createWindow()
