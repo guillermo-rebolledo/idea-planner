@@ -43,6 +43,9 @@ writeFileSync(join(work, 'greeting.txt'), 'hello world\nsecond line\n')
 const recorded = []
 let deltas = 0
 let buffered = ''
+let threadId = null
+let turnId = null
+let steerSent = false
 
 const child = spawn('codex', ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] })
 const send = (message) => child.stdin.write(`${JSON.stringify(message)}\n`)
@@ -74,6 +77,7 @@ child.stdout.on('data', (chunk) => {
       })
     }
     if (message.id === 2 && message.result) {
+      threadId = message.result.thread.id
       send({
         jsonrpc: '2.0',
         id: 3,
@@ -84,6 +88,33 @@ child.stdout.on('data', (chunk) => {
             {
               type: 'text',
               text: "Change 'hello world' to 'goodbye world' in greeting.txt, then run 'wc -l greeting.txt'. Nothing else.",
+              text_elements: []
+            }
+          ]
+        }
+      })
+    }
+    if (message.id === 3 && message.result) {
+      turnId = message.result.turn.id
+    }
+    if (
+      !steerSent &&
+      turnId &&
+      message.method === 'item/started' &&
+      message.params?.item?.type === 'userMessage'
+    ) {
+      steerSent = true
+      send({
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'turn/steer',
+        params: {
+          threadId,
+          expectedTurnId: turnId,
+          input: [
+            {
+              type: 'text',
+              text: 'Keep the existing second line unchanged.',
               text_elements: []
             }
           ]

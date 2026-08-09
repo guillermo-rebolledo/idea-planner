@@ -32,6 +32,9 @@ function dependencies(root: string): HarnessAdapterDeps & {
           return Promise.resolve({ events: [], outgoing: ['opening-frame'] })
         }
         if (command.type === 'harness/interrupt') return Promise.resolve(['interrupt-frame'])
+        if (command.type === 'harness/steer') {
+          return Promise.resolve({ steered: true, outgoing: ['steer-frame'] })
+        }
         if (command.type === 'harness/answer') {
           return Promise.resolve({ answered: true, outgoing: ['approval-frame'] })
         }
@@ -120,6 +123,8 @@ describe('Harness adapter contract', () => {
     })
     expect(await Effect.runPromise(adapter.interrupt('run-1'))).toBe(true)
     expect(deps.writeFrame).toHaveBeenCalledWith('run-1', 'interrupt-frame')
+    expect(await Effect.runPromise(adapter.steer('run-1', 'Correct course'))).toBe(true)
+    expect(deps.writeFrame).toHaveBeenCalledWith('run-1', 'steer-frame')
     expect(
       await Effect.runPromise(
         adapter.answerApproval({
@@ -259,6 +264,7 @@ describe('Harness adapter contract', () => {
     ).toEqual(expect.arrayContaining(['--permission-mode', 'default', '--resume', 'thread-1']))
     expect(adapter.terminalFact({ type: 'completed' })).toBeNull()
     expect(await Effect.runPromise(adapter.interrupt('run-1'))).toBe(false)
+    expect(await Effect.runPromise(adapter.steer('run-1', 'Correct course'))).toBe(false)
     expect(
       await Effect.runPromise(
         adapter.open({

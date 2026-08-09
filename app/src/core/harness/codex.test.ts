@@ -86,6 +86,41 @@ describe('the exchange', () => {
     // it was fixed when the thread was started.
     expect(resume?.params).not.toHaveProperty('threadSource')
   })
+
+  it('steers the active turn with the installed protocol precondition', () => {
+    const adapter = createCodexAdapter(launch())
+    adapter.takeOutgoing()
+    adapter.ingest(`${JSON.stringify({ id: 1, result: {} })}\n`)
+    adapter.takeOutgoing()
+    adapter.ingest(`${JSON.stringify({ id: 2, result: { thread: { id: 'thread-1' } } })}\n`)
+    adapter.takeOutgoing()
+    adapter.ingest(`${JSON.stringify({ id: 3, result: { turn: { id: 'turn-1' } } })}\n`)
+
+    expect(adapter.steer('Correct course now')).toBe(true)
+    expect(frames(adapter.takeOutgoing())).toEqual([
+      expect.objectContaining({
+        method: 'turn/steer',
+        params: {
+          threadId: 'thread-1',
+          expectedTurnId: 'turn-1',
+          input: [{ type: 'text', text: 'Correct course now', text_elements: [] }]
+        }
+      })
+    ])
+  })
+
+  it('accepts steering in the stream recorded from the installed binary', async () => {
+    const raw = await readFile(join(__dirname, 'fixtures', 'codex-app-server.jsonl'), 'utf8')
+    const response = raw
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { id?: number; result?: unknown; error?: unknown })
+      .find((frame) => frame.id === 5)
+
+    expect(response?.id).toBe(5)
+    expect(typeof (response?.result as { turnId?: unknown } | undefined)?.turnId).toBe('string')
+    expect(response).not.toHaveProperty('error')
+  })
 })
 
 describe('what the Run did', () => {
@@ -97,9 +132,9 @@ describe('what the Run did', () => {
 
   it('reports the Harness Thread so the Conversation can continue it', async () => {
     const { events } = await replay()
-    expect(events.filter((event) => event.type === 'thread-ready')).toMatchObject([
-      { harness: 'codex', threadId: '019fc3da-e096-72a3-8bcd-56313b8ca5e9' }
-    ])
+    const ready = events.find((event) => event.type === 'thread-ready')
+    expect(ready).toMatchObject({ harness: 'codex' })
+    expect(ready?.type === 'thread-ready' ? typeof ready.threadId : 'missing').toBe('string')
   })
 
   it('grows an assistant message and completes it once', async () => {
@@ -113,7 +148,10 @@ describe('what the Run did', () => {
 
   it('shows a command when it starts and again with what it printed', async () => {
     const { events } = await replay()
-    expect(events.filter((event) => event.type === 'command')).toMatchObject([
+    const commands = events.filter(
+      (event) => event.type === 'command' && event.command === "/bin/zsh -lc 'wc -l greeting.txt'"
+    )
+    expect(commands).toMatchObject([
       {
         command: "/bin/zsh -lc 'wc -l greeting.txt'",
         running: true,
@@ -155,9 +193,9 @@ describe('what the Run did', () => {
 
   it('reports usage and the end of the turn', async () => {
     const { events } = await replay()
-    expect(events.filter((event) => event.type === 'usage').at(-1)).toMatchObject({
-      usage: { totalTokens: 52823, contextWindow: 258400 }
-    })
+    const usage = events.filter((event) => event.type === 'usage').at(-1)
+    expect(usage).toMatchObject({ usage: { contextWindow: 258400 } })
+    expect(usage?.type === 'usage' ? typeof usage.usage.totalTokens : 'missing').toBe('number')
     expect(events.filter((event) => event.type === 'completed')).toHaveLength(1)
   })
 
@@ -290,9 +328,9 @@ describe('stopping', () => {
     adapter.takeOutgoing()
 
     adapter.interrupt()
-    expect(frames(adapter.takeOutgoing())).toMatchObject([
-      { method: 'turn/interrupt', params: { threadId: '019fc3da-e096-72a3-8bcd-56313b8ca5e9' } }
-    ])
+    const [interruption] = frames(adapter.takeOutgoing())
+    expect(interruption?.method).toBe('turn/interrupt')
+    expect(typeof interruption?.params['threadId']).toBe('string')
   })
 
   it('says nothing when there is no turn to interrupt', () => {

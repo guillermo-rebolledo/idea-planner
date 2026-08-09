@@ -404,6 +404,51 @@ describe('durable Queued Submissions', () => {
   })
 })
 
+describe('mid-Run delivery admission', () => {
+  const correction = (runId: string) => ({
+    sessionId,
+    submissionId: 'correction-1',
+    text: 'Stop changing the API; keep it compatible',
+    source: 'composer' as const,
+    harness: 'codex' as const,
+    model: 'gpt-5',
+    effort: 'high' as const,
+    permissionMode: 'ask' as const,
+    reviewAttachments: [],
+    runId
+  })
+
+  it('admits a correction to the Run the person saw without creating a queue item', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+
+    const result = await core.admitRunSteer(correction(runId))
+
+    expect(result.delivery).toBe('steer')
+    expect(result.conversation.entries).toContainEqual(
+      expect.objectContaining({ kind: 'message', submissionId: 'correction-1' })
+    )
+    expect(result.conversation.queue.items).toEqual([])
+  })
+
+  it('queues atomically when the Run the person saw is no longer active', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness completed the turn'
+    })
+
+    const result = await core.admitRunSteer(correction(runId))
+
+    expect(result.delivery).toBe('queue')
+    expect(result.conversation.queue.items).toContainEqual(
+      expect.objectContaining({ submissionId: 'correction-1', status: 'pending' })
+    )
+  })
+})
+
 describe('Review Attachments on durable submissions', () => {
   const snapshotOf = (lines: string[], id = 'file-change:run-1:1') => ({
     id,

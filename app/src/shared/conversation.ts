@@ -927,6 +927,12 @@ export const conversationSnapshotSchema = z.object({
 })
 export type ConversationSnapshot = z.infer<typeof conversationSnapshotSchema>
 
+export const runSteerAdmissionResultSchema = z.object({
+  delivery: z.enum(['steer', 'queue']),
+  conversation: conversationSnapshotSchema
+})
+export type RunSteerAdmissionResult = z.infer<typeof runSteerAdmissionResultSchema>
+
 export const submitConversationMessageInputSchema = z.object({
   sessionId: z.string().min(1),
   submissionId: z
@@ -958,6 +964,12 @@ export type RunRequest = z.infer<typeof runRequestSchema>
 export const enqueueQueuedSubmissionInputSchema =
   submitConversationMessageInputSchema.merge(runRequestSchema)
 export type EnqueueQueuedSubmissionInput = z.input<typeof enqueueQueuedSubmissionInputSchema>
+
+/** A correction aimed at the Run the person saw when they pressed Send. */
+export const runSteerAdmissionInputSchema = enqueueQueuedSubmissionInputSchema.extend({
+  runId: z.string().min(1)
+})
+export type RunSteerAdmissionInput = z.input<typeof runSteerAdmissionInputSchema>
 
 export const editQueuedSubmissionInputSchema = z.object({
   sessionId: z.string().min(1),
@@ -1090,9 +1102,16 @@ export type RecordCompactionInput = z.input<typeof recordCompactionInputSchema>
 export const compactSessionInputSchema = z.object({ sessionId: z.string().min(1) })
 export type CompactSessionInput = z.infer<typeof compactSessionInputSchema>
 
+export const messageDeliveryIntentSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('steer'), runId: z.string().min(1) }),
+  z.object({ type: z.literal('queue') })
+])
+export type MessageDeliveryIntent = z.infer<typeof messageDeliveryIntentSchema>
+
 /** The Renderer's one command for developing a Session through a Conversation. */
-export const developSessionInputSchema =
-  submitConversationMessageInputSchema.merge(runRequestSchema)
+export const developSessionInputSchema = submitConversationMessageInputSchema
+  .merge(runRequestSchema)
+  .extend({ delivery: messageDeliveryIntentSchema.optional() })
 export type DevelopSessionInput = z.input<typeof developSessionInputSchema>
 
 /**

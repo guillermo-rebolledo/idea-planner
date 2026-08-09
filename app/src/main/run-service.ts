@@ -26,6 +26,7 @@ import {
   headroomExhausted,
   moveQueuedSubmissionInputSchema,
   queuedSubmissionIdentitySchema,
+  runSteerAdmissionResultSchema,
   redactCredentials,
   startingSubmissionId,
   unfinishedRunSchema,
@@ -481,6 +482,26 @@ export class RunService {
       throw new Error(
         `Developing a Session with ${HARNESS_SPECS[input.harness].displayName} is not supported yet`
       )
+    }
+    if (input.delivery?.type === 'queue') {
+      return await this.enqueueQueuedSubmission(input)
+    }
+    if (input.delivery?.type === 'steer') {
+      const prompt = harnessPromptWithReviewAttachments(input.text, input.reviewAttachments)
+      const admission = runSteerAdmissionResultSchema.parse(
+        await this.deps.core.send({
+          type: 'conversation/admit-steer',
+          input: { ...input, runId: input.delivery.runId }
+        })
+      )
+      if (admission.delivery === 'queue') return admission.conversation
+      const adapter = this.adapters.get(input.delivery.runId)
+      const steered =
+        adapter?.id === input.harness &&
+        (await this.runEffect(adapter.steer(input.delivery.runId, prompt)))
+      // Core admitted the message first. If native delivery is no longer
+      // possible, preserve the same submission in the ordinary durable queue.
+      return steered ? admission.conversation : await this.enqueueQueuedSubmission(input)
     }
     await this.deps.core.send({
       type: 'conversation/submit',

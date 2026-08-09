@@ -1,6 +1,7 @@
 import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Effect, Ref } from 'effect'
+import type { z } from 'zod'
 import { CoreError } from '@shared/contract'
 import {
   MAX_APPROVAL_DETAIL,
@@ -20,6 +21,7 @@ import {
   isActiveQueuedSubmission,
   recordAppActionInputSchema,
   recordCompactionInputSchema,
+  runSteerAdmissionInputSchema,
   setConversationQueuePausedInputSchema,
   MAX_COMPACTION_SUMMARY,
   type CompactionPlan,
@@ -45,6 +47,8 @@ import {
   type QueuedSubmissionDispositionObservation,
   type QueuedSubmissionLaunchResult,
   type QueueOutcome,
+  type RunSteerAdmissionInput,
+  type RunSteerAdmissionResult,
   type SetConversationQueuePausedInput,
   type SuggestedResponse
 } from '@shared/conversation'
@@ -64,6 +68,8 @@ import {
   type SessionState
 } from './session-state'
 import { createClaudeAdapter } from './harness/claude'
+
+type ValidatedQueuedSubmissionInput = z.output<typeof enqueueQueuedSubmissionInputSchema>
 
 /**
  * The Session's one permanent Conversation, inside the app-owned Session
@@ -213,6 +219,7 @@ export interface ConversationEffects {
   state(sessionId: string): Effect.Effect<SessionState, CoreError>
   submit(input: unknown): Effect.Effect<ConversationSnapshot, CoreError>
   enqueue(input: EnqueueQueuedSubmissionInput): Effect.Effect<ConversationSnapshot, CoreError>
+  admitRunSteer(input: RunSteerAdmissionInput): Effect.Effect<RunSteerAdmissionResult, CoreError>
   editQueued(input: EditQueuedSubmissionInput): Effect.Effect<ConversationSnapshot, CoreError>
   moveQueued(input: MoveQueuedSubmissionInput): Effect.Effect<ConversationSnapshot, CoreError>
   prioritizeQueued(input: QueuedSubmissionIdentity): Effect.Effect<ConversationSnapshot, CoreError>
@@ -239,6 +246,11 @@ export interface ConversationEffects {
   answer(
     input: AnswerHarnessInput
   ): Effect.Effect<{ answered: boolean; outgoing: string[] }, CoreError>
+  /** Adds a correction to the Harness turn currently in progress. */
+  steer(
+    runId: string,
+    prompt: string
+  ): Effect.Effect<{ steered: boolean; outgoing: string[] }, CoreError>
   /** Asks the Harness to end the turn it is running, if it can be asked. */
   interrupt(runId: string): Effect.Effect<string[], CoreError>
   /** Parses one raw Harness chunk and applies everything it completed. */
@@ -537,6 +549,81 @@ export function createConversationEffects(options: ConversationOptions): Convers
       Effect.map((overrides) => summarize(sessionId, entries, overrides.get(sessionId)))
     )
 
+  const enqueueLocked = (
+    input: ValidatedQueuedSubmissionInput,
+    sessionDir: string,
+    entries: ConversationEntry[]
+  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+    Effect.gen(function* () {
+      const existing = queuedEntry(entries, input.submissionId)
+      if (existing) {
+        const same =
+          existing.text === input.text &&
+          existing.harness === input.harness &&
+          existing.model === input.model &&
+          existing.effort === input.effort &&
+          existing.skill === (input.skill ?? null) &&
+          existing.permissionMode === input.permissionMode &&
+          existing.source === input.source &&
+          sameAttachments(existing.reviewAttachments, input.reviewAttachments)
+        if (!same) {
+          return yield* Effect.fail(
+            new CoreError(
+              'INVALID_INPUT',
+              'Submission identity was already used for different queued content'
+            )
+          )
+        }
+        return yield* queueSnapshot(input.sessionId, entries)
+      }
+      const active = entries.filter(
+        (entry): entry is QueuedSubmission =>
+          entry.kind === 'queued-submission' && isActiveQueuedSubmission(entry)
+      )
+      if (active.length >= 50) {
+        return yield* Effect.fail(
+          new CoreError('INVALID_INPUT', 'A Session may hold at most 50 queued submissions')
+        )
+      }
+      const at = (yield* options.clock).toISOString()
+      const pauseOverride = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId)
+      const entry = queuedSubmissionEntrySchema.parse({
+        kind: 'queued-submission',
+        id: `queued:${input.submissionId}`,
+        at,
+        submissionId: input.submissionId,
+        text: input.text,
+        source: input.source,
+        harness: input.harness,
+        model: input.model,
+        effort: input.effort,
+        skill: input.skill ?? null,
+        permissionMode: input.permissionMode,
+        reviewAttachments: input.reviewAttachments,
+        status: 'pending',
+        position: Math.max(-1, ...active.map((item) => item.position)) + 1
+      })
+      const additions: ConversationEntry[] = [
+        entry,
+        queueOutcome('enqueued', input.submissionId, at)
+      ]
+      if (pauseOverride === undefined) {
+        additions.push(
+          conversationEntrySchema.parse({
+            kind: 'queue-state',
+            id: 'queue-state',
+            at,
+            paused: false
+          })
+        )
+        yield* Ref.update(queuePauseOverrides, (current) =>
+          new Map(current).set(input.sessionId, false)
+        )
+      }
+      yield* appendMany(sessionDir, additions)
+      return summarize(input.sessionId, replaceEntries(entries, additions), pauseOverride ?? false)
+    })
+
   const enqueue = (
     rawInput: EnqueueQueuedSubmissionInput
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
@@ -557,77 +644,71 @@ export function createConversationEffects(options: ConversationOptions): Convers
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
           const entries = yield* readEntries(sessionDir)
-          const existing = queuedEntry(entries, input.submissionId)
+          return yield* enqueueLocked(input, sessionDir, entries)
+        })
+      )
+    })
+
+  const admitRunSteer = (
+    rawInput: RunSteerAdmissionInput
+  ): Effect.Effect<RunSteerAdmissionResult, CoreError> =>
+    Effect.gen(function* () {
+      const parsed = runSteerAdmissionInputSchema.safeParse(rawInput)
+      if (!parsed.success) {
+        return yield* Effect.fail(
+          new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid steer')
+        )
+      }
+      const input = parsed.data
+      const refusal = reviewAttachmentsRefusal(input.reviewAttachments)
+      if (refusal) return yield* Effect.fail(new CoreError('INVALID_INPUT', refusal))
+      const sessionDir = yield* sessionDirectory(input.sessionId)
+      return yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const entries = yield* readEntries(sessionDir)
+          if (deriveState(entries, 0).activeRunId !== input.runId) {
+            const conversation = yield* enqueueLocked(input, sessionDir, entries)
+            return { delivery: 'queue' as const, conversation }
+          }
+          const id = `user:${input.submissionId}`
+          const existing = entries.find((entry) => entry.id === id)
           if (existing) {
-            const same =
-              existing.text === input.text &&
-              existing.harness === input.harness &&
-              existing.model === input.model &&
-              existing.effort === input.effort &&
-              existing.skill === (input.skill ?? null) &&
-              existing.permissionMode === input.permissionMode &&
-              existing.source === input.source &&
-              sameAttachments(existing.reviewAttachments, input.reviewAttachments)
-            if (!same) {
+            if (
+              existing.kind !== 'message' ||
+              existing.text !== input.text ||
+              !sameAttachments(existing.reviewAttachments, input.reviewAttachments)
+            ) {
               return yield* Effect.fail(
                 new CoreError(
                   'INVALID_INPUT',
-                  'Submission identity was already used for different queued content'
+                  'Submission identity was already used for different content'
                 )
               )
             }
-            return yield* queueSnapshot(input.sessionId, entries)
+            return {
+              delivery: 'steer' as const,
+              conversation: yield* queueSnapshot(input.sessionId, entries)
+            }
           }
-          const active = entries.filter(
-            (entry): entry is QueuedSubmission =>
-              entry.kind === 'queued-submission' && isActiveQueuedSubmission(entry)
-          )
-          if (active.length >= 50) {
-            return yield* Effect.fail(
-              new CoreError('INVALID_INPUT', 'A Session may hold at most 50 queued submissions')
-            )
-          }
-          const at = (yield* options.clock).toISOString()
-          const pauseOverride = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId)
-          const entry = queuedSubmissionEntrySchema.parse({
-            kind: 'queued-submission',
-            id: `queued:${input.submissionId}`,
-            at,
-            submissionId: input.submissionId,
+          const entry = conversationEntrySchema.parse({
+            kind: 'message',
+            id,
+            at: (yield* options.clock).toISOString(),
+            runId: input.runId,
+            role: 'user',
             text: input.text,
+            completeness: 'complete',
             source: input.source,
-            harness: input.harness,
-            model: input.model,
-            effort: input.effort,
-            skill: input.skill ?? null,
-            permissionMode: input.permissionMode,
+            submissionId: input.submissionId,
             reviewAttachments: input.reviewAttachments,
-            status: 'pending',
-            position: Math.max(-1, ...active.map((item) => item.position)) + 1
+            suggestedResponses: [],
+            plainOptions: false
           })
-          const additions: ConversationEntry[] = [
-            entry,
-            queueOutcome('enqueued', input.submissionId, at)
-          ]
-          if (pauseOverride === undefined) {
-            additions.push(
-              conversationEntrySchema.parse({
-                kind: 'queue-state',
-                id: 'queue-state',
-                at,
-                paused: false
-              })
-            )
-            yield* Ref.update(queuePauseOverrides, (current) =>
-              new Map(current).set(input.sessionId, false)
-            )
+          yield* append(sessionDir, entry)
+          return {
+            delivery: 'steer' as const,
+            conversation: yield* queueSnapshot(input.sessionId, [...entries, entry])
           }
-          yield* appendMany(sessionDir, additions)
-          return summarize(
-            input.sessionId,
-            replaceEntries(entries, additions),
-            pauseOverride ?? false
-          )
         })
       )
     })
@@ -1774,6 +1855,19 @@ export function createConversationEffects(options: ConversationOptions): Convers
       })
     )
 
+  const steer = (
+    runId: string,
+    prompt: string
+  ): Effect.Effect<{ steered: boolean; outgoing: string[] }, CoreError> =>
+    Ref.get(adapters).pipe(
+      Effect.map((current) => {
+        const adapter = current.get(runId)
+        if (!adapter) return { steered: false, outgoing: [] }
+        const steered = adapter.steer(prompt)
+        return { steered, outgoing: adapter.takeOutgoing() }
+      })
+    )
+
   const ingest = (input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError> =>
     Effect.gen(function* () {
       const adapter = yield* adapterFor(input.runId, input.harness)
@@ -1789,6 +1883,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
     state,
     submit,
     enqueue,
+    admitRunSteer,
     editQueued,
     moveQueued,
     prioritizeQueued,
@@ -1800,6 +1895,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
     apply,
     open,
     answer,
+    steer,
     interrupt,
     ingest,
     finalize,

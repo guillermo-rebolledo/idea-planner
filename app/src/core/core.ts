@@ -35,6 +35,8 @@ import type {
   QueuedSubmissionLaunchResult,
   RecordAppActionInput,
   RecordCompactionInput,
+  RunSteerAdmissionInput,
+  RunSteerAdmissionResult,
   SubmitConversationMessageInput,
   UnfinishedRun
 } from '@shared/conversation'
@@ -113,6 +115,7 @@ export interface Core {
   recordRunEvent(input: RecordRunEventInput): Promise<RunSnapshot>
   getConversation(sessionId: string): Promise<ConversationSnapshot>
   submitConversationMessage(input: SubmitConversationMessageInput): Promise<ConversationSnapshot>
+  admitRunSteer(input: RunSteerAdmissionInput): Promise<RunSteerAdmissionResult>
   recordAppAction(input: RecordAppActionInput): Promise<ConversationSnapshot>
   planCompaction(sessionId: string): Promise<CompactionPlan>
   compactConversation(input: RecordCompactionInput): Promise<ConversationSnapshot>
@@ -126,6 +129,7 @@ export interface Core {
   answerHarnessApproval(
     input: AnswerHarnessInput
   ): Promise<{ answered: boolean; outgoing: string[] }>
+  steerHarness(runId: string, prompt: string): Promise<{ steered: boolean; outgoing: string[] }>
   interruptHarness(runId: string): Promise<string[]>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Promise<HarnessStream>
   listUnfinishedRuns(): Promise<UnfinishedRun[]>
@@ -169,6 +173,7 @@ export interface CoreEffects {
   submitConversationMessage(
     input: SubmitConversationMessageInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
+  admitRunSteer(input: RunSteerAdmissionInput): Effect.Effect<RunSteerAdmissionResult, CoreError>
   recordAppAction(input: RecordAppActionInput): Effect.Effect<ConversationSnapshot, CoreError>
   planCompaction(sessionId: string): Effect.Effect<CompactionPlan, CoreError>
   compactConversation(input: RecordCompactionInput): Effect.Effect<ConversationSnapshot, CoreError>
@@ -186,6 +191,10 @@ export interface CoreEffects {
   answerHarnessApproval(
     input: AnswerHarnessInput
   ): Effect.Effect<{ answered: boolean; outgoing: string[] }, CoreError>
+  steerHarness(
+    runId: string,
+    prompt: string
+  ): Effect.Effect<{ steered: boolean; outgoing: string[] }, CoreError>
   interruptHarness(runId: string): Effect.Effect<string[], CoreError>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
   listUnfinishedRuns(): Effect.Effect<UnfinishedRun[], CoreError>
@@ -796,6 +805,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     recordRunEvent,
     getConversation: (sessionId) => conversation.get(sessionId),
     submitConversationMessage: (input) => conversation.submit(input),
+    admitRunSteer: (input) => conversation.admitRunSteer(input),
     recordAppAction: (input) => conversation.recordAppAction(input),
     planCompaction: (sessionId) => conversation.compactionPlan(sessionId),
     compactConversation: (input) => conversation.compact(input),
@@ -805,6 +815,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     applyHarnessEvent: (input) => conversation.apply(input),
     openHarness: (input) => conversation.open(input),
     answerHarnessApproval: (input) => conversation.answer(input),
+    steerHarness: (runId, prompt) => conversation.steer(runId, prompt),
     interruptHarness: (runId) => conversation.interrupt(runId),
     ingestHarnessOutput: (input) => conversation.ingest(input),
     listUnfinishedRuns
@@ -941,6 +952,7 @@ export function createCore(deps: CoreDeps = {}): Core {
     recordRunEvent: (input) => run(core.recordRunEvent(input)),
     getConversation: (sessionId) => run(core.getConversation(sessionId)),
     submitConversationMessage: (input) => run(core.submitConversationMessage(input)),
+    admitRunSteer: (input) => run(core.admitRunSteer(input)),
     recordAppAction: (input) => run(core.recordAppAction(input)),
     planCompaction: (sessionId) => run(core.planCompaction(sessionId)),
     compactConversation: (input) => run(core.compactConversation(input)),
@@ -950,6 +962,7 @@ export function createCore(deps: CoreDeps = {}): Core {
     applyHarnessEvent: (input) => run(core.applyHarnessEvent(input)),
     openHarness: (input) => run(core.openHarness(input)),
     answerHarnessApproval: (input) => run(core.answerHarnessApproval(input)),
+    steerHarness: (runId, prompt) => run(core.steerHarness(runId, prompt)),
     interruptHarness: (runId) => run(core.interruptHarness(runId)),
     ingestHarnessOutput: (input) => run(core.ingestHarnessOutput(input)),
     listUnfinishedRuns: () => run(core.listUnfinishedRuns())

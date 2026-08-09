@@ -56,6 +56,8 @@ export interface HarnessSpec {
    * offered and then failing.
    */
   conversation: { minimumVersion: string } | null
+  /** Native mid-Run delivery; null means the honest fallback is the queue. */
+  steering: { minimumVersion: string } | null
   /** Versions at or above this are untested: usable, with a warning. */
   untestedFrom: string
   authProbe: AuthProbe
@@ -81,6 +83,7 @@ export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
     // what the Harness sends, and a protocol the app misreads is a Run that
     // reports nothing.
     conversation: { minimumVersion: '0.146.0' },
+    steering: { minimumVersion: '0.146.0' },
     untestedFrom: '0.147.0',
     authProbe: { kind: 'exit-code', args: ['login', 'status'] },
     authRemediationCommand: 'codex login',
@@ -98,6 +101,7 @@ export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
     // Stream JSON partial messages, hook events, and effort selection are the
     // protocol surface the Claude Adapter and Wayfinder bridge require.
     conversation: { minimumVersion: '2.1.0' },
+    steering: null,
     untestedFrom: '2.2.0',
     // Print mode emits its system init line before any API request when the
     // CLI is signed in, and exits with a sign-in error when it is not. The
@@ -503,10 +507,35 @@ export async function probeHarness(
         available,
         version,
         paths: [executablePath, realExecutablePath]
-      })
+      }),
+      steerRun: describeSteeringCapability(spec, { available, version })
     },
     checkedAt: new Date().toISOString(),
     available
+  }
+}
+
+function describeSteeringCapability(
+  spec: HarnessSpec,
+  state: { available: boolean; version: string | null }
+): HarnessCapability {
+  if (!spec.steering) {
+    return {
+      available: false,
+      summary: `${spec.displayName} messages sent during a Run wait in the queue.`,
+      command: null
+    }
+  }
+  const available =
+    state.available &&
+    state.version !== null &&
+    compareVersions(state.version, spec.steering.minimumVersion) >= 0
+  return {
+    available,
+    summary: available
+      ? `${spec.displayName} can receive a message in the Run already in progress.`
+      : `${spec.displayName} messages sent during this Run wait in the queue.`,
+    command: null
   }
 }
 
