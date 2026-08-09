@@ -68,6 +68,7 @@ import {
   type AdapterRequestProposal,
   type HarnessAdapter
 } from './harness-adapter'
+import { conversationSeed, threadReuseVetoed } from './thread-continuity'
 
 interface CorePort {
   send(command: CoreCommand): Promise<unknown>
@@ -639,10 +640,14 @@ export class RunService {
       latestHarnessBoundary !== undefined &&
       latestHarnessBoundary.skill === input.skill &&
       latestHarnessBoundary.model === input.model &&
+      !threadReuseVetoed(conversation, input.harness) &&
       (await this.runEffect(adapter.threadExists(checkout, savedThread)))
     const restoreFromHistory =
       switchedHarness || (latestHarness === input.harness && !threadCompatible)
-    const handoff = deterministicHandoff(conversation, input.skill ?? null)
+    const handoff = conversationSeed(conversation, {
+      shape: 'handoff',
+      skill: input.skill ?? null
+    })
     const accept = (submissionId: string): Promise<unknown> =>
       this.deps.core.send({
         type: 'run/lifecycle-open',
@@ -1520,19 +1525,6 @@ function terminalObservation(
  * gives its tools. Claude's `--allowedTools` filter below is derived from it,
  * so the two can never drift apart.
  */
-
-/**
- * What a new Harness Thread needs to continue the Conversation: the Skill in
- * force and the turns immediately before it.
- */
-function deterministicHandoff(conversation: ConversationSnapshot, skill: string | null): string {
-  const recent = conversation.entries
-    .filter((entry) => entry.kind === 'message')
-    .slice(-8)
-    .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.text}`)
-    .join('\n')
-  return [...(skill ? [`Skill: ${skill}`] : []), 'Recent turns:', recent || '(none)'].join('\n')
-}
 
 /**
  * Whether Codex still holds the rollout behind a saved Harness Thread. Codex
