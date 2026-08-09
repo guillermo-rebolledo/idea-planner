@@ -43,6 +43,7 @@ function dependencies(root: string): HarnessAdapterDeps & {
     proxyScript: '/tmp/mcp-proxy.js',
     claudeOauthToken: vi.fn(() => Promise.resolve('oauth-token')),
     validateExecpolicy: vi.fn(() => Promise.resolve()),
+    randomId: vi.fn(() => 'generated-id'),
     writeFrame: vi.fn()
   }
 }
@@ -122,16 +123,24 @@ describe('Harness adapter contract', () => {
     expect(
       await Effect.runPromise(
         adapter.answerApproval({
+          sessionId: 'session-1',
           runId: 'run-1',
           approvalId: 'approval-1',
           allowed: true,
           remembered: false,
-          message: '',
+          reason: undefined,
           proposal: {
             projectRoot: '/project',
             harness: 'codex',
             proposed: null,
-            summary: 'pnpm test'
+            summary: 'pnpm test',
+            continuation: {
+              harness: 'codex',
+              model: 'model-1',
+              effort: 'high',
+              skill: 'grilling',
+              permissionMode: 'ask'
+            }
           }
         })
       )
@@ -141,6 +150,56 @@ describe('Harness adapter contract', () => {
       status: 'completed',
       kind: 'lifecycle',
       summary: 'Harness completed the turn'
+    })
+  })
+
+  it('queues a bounded, redacted denial instruction when Codex cannot attach feedback', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-denial-'))
+    temporaryDirectories.push(root)
+    const deps = dependencies(root)
+    const adapter = createHarnessAdapter('codex', harnessAdapterLayer(deps))
+
+    expect(
+      await Effect.runPromise(
+        adapter.answerApproval({
+          sessionId: 'session-1',
+          runId: 'run-1',
+          approvalId: 'approval-1',
+          allowed: false,
+          remembered: false,
+          reason: 'Run tests with token=secret-value instead',
+          proposal: {
+            projectRoot: '/project',
+            harness: 'codex',
+            proposed: null,
+            summary: 'rm -rf build',
+            continuation: {
+              harness: 'codex',
+              model: 'model-1',
+              effort: 'high',
+              skill: null,
+              permissionMode: 'ask'
+            }
+          }
+        })
+      )
+    ).toBe(true)
+    expect(
+      deps.commands.find((command) => command.type === 'conversation/queue-change')
+    ).toMatchObject({
+      input: {
+        type: 'enqueue',
+        input: {
+          sessionId: 'session-1',
+          text: 'Run tests with token=[REDACTED: credential] instead',
+          source: 'composer',
+          harness: 'codex',
+          model: 'model-1',
+          effort: 'high',
+          permissionMode: 'ask',
+          reviewAttachments: []
+        }
+      }
     })
   })
 
@@ -225,16 +284,24 @@ describe('Harness adapter contract', () => {
         toolName: 'Bash',
         content: 'pnpm test:*'
       },
-      summary: 'pnpm test'
+      summary: 'pnpm test',
+      continuation: {
+        harness: 'claude' as const,
+        model: 'model-1',
+        effort: 'high',
+        skill: 'grilling' as const,
+        permissionMode: 'ask' as const
+      }
     }
     expect(
       await Effect.runPromise(
         adapter.answerApproval({
+          sessionId: 'session-1',
           runId: 'run-1',
           approvalId: 'approval-1',
           allowed: true,
           remembered: true,
-          message: '',
+          reason: undefined,
           proposal,
           host
         })
@@ -244,6 +311,55 @@ describe('Harness adapter contract', () => {
       'approval-1',
       expect.objectContaining({ behavior: 'allow' })
     )
+    await Effect.runPromise(
+      adapter.answerApproval({
+        sessionId: 'session-1',
+        runId: 'run-1',
+        approvalId: 'approval-2',
+        allowed: false,
+        remembered: false,
+        reason: 'Run the focused tests instead',
+        proposal,
+        host
+      })
+    )
+    expect(host.resolveApproval).toHaveBeenLastCalledWith('approval-2', {
+      behavior: 'deny',
+      message: 'Run the focused tests instead'
+    })
+  })
+
+  it('keeps a Codex denial with no instruction on the existing fast path', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-plain-denial-'))
+    temporaryDirectories.push(root)
+    const deps = dependencies(root)
+    const adapter = createHarnessAdapter('codex', harnessAdapterLayer(deps))
+
+    await Effect.runPromise(
+      adapter.answerApproval({
+        sessionId: 'session-1',
+        runId: 'run-1',
+        approvalId: 'approval-1',
+        allowed: false,
+        remembered: false,
+        reason: undefined,
+        proposal: {
+          projectRoot: '/project',
+          harness: 'codex',
+          proposed: null,
+          summary: 'rm -rf build',
+          continuation: {
+            harness: 'codex',
+            model: 'model-1',
+            effort: 'high',
+            skill: null,
+            permissionMode: 'ask'
+          }
+        }
+      })
+    )
+
+    expect(deps.commands.map((command) => command.type)).toEqual(['harness/answer'])
   })
 
   it('fails through the tagged adapter channel before Claude sees invalid staged settings', async () => {

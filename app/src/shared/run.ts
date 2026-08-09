@@ -158,9 +158,7 @@ export type StopRunInput = z.infer<typeof stopRunInputSchema>
 
 /**
  * The person's answer to one outstanding Approval Request. A denial may carry
- * a message for the agent to read; the card itself no longer collects one
- * (mock 1a) — the next composer message is where a person says what to do
- * instead — but the contract keeps the field for callers that have one.
+ * an optional instruction for the agent to read and act on instead.
  */
 export const resolveApprovalInputSchema = z.object({
   sessionId: z.string().min(1),

@@ -44,6 +44,7 @@ import {
   type SkillCatalog
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
+import { Textarea } from '@renderer/components/ui/textarea'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@renderer/components/ui/hover-card'
 import {
   applicableEffort,
@@ -235,6 +236,7 @@ export function Conversation({
   // A mode the person picked on this surface outranks any seeding.
   const modeTouchedRef = useRef(false)
   const [deciding, setDeciding] = useState(false)
+  const [denialDraft, setDenialDraft] = useState<{ approvalId: string; text: string } | null>(null)
   // A standing rule is more consequential than answering this one request.
   // The first click reveals the exact commitment in context; the second stores
   // it. Changing requests always withdraws an unfinished confirmation.
@@ -415,7 +417,8 @@ export function Conversation({
     async (
       approval: Extract<ConversationEntry, { kind: 'approval' }>,
       decision: 'allow' | 'deny',
-      remember = false
+      remember = false,
+      message?: string
     ) => {
       setDeciding(true)
       setError(null)
@@ -425,7 +428,8 @@ export function Conversation({
           runId: approval.runId,
           approvalId: approval.requestId,
           decision,
-          remember
+          remember,
+          ...(decision === 'deny' && message?.trim() ? { message: message.trim() } : {})
         })
         adoptSnapshot(next)
       } catch {
@@ -481,6 +485,7 @@ export function Conversation({
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const skillSuggestionsRef = useRef<HTMLUListElement>(null)
   const pendingApprovalId = pendingApproval?.id ?? null
+  const denialInstruction = denialDraft?.approvalId === pendingApprovalId ? denialDraft.text : ''
   useEffect(() => {
     if (pendingApprovalId === null) return
     const active = document.activeElement
@@ -895,6 +900,28 @@ export function Conversation({
                           </pre>
                         </details>
                       )}
+                      <div className="mx-3.5 mt-3">
+                        <label
+                          className="text-xs font-medium text-foreground"
+                          htmlFor={`denial-instruction-${pendingApproval.requestId}`}
+                        >
+                          Do this instead (optional)
+                        </label>
+                        <Textarea
+                          id={`denial-instruction-${pendingApproval.requestId}`}
+                          className="mt-1 min-h-16 resize-y bg-surface text-xs"
+                          value={denialInstruction}
+                          maxLength={2_000}
+                          disabled={deciding}
+                          placeholder="Give the agent a safer or more useful direction"
+                          onChange={(event) =>
+                            setDenialDraft({
+                              approvalId: pendingApproval.id,
+                              text: event.target.value
+                            })
+                          }
+                        />
+                      </div>
                       <div className="flex flex-wrap items-center gap-2 px-3.5 py-3">
                         <Button
                           size="sm"
@@ -907,7 +934,9 @@ export function Conversation({
                           size="sm"
                           variant="ghost"
                           disabled={deciding}
-                          onClick={() => void decide(pendingApproval, 'deny')}
+                          onClick={() =>
+                            void decide(pendingApproval, 'deny', false, denialInstruction)
+                          }
                         >
                           Deny
                         </Button>
