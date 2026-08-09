@@ -758,7 +758,7 @@ const MAX_CHANGED_FILES = 500
  * environment in which `cwd` no longer decides which repository it is talking
  * to, and every call here means the one the person's Project is in.
  */
-function environment(options: GitOptions): NodeJS.ProcessEnv {
+export function environment(options: GitOptions = {}): NodeJS.ProcessEnv {
   const inherited = Object.fromEntries(
     Object.entries(process.env).filter(([name]) => !REDIRECTING.has(name))
   )

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  What the hardened runtime is asked to allow, kept in the repository so it can
+  be read rather than inherited from a packager default.
+
+  The three exceptions are V8's: a JavaScript engine compiles at run time and
+  executes what it wrote. Nothing here relaxes library validation, and there is
+  no App Sandbox entitlement — this is a Developer ID build distributed outside
+  the App Store (ADR 0008), and the Chromium sandbox the app enables in Main is
+  a different mechanism from Apple's.
+-->
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+  </dict>
+</plist>
