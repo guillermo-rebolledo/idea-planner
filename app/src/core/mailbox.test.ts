@@ -529,4 +529,37 @@ describe('what is waiting for me', () => {
     const snapshot = await core.queryMailbox(query())
     expect(row(snapshot, 'Ended badly')).toMatchObject({ status: 'failed' })
   })
+
+  it('keeps saying what a compacted Session is doing, in both states', async () => {
+    const quiet = await start('Compacted and resting')
+    const working = await start('Compacted mid-thought')
+    const quietRun = await beginRun(quiet.id)
+    await finishRun({
+      sessionId: quiet.id,
+      runId: quietRun,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness completed the turn'
+    })
+    const workingRun = await beginRun(working.id)
+    for (const [sessionId, runId] of [
+      [quiet.id, quietRun],
+      [working.id, workingRun]
+    ] as const) {
+      await core.compactConversation({
+        sessionId,
+        operationId: `compaction-${sessionId}`,
+        runId,
+        summary: 'The Session set up receipts.',
+        tailFromEntryId: `boundary:${runId}:started`
+      })
+    }
+
+    const snapshot = await core.queryMailbox(query())
+    // Compaction says what the agent is told next. It is not an ending, and a
+    // Session that read as finished because its context was replaced would be
+    // one the inbox lies about.
+    expect(row(snapshot, 'Compacted and resting')).toMatchObject({ status: 'idle' })
+    expect(row(snapshot, 'Compacted mid-thought')).toMatchObject({ status: 'running' })
+  })
 })

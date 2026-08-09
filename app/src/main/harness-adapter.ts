@@ -44,6 +44,8 @@ export interface HarnessAdapterDeps {
   stageSettings?: (permissionMode: PermissionMode) => unknown
   validateExecpolicy?: (executable: string, rulesFile: string) => Promise<void>
   writeFrame?: (runId: string, frame: string) => void
+  /** How a bounded request reaches a Harness process; injectable for tests. */
+  runBounded?: BoundedRunner
 }
 
 export class HarnessAdapterExternal extends Context.Tag('main/HarnessAdapterExternal')<
@@ -101,6 +103,39 @@ export interface HarnessStream {
   events: HarnessEvent[]
   outgoing: string[]
 }
+
+/**
+ * One bounded, non-mutating question put to a Harness outside any Run: what
+ * this Conversation amounts to, in prose. It touches no Conversation, saves no
+ * Thread, and is refused the ability to change anything in the Checkout — a
+ * summary that edited the person's code while writing itself would be a far
+ * worse failure than not having one.
+ */
+export interface HarnessSummaryRequest {
+  executable: string
+  /** The directory the request runs in; nothing in it may be written. */
+  checkout: string
+  /** The Run directory this request may use for its own scratch files. */
+  runDirectory: string
+  /** What the Harness is asked, whole. */
+  prompt: string
+}
+
+/** How long one summary request is given before it is abandoned. */
+export const SUMMARY_TIMEOUT_MS = 120_000
+
+/** One Harness process run to completion and read for its answer. */
+export interface BoundedRequest {
+  executable: string
+  args: string[]
+  environment: Record<string, string>
+  workingDirectory: string
+  /** Fed on stdin, which is how both Harnesses take a prompt too long for argv. */
+  stdin: string
+  timeoutMs: number
+}
+
+export type BoundedRunner = (request: BoundedRequest) => Promise<string>
 
 export interface AdapterTerminalFact {
   status: 'completed' | 'failed'
@@ -160,6 +195,12 @@ export interface HarnessAdapter {
     threadId?: string
   ): Effect.Effect<string[], HarnessAdapterError>
   open(input: HarnessOpenInput): Effect.Effect<HarnessStream, HarnessAdapterError>
+  /**
+   * Asks this Harness one bounded, non-mutating question and returns its prose
+   * answer. Used to write the summary a compaction carries; it belongs to no
+   * Run and leaves no Harness Thread behind.
+   */
+  summarize(input: HarnessSummaryRequest): Effect.Effect<string, HarnessAdapterError>
   interrupt(runId: string): Effect.Effect<boolean, HarnessAdapterError>
   answerApproval(input: AdapterApprovalAnswer): Effect.Effect<boolean, HarnessAdapterError>
   terminalFact(event: HarnessEvent): AdapterTerminalFact | null
@@ -272,6 +313,51 @@ function validateExecpolicy(
   )
 }
 
+/**
+ * One Harness process, fed a prompt and read for what it printed. Bounded in
+ * time and in output: a request that never ends, or answers with a gigabyte,
+ * is a request that takes the app down with it.
+ */
+function runBoundedProcess(request: BoundedRequest): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      request.executable,
+      request.args,
+      {
+        cwd: request.workingDirectory,
+        env: request.environment,
+        timeout: request.timeoutMs,
+        maxBuffer: 4_000_000
+      },
+      (error: Error | null, stdout) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve(stdout)
+      }
+    )
+    child.stdin?.end(request.stdin)
+  })
+}
+
+function boundedRunner(deps: HarnessAdapterDeps): BoundedRunner {
+  return deps.runBounded ?? runBoundedProcess
+}
+
+/**
+ * What a Harness is asked, and what it must not do while answering. Said in
+ * the prompt as well as enforced by the arguments: an agent told it is only
+ * writing prose does not go looking for something to fix.
+ */
+function summaryPreamble(): string {
+  return [
+    'You are summarizing a coding session so it can be continued in a fresh context.',
+    'Write prose only. Do not use any tools, do not read or change any files, and do not ask questions.',
+    'Answer with the summary itself and nothing else.'
+  ].join('\n')
+}
+
 function readClaudeOauthToken(): Promise<string> {
   return promisify(execFile)('/usr/bin/security', [
     'find-generic-password',
@@ -381,6 +467,44 @@ function createCodexAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter 
           })
         )
       )
+    },
+    /**
+     * `codex exec`, sandboxed read-only and told to persist nothing. The
+     * answer comes back through `--output-last-message` rather than off
+     * stdout, because stdout is a transcript and the summary is one message
+     * inside it — both flags are the installed binary's own.
+     */
+    summarize(input) {
+      return withExternal(layer, 'ask Codex for a summary', async (dependencies) => {
+        const answerPath = join(input.runDirectory, 'compaction-summary.txt')
+        await mkdir(input.runDirectory, { recursive: true, mode: 0o700 })
+        await boundedRunner(dependencies)({
+          executable: input.executable,
+          args: [
+            'exec',
+            '--sandbox',
+            'read-only',
+            '--skip-git-repo-check',
+            // Nothing about this request belongs in the person's own history.
+            '--ephemeral',
+            '--color',
+            'never',
+            '--cd',
+            input.checkout,
+            '--output-last-message',
+            answerPath,
+            '-'
+          ],
+          environment: {
+            ...baseEnvironment(input.executable, dependencies.homeDirectory),
+            CODEX_HOME: join(dependencies.homeDirectory, '.codex')
+          },
+          workingDirectory: input.checkout,
+          stdin: `${summaryPreamble()}\n\n${input.prompt}`,
+          timeoutMs: SUMMARY_TIMEOUT_MS
+        })
+        return (await readFile(answerPath, 'utf8')).trim()
+      })
     },
     interrupt(runId) {
       return withExternal(layer, 'interrupt Codex', async (dependencies) => {
@@ -508,6 +632,41 @@ function createClaudeAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter
             harness: 'claude'
           })
         )
+      )
+    },
+    /**
+     * `claude --print`, in Plan mode with no MCP servers configured. Plan mode
+     * is Claude's own refusal to change anything, and under `--print` there is
+     * nobody who could approve leaving it — so the request cannot touch the
+     * Checkout however the model reads its instructions.
+     */
+    summarize(input) {
+      return withExternal(layer, 'ask Claude for a summary', async (dependencies) =>
+        (
+          await boundedRunner(dependencies)({
+            executable: input.executable,
+            args: [
+              '--print',
+              '--output-format',
+              'text',
+              '--setting-sources',
+              'user',
+              '--strict-mcp-config',
+              '--permission-mode',
+              'plan',
+              '--no-chrome'
+            ],
+            environment: {
+              ...baseEnvironment(input.executable, dependencies.homeDirectory),
+              CLAUDE_CODE_OAUTH_TOKEN: await (
+                dependencies.claudeOauthToken ?? readClaudeOauthToken
+              )()
+            },
+            workingDirectory: input.checkout,
+            stdin: `${summaryPreamble()}\n\n${input.prompt}`,
+            timeoutMs: SUMMARY_TIMEOUT_MS
+          })
+        ).trim()
       )
     },
     interrupt: () => Effect.succeed(false),

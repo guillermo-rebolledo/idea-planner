@@ -1,8 +1,4 @@
-import type {
-  ConversationBoundaryKind,
-  ConversationEntry,
-  ConversationSnapshot
-} from '@shared/conversation'
+import type { Compaction, ConversationEntry, ConversationSnapshot } from '@shared/conversation'
 import type { HarnessId } from '@shared/readiness'
 
 /**
@@ -25,7 +21,7 @@ const HANDOFF_TURNS = 8
  * a tail alone. Asking by shape keeps every one of them on the same path.
  */
 export interface ConversationSeedRequest {
-  shape: 'handoff'
+  shape: 'handoff' | 'compaction'
   /** The Skill in force for the Run being seeded, or null when there is none. */
   skill: string | null
 }
@@ -50,27 +46,88 @@ const SEEDS: Record<
   ConversationSeedRequest['shape'],
   (conversation: ConversationSnapshot, request: ConversationSeedRequest) => string
 > = {
-  handoff: (conversation, request) => handoffSeed(conversation, request.skill)
+  handoff: (conversation, request) => handoffSeed(conversation, request.skill),
+  compaction: (conversation, request) => compactionSeed(conversation, request.skill)
 }
 
 /** The Skill in force and the turns immediately before the new Thread. */
 function handoffSeed(conversation: ConversationSnapshot, skill: string | null): string {
-  const recent = conversation.entries
-    .filter((entry) => entry.kind === 'message')
-    .slice(-HANDOFF_TURNS)
-    .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.text}`)
-    .join('\n')
+  const recent = turns(
+    conversation.entries.filter((entry) => entry.kind === 'message').slice(-HANDOFF_TURNS)
+  )
   return [...(skill ? [`Skill: ${skill}`] : []), 'Recent turns:', recent || '(none)'].join('\n')
 }
 
 /**
- * The Conversation boundaries after which a saved Harness Thread must not be
- * reused, whatever the configuration says. Empty today: nothing a Conversation
- * can currently record breaks the Thread behind it. Compaction and rewind each
- * add one — a Harness that still remembers turns the person rewound past is a
- * Harness answering from a Conversation that no longer exists.
+ * The summary this Session is carrying, and the turns it deliberately did not
+ * summarize. This is what makes a compaction a continuation rather than a
+ * fresh start: the agent begins again knowing what was already established,
+ * and reads the last few turns in the person's own words.
+ *
+ * With no compaction to read this degrades to a handoff, which is the same
+ * seed without the summary — the honest answer when there is no summary.
  */
-export const CONTINUITY_BREAKING_BOUNDARIES: ReadonlySet<ConversationBoundaryKind> = new Set()
+function compactionSeed(conversation: ConversationSnapshot, skill: string | null): string {
+  const compaction = latestCompaction(conversation)
+  if (!compaction) return handoffSeed(conversation, skill)
+  const from = conversation.entries.findIndex((entry) => entry.id === compaction.tailFromEntryId)
+  const tail = turns(
+    (from === -1 ? conversation.entries : conversation.entries.slice(from)).filter(
+      (entry) => entry.kind === 'message'
+    )
+  )
+  return [
+    ...(skill ? [`Skill: ${skill}`] : []),
+    'Summary of this Conversation up to the turns below:',
+    compaction.summary,
+    'Recent turns:',
+    tail || '(none)'
+  ].join('\n')
+}
+
+/**
+ * The compaction in force, when one is: the newest the app performed itself.
+ * A Harness that compacted its own Thread left nothing to seed — it still has
+ * the Thread — so its record is not one of these.
+ */
+export function latestCompaction(conversation: ConversationSnapshot): Compaction | null {
+  const boundary = conversation.entries.findLast(
+    (entry) =>
+      entry.kind === 'boundary' && entry.compaction !== undefined && !entry.compaction.native
+  )
+  return boundary?.kind === 'boundary' ? (boundary.compaction ?? null) : null
+}
+
+/** Message entries as the two speakers, one per line. */
+function turns(entries: ConversationEntry[]): string {
+  return entries
+    .flatMap((entry) =>
+      entry.kind === 'message'
+        ? [`${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.text}`]
+        : []
+    )
+    .join('\n')
+}
+
+/** A boundary entry, which is the only kind that can declare a break. */
+type BoundaryEntry = Extract<ConversationEntry, { kind: 'boundary' }>
+
+/** Whether one boundary makes the Harness Thread behind it unusable. */
+export type ContinuityBreak = (entry: BoundaryEntry) => boolean
+
+/**
+ * The Conversation facts after which a saved Harness Thread must not be
+ * reused, whatever the configuration says.
+ *
+ * A compaction is one, because the whole of it is a refusal to resume: the
+ * Thread is left where it is and a fresh one is started from the summary and
+ * the tail. A compaction the *Harness* performed is not, and the distinction
+ * is not a detail — that Thread was never abandoned, it summarized itself and
+ * carried on, and declining to resume it would throw away the very thing
+ * compacting it was for.
+ */
+export const breaksContinuity: ContinuityBreak = (entry) =>
+  entry.boundary === 'compacted' && entry.compaction?.native !== true
 
 /**
  * The Run a Harness can only have produced this entry while answering in, or
@@ -134,18 +191,18 @@ function answeringRun(entry: ConversationEntry): string | null {
 export function threadReuseVetoed(
   conversation: ConversationSnapshot,
   harness: HarnessId,
-  breaking: ReadonlySet<ConversationBoundaryKind> = CONTINUITY_BREAKING_BOUNDARIES
+  breaking: ContinuityBreak = breaksContinuity
 ): boolean {
   const answered = new Set(conversation.entries.flatMap((entry) => answeringRun(entry) ?? []))
   const savedAt = conversation.entries.findLastIndex(
     (entry) =>
       entry.kind === 'boundary' &&
       entry.harness === harness &&
-      !breaking.has(entry.boundary) &&
+      !breaking(entry) &&
       answered.has(entry.runId)
   )
   // No such Run leaves `savedAt` at -1, which reads the Conversation whole.
   return conversation.entries
     .slice(savedAt + 1)
-    .some((entry) => entry.kind === 'boundary' && breaking.has(entry.boundary))
+    .some((entry) => entry.kind === 'boundary' && breaking(entry))
 }

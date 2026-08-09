@@ -2139,3 +2139,218 @@ describe('an approval from request to answer', () => {
     expect(reloaded.activeRunId).toBeNull()
   })
 })
+
+describe('surviving the context window', () => {
+  /** A Conversation long enough to have something a summary could stand in for. */
+  async function longConversation(turns = 12, era = 'a'): Promise<string> {
+    let runId = ''
+    for (let turn = 1; turn <= turns; turn++) {
+      runId = await startRun(`Turn ${era}${String(turn)}`, `submission-turn-${era}${String(turn)}`)
+      await stream(runId, [
+        {
+          type: 'assistant-message',
+          id: `m${era}${String(turn)}`,
+          text: `Answer ${era}${String(turn)}`,
+          complete: true
+        }
+      ])
+      await finishRun({
+        sessionId,
+        runId,
+        outcome: 'completed',
+        category: null,
+        summary: 'Harness completed the turn'
+      })
+    }
+    return runId
+  }
+
+  /** Compacts the Session the way Main does: ask Core for the plan, write the summary back. */
+  async function compact(summary: string, operationId = 'compaction-1') {
+    const plan = await core.planCompaction(sessionId)
+    return {
+      plan,
+      snapshot: await core.compactConversation({
+        sessionId,
+        operationId,
+        runId: plan.runId,
+        summary,
+        tailFromEntryId: plan.tailFromEntryId
+      })
+    }
+  }
+
+  it('leaves every message, command and output exactly where it was', async () => {
+    const runId = await startRun('Run the tests', 'submission-compact-whole')
+    await stream(runId, [
+      {
+        type: 'command',
+        id: 'toolu_1',
+        command: 'pnpm test',
+        output: 'all green',
+        failed: false,
+        running: false,
+        exitCode: 0,
+        durationMs: 12
+      }
+    ])
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness completed the turn'
+    })
+    await longConversation()
+    const before = await core.getConversation(sessionId)
+
+    const { snapshot } = await compact('The Session set up receipts and got the tests green.')
+
+    // Nothing is hidden and nothing is lost: compaction changes what the agent
+    // remembers, never what the person can read.
+    for (const entry of before.entries) {
+      expect(snapshot.entries.some((kept) => kept.id === entry.id)).toBe(true)
+    }
+    expect(snapshot.entries.filter((entry) => entry.kind === 'command')).toMatchObject([
+      { command: 'pnpm test', output: 'all green' }
+    ])
+    // And the journal on disk still holds every original entry.
+    const stored = await readFile(
+      join(stateDir, 'sessions', sessionId, 'conversation.jsonl'),
+      'utf8'
+    )
+    expect(stored).toContain('all green')
+    expect(stored).toContain(STARTING_MESSAGE)
+  })
+
+  it('records the summary it is carrying and where the untouched tail begins', async () => {
+    await longConversation()
+
+    const { plan, snapshot } = await compact('Receipts work offline; the tests are green.')
+
+    const boundary = snapshot.entries.findLast(
+      (entry) => entry.kind === 'boundary' && entry.boundary === 'compacted'
+    )
+    if (boundary?.kind !== 'boundary') throw new Error('expected a compaction boundary')
+    expect(boundary.compaction).toMatchObject({
+      summary: 'Receipts work offline; the tests are green.',
+      tailFromEntryId: plan.tailFromEntryId,
+      native: false
+    })
+    // The tail names an entry the person can actually see.
+    expect(snapshot.entries.some((entry) => entry.id === plan.tailFromEntryId)).toBe(true)
+  })
+
+  it('hands the previous summary over as material, so a second compaction does not nest', async () => {
+    await longConversation()
+    await compact('First: receipts render offline.')
+    await longConversation(12, 'b')
+
+    const plan = await core.planCompaction(sessionId)
+
+    expect(plan.previousSummary).toBe('First: receipts render offline.')
+    // The turns the first summary already accounts for are not read again.
+    expect(plan.material).not.toContain('Answer a1')
+    expect(plan.material).toContain('Answer b1')
+    await core.compactConversation({
+      sessionId,
+      operationId: 'compaction-2',
+      runId: plan.runId,
+      summary: 'Receipts render offline and the tests are green.',
+      tailFromEntryId: plan.tailFromEntryId
+    })
+
+    const snapshot = await core.getConversation(sessionId)
+    const summaries = snapshot.entries.flatMap((entry) =>
+      entry.kind === 'boundary' && entry.compaction ? [entry.compaction.summary] : []
+    )
+    // Both compactions are in the record, and the one in force is one summary.
+    expect(summaries).toHaveLength(2)
+    expect(summaries.at(-1)).toBe('Receipts render offline and the tests are green.')
+    expect(summaries.at(-1)).not.toContain('First: receipts render offline.')
+  })
+
+  it('refuses to run inside a Run blocked on an Approval Request', async () => {
+    await longConversation()
+    const runId = await startRun('Delete the build', 'submission-compact-blocked')
+    await stream(runId, [
+      {
+        type: 'approval-request',
+        id: 'toolu_block',
+        tool: 'Command',
+        summary: 'rm -rf build',
+        detail: '{}',
+        proposedRule: null
+      }
+    ])
+
+    await expect(core.planCompaction(sessionId)).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('refuses a Session with nothing yet a summary could stand in for', async () => {
+    await expect(core.planCompaction(sessionId)).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('records a Harness that compacted itself, rather than failing on protocol', async () => {
+    const runId = await startRun('Keep going', 'submission-native-compaction')
+    await stream(runId, [
+      { type: 'assistant-message', id: 'm1', text: 'Still here', complete: true },
+      { type: 'context-compacted', summary: 'Kept the file layout and the conventions.' }
+    ])
+
+    const snapshot = await core.getConversation(sessionId)
+    const boundary = snapshot.entries.findLast(
+      (entry) => entry.kind === 'boundary' && entry.boundary === 'compacted'
+    )
+    if (boundary?.kind !== 'boundary') throw new Error('expected a compaction boundary')
+    expect(boundary.compaction).toMatchObject({
+      summary: 'Kept the file layout and the conventions.',
+      native: true
+    })
+    // The Harness still holds its Thread, so the Run is still the Run.
+    expect(snapshot.activeRunId).toBe(runId)
+    expect(snapshot.recovery).toBeNull()
+  })
+
+  it('is written once however many times the same compaction is recorded', async () => {
+    await longConversation()
+    await compact('Receipts work offline.')
+    await compact('Receipts work offline.')
+
+    const snapshot = await core.getConversation(sessionId)
+    expect(
+      snapshot.entries.filter(
+        (entry) => entry.kind === 'boundary' && entry.boundary === 'compacted'
+      )
+    ).toHaveLength(1)
+  })
+
+  it('reads back the same way when the projection disagrees with the journal', async () => {
+    await longConversation()
+    await compact('Receipts work offline.')
+    const trusted = await core.getConversation(sessionId)
+
+    // A projection that fell behind — a crash between the two writes — is
+    // repaired from the journal rather than believed.
+    await writeFile(
+      join(stateDir, 'sessions', sessionId, 'state.json'),
+      JSON.stringify({
+        activeRunId: 'run-that-never-was',
+        openApprovals: [],
+        lastMessage: null,
+        recentMessageIds: [],
+        recovery: null,
+        runningCommands: {},
+        subagentDispatchedAt: {},
+        runSteps: { read: 0, 'file-change': 0 },
+        journalBytes: 1
+      })
+    )
+
+    const rebuilt = await makeCore().getConversation(sessionId)
+    expect(rebuilt.activeRunId).toBe(trusted.activeRunId)
+    expect(rebuilt.entries.map((entry) => entry.id)).toEqual(
+      trusted.entries.map((entry) => entry.id)
+    )
+  })
+})

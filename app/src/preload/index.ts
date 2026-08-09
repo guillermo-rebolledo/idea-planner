@@ -61,6 +61,7 @@ const api: ShellApi = {
   openInEditor: (input) => ipcRenderer.invoke(IPC_CHANNELS.openInEditor, input),
   getConversation: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.getConversation, sessionId),
   developSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.developSession, input),
+  compactSession: (input) => ipcRenderer.invoke(IPC_CHANNELS.compactSession, input),
   enqueueQueuedSubmission: (input) =>
     ipcRenderer.invoke(IPC_CHANNELS.enqueueQueuedSubmission, input),
   editQueuedSubmission: (input) => ipcRenderer.invoke(IPC_CHANNELS.editQueuedSubmission, input),

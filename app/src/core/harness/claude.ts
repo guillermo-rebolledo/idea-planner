@@ -115,8 +115,14 @@ const KNOWN_SYSTEM_EVENTS = new Set([
   'thinking_tokens',
   'api_retry',
   'hook_started',
-  'hook_response'
+  'hook_response',
+  'compact_boundary'
 ])
+/** What Claude says about a compaction it decided on: why, and how much it held. */
+const compactBoundarySchema = z.object({
+  trigger: z.string().default(''),
+  pre_tokens: z.number().int().nonnegative().optional()
+})
 const hookEventSchema = z.object({
   hook_id: z.string().min(1).max(200),
   hook_name: z.string().min(1).max(200),
@@ -404,6 +410,19 @@ function describeSystem(frame: Record<string, unknown>): HarnessEvent[] {
     return thinkingTokensSchema.safeParse(frame).success
       ? []
       : [protocolFailure('Invalid Claude thinking_tokens event')]
+  }
+  if (subtype === 'compact_boundary') {
+    // Claude compacts on its own initiative and announces it afterwards. It
+    // still holds the Thread, so this is something observed rather than a
+    // protocol frame this app failed to understand.
+    const metadata = compactBoundarySchema.safeParse(frame['compact_metadata'])
+    const trigger = metadata.success ? metadata.data.trigger : ''
+    return [
+      {
+        type: 'context-compacted',
+        summary: `Claude summarized its own context${trigger === 'manual' ? ' when asked' : ' as it ran short of room'}.`
+      }
+    ]
   }
   if (subtype === 'hook_started' || subtype === 'hook_response') {
     return hookEventSchema.safeParse(frame).success

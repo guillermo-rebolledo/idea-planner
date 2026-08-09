@@ -7,10 +7,19 @@ import {
   type ConversationSnapshot
 } from '@shared/conversation'
 import {
-  CONTINUITY_BREAKING_BOUNDARIES,
+  breaksContinuity,
   conversationSeed,
-  threadReuseVetoed
+  threadReuseVetoed,
+  type ContinuityBreak
 } from './thread-continuity'
+
+/**
+ * A break the Conversation cannot really declare, so the rule can be exercised
+ * apart from the one fact that does declare one.
+ */
+const configurationBreak: ContinuityBreak = (entry) => entry.boundary === 'configuration'
+
+type BoundaryEntry = Extract<ConversationEntry, { kind: 'boundary' }>
 
 function conversation(entries: ConversationEntry[]): ConversationSnapshot {
   return {
@@ -47,7 +56,7 @@ function message(text: string, role: 'user' | 'assistant' = 'user'): Conversatio
  * A Run opening, which is the only boundary that names its Harness — and so
  * the only place the saved Harness Thread can be placed in the Conversation.
  */
-function opened(runId: string, harness: 'codex' | 'claude'): ConversationEntry {
+function opened(runId: string, harness: 'codex' | 'claude'): BoundaryEntry {
   return {
     kind: 'boundary',
     id: `boundary:${runId}:started`,
@@ -62,7 +71,7 @@ function opened(runId: string, harness: 'codex' | 'claude'): ConversationEntry {
 }
 
 /** How that Run ended, which is where the Harness is no longer named. */
-function ended(runId: string, boundaryKind: ConversationBoundaryKind): ConversationEntry {
+function ended(runId: string, boundaryKind: ConversationBoundaryKind): BoundaryEntry {
   return {
     kind: 'boundary',
     id: `boundary:${runId}:ended`,
@@ -116,6 +125,24 @@ function ranAndSaved(runId: string, harness: 'codex' | 'claude'): ConversationEn
   return [opened(runId, harness), answered(runId), ended(runId, 'run-completed')]
 }
 
+/** The record of a compaction, by the app or by the Harness itself. */
+function compacted(
+  runId: string,
+  compaction: { summary: string; tailFromEntryId: string; native?: boolean }
+): BoundaryEntry {
+  return {
+    kind: 'boundary',
+    id: `boundary:compacted:${runId}`,
+    at: '2026-08-09T12:00:00.000Z',
+    runId,
+    boundary: 'compacted',
+    summary: 'Compacted',
+    submissionId: null,
+    recovery: null,
+    compaction: { native: false, ...compaction }
+  }
+}
+
 describe('what a new Harness Thread is seeded with', () => {
   it('hands off the Skill in force and the last eight turns, byte for byte', () => {
     const entries = Array.from({ length: 10 }, (_, index) =>
@@ -152,6 +179,49 @@ describe('what a new Harness Thread is seeded with', () => {
     ).toBe('Recent turns:\n(none)')
   })
 
+  it('carries the summary in force and the turns it deliberately kept whole', () => {
+    const entries = [
+      message('set up receipts'),
+      message('done', 'assistant'),
+      compacted('run-1', {
+        summary: 'Receipts render offline; the tests are green.',
+        tailFromEntryId: 'message:now what?'
+      }),
+      message('now what?'),
+      message('ship it', 'assistant')
+    ]
+    expect(
+      conversationSeed(conversation(entries), { shape: 'compaction', skill: 'wayfinder' })
+    ).toBe(
+      [
+        'Skill: wayfinder',
+        'Summary of this Conversation up to the turns below:',
+        'Receipts render offline; the tests are green.',
+        'Recent turns:',
+        'User: now what?',
+        'Assistant: ship it'
+      ].join('\n')
+    )
+  })
+
+  it('carries no summary the Harness kept for itself, because that Thread was never left', () => {
+    const entries = [
+      message('set up receipts'),
+      compacted('run-1', {
+        summary: 'What the Harness kept',
+        tailFromEntryId: 'message:set up receipts',
+        native: true
+      }),
+      message('now what?')
+    ]
+    // Degrades to the handoff: there is no summary of this app's making, and
+    // inventing one from the Harness's own would seed a Thread with a summary
+    // the Harness already holds.
+    expect(conversationSeed(conversation(entries), { shape: 'compaction', skill: null })).toBe(
+      'Recent turns:\nUser: set up receipts\nUser: now what?'
+    )
+  })
+
   it('reads only the turns, never the rest of the Conversation', () => {
     const entries = [
       message('what changed?'),
@@ -165,13 +235,52 @@ describe('what a new Harness Thread is seeded with', () => {
 })
 
 describe('a Conversation fact that vetoes Harness Thread reuse', () => {
-  it('is not among the boundaries a Conversation can record today', () => {
-    expect([...CONTINUITY_BREAKING_BOUNDARIES]).toEqual([])
+  it('is a compaction this app performed, and only that', () => {
+    for (const kind of conversationBoundarySchema.options) {
+      expect(breaksContinuity({ ...ended('run-1', kind), boundary: kind })).toBe(
+        kind === 'compacted'
+      )
+    }
+    expect(
+      breaksContinuity(
+        compacted('run-1', { summary: 'kept', tailFromEntryId: 'message:x', native: true })
+      )
+    ).toBe(false)
+  })
+
+  it('vetoes reuse of the Thread the compaction declined to resume', () => {
+    const entries = [
+      ...ranAndSaved('run-1', 'claude'),
+      compacted('run-1', { summary: 'Receipts render offline.', tailFromEntryId: 'message:run-1' })
+    ]
+    expect(threadReuseVetoed(conversation(entries), 'claude')).toBe(true)
+  })
+
+  it('leaves a natively compacted Thread alone, because the Harness still holds it', () => {
+    const entries = [
+      ...ranAndSaved('run-1', 'claude'),
+      compacted('run-1', {
+        summary: 'What the Harness kept',
+        tailFromEntryId: 'message:run-1',
+        native: true
+      })
+    ]
+    expect(threadReuseVetoed(conversation(entries), 'claude')).toBe(false)
+  })
+
+  it('is lifted once a Run has answered on the Thread the compaction seeded', () => {
+    const entries = [
+      ...ranAndSaved('run-1', 'claude'),
+      compacted('run-1', { summary: 'Receipts render offline.', tailFromEntryId: 'message:run-1' }),
+      ...ranAndSaved('run-2', 'claude')
+    ]
+    expect(threadReuseVetoed(conversation(entries), 'claude')).toBe(false)
   })
 
   it('is found nowhere in a Conversation of ordinary Runs', () => {
     const entries = [message('hello'), ...ranAndSaved('run-1', 'claude'), message('and again')]
     for (const kind of conversationBoundarySchema.options) {
+      if (kind === 'compacted') continue
       expect(threadReuseVetoed(conversation([...entries, ended('run-2', kind)]), 'claude')).toBe(
         false
       )
@@ -180,16 +289,12 @@ describe('a Conversation fact that vetoes Harness Thread reuse', () => {
 
   it('vetoes reuse when it follows the Run that saved the Thread', () => {
     const entries = [...ranAndSaved('run-1', 'claude'), ended('run-2', 'configuration')]
-    expect(threadReuseVetoed(conversation(entries), 'claude', new Set(['configuration']))).toBe(
-      true
-    )
+    expect(threadReuseVetoed(conversation(entries), 'claude', configurationBreak)).toBe(true)
   })
 
   it('leaves a Thread saved after the break alone', () => {
     const entries = [ended('run-1', 'configuration'), ...ranAndSaved('run-2', 'claude')]
-    expect(threadReuseVetoed(conversation(entries), 'claude', new Set(['configuration']))).toBe(
-      false
-    )
+    expect(threadReuseVetoed(conversation(entries), 'claude', configurationBreak)).toBe(false)
   })
 
   it('stands until a Run of this Harness actually saves a Thread past it', () => {
@@ -203,9 +308,7 @@ describe('a Conversation fact that vetoes Harness Thread reuse', () => {
         opened('run-3', 'claude'),
         ended('run-3', ending)
       ]
-      expect(threadReuseVetoed(conversation(entries), 'claude', new Set(['configuration']))).toBe(
-        true
-      )
+      expect(threadReuseVetoed(conversation(entries), 'claude', configurationBreak)).toBe(true)
     }
   })
 
@@ -217,9 +320,7 @@ describe('a Conversation fact that vetoes Harness Thread reuse', () => {
       answered('run-3'),
       ended('run-3', 'run-stopped')
     ]
-    expect(threadReuseVetoed(conversation(entries), 'claude', new Set(['configuration']))).toBe(
-      false
-    )
+    expect(threadReuseVetoed(conversation(entries), 'claude', configurationBreak)).toBe(false)
   })
 
   it('is not lifted by the person’s own message, which is written as the Run opens', () => {
@@ -229,9 +330,7 @@ describe('a Conversation fact that vetoes Harness Thread reuse', () => {
       opened('run-3', 'claude'),
       asked('run-3')
     ]
-    expect(threadReuseVetoed(conversation(entries), 'claude', new Set(['configuration']))).toBe(
-      true
-    )
+    expect(threadReuseVetoed(conversation(entries), 'claude', configurationBreak)).toBe(true)
   })
 
   it('is read per Harness, not across all of them', () => {
@@ -240,18 +339,16 @@ describe('a Conversation fact that vetoes Harness Thread reuse', () => {
       ended('run-2', 'configuration'),
       ...ranAndSaved('run-3', 'codex')
     ]
-    const breaking: ReadonlySet<ConversationBoundaryKind> = new Set(['configuration'])
+    const breaking = configurationBreak
     expect(threadReuseVetoed(conversation(entries), 'claude', breaking)).toBe(true)
     expect(threadReuseVetoed(conversation(entries), 'codex', breaking)).toBe(false)
   })
 
   it('refuses a Thread it cannot place at all rather than assuming it innocent', () => {
     const unplaceable = [message('hello'), ended('run-1', 'configuration')]
-    expect(threadReuseVetoed(conversation(unplaceable), 'codex', new Set(['configuration']))).toBe(
-      true
+    expect(threadReuseVetoed(conversation(unplaceable), 'codex', configurationBreak)).toBe(true)
+    expect(threadReuseVetoed(conversation([message('hello')]), 'codex', configurationBreak)).toBe(
+      false
     )
-    expect(
-      threadReuseVetoed(conversation([message('hello')]), 'codex', new Set(['configuration']))
-    ).toBe(false)
   })
 })

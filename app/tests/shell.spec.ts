@@ -187,6 +187,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'chooseHarnessExecutable',
       'chooseProject',
       'clearHarnessExecutable',
+      'compactSession',
       'confirmProject',
       'createPullRequest',
       'deleteSession',
@@ -786,6 +787,57 @@ test('one streamed Harness message stays one DOM message through durable checkpo
       disappeared: false,
       replaced: false
     })
+  } finally {
+    await app.close()
+  }
+})
+
+test('a person compacts a long Session and keeps working in it', async () => {
+  await installFakeHarness('claude', COMPACTING_CLAUDE_FAKE)
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await startSession(page, 'Set up offline receipts')
+    const history = page.getByRole('log', { name: 'Conversation history' })
+    await expect(history.getByText('Noted.', { exact: true }).first()).toBeVisible()
+
+    // Long enough to have turns a summary could stand in for. Sent through the
+    // same surface the composer uses, because typing eight turns by hand is
+    // the test taking longer, not the app doing more.
+    for (let turn = 1; turn <= 5; turn++) {
+      await page.getByLabel('Your message').fill(`Turn ${String(turn)}`)
+      await page.getByRole('button', { name: 'Send' }).click()
+      await expect(history.getByText('Noted.', { exact: true })).toHaveCount(turn + 1)
+    }
+    await expect(history.getByText('Turn 5', { exact: true })).toBeVisible()
+
+    await page.getByRole('button', { name: 'Compact', exact: true }).click()
+
+    const note = history.getByRole('region', { name: 'Compaction' })
+    await expect(note).toBeVisible()
+    // The summary is readable, so the person can tell whether it kept the part
+    // that mattered.
+    await note.getByText('The summary being carried').click()
+    await expect(note.getByText('Receipts render offline and the tests are green.')).toBeVisible()
+    // And nothing above it moved: the Conversation still reads back whole,
+    // every turn of it, however much of it the transcript is drawing now.
+    const readBack = await page.evaluate(async () => {
+      const [session] = await window.shell.listSessions()
+      if (!session) throw new Error('no Session to read back')
+      const snapshot = await window.shell.getConversation(session.id)
+      return snapshot.entries.flatMap((entry) => (entry.kind === 'message' ? [entry.text] : []))
+    })
+    expect(readBack).toContain('Set up offline receipts')
+    expect(readBack).toContain('Turn 1')
+    expect(readBack).toContain('Turn 5')
+
+    // The Session is still the Session: the same Checkout, and it takes the
+    // next message without being restarted.
+    await page.getByLabel('Your message').fill('Carry on from the summary')
+    await page.getByRole('button', { name: 'Send' }).click()
+    await expect(history.getByText('Carry on from the summary', { exact: true })).toBeVisible()
+    await expect(history.getByRole('region', { name: 'Compaction' })).toHaveCount(1)
   } finally {
     await app.close()
   }
@@ -1803,6 +1855,30 @@ exit 1`
 const READY_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
   -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+esac`
+
+/**
+ * A Harness that answers every turn at once, and answers the bounded summary
+ * request with prose. The two are told apart by their arguments, exactly as
+ * the app writes them: a Run asks for `stream-json` after its settings, and a
+ * summary request asks for `text` straight after `--print`.
+ */
+const COMPACTING_CLAUDE_FAKE = `case "$1:$2" in
+  --version:*) echo "2.1.220 (Claude Code)"; exit 0;;
+  --print:--output-format)
+    echo "Receipts render offline and the tests are green."
+    exit 0;;
+esac
+case "$1" in
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  --print)
+    echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
+    /bin/sleep 0.2
+    echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Noted."}]},"session_id":"thread-1"}'
+    /bin/sleep 0.2
+    echo '{"type":"result","subtype":"success","is_error":false,"session_id":"thread-1","result":"Noted.","usage":{"input_tokens":12,"output_tokens":5}}'
+    /bin/sleep 0.2
+    exit 0;;
 esac`
 
 const READY_GH_FAKE = `case "$1:$2" in
