@@ -292,7 +292,7 @@ describe('selected Conversation refreshes', () => {
       refresh.push({
         sessionId: 'session',
         runId: 'run',
-        journalPosition: 0,
+        journalPosition: null,
         invalidation: 'none',
         event
       })
@@ -353,7 +353,7 @@ describe('selected Conversation refreshes', () => {
     refresh.push({
       sessionId: 'session',
       runId: 'run',
-      journalPosition: 10,
+      journalPosition: 11,
       invalidation: 'none',
       event: {
         type: 'assistant-message',
@@ -369,6 +369,81 @@ describe('selected Conversation refreshes', () => {
     const durable = await refresh.requestRefresh()
     expect(durable?.conversation.entries).toHaveLength(1)
     expect(durable?.live?.messages ?? []).toEqual([])
+  })
+
+  it('keeps a coalesced event when an unrelated write advances the snapshot', async () => {
+    const refresh = new SelectedConversationReadModel('session', {
+      readConversation: vi.fn(() => Promise.resolve(conversation('run', [], 12))),
+      readRuns: vi.fn(() => Promise.resolve([])),
+      publish: vi.fn()
+    })
+
+    refresh.push({
+      sessionId: 'session',
+      runId: 'run',
+      journalPosition: null,
+      invalidation: 'none',
+      event: {
+        type: 'assistant-message',
+        id: 'message',
+        text: 'Not checkpointed yet',
+        complete: false
+      }
+    })
+
+    const snapshot = await refresh.requestRefresh()
+
+    expect(snapshot?.conversation.journalPosition).toBe(12)
+    expect(snapshot?.live?.messages).toEqual([{ id: 'message', text: 'Not checkpointed yet' }])
+  })
+
+  it('clears older live text when the settled notification follows its snapshot', async () => {
+    const publish = vi.fn()
+    const refresh = new SelectedConversationReadModel('session', {
+      readConversation: vi.fn(() => Promise.resolve(conversation('run'))),
+      readRuns: vi.fn(() => Promise.resolve([])),
+      publish
+    })
+    await refresh.requestRefresh()
+    refresh.push({
+      sessionId: 'session',
+      runId: 'run',
+      journalPosition: null,
+      invalidation: 'none',
+      event: { type: 'assistant-message', id: 'message', text: 'Almost', complete: false }
+    })
+    refresh.adopt(
+      conversation(
+        'run',
+        [
+          {
+            kind: 'message',
+            id: 'assistant:run:message',
+            at: AT,
+            runId: 'run',
+            role: 'assistant',
+            text: 'Settled',
+            completeness: 'complete',
+            source: 'harness',
+            reviewAttachments: [],
+            submissionId: null,
+            suggestedResponses: [],
+            plainOptions: false
+          }
+        ],
+        11
+      )
+    )
+
+    refresh.push({
+      sessionId: 'session',
+      runId: 'run',
+      journalPosition: 11,
+      invalidation: 'none',
+      event: { type: 'assistant-message', id: 'message', text: 'Settled', complete: true }
+    })
+
+    expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ live: null }))
   })
 
   it('reconciles live state against the active durable Run identity', async () => {
@@ -389,7 +464,7 @@ describe('selected Conversation refreshes', () => {
     refresh.push({
       sessionId: 'session',
       runId: 'run',
-      journalPosition: 0,
+      journalPosition: null,
       invalidation: 'none',
       event: { type: 'assistant-message', id: 'message', text: 'Live', complete: false }
     })
@@ -421,7 +496,7 @@ describe('selected Conversation refreshes', () => {
     refresh.push({
       sessionId: 'session',
       runId: 'run',
-      journalPosition: 0,
+      journalPosition: null,
       invalidation: 'mailbox',
       event: { type: 'failed', category: 'process-crash', summary: 'The Harness exited' }
     })
@@ -453,7 +528,7 @@ describe('selected Conversation refreshes', () => {
     refresh.push({
       sessionId: 'session',
       runId: 'run',
-      journalPosition: 0,
+      journalPosition: null,
       invalidation: 'none',
       event: {
         type: 'file-change',

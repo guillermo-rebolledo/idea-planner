@@ -136,12 +136,23 @@ export class SelectedConversationReadModel {
     }
     if (streamed.event.type === 'started') this.failureSummary = null
     if (streamed.event.type === 'failed') this.failureSummary = streamed.event.summary
+    if (streamed.event.type === 'assistant-message') {
+      const messageId = streamed.event.id
+      this.streamed = this.streamed.filter(
+        (existing) =>
+          existing.runId !== streamed.runId ||
+          existing.event.type !== 'assistant-message' ||
+          existing.event.id !== messageId
+      )
+    }
     this.streamed.push(streamed)
     if (
       this.latest !== null &&
-      streamed.journalPosition < this.latest.conversation.journalPosition
+      streamed.journalPosition !== null &&
+      streamed.journalPosition <= this.latest.conversation.journalPosition
     ) {
       this.streamed.pop()
+      this.reconcileLive(this.latest.conversation)
       this.publishCurrent()
       if (streamed.invalidation === 'mailbox') this.invalidateDurableRead()
       return
@@ -230,7 +241,8 @@ export class SelectedConversationReadModel {
     const activeRunId = conversation.activeRunId
     this.streamed = this.streamed.filter(
       (streamed) =>
-        streamed.journalPosition >= conversation.journalPosition &&
+        (streamed.journalPosition === null ||
+          streamed.journalPosition > conversation.journalPosition) &&
         activeRunId !== null &&
         streamed.runId === activeRunId
     )

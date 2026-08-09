@@ -231,7 +231,7 @@ export interface ConversationEffects {
     input: QueuedSubmissionDispositionObservation
   ): Effect.Effect<QueuedSubmissionLaunchResult, CoreError>
   begin(input: BeginConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
-  apply(input: ApplyHarnessEventInput): Effect.Effect<number, CoreError>
+  apply(input: ApplyHarnessEventInput): Effect.Effect<number | null, CoreError>
   /**
    * Prepares the Adapter for a Run and returns whatever the Harness must be
    * told before it will say anything. Codex speaks only when spoken to.
@@ -1086,13 +1086,15 @@ export function createConversationEffects(options: ConversationOptions): Convers
       )
     })
 
-  const apply = (input: ApplyHarnessEventInput): Effect.Effect<number, CoreError> =>
+  const apply = (input: ApplyHarnessEventInput): Effect.Effect<number | null, CoreError> =>
     Effect.gen(function* () {
       const sessionDir = yield* sessionDirectory(input.sessionId)
-      let journalPosition = 0
+      const journalPath = join(sessionDir, JOURNAL)
+      let before = 0
+      let journalPosition: number | null = null
       yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          journalPosition = yield* journalSize(join(sessionDir, JOURNAL))
+          before = yield* journalSize(journalPath)
           const now = yield* options.clock
           const event = input.event
           switch (event.type) {
@@ -1429,7 +1431,14 @@ export function createConversationEffects(options: ConversationOptions): Convers
               // only.
               return
           }
-        })
+        }).pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              const after = yield* journalSize(journalPath)
+              journalPosition = after > before ? after : null
+            })
+          )
+        )
       )
       return journalPosition
     })
@@ -1884,7 +1893,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
     Effect.gen(function* () {
       const adapter = yield* adapterFor(input.runId, input.harness)
       const events = adapter.ingest(input.chunk)
-      const journalPositions: number[] = []
+      const journalPositions: (number | null)[] = []
       for (const event of events) {
         journalPositions.push(
           yield* apply({ sessionId: input.sessionId, runId: input.runId, event })

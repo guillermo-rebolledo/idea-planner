@@ -1478,7 +1478,7 @@ describe('Run service', () => {
       'tool'
     ])
     expect(streamed.map((entry) => entry.invalidation)).toEqual(['mailbox', 'none', 'none', 'none'])
-    expect(streamed.map((entry) => entry.journalPosition)).toEqual([41, 42, 42, 42])
+    expect(streamed.map((entry) => entry.journalPosition)).toEqual([42, 42, 42, 42])
     const activity = (core.send.mock.calls as [{ type: string; input?: unknown }][])
       .filter(([command]) => command.type === 'run/event')
       .map(([command]) => command.input as { kind: string; summary: string })

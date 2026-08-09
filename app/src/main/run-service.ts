@@ -86,10 +86,12 @@ interface CorePort {
 }
 
 /** What Core hands back for one pass of protocol: events, and any reply owed. */
+const journalProjectionPositionSchema = z.number().int().nonnegative().nullable()
+
 const harnessStreamSchema = z.object({
   events: harnessEventSchema.array(),
   outgoing: z.array(z.string()),
-  journalPositions: z.array(z.number().int().nonnegative())
+  journalPositions: z.array(journalProjectionPositionSchema)
 })
 interface ReadinessPort {
   refresh(harness?: HarnessId): Promise<{
@@ -785,7 +787,7 @@ export class RunService {
     this.deps.onConversationEvent?.({
       sessionId: input.sessionId,
       runId: accepted.id,
-      journalPosition: Math.max(0, started.journalPosition - 1),
+      journalPosition: started.journalPosition,
       invalidation: 'mailbox',
       event: { type: 'started' }
     })
@@ -1112,7 +1114,7 @@ export class RunService {
         this.deps.onConversationEvent?.({
           sessionId: run.sessionId,
           runId: run.id,
-          journalPosition: stream.journalPositions[index] ?? 0,
+          journalPosition: stream.journalPositions[index] ?? null,
           invalidation: conversationInvalidation(event),
           event
         })
@@ -1169,6 +1171,29 @@ export class RunService {
     this.finishing.delete(run.id)
   }
 
+  /** Applies one event in Core before making that exact projection visible. */
+  private async applyConversationEvent(
+    sessionId: string,
+    runId: string,
+    event: HarnessEvent
+  ): Promise<void> {
+    const journalPosition = journalProjectionPositionSchema.parse(
+      await this.deps.core.send({
+        type: 'conversation/apply',
+        sessionId,
+        runId,
+        event
+      })
+    )
+    this.deps.onConversationEvent?.({
+      sessionId,
+      runId,
+      journalPosition,
+      invalidation: conversationInvalidation(event),
+      event
+    })
+  }
+
   /**
    * Records Harness-native structured choices. Only the app's tool host sees
    * the offered options, so it is what tells the Conversation.
@@ -1187,25 +1212,7 @@ export class RunService {
         value: redactCredentials(option.value)
       }))
     }
-    const journalPosition = z
-      .number()
-      .int()
-      .nonnegative()
-      .parse(
-        await this.deps.core.send({
-          type: 'conversation/apply',
-          sessionId: run.sessionId,
-          runId: run.id,
-          event
-        })
-      )
-    this.deps.onConversationEvent?.({
-      sessionId: run.sessionId,
-      runId: run.id,
-      journalPosition,
-      invalidation: conversationInvalidation(event),
-      event
-    })
+    await this.applyConversationEvent(run.sessionId, run.id, event)
   }
 
   /**
@@ -1250,25 +1257,7 @@ export class RunService {
       detail: sanitize(described.detail, projectRoot).slice(0, MAX_APPROVAL_DETAIL),
       proposedRule
     }
-    const journalPosition = z
-      .number()
-      .int()
-      .nonnegative()
-      .parse(
-        await this.deps.core.send({
-          type: 'conversation/apply',
-          sessionId: run.sessionId,
-          runId: run.id,
-          event
-        })
-      )
-    this.deps.onConversationEvent?.({
-      sessionId: run.sessionId,
-      runId: run.id,
-      journalPosition,
-      invalidation: conversationInvalidation(event),
-      event
-    })
+    await this.applyConversationEvent(run.sessionId, run.id, event)
     await this.record(run, 'waiting', 'blocked', `Waiting for you to approve ${event.summary}`)
   }
 
@@ -1326,25 +1315,7 @@ export class RunService {
       message: allowed ? '' : redactCredentials(denialMessage).slice(0, 2_000),
       remembered
     }
-    const journalPosition = z
-      .number()
-      .int()
-      .nonnegative()
-      .parse(
-        await this.deps.core.send({
-          type: 'conversation/apply',
-          sessionId: input.sessionId,
-          runId: input.runId,
-          event
-        })
-      )
-    this.deps.onConversationEvent?.({
-      sessionId: input.sessionId,
-      runId: input.runId,
-      journalPosition,
-      invalidation: conversationInvalidation(event),
-      event
-    })
+    await this.applyConversationEvent(input.sessionId, input.runId, event)
     // A denial is an answer, not a failure: the agent was told and carries on.
     // The Run leaves the blocked state once nothing else is outstanding.
     await this.record(
@@ -1456,7 +1427,7 @@ export class RunService {
     this.deps.onConversationEvent?.({
       sessionId: input.sessionId,
       runId: boundary?.kind === 'boundary' ? boundary.runId : '',
-      journalPosition: Math.max(0, snapshot.journalPosition - 1),
+      journalPosition: snapshot.journalPosition,
       invalidation: 'mailbox',
       event: { type: 'rewound' }
     })
@@ -1515,7 +1486,7 @@ export class RunService {
     this.deps.onConversationEvent?.({
       sessionId: sessionId,
       runId: plan.runId,
-      journalPosition: Math.max(0, snapshot.journalPosition - 1),
+      journalPosition: snapshot.journalPosition,
       invalidation: 'mailbox',
       event: { type: 'context-compacted', summary }
     })
@@ -1631,7 +1602,7 @@ export class RunService {
     this.deps.onConversationEvent?.({
       sessionId: run.sessionId,
       runId: run.id,
-      journalPosition: Math.max(0, terminal.conversation.journalPosition - 1),
+      journalPosition: terminal.conversation.journalPosition,
       invalidation: 'mailbox',
       event:
         terminal.run.status === 'completed'

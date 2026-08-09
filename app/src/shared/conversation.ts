@@ -384,8 +384,8 @@ export type CodexLaunch = z.infer<typeof codexLaunchSchema>
 export interface HarnessStream {
   events: HarnessEvent[]
   outgoing: string[]
-  /** Journal position immediately before each corresponding event was applied. */
-  journalPositions?: number[]
+  /** Smallest snapshot position containing each event, or null while it is only live. */
+  journalPositions?: (number | null)[]
 }
 
 export const messageCompletenessSchema = z.enum(['complete', 'partial'])
@@ -1158,8 +1158,8 @@ export type ConversationEvent = z.infer<typeof conversationEventSchema>
 export const conversationStreamEventSchema = z.object({
   sessionId: z.string().min(1),
   runId: z.string().min(1),
-  /** Journal position immediately before this event was durably applied. */
-  journalPosition: z.number().int().nonnegative(),
+  /** Smallest snapshot position containing this event, or null while it is only live. */
+  journalPosition: z.number().int().nonnegative().nullable(),
   /** Explicitly tells independent consumers which durable projection became stale. */
   invalidation: z.enum(['none', 'mailbox']),
   event: conversationEventSchema
