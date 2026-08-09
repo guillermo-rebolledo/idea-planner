@@ -294,6 +294,13 @@ body {
   grid-template-columns: 210px minmax(0, 1fr);
 }
 
+.add-project-dialog {
+  display: flex;
+  height: min(680px, calc(100vh - 3rem));
+  max-width: 800px;
+  flex-direction: column;
+}
+
 .appearance-settings-layout {
   grid-template-columns: minmax(0, 1fr) 0;
   transition-property: grid-template-columns;

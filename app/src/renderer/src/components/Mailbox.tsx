@@ -38,6 +38,7 @@ import type {
   ThemeState
 } from '@shared/contract'
 import { AppMenu } from '@renderer/components/AppMenu'
+import { AddProjectDialog } from '@renderer/components/AddProjectDialog'
 import { Button } from '@renderer/components/ui/button'
 import { Composer } from '@renderer/components/Composer'
 import { Conversation } from '@renderer/components/Conversation'
@@ -66,6 +67,7 @@ import { pullRequestPresentation } from '@shared/pull-request-presentation'
 interface MailboxProps {
   theme: ThemeState | null
   onAppearanceChange: (appearance: AppearanceSettings) => Promise<void>
+  onProjectsChanged: () => Promise<void>
 }
 
 type CenterSurface =
@@ -112,7 +114,11 @@ function ownsUndo(target: Element | null): boolean {
  * (expanded list or compact rail), the app menu in its footer, and the
  * primary center surface for starting and reading Sessions.
  */
-export function Mailbox({ theme, onAppearanceChange }: MailboxProps): React.JSX.Element {
+export function Mailbox({
+  theme,
+  onAppearanceChange,
+  onProjectsChanged
+}: MailboxProps): React.JSX.Element {
   const [surface, setSurface] = useState<CenterSurface>({ kind: 'new-chat' })
   const [inboxCollapsed, setInboxCollapsed] = useState(false)
   // What just happened, said once for everyone: the strip below renders it
@@ -142,6 +148,7 @@ export function Mailbox({ theme, onAppearanceChange }: MailboxProps): React.JSX.
   const [mailbox, setMailbox] = useState<MailboxData>({ state: 'reading' })
   const [renaming, setRenaming] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<SessionSummary | null>(null)
+  const [addProjectOpen, setAddProjectOpen] = useState(false)
   // ⌘K's palette, holding a fresh unfiltered list: the sidebar's search must
   // not silently narrow what the switcher can reach.
   const [switcher, setSwitcher] = useState<SessionSummary[] | null>(null)
@@ -663,7 +670,11 @@ export function Mailbox({ theme, onAppearanceChange }: MailboxProps): React.JSX.
                   onClearSearch={() => setQuery((current) => ({ ...current, search: '' }))}
                   onRetry={() => void refreshMailbox(effectiveQuery)}
                   onAnnounce={setAnnouncement}
-                  onProjectsChanged={() => void refreshMailbox(effectiveQuery)}
+                  onProjectsChanged={() => {
+                    void refreshMailbox(effectiveQuery)
+                    void onProjectsChanged()
+                  }}
+                  onAddProject={() => setAddProjectOpen(true)}
                 />
               </div>
             </nav>
@@ -675,7 +686,7 @@ export function Mailbox({ theme, onAppearanceChange }: MailboxProps): React.JSX.
               onGoToSession={() =>
                 void window.shell.listSessions().then(setSwitcher, () => undefined)
               }
-              onProjectsChanged={() => void refreshMailbox(effectiveQuery)}
+              onAddProject={() => setAddProjectOpen(true)}
               onAnnounce={setAnnouncement}
             />
           </div>
@@ -712,6 +723,18 @@ export function Mailbox({ theme, onAppearanceChange }: MailboxProps): React.JSX.
           />
         )}
       </div>
+
+      {addProjectOpen && (
+        <AddProjectDialog
+          onAdded={(project) => {
+            setAddProjectOpen(false)
+            setAnnouncement(`Added “${project.name}”.`)
+            void refreshMailbox(effectiveQuery)
+            void onProjectsChanged()
+          }}
+          onDismiss={() => setAddProjectOpen(false)}
+        />
+      )}
 
       {/* The outcome strip: one quiet pill saying what just happened, for
           eyes and screen readers alike. It floats over the composer for a
@@ -797,6 +820,7 @@ interface InboxContentProps {
   onRetry: () => void
   onAnnounce: (text: string) => void
   onProjectsChanged: () => void
+  onAddProject: () => void
 }
 
 function InboxContent(props: InboxContentProps): React.JSX.Element {
@@ -890,9 +914,19 @@ function InboxContent(props: InboxContentProps): React.JSX.Element {
         </section>
       )}
       <section aria-label="Projects" className="px-2">
-        <h2 className="px-2 pt-1 pb-0.5 font-mono text-2xs font-medium tracking-wide text-muted-foreground uppercase">
-          Projects
-        </h2>
+        <div className="flex items-center px-2 pt-1 pb-0.5">
+          <h2 className="font-mono text-2xs font-medium tracking-wide text-muted-foreground uppercase">
+            Projects
+          </h2>
+          <button
+            type="button"
+            aria-label="New Project"
+            onClick={props.onAddProject}
+            className="ml-auto grid size-6 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Plus aria-hidden="true" className="size-3.5" />
+          </button>
+        </div>
         {projects.length === 0 ? (
           <p className="px-2 py-2 text-xs text-muted-foreground italic">
             No Projects yet. Add one from the menu below.

@@ -5,6 +5,13 @@
 export const IPC_CHANNELS = {
   bootState: 'shell:boot-state',
   chooseProject: 'project:choose',
+  listGitHubRepositories: 'project:list-github-repositories',
+  listProjectCloneLocations: 'project:list-clone-locations',
+  chooseProjectCloneLocation: 'project:choose-clone-location',
+  startProjectClone: 'project:clone-start',
+  beginProjectClone: 'project:clone-begin',
+  cancelProjectClone: 'project:clone-cancel',
+  projectCloneEvent: 'project:clone-event',
   offerProject: 'project:offer',
   listProjects: 'project:list',
   removeProject: 'project:remove',

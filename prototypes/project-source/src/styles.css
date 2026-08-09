@@ -1,0 +1,45 @@
+/* PROTOTYPE — use the product's real palette, typography, and primitives. */
+@import '../../../app/src/renderer/src/styles.css';
+@source '.';
+
+body {
+  user-select: text;
+}
+
+.project-source-dialog {
+  display: flex;
+  height: min(680px, calc(100vh - 3rem));
+  max-width: 800px;
+  flex-direction: column;
+}
+
+/* Base UI portals popovers beside the modal rather than inside its stacking
+   context. Lift the positioned layer itself so the options remain interactive. */
+[data-base-ui-portal] > [role='presentation']:has(.project-source-popover) {
+  z-index: 60;
+}
+
+.prototype-backdrop {
+  background: color-mix(in oklab, var(--background) 42%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.prototype-progress {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklab, var(--primary) 28%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: prototype-progress 1.4s linear infinite;
+}
+
+@keyframes prototype-progress {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}

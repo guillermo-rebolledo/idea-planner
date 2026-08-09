@@ -3,6 +3,8 @@
 Status: accepted
 Date: 2026-08-01
 
+Amended: 2026-08-09
+
 ## Context
 
 A **Project** is a local git repository the user has added to the app, identified by the resolved path of its root ([ADR 0004](./0004-in-place-primary-checkout.md), `CONTEXT.md`). Two questions follow: how the app decides a folder is a repository, and what "its root" means when the user picks a folder somewhere inside one.
@@ -15,8 +17,11 @@ The app **shells out to git**, and treats the git binary as a required external 
 
 A folder becomes a Project only if `git rev-parse --show-toplevel` succeeds, and the path it returns — not the path the user picked — is the Project's root and its identity. Picking any folder inside a repository therefore adds that repository, once.
 
-A folder that is not a repository is refused, with an offer to run `git init`. Publishing an isolated
-Checkout is the other explicit Git mutation; see ADR 0007.
+A folder that is not a repository is refused, with an offer to run `git init`. Cloning is a second
+explicit Git mutation: the person chooses a remote and an existing parent, and Main atomically
+reserves a new child directory before Git writes into it. Main verifies that Git resolves the result
+to exactly that directory before adding it as a Project. Publishing an isolated Checkout is the third
+explicit Git mutation; see ADR 0007.
 
 Spawning belongs to Main, per the follow-up decision in [ADR 0001](./0001-adopt-effect-in-core.md). Main runs the probe and hands Core the resolved root; Core validates it, decides identity, and persists. Main does not own the state transition.
 
