@@ -39,6 +39,7 @@ import {
   type QueueOutcome,
   reviewAttachmentLabel,
   reviewAttachmentsRefusal,
+  sameReviewAttachments,
   type ReviewAttachment,
   type RunSnapshot,
   type SessionSummary,
@@ -199,7 +200,8 @@ export function Conversation({
   onOpenFile,
   reviewAttachments,
   onRemoveReviewAttachment,
-  onClearReviewAttachments
+  onClearReviewAttachments,
+  onRestoreReviewAttachments
 }: {
   session: SessionSummary
   conversation: SelectedConversation
@@ -210,6 +212,8 @@ export function Conversation({
   onRemoveReviewAttachment: (id: string) => void
   /** The message carrying them was committed, so the composer is empty again. */
   onClearReviewAttachments: () => void
+  /** Rewind restores the exact reviewed code carried by the selected message. */
+  onRestoreReviewAttachments: (attachments: ReviewAttachment[]) => void
 }): React.JSX.Element {
   const sessionId = session.id
   const { phase, runs, live, failureSummary, refresh, adopt: adoptSnapshot } = conversation
@@ -225,6 +229,7 @@ export function Conversation({
   const [rewoundSubmission, setRewoundSubmission] = useState<{
     text: string
     submissionId: string
+    reviewAttachments: ReviewAttachment[]
   } | null>(null)
   // One choice, not three: the model carries the Harness that reaches it.
   const { models, readiness } = useModelCatalog()
@@ -329,7 +334,9 @@ export function Conversation({
       const messageSkill = queuedSkill === undefined ? chosenSkill : queuedSkill
       const ownsComposer = source === 'composer' && !submissionId && queuedSkill === undefined
       const restoredSubmissionId =
-        ownsComposer && rewoundSubmission?.text === text
+        ownsComposer &&
+        rewoundSubmission?.text === text &&
+        sameReviewAttachments(rewoundSubmission.reviewAttachments, reviewAttachments)
           ? rewoundSubmission.submissionId
           : undefined
       const resolvedSubmissionId = submissionId ?? restoredSubmissionId ?? crypto.randomUUID()
@@ -692,8 +699,12 @@ export function Conversation({
             })
             adoptSnapshot(next)
             setDraft(message.text)
-            setRewoundSubmission({ text: message.text, submissionId: message.submissionId })
-            onClearReviewAttachments()
+            setRewoundSubmission({
+              text: message.text,
+              submissionId: message.submissionId,
+              reviewAttachments: message.reviewAttachments
+            })
+            onRestoreReviewAttachments(message.reviewAttachments)
             setRewindingMessage(null)
             window.requestAnimationFrame(() => focusTextareaAtEnd(composerRef))
           }}

@@ -52,7 +52,7 @@ import {
   type SubmitConversationMessageResult,
   type SuggestedResponse
 } from '@shared/conversation'
-import { reviewAttachmentsRefusal, type ReviewAttachment } from '@shared/review-attachment'
+import { reviewAttachmentsRefusal, sameReviewAttachments } from '@shared/review-attachment'
 import { isRestored } from '@shared/run-undo'
 import type { HarnessId } from '@shared/readiness'
 import type { RunActivityKind, SkillName } from '@shared/run'
@@ -507,7 +507,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             if (
               existing.kind !== 'message' ||
               existing.text !== input.text ||
-              !sameAttachments(existing.reviewAttachments, input.reviewAttachments)
+              !sameReviewAttachments(existing.reviewAttachments, input.reviewAttachments)
             ) {
               return yield* Effect.fail(
                 new CoreError(
@@ -604,7 +604,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
               existing.skill === (input.skill ?? null) &&
               existing.permissionMode === input.permissionMode &&
               existing.source === input.source &&
-              sameAttachments(existing.reviewAttachments, input.reviewAttachments)
+              sameReviewAttachments(existing.reviewAttachments, input.reviewAttachments)
             if (!same) {
               return yield* Effect.fail(
                 new CoreError(
@@ -899,7 +899,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
           if (
             message?.kind === 'message' &&
             (message.text !== item.text ||
-              !sameAttachments(message.reviewAttachments, item.reviewAttachments))
+              !sameReviewAttachments(message.reviewAttachments, item.reviewAttachments))
           ) {
             return yield* Effect.fail(
               new CoreError(
@@ -1909,15 +1909,6 @@ export function createConversationEffects(options: ConversationOptions): Convers
     compact,
     rewind
   }
-}
-
-/**
- * Whether two sets of Review Attachments are the same reviewed code. Identity
- * reuse is refused on any difference: a submission id that answers about
- * different code is a different submission wearing the same name.
- */
-function sameAttachments(left: ReviewAttachment[], right: ReviewAttachment[]): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 /**
