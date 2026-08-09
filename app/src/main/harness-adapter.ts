@@ -477,7 +477,16 @@ function createCodexAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter 
     summarize(input) {
       return withExternal(layer, 'ask Codex for a summary', async (dependencies) => {
         const answerPath = join(input.runDirectory, 'compaction-summary.txt')
-        await mkdir(input.runDirectory, { recursive: true, mode: 0o700 })
+        // A staged home, exactly as a Run gets one: the person's own
+        // `~/.codex` is never written to and never read from beyond the
+        // credentials this borrows (ADR 0003). It carries no `config.toml`, so
+        // this request reaches no MCP server and no execpolicy rules either.
+        const codexHome = join(input.runDirectory, 'codex-home')
+        await mkdir(codexHome, { recursive: true, mode: 0o700 })
+        await symlink(
+          join(dependencies.homeDirectory, '.codex', 'auth.json'),
+          join(codexHome, 'auth.json')
+        ).catch(() => undefined)
         await boundedRunner(dependencies)({
           executable: input.executable,
           args: [
@@ -485,8 +494,10 @@ function createCodexAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter 
             '--sandbox',
             'read-only',
             '--skip-git-repo-check',
-            // Nothing about this request belongs in the person's own history.
+            // Nothing about this request belongs in any history, and nothing
+            // the person configured for themselves applies to it.
             '--ephemeral',
+            '--ignore-user-config',
             '--color',
             'never',
             '--cd',
@@ -497,7 +508,7 @@ function createCodexAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter 
           ],
           environment: {
             ...baseEnvironment(input.executable, dependencies.homeDirectory),
-            CODEX_HOME: join(dependencies.homeDirectory, '.codex')
+            CODEX_HOME: codexHome
           },
           workingDirectory: input.checkout,
           stdin: `${summaryPreamble()}\n\n${input.prompt}`,

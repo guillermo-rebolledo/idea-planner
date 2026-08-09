@@ -2270,6 +2270,27 @@ describe('surviving the context window', () => {
     expect(summaries.at(-1)).not.toContain('First: receipts render offline.')
   })
 
+  it('still accounts for every turn a Harness summarized only for itself', async () => {
+    await longConversation()
+    const runId = await startRun('Keep going', 'submission-native-then-app')
+    await stream(runId, [{ type: 'context-compacted', summary: 'What Codex kept.' }])
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness completed the turn'
+    })
+
+    const plan = await core.planCompaction(sessionId)
+
+    // What a Harness kept is inside that Harness and cannot be read, so it is
+    // no summary this app can rewrite — and the turns behind it are still the
+    // app's own to account for.
+    expect(plan.previousSummary).toBeNull()
+    expect(plan.material).toContain('Answer a1')
+  })
+
   it('refuses to run inside a Run blocked on an Approval Request', async () => {
     await longConversation()
     const runId = await startRun('Delete the build', 'submission-compact-blocked')

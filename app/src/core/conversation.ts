@@ -1644,8 +1644,14 @@ export function createConversationEffects(options: ConversationOptions): Convers
       // Everything the summary in force already accounts for is left out of
       // the material: a second compaction rewrites that summary rather than
       // reading the same turns a second time.
+      //
+      // Only a summary this app wrote counts. What a Harness kept for itself
+      // is inside that Harness and cannot be read, let alone rewritten — so
+      // treating its record as a summary in force would drop every turn before
+      // it from the material and carry a note about it forward in their place.
       const carried = entries.findLast(
-        (entry) => entry.kind === 'boundary' && entry.compaction !== undefined
+        (entry) =>
+          entry.kind === 'boundary' && entry.compaction !== undefined && !entry.compaction.native
       )
       const from = carried ? entries.indexOf(carried) + 1 : 0
       const material = entries.slice(from, entries.indexOf(tailFrom))

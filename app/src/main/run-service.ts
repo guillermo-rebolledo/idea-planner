@@ -1442,7 +1442,7 @@ export class RunService {
    * for one themselves.
    */
   private compactIfShortOfRoom(sessionId: string): Promise<void> {
-    const work = this.compactShortSession(sessionId)
+    const work = this.compactForHeadroom(sessionId)
     this.compactions.set(sessionId, work)
     void work.finally(() => {
       if (this.compactions.get(sessionId) === work) this.compactions.delete(sessionId)
@@ -1455,7 +1455,7 @@ export class RunService {
     await this.compactions.get(sessionId)
   }
 
-  private async compactShortSession(sessionId: string): Promise<void> {
+  private async compactForHeadroom(sessionId: string): Promise<void> {
     try {
       const conversation = await this.readConversation(sessionId)
       if (!headroomExhausted(conversation.usage.run)) return
