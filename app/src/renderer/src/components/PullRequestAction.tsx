@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ExternalLink, GitPullRequest, LoaderCircle } from 'lucide-react'
 import type { PreparePullRequestResult, PullRequest, SessionSummary } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
@@ -10,13 +10,17 @@ const CHIP_CLASS =
 
 type DialogState =
   | { kind: 'closed' }
-  | { kind: 'preparing' }
   | { kind: 'unavailable'; detail: string }
   | { kind: 'editing'; draft: Extract<PreparePullRequestResult, { status: 'ready' }> }
   | {
       kind: 'publishing'
       draft: Extract<PreparePullRequestResult, { status: 'ready' }>
     }
+
+type Availability =
+  | { kind: 'checking' }
+  | { kind: 'ready'; draft: Extract<PreparePullRequestResult, { status: 'ready' }> }
+  | { kind: 'unavailable'; detail: string }
 
 export function PullRequestAction({
   session,
@@ -28,23 +32,38 @@ export function PullRequestAction({
   onAnnounce: (message: string) => void
 }): React.JSX.Element {
   const [dialog, setDialog] = useState<DialogState>({ kind: 'closed' })
-  const [pullRequest, setPullRequest] = useState<PullRequest | null>(session.pullRequest ?? null)
+  const [publishedPullRequest, setPublishedPullRequest] = useState<PullRequest | null>(null)
+  const pullRequest = publishedPullRequest ?? session.pullRequest ?? null
+  const [availability, setAvailability] = useState<Availability>({ kind: 'checking' })
+  const availabilityRequestRef = useRef(0)
 
-  async function prepare(): Promise<void> {
-    setDialog({ kind: 'preparing' })
+  const refreshAvailability = useCallback(async (): Promise<void> => {
+    if (pullRequest) return
+    const request = availabilityRequestRef.current + 1
+    availabilityRequestRef.current = request
+    setAvailability({ kind: 'checking' })
     try {
       const result = await window.shell.preparePullRequest({ sessionId: session.id })
-      if (result.status === 'ready') setDialog({ kind: 'editing', draft: result })
+      if (availabilityRequestRef.current !== request) return
+      if (result.status === 'ready') setAvailability({ kind: 'ready', draft: result })
       else {
-        setDialog({
+        setAvailability({
           kind: 'unavailable',
           detail: result.detail ?? unavailableMessage(result.reason)
         })
       }
     } catch {
-      setDialog({ kind: 'unavailable', detail: 'The Pull Request could not be prepared.' })
+      if (availabilityRequestRef.current !== request) return
+      setAvailability({ kind: 'unavailable', detail: 'Pull Request availability is unknown.' })
     }
-  }
+  }, [pullRequest, session.id])
+
+  useEffect(() => {
+    void refreshAvailability()
+    const refreshOnFocus = (): void => void refreshAvailability()
+    window.addEventListener('focus', refreshOnFocus)
+    return () => window.removeEventListener('focus', refreshOnFocus)
+  }, [refreshAvailability, session.updatedAt])
 
   async function publish(
     draft: Extract<PreparePullRequestResult, { status: 'ready' }>
@@ -63,7 +82,7 @@ export function PullRequestAction({
         setDialog({ kind: 'unavailable', detail: result.detail })
         return
       }
-      setPullRequest(result.pullRequest)
+      setPublishedPullRequest(result.pullRequest)
       setDialog({ kind: 'closed' })
       onPublished()
       onAnnounce(
@@ -76,26 +95,42 @@ export function PullRequestAction({
     }
   }
 
+  const creationUnavailable = !pullRequest && availability.kind !== 'ready'
+  const availabilityDescriptionId = `pull-request-availability-${session.id}`
+  const availabilityDetail =
+    availability.kind === 'unavailable'
+      ? availability.detail
+      : 'Checking whether a Pull Request can be created.'
+
   return (
     <>
       <button
         type="button"
-        disabled={dialog.kind === 'preparing' || dialog.kind === 'publishing'}
-        title={pullRequest ? `Open PR #${String(pullRequest.number)}` : 'Create a Pull Request'}
+        disabled={creationUnavailable || dialog.kind === 'publishing'}
+        title={
+          pullRequest
+            ? `Open PR #${String(pullRequest.number)}`
+            : availability.kind === 'ready'
+              ? 'Create a Pull Request'
+              : availabilityDetail
+        }
+        aria-describedby={creationUnavailable ? availabilityDescriptionId : undefined}
         aria-label={
           pullRequest ? `Open PR #${String(pullRequest.number)}` : 'Create a Pull Request'
         }
         onClick={() =>
           pullRequest
             ? void window.shell.openPullRequest(session.id)
-            : dialog.kind === 'closed' && void prepare()
+            : dialog.kind === 'closed' &&
+              availability.kind === 'ready' &&
+              setDialog({ kind: 'editing', draft: availability.draft })
         }
         className={cn(
           CHIP_CLASS,
           'font-medium text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40'
         )}
       >
-        {dialog.kind === 'preparing' || dialog.kind === 'publishing' ? (
+        {(!pullRequest && availability.kind === 'checking') || dialog.kind === 'publishing' ? (
           <LoaderCircle aria-hidden="true" className="size-3 animate-spin" />
         ) : pullRequest ? (
           <ExternalLink aria-hidden="true" className="size-3" />
@@ -104,8 +139,13 @@ export function PullRequestAction({
         )}
         {pullRequest ? `PR #${String(pullRequest.number)}` : 'Create PR'}
       </button>
+      {creationUnavailable && (
+        <span id={availabilityDescriptionId} className="sr-only">
+          {availabilityDetail}
+        </span>
+      )}
 
-      {dialog.kind !== 'closed' && dialog.kind !== 'preparing' && (
+      {dialog.kind !== 'closed' && (
         <Modal
           labelledBy="pull-request-title"
           onDismiss={() => {
