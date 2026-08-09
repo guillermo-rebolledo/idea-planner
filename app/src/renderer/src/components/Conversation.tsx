@@ -10,6 +10,7 @@ import {
   ChevronUp,
   FileDiff,
   FileText,
+  Layers,
   ListChecks,
   LoaderCircle,
   Pause,
@@ -100,7 +101,7 @@ const RECOVERY_GUIDANCE: Record<ConversationRecovery['category'], string> = {
   'rate-limit':
     'The Harness is rate limiting this account. Nothing was lost — send your message again in a moment.',
   'context-exhausted':
-    'The Run ran out of Harness context. Start a shorter message rather than resending this one.',
+    'The Run ran out of Harness context. Compacting replaces the agent’s memory of the early turns with a summary and keeps this Session going; nothing you can read here is lost.',
   'process-crash': 'The Harness process ended unexpectedly. Your message is safe to send again.',
   stopped: 'You stopped this Run. Everything up to that point is kept.',
   'uncertain-submission':
@@ -241,6 +242,7 @@ export function Conversation({
   const [busy, setBusy] = useState(false)
   const [optimisticMessage, setOptimisticMessage] = useState<MessageEntry | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [compacting, setCompacting] = useState(false)
   const [dismissedRecoveryKey, setDismissedRecoveryKey] = useState<string | null>(null)
 
   const snapshot = phase.state === 'ready' ? phase.snapshot : null
@@ -444,6 +446,29 @@ export function Conversation({
     )
   }, [activeRunId, sessionId, refresh])
 
+  /**
+   * Replaces what the agent remembers of the early turns with a summary, and
+   * leaves this Conversation exactly as it reads. It takes a Harness request
+   * to write that summary, so it is announced while it happens rather than
+   * appearing to do nothing.
+   */
+  const compact = useCallback(() => {
+    setCompacting(true)
+    setError(null)
+    void window.shell
+      .compactSession({ sessionId })
+      .then(
+        () => refresh(),
+        (cause: unknown) =>
+          setError(
+            cause instanceof Error && cause.message
+              ? `This Session could not be compacted. ${cause.message}`
+              : 'This Session could not be compacted. Nothing about it was changed.'
+          )
+      )
+      .finally(() => setCompacting(false))
+  }, [sessionId, refresh])
+
   // The card takes focus the moment a request arrives, so ⏎ and esc are
   // already speaking to it — and only to it. Allowing is the app's
   // highest-stakes act, and a reflexive Enter with focus somewhere else must
@@ -598,6 +623,11 @@ export function Conversation({
   const canDevelop = readiness?.harnesses.find((entry) => entry.harness === chosenHarness)
     ?.capabilities.developSession
   const blocked = readiness !== null && canDevelop?.available !== true
+  // There is something to compact once a Harness has answered here at all;
+  // Core decides whether there is yet enough, and says so if there is not.
+  const compactable = entries.some(
+    (entry) => entry.kind === 'boundary' && entry.boundary === 'run-started'
+  )
   const resumable = displayedRecovery?.recovery.resumableSubmissionId ?? null
   const resumableText = entries.find(
     (entry) => entry.kind === 'message' && entry.submissionId === resumable
@@ -637,12 +667,24 @@ export function Conversation({
               actually exists — narrower than this the rail would be standing
               on the prose it is a map of. */}
             <TurnRail turns={turns} />
-            {activeRunId && (
+            {activeRunId ? (
               <div className="absolute end-4 top-3 z-10">
                 <Button size="sm" variant="secondary" onClick={stop}>
                   <Square aria-hidden="true" className="size-3" /> Stop
                 </Button>
               </div>
+            ) : (
+              compactable && (
+                <div className="absolute end-4 top-3 z-10">
+                  {/* Offered before the limit is reached, so the moment is the
+                    person's to choose rather than one chosen for them
+                    mid-thought. */}
+                  <Button size="sm" variant="ghost" disabled={compacting} onClick={compact}>
+                    <Layers aria-hidden="true" className="size-3" />
+                    {compacting ? 'Compacting…' : 'Compact'}
+                  </Button>
+                </div>
+              )
             )}
             {/* The viewport is the scroll region a keyboard can reach; the
               content inside it is the transcript itself, and it is the
@@ -683,6 +725,9 @@ export function Conversation({
                         {item.entry.summary}
                       </p>
                     )
+                  }
+                  if (item.type === 'compaction') {
+                    return row(item.entry.id, <CompactionNote entry={item.entry} />)
                   }
                   if (item.type === 'app-action') {
                     return row(item.entry.id, <AppActionNote entry={item.entry} />)
@@ -958,6 +1003,20 @@ export function Conversation({
                           <p className="mt-1 break-words">{displayedRecovery.recovery.summary}</p>
                         </details>
                       </div>
+                      {displayedRecovery.recovery.category === 'context-exhausted' && (
+                        // The dead end becomes a door: the one thing that
+                        // makes this Session usable again is offered here,
+                        // rather than left for the person to go and find.
+                        <Button
+                          className="shrink-0"
+                          size="sm"
+                          variant="secondary"
+                          disabled={compacting}
+                          onClick={compact}
+                        >
+                          {compacting ? 'Compacting…' : 'Compact and continue'}
+                        </Button>
+                      )}
                       {resumable && resumableText?.kind === 'message' && (
                         <Button
                           className="shrink-0"
@@ -2224,6 +2283,39 @@ type AppActionEntry = Extract<ConversationEntry, { kind: 'app-action' }>
  * Every path it left alone is named, because "put some of them back" is a
  * sentence nobody can act on without knowing which.
  */
+/**
+ * Where the agent's memory of the early turns became a summary. Everything
+ * above it is still here and still readable — that is the point of saying so
+ * in the transcript rather than only in a status somewhere — and the summary
+ * itself is offered to read, because a person who cannot see what was kept
+ * cannot tell whether it kept the part that mattered.
+ */
+function CompactionNote({ entry }: { entry: BoundaryEntry }): React.JSX.Element {
+  const compaction = entry.compaction
+  return (
+    <section
+      aria-label="Compaction"
+      className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs"
+    >
+      <p className="flex items-center gap-1.5 text-muted-foreground">
+        <Layers aria-hidden="true" className="size-3 shrink-0" />
+        {compaction?.native === true
+          ? 'The Harness summarized its own memory of the turns above.'
+          : 'From here the agent reads a summary of the turns above, not the turns themselves.'}
+      </p>
+      <p className="mt-1 text-2xs text-muted-foreground">
+        Nothing above was removed. Everything you can read here, you can still read.
+      </p>
+      {compaction && (
+        <details className="mt-1.5 text-2xs text-muted-foreground">
+          <summary className="w-fit cursor-pointer select-none">The summary being carried</summary>
+          <p className="mt-1 break-words whitespace-pre-wrap">{compaction.summary}</p>
+        </details>
+      )}
+    </section>
+  )
+}
+
 function AppActionNote({ entry }: { entry: AppActionEntry }): React.JSX.Element {
   const restored = entry.outcomes.filter((one) => one.outcome === 'restored')
   const diverged = entry.outcomes.filter((one) => one.outcome === 'skipped-diverged')
@@ -2271,6 +2363,7 @@ type ConversationItem =
   | { type: 'user'; entry: MessageEntry }
   | { type: 'assistant'; entry: MessageEntry }
   | { type: 'note'; entry: BoundaryEntry }
+  | { type: 'compaction'; entry: BoundaryEntry }
   | { type: 'app-action'; entry: AppActionEntry }
   | RunGroup
 
@@ -2308,6 +2401,9 @@ function groupEntries(entries: ConversationEntry[]): ConversationItem[] {
       case 'boundary':
         if (entry.boundary === 'run-started') groupFor(entry.runId).started = entry
         else if (entry.boundary === 'configuration') items.push({ type: 'note', entry })
+        // A compaction belongs to no Run's group: it is a thing that happened
+        // between them, and the Run it names is not rewritten by it.
+        else if (entry.boundary === 'compacted') items.push({ type: 'compaction', entry })
         else groupFor(entry.runId).ended = entry
         break
       case 'command':
@@ -2369,7 +2465,14 @@ function summarizeTurns(items: ConversationItem[]): TurnSummary[] {
       continue
     }
     const turn = turns.at(-1)
-    if (turn === undefined || item.type === 'note' || item.type === 'app-action') continue
+    if (
+      turn === undefined ||
+      item.type === 'note' ||
+      item.type === 'compaction' ||
+      item.type === 'app-action'
+    ) {
+      continue
+    }
     if (item.type === 'assistant') {
       if (turn.reply === '') turn.reply = previewText(item.entry.text)
       continue

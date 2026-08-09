@@ -521,6 +521,33 @@ describe('the plan', () => {
     expect(events.filter((event) => event.type === 'unsupported')).toEqual([])
   })
 
+  it('reads a Thread Codex compacted itself, rather than calling it protocol it cannot read', () => {
+    const adapter = createCodexAdapter(launch())
+    const events = adapter.ingest(
+      `${JSON.stringify({
+        method: 'item/completed',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: { type: 'contextCompaction', id: 'item-compaction-1' }
+        }
+      })}\n`
+    )
+    expect(events).toMatchObject([{ type: 'context-compacted' }])
+    expect(events.filter((event) => event.type === 'unsupported')).toEqual([])
+  })
+
+  it('records that compaction once, from the item rather than the deprecated notice', () => {
+    const adapter = createCodexAdapter(launch())
+    const events = adapter.ingest(
+      `${JSON.stringify({
+        method: 'thread/compacted',
+        params: { threadId: 'thread-1', turnId: 'turn-1' }
+      })}\n`
+    )
+    expect(events).toEqual([])
+  })
+
   it('leaves plan mode alone, which shares the word and nothing else', () => {
     const adapter = createCodexAdapter(launch())
     const events = adapter.ingest(

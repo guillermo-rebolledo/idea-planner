@@ -116,6 +116,10 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.submitConversationMessage(command.input)
     case 'conversation/app-action':
       return core.recordAppAction(command.input)
+    case 'conversation/compaction-plan':
+      return core.planCompaction(command.sessionId)
+    case 'conversation/compact':
+      return core.compactConversation(command.input)
     case 'conversation/queue-change':
       return core.changeQueuedSubmissions(command.input)
     case 'conversation/queue-next':

@@ -101,6 +101,12 @@ export const EMPTY_STATE: SessionState = {
 /** One more entry, folded into what the Session was already doing. */
 export function advance(state: SessionState, entry: ConversationEntry): SessionState {
   if (entry.kind === 'boundary') {
+    // A compaction happens between one thing and the next rather than opening
+    // or closing anything. It says what the agent will be told from here on,
+    // which is not a fact about whether a Run is working — and a Session that
+    // read as finished because its context was replaced would be a Session the
+    // inbox lies about.
+    if (entry.boundary === 'compacted') return state
     if (entry.boundary === 'run-started') {
       // A new Run starts its own count of steps and running commands.
       return {
