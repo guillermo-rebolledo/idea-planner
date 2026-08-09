@@ -560,7 +560,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
   const enqueueLocked = (
     input: ValidatedQueuedSubmissionInput,
     sessionDir: string,
-    entries: ConversationEntry[]
+    entries: ConversationEntry[],
+    capacity: 'bounded' | 'steer-fallback' = 'bounded'
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
     Effect.gen(function* () {
       const existing = queuedEntry(entries, input.submissionId)
@@ -588,7 +589,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
         (entry): entry is QueuedSubmission =>
           entry.kind === 'queued-submission' && isActiveQueuedSubmission(entry)
       )
-      if (active.length >= 50) {
+      if (active.length >= 50 && capacity === 'bounded') {
         return yield* Effect.fail(
           new CoreError('INVALID_INPUT', 'A Session may hold at most 50 queued submissions')
         )
@@ -694,7 +695,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
         yield* enqueueLocked(
           enqueueQueuedSubmissionInputSchema.parse({ ...input, sessionId: input.sessionId }),
           sessionDir,
-          yield* readEntries(sessionDir)
+          yield* readEntries(sessionDir),
+          'steer-fallback'
         )
         yield* append(
           sessionDir,
@@ -721,7 +723,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
         Effect.gen(function* () {
           const entries = yield* readEntries(sessionDir)
           if (deriveState(entries, 0).activeRunId !== input.runId) {
-            const conversation = yield* enqueueLocked(input, sessionDir, entries)
+            const conversation = yield* enqueueLocked(input, sessionDir, entries, 'steer-fallback')
             return { delivery: 'queue' as const, conversation }
           }
           const id = `user:${input.submissionId}`
@@ -1347,7 +1349,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
               yield* enqueueLocked(
                 enqueueQueuedSubmissionInputSchema.parse(fallbackInput),
                 sessionDir,
-                entries
+                entries,
+                'steer-fallback'
               )
               yield* append(
                 sessionDir,
@@ -1964,7 +1967,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
         const conversation = yield* writeLock.withPermits(1)(
           Effect.gen(function* () {
             const entries = yield* readEntries(sessionDir)
-            const queued = yield* enqueueLocked(validated, sessionDir, entries)
+            const queued = yield* enqueueLocked(validated, sessionDir, entries, 'steer-fallback')
             yield* append(
               sessionDir,
               steerDisposition(validated, 'queued', (yield* options.clock).toISOString())

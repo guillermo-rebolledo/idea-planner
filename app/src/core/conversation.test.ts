@@ -530,6 +530,39 @@ describe('mid-Run delivery admission', () => {
     )
   })
 
+  it('finalizes and preserves an unacknowledged correction when the queue is full', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    await Promise.all(
+      Array.from({ length: 50 }, (_, index) =>
+        core.changeQueuedSubmissions({
+          type: 'enqueue',
+          input: {
+            ...correction(runId),
+            submissionId: `queued-${String(index)}`,
+            text: `Message ${String(index)}`
+          }
+        })
+      )
+    )
+    const input = correction(runId)
+    await core.admitRunSteer(input)
+
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness completed before acknowledging the correction'
+    })
+
+    const snapshot = await core.getConversation(sessionId)
+    expect(snapshot.activeRunId).toBeNull()
+    expect(snapshot.queue.items).toHaveLength(51)
+    expect(snapshot.queue.items).toContainEqual(
+      expect.objectContaining({ submissionId: 'correction-1', text: input.text })
+    )
+  })
+
   it('recovers an unacknowledged correction after Core restarts', async () => {
     const runId = await startRun('Change the API', 'submission-1')
     const input = correction(runId)
