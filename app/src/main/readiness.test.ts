@@ -277,6 +277,7 @@ exit 1`
       probeTimeoutMs: 5000
     })
     expect(capability(readiness)).toMatchObject({ available: true, command: null })
+    expect(readiness.capabilities.steerRun).toMatchObject({ available: false, command: null })
   })
 
   it('offers Codex once it is new enough to speak the app-server protocol', async () => {
@@ -286,6 +287,7 @@ exit 1`
     const readiness = await probeCodex()
     expect(readiness.available).toBe(true)
     expect(capability(readiness)).toMatchObject({ available: true, command: null })
+    expect(readiness.capabilities.steerRun).toMatchObject({ available: true, command: null })
     // The available branch has copy of its own, and it is what the card shows.
     expect(capability(readiness).summary).toContain('can run a Session with Codex')
 
@@ -328,6 +330,8 @@ exit 1`
       probeTimeoutMs: 2000
     })
     expect(capability(readiness)).toMatchObject({ available: true, command: null })
+    expect(readiness.capabilities.steerRun).toMatchObject({ available: false, command: null })
+    expect(readiness.capabilities.steerRun.summary).toContain('wait in the queue')
   })
 
   it('points at the failing checks rather than a version when the Harness is unready', async () => {

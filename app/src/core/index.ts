@@ -114,6 +114,8 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.getConversation(command.sessionId)
     case 'conversation/submit':
       return core.submitConversationMessageWithResult(command.input)
+    case 'conversation/admit-steer':
+      return core.admitRunSteer(command.input)
     case 'conversation/app-action':
       return core.recordAppAction(command.input)
     case 'conversation/compaction-plan':
@@ -143,6 +145,8 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       })
     case 'harness/interrupt':
       return core.interruptHarness(command.runId)
+    case 'harness/steer':
+      return core.steerHarness(command.input, command.prompt)
     case 'conversation/ingest':
       return core.ingestHarnessOutput({
         sessionId: command.sessionId,

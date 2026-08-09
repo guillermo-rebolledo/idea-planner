@@ -72,6 +72,7 @@ import { RunUndoDialog, UndoRunButton } from '@renderer/components/RunUndo'
 import { ConversationRewindDialog } from '@renderer/components/ConversationRewind'
 import { fleetOf, planOf } from '@renderer/lib/selected-conversation-read-model'
 import type { FleetMember } from '@renderer/lib/subagent-fleet'
+import type { MessageDeliveryIntent } from '@shared/conversation'
 import {
   ChainOfThought,
   ChainStep,
@@ -279,6 +280,14 @@ export function Conversation({
   // what it recorded.
   const choice = effectiveChoice(models, chosen)
   const chosenHarness = choice?.harness ?? null
+  const activeRun =
+    activeRunId === null ? null : (runs.find((run) => run.id === activeRunId) ?? null)
+  const willSteer =
+    activeRun !== null &&
+    chosenHarness === activeRun.configuration.harness &&
+    (readiness?.harnesses.find((item) => item.harness === activeRun.configuration.harness)
+      ?.capabilities.steerRun.available ??
+      false)
   const [catalog, setCatalog] = useSkillCatalog({
     projectRoot: session.projectRoot,
     harness: chosenHarness,
@@ -330,7 +339,8 @@ export function Conversation({
        * same message under the same identity, so it must carry exactly what
        * it carried the first time rather than whatever is attached now.
        */
-      resendAttachments?: ReviewAttachment[]
+      resendAttachments?: ReviewAttachment[],
+      delivery?: MessageDeliveryIntent
     ) => {
       if (!chosenHarness) return
       const messageSkill = queuedSkill === undefined ? chosenSkill : queuedSkill
@@ -385,7 +395,8 @@ export function Conversation({
           model: choice?.model ?? HARNESS_DEFAULT_MODEL,
           // Only what the chosen model can be asked for.
           effort: applicableEffort(models, choice),
-          permissionMode: permissionMode
+          permissionMode: permissionMode,
+          ...(delivery ? { delivery } : {})
         })
         adoptSnapshot(next)
         setOptimisticMessage(null)
@@ -1427,6 +1438,13 @@ export function Conversation({
                 if (displayedRecovery) setDismissedRecoveryKey(displayedRecovery.key)
                 // While a Run works, capture every Run choice in the durable,
                 // Session-owned queue. No pending message exists only in React.
+                if (activeRunId !== null && willSteer) {
+                  void send(text, 'composer', undefined, undefined, undefined, {
+                    type: 'steer',
+                    runId: activeRunId
+                  })
+                  return
+                }
                 if (activeRunId !== null || hasQueuedSubmissions) {
                   if (!chosenHarness) return
                   const refusal = reviewAttachmentsRefusal(reviewAttachments)
@@ -1435,19 +1453,26 @@ export function Conversation({
                     return
                   }
                   setBusy(true)
-                  void window.shell
-                    .enqueueQueuedSubmission({
-                      sessionId,
-                      submissionId: crypto.randomUUID(),
-                      text,
-                      source: 'composer',
-                      ...(chosenSkill ? { skill: chosenSkill } : {}),
-                      harness: chosenHarness,
-                      model: choice?.model ?? HARNESS_DEFAULT_MODEL,
-                      effort: applicableEffort(models, choice),
-                      permissionMode,
-                      reviewAttachments
-                    })
+                  const queued = {
+                    sessionId,
+                    submissionId: crypto.randomUUID(),
+                    text,
+                    source: 'composer' as const,
+                    ...(chosenSkill ? { skill: chosenSkill } : {}),
+                    harness: chosenHarness,
+                    model: choice?.model ?? HARNESS_DEFAULT_MODEL,
+                    effort: applicableEffort(models, choice),
+                    permissionMode,
+                    reviewAttachments
+                  }
+                  const delivery =
+                    activeRunId === null
+                      ? window.shell.enqueueQueuedSubmission(queued)
+                      : window.shell.developSession({
+                          ...queued,
+                          delivery: { type: 'queue' }
+                        })
+                  void delivery
                     .then((next) => {
                       adoptSnapshot(next)
                       setDraft((current) => (current === text ? '' : current))
@@ -1563,7 +1588,13 @@ export function Conversation({
                     type="submit"
                     size="icon"
                     aria-label={
-                      activeRunId !== null || hasQueuedSubmissions ? 'Add to queue' : 'Send'
+                      activeRunId !== null
+                        ? willSteer
+                          ? 'Steer Run'
+                          : 'Add to queue'
+                        : hasQueuedSubmissions
+                          ? 'Add to queue'
+                          : 'Send'
                     }
                     className="rounded-full disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                     disabled={busy || blocked || !draft.trim()}
@@ -1653,7 +1684,9 @@ export function Conversation({
               )}
               {activeRunId !== null && (
                 <p className="text-xs text-muted-foreground">
-                  A Run is working. Keep typing — Send adds a durable Queued Submission.{' '}
+                  {willSteer
+                    ? 'A Run is working. Send steers this Run now.'
+                    : 'A Run is working. Send adds a durable Queued Submission.'}{' '}
                   <span className="font-mono text-2xs">⌘.</span> stops the Run now.
                 </p>
               )}
@@ -2547,6 +2580,7 @@ function groupEntries(entries: ConversationEntry[]): ConversationItem[] {
       case 'usage':
       case 'thread':
       case 'queued-submission':
+      case 'steer-disposition':
       case 'queue-state':
       case 'queue-outcome':
         break

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { gateProblem, type HarnessReadiness, type ReadinessCheck } from './readiness'
 
+const queueOnly = {
+  available: false,
+  summary: 'Messages wait in the queue.',
+  command: null
+}
+
 /** One passing check, so a fixture only has to spell out the failing one. */
 function ready(dimension: ReadinessCheck['dimension']): ReadinessCheck {
   return {
@@ -24,7 +30,8 @@ function readyHarness(overrides: Partial<HarnessReadiness> = {}): HarnessReadine
     version: '2.1.220',
     checks: [ready('executable'), ready('compatibility'), ready('authentication'), ready('skills')],
     capabilities: {
-      developSession: { available: true, summary: 'Can run a Session.', command: null }
+      developSession: { available: true, summary: 'Can run a Session.', command: null },
+      steerRun: queueOnly
     },
     checkedAt: '2026-08-03T00:00:00.000Z',
     available: true,
@@ -65,7 +72,8 @@ describe('gateProblem', () => {
         failing('skills', { status: 'not-probed', code: 'not-probed' })
       ],
       capabilities: {
-        developSession: { available: false, summary: 'Install it first.', command: null }
+        developSession: { available: false, summary: 'Install it first.', command: null },
+        steerRun: queueOnly
       },
       available: false
     })
@@ -91,7 +99,8 @@ describe('gateProblem', () => {
         ready('skills')
       ],
       capabilities: {
-        developSession: { available: false, summary: 'Update it first.', command: null }
+        developSession: { available: false, summary: 'Update it first.', command: null },
+        steerRun: queueOnly
       },
       available: false
     })
@@ -117,7 +126,8 @@ describe('gateProblem', () => {
         ready('skills')
       ],
       capabilities: {
-        developSession: { available: false, summary: 'Sign in first.', command: null }
+        developSession: { available: false, summary: 'Sign in first.', command: null },
+        steerRun: queueOnly
       },
       available: false
     })
@@ -137,7 +147,8 @@ describe('gateProblem', () => {
           available: false,
           summary: 'This Codex cannot run a Session with this app yet.',
           command: 'npm update -g @openai/codex'
-        }
+        },
+        steerRun: queueOnly
       }
     })
     expect(gateProblem(harness)).toEqual({

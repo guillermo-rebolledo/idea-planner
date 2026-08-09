@@ -206,6 +206,7 @@ function answeringRun(entry: ConversationEntry): string | null {
     case 'thread':
     case 'app-action':
     case 'queued-submission':
+    case 'steer-disposition':
     case 'queue-state':
     case 'queue-outcome':
       return null

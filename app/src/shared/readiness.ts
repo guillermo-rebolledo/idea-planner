@@ -105,7 +105,14 @@ export const harnessReadinessSchema = z.object({
   /** One per dimension, always, so a missing probe cannot read as a pass. */
   checks: z.array(readinessCheckSchema).length(readinessDimensionSchema.options.length),
   /** Keyed by capability so a new one is a new field, not a lookup. */
-  capabilities: z.object({ developSession: harnessCapabilitySchema }),
+  capabilities: z.object({
+    developSession: harnessCapabilitySchema,
+    steerRun: harnessCapabilitySchema.default({
+      available: false,
+      summary: 'Messages sent during this Run wait in the queue.',
+      command: null
+    })
+  }),
   checkedAt: z.string().datetime(),
   /** True when every gating dimension is ready or a warning. */
   available: z.boolean()
