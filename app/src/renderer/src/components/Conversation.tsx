@@ -71,6 +71,7 @@ import {
   type ChainStepStatus
 } from '@renderer/components/ui/chain-of-thought'
 import {
+  focusTextareaAtEnd,
   SkillAwareTextarea,
   SkillSuggestions,
   skillInDraft,
@@ -292,12 +293,7 @@ export function Conversation({
   /** Completes the visible Skill token and leaves the prompt ready after it. */
   const chooseSkill = useCallback((name: string) => {
     setDraft((current) => completeSkillQuery(current, name))
-    window.requestAnimationFrame(() => {
-      const textarea = composerRef.current
-      if (!textarea) return
-      textarea.focus()
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length)
-    })
+    focusTextareaAtEnd(composerRef)
   }, [])
 
   const send = useCallback(

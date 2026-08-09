@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type Ref } from 'react'
+import { useEffect, useId, useRef, useState, type Ref, type RefObject } from 'react'
 import { SKILL_ATTRIBUTION } from '@shared/contract'
 import type { HarnessId, SkillCatalog } from '@shared/contract'
 import { skillFromDraft } from '@shared/skill'
@@ -36,6 +36,16 @@ export function useSkillCatalog(input: {
  */
 export function skillInDraft(catalog: SkillCatalog | null, draft: string): string | null {
   return catalog ? (skillFromDraft(catalog.available, draft)?.name ?? null) : null
+}
+
+/** Refocuses after React has rendered a completed token, ready for the prompt. */
+export function focusTextareaAtEnd(ref: RefObject<HTMLTextAreaElement | null>): void {
+  window.requestAnimationFrame(() => {
+    const textarea = ref.current
+    if (!textarea) return
+    textarea.focus()
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+  })
 }
 
 /**
@@ -151,7 +161,7 @@ export function SkillAwareTextarea({
       <div
         ref={mirrorRef}
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 overflow-hidden px-3 pt-3 pb-1 text-sm break-words whitespace-pre-wrap text-foreground"
+        className="pointer-events-none absolute inset-0 overflow-x-hidden overflow-y-scroll px-3 pt-3 pb-1 text-sm break-words whitespace-pre-wrap text-foreground"
       >
         {skill ? (
           <>
@@ -169,7 +179,7 @@ export function SkillAwareTextarea({
         ref={textareaRef}
         value={value}
         aria-describedby={description || undefined}
-        className="relative block w-full resize-none bg-transparent px-3 pt-3 pb-1 text-sm text-transparent caret-foreground outline-none placeholder:text-muted-foreground"
+        className="relative block w-full resize-none overflow-y-scroll bg-transparent px-3 pt-3 pb-1 text-sm text-transparent caret-foreground outline-none placeholder:text-muted-foreground"
         onScroll={(event) => {
           syncScroll(event.currentTarget)
           onScroll?.(event)

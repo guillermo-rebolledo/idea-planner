@@ -22,6 +22,7 @@ import {
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@renderer/components/ui/menu'
 import { PermissionModePicker } from '@renderer/components/PermissionModePicker'
 import {
+  focusTextareaAtEnd,
   SkillAwareTextarea,
   SkillSuggestions,
   skillInDraft,
@@ -148,12 +149,7 @@ export function Composer({
   /** Completes the visible Skill token and leaves the prompt ready after it. */
   function chooseSkill(name: string): void {
     setMessage((current) => completeSkillQuery(current, name))
-    window.requestAnimationFrame(() => {
-      const textarea = messageRef.current
-      if (!textarea) return
-      textarea.focus()
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length)
-    })
+    focusTextareaAtEnd(messageRef)
   }
 
   // The most recent Sessions in the Project being sent to. Continuing one is
