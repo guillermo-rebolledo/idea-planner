@@ -1865,14 +1865,17 @@ test('a Project’s own Skills are shown, trusted once, and then offered', async
     await expect(notice.getByText('Changed: deploy-to-prod (claude)')).toBeVisible()
     await notice.getByRole('button', { name: 'Trust this Project’s Skills' }).click()
 
-    // Typing `/` offers what is installed, and the choice is for this message.
+    // Typing `/` offers what is installed. Choosing completes the visible
+    // token in place; that same token is both the prompt and the Run choice.
     await chooseSkill(page, 'grilling')
-    await expect(page.getByText('This message asks for the')).toBeVisible()
-    // Picking takes the `/` back out; the message itself is what follows.
-    await page.getByLabel('Your message').fill('Grill me on this')
+    const composer = page.getByLabel('Your message')
+    await expect(composer).toHaveValue('/grilling ')
+    await expect(composer).toHaveAccessibleDescription('grilling Skill recognized')
+    await composer.fill('/grilling Grill me on this')
     await page.getByRole('button', { name: 'Send', exact: true }).click()
-    // Gone with the message it was chosen for: the next one asks for nothing.
-    await expect(page.getByText('This message asks for the')).toHaveCount(0)
+    // Gone with the message it was part of: the next one asks for nothing.
+    await expect(composer).toHaveValue('')
+    await expect(composer).not.toHaveAccessibleDescription('grilling Skill recognized')
 
     // Trust is revocable where it was given, and withdrawing it takes the
     // Skill back out of what is offered.

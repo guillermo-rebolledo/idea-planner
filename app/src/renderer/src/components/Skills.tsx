@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useRef, useState, type Ref, type RefObject } from 'react'
 import { SKILL_ATTRIBUTION } from '@shared/contract'
 import type { HarnessId, SkillCatalog } from '@shared/contract'
+import { skillFromDraft } from '@shared/skill'
 import { PopoverHeading } from '@renderer/components/ui/chip-popover'
 
 /**
@@ -28,13 +29,23 @@ export function useSkillCatalog(input: {
 }
 
 /**
- * What the message is asking for, and null when it asks for nothing. Derived
- * rather than corrected: a Skill the catalog stops offering — the Project's
- * trust withdrawn, the directory deleted — is one this message no longer asks
- * for, without a round of state chasing the catalog.
+ * What the message is asking for, and null when its leading token does not name
+ * an offered Skill. The visible draft is the source of truth: editing the token
+ * edits the Run configuration, and a catalog change withdraws recognition
+ * without rewriting what the person typed.
  */
-export function offeredSkill(catalog: SkillCatalog | null, chosen: string | null): string | null {
-  return chosen && catalog?.available.some((entry) => entry.name === chosen) ? chosen : null
+export function skillInDraft(catalog: SkillCatalog | null, draft: string): string | null {
+  return catalog ? (skillFromDraft(catalog.available, draft)?.name ?? null) : null
+}
+
+/** Refocuses after React has rendered a completed token, ready for the prompt. */
+export function focusTextareaAtEnd(ref: RefObject<HTMLTextAreaElement | null>): void {
+  window.requestAnimationFrame(() => {
+    const textarea = ref.current
+    if (!textarea) return
+    textarea.focus()
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+  })
 }
 
 /**
@@ -115,23 +126,70 @@ export function SkillSuggestions({
 }
 
 /**
- * What this message is asking for, said where it was asked for. Per message,
- * not per Session: real work switches methodology inside one thread of
- * context, so a Skill never quietly outlives the message it was chosen for.
+ * A plain textarea with a presentation layer directly beneath it. The native
+ * control still owns text, selection, composition, undo, and accessibility;
+ * the mirrored layer only makes the recognized leading token read as a pill.
  */
-export function ChosenSkillNote({
-  name,
-  onClear
+export function SkillAwareTextarea({
+  value,
+  skill,
+  textareaRef,
+  onScroll,
+  'aria-describedby': describedBy,
+  ...props
 }: {
-  name: string
-  onClear: () => void
-}): React.JSX.Element {
+  value: string
+  skill: string | null
+  textareaRef?: Ref<HTMLTextAreaElement>
+} & Omit<
+  React.TextareaHTMLAttributes<HTMLTextAreaElement>,
+  'className' | 'value'
+>): React.JSX.Element {
+  const mirrorRef = useRef<HTMLDivElement>(null)
+  const recognitionId = useId()
+  const tokenLength = skill ? skill.length + 1 : 0
+  const description = [describedBy, skill ? recognitionId : null].filter(Boolean).join(' ')
+
+  function syncScroll(target: HTMLTextAreaElement): void {
+    if (!mirrorRef.current) return
+    mirrorRef.current.scrollTop = target.scrollTop
+    mirrorRef.current.scrollLeft = target.scrollLeft
+  }
+
   return (
-    <p className="text-xs text-muted-foreground">
-      This message asks for the <span className="font-medium text-foreground">{name}</span> Skill.{' '}
-      <button type="button" className="underline underline-offset-2" onClick={onClear}>
-        Send without it
-      </button>
-    </p>
+    <div className="relative">
+      <div
+        ref={mirrorRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 overflow-x-hidden overflow-y-scroll px-3 pt-3 pb-1 text-sm break-words whitespace-pre-wrap text-foreground"
+      >
+        {skill ? (
+          <>
+            <mark className="rounded-sm bg-primary/10 text-primary ring-1 ring-primary/25">
+              {value.slice(0, tokenLength)}
+            </mark>
+            {value.slice(tokenLength)}
+          </>
+        ) : (
+          value
+        )}
+      </div>
+      <textarea
+        {...props}
+        ref={textareaRef}
+        value={value}
+        aria-describedby={description || undefined}
+        className="relative block w-full resize-none overflow-y-scroll bg-transparent px-3 pt-3 pb-1 text-sm text-transparent caret-foreground outline-none placeholder:text-muted-foreground"
+        onScroll={(event) => {
+          syncScroll(event.currentTarget)
+          onScroll?.(event)
+        }}
+      />
+      {skill && (
+        <span id={recognitionId} className="sr-only">
+          {skill} Skill recognized
+        </span>
+      )}
+    </div>
   )
 }
