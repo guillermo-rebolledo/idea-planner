@@ -402,7 +402,7 @@ export const conversationBoundarySchema = z.enum([
    * person can read is untouched.
    */
   'compacted',
-  /** The chosen message and every turn after it were set aside from the readable thread. */
+  /** The chosen message and every turn after it were set aside from the readable Conversation. */
   'rewound'
 ])
 export type ConversationBoundaryKind = z.infer<typeof conversationBoundarySchema>

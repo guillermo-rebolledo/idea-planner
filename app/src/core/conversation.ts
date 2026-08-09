@@ -300,11 +300,11 @@ export function createConversationEffects(options: ConversationOptions): Convers
 
   const sessionDirectory = options.directoryFor
 
-  const readEntries = (sessionDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
+  const readJournalEntries = (sessionDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
     Effect.tryPromise({
       try: async () => {
         const raw = await readFile(join(sessionDir, JOURNAL), 'utf8').catch(() => '')
-        const byId = new Map<string, ConversationEntry>()
+        const entries: ConversationEntry[] = []
         for (const line of raw.split('\n')) {
           if (!line.trim()) continue
           let parsed
@@ -315,12 +315,26 @@ export function createConversationEffects(options: ConversationOptions): Convers
             // lose the Conversation before it.
             continue
           }
-          if (parsed.success) byId.set(parsed.data.id, parsed.data)
+          if (parsed.success) entries.push(parsed.data)
         }
-        return [...byId.values()]
+        return entries
       },
       catch: () => new CoreError('IO_ERROR', 'The Conversation history could not be read')
     })
+
+  const latestEntries = (entries: ConversationEntry[]): ConversationEntry[] => {
+    const byId = new Map<string, ConversationEntry>()
+    for (const entry of entries) byId.set(entry.id, entry)
+    return [...byId.values()]
+  }
+
+  const readEntries = (sessionDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
+    readJournalEntries(sessionDir).pipe(Effect.map(latestEntries))
+
+  const readVisibleEntries = (sessionDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
+    readJournalEntries(sessionDir).pipe(
+      Effect.map((entries) => latestEntries(visibleConversationEntries(entries)))
+    )
 
   const appendMany = (
     sessionDir: string,
@@ -446,8 +460,15 @@ export function createConversationEffects(options: ConversationOptions): Convers
     sessionId: string,
     sessionDir: string
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
-    Effect.all([readEntries(sessionDir), Ref.get(queuePauseOverrides)]).pipe(
-      Effect.map(([entries, overrides]) => summarize(sessionId, entries, overrides.get(sessionId)))
+    Effect.all([readJournalEntries(sessionDir), Ref.get(queuePauseOverrides)]).pipe(
+      Effect.map(([journal, overrides]) =>
+        summarize(
+          sessionId,
+          latestEntries(journal),
+          latestEntries(visibleConversationEntries(journal)),
+          overrides.get(sessionId)
+        )
+      )
     )
 
   const state = (sessionId: string): Effect.Effect<SessionState, CoreError> =>
@@ -495,10 +516,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
                 )
               )
             }
-            const paused = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId)
             return {
-              snapshot: summarize(input.sessionId, entries, paused),
-              disposition: visibleConversationEntries(entries).some(
+              snapshot: yield* snapshot(input.sessionId, sessionDir),
+              disposition: (yield* readVisibleEntries(sessionDir)).some(
                 (entry) => entry.id === existing.id
               )
                 ? ('visible-replay' as const)
@@ -521,9 +541,8 @@ export function createConversationEffects(options: ConversationOptions): Convers
             plainOptions: false
           })
           yield* append(sessionDir, entry)
-          const paused = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId)
           return {
-            snapshot: summarize(input.sessionId, [...entries, entry], paused),
+            snapshot: yield* snapshot(input.sessionId, sessionDir),
             disposition: 'accepted' as const
           }
         })
@@ -574,7 +593,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entries = visibleConversationEntries(yield* readEntries(sessionDir))
+          const entries = yield* readVisibleEntries(sessionDir)
           const existing = queuedEntry(entries, input.submissionId)
           if (existing) {
             const same =
@@ -674,7 +693,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entries = visibleConversationEntries(yield* readEntries(sessionDir))
+          const entries = yield* readVisibleEntries(sessionDir)
           const item = queuedEntry(entries, input.submissionId)
           const paused = (yield* Ref.get(queuePauseOverrides)).get(input.sessionId) ?? true
           if (
@@ -769,7 +788,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const sessionDir = yield* sessionDirectory(input.sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entries = visibleConversationEntries(yield* readEntries(sessionDir))
+          const entries = yield* readVisibleEntries(sessionDir)
           const active = entries
             .filter(
               (entry): entry is QueuedSubmission =>
@@ -860,7 +879,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       const sessionDir = yield* sessionDirectory(sessionId)
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entries = visibleConversationEntries(yield* readEntries(sessionDir))
+          const entries = yield* readVisibleEntries(sessionDir)
           const paused = (yield* Ref.get(queuePauseOverrides)).get(sessionId) ?? true
           if (paused || deriveState(entries, 0).activeRunId !== null) return null
           const claimed = entries.find(
@@ -1624,7 +1643,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
   const compactionPlan = (sessionId: string): Effect.Effect<CompactionPlan, CoreError> =>
     Effect.gen(function* () {
       const sessionDir = yield* sessionDirectory(sessionId)
-      const entries = visibleConversationEntries(yield* readEntries(sessionDir))
+      const entries = yield* readVisibleEntries(sessionDir)
       // A Run stopped in front of an Approval Request is a Run mid-decision.
       // Replacing what the agent remembers while it waits would answer the
       // question for it, from a context it can no longer see.
@@ -1727,15 +1746,6 @@ export function createConversationEffects(options: ConversationOptions): Convers
             }
           })
           yield* append(sessionDir, entry)
-          const queueState = visibleConversationEntries([...entries, entry]).findLast(
-            (candidate) => candidate.kind === 'queue-state'
-          )
-          yield* Ref.update(queuePauseOverrides, (current) =>
-            new Map(current).set(
-              input.sessionId,
-              queueState?.kind === 'queue-state' ? queueState.paused : true
-            )
-          )
           return yield* snapshot(input.sessionId, sessionDir)
         })
       )
@@ -1758,7 +1768,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
           if (entries.some((entry) => entry.id === id)) {
             return yield* snapshot(input.sessionId, sessionDir)
           }
-          const visible = visibleConversationEntries(entries)
+          const visible = yield* readVisibleEntries(sessionDir)
           const activeRunId = deriveState(entries, 0).activeRunId
           if (activeRunId !== null) {
             return yield* Effect.fail(
@@ -1799,6 +1809,15 @@ export function createConversationEffects(options: ConversationOptions): Convers
             rewind: { rewoundToEntryId: target.id, tailFromEntryId: tailFrom }
           })
           yield* append(sessionDir, entry)
+          const queueState = (yield* readVisibleEntries(sessionDir)).findLast(
+            (candidate) => candidate.kind === 'queue-state'
+          )
+          yield* Ref.update(queuePauseOverrides, (current) =>
+            new Map(current).set(
+              input.sessionId,
+              queueState?.kind === 'queue-state' ? queueState.paused : true
+            )
+          )
           return yield* snapshot(input.sessionId, sessionDir)
         })
       )
@@ -2108,14 +2127,13 @@ function tally(
 
 function summarize(
   sessionId: string,
+  rawEntries: ConversationEntry[],
   entries: ConversationEntry[],
   queuePausedOverride?: boolean
 ): ConversationSnapshot {
   // What the Session is doing is one rule, and it lives with the projection
   // the inbox reads (ticket 12f). Stating it twice would be two answers to
   // one question, free to disagree.
-  const rawEntries = entries
-  entries = visibleConversationEntries(rawEntries)
   const state = deriveState(entries, 0)
   let latestRunUsage: HarnessUsage | null = null
   let sessionUsage = emptyUsage()

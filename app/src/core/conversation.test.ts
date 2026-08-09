@@ -2504,6 +2504,47 @@ describe('rewinding the Conversation', () => {
     expect(await core.nextQueuedSubmission(sessionId)).toBeNull()
   })
 
+  it('restores retained queue records when their later edits and pause are rewound', async () => {
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: {
+        sessionId,
+        submissionId: 'queued-before-rewind',
+        text: 'Original queued work',
+        source: 'composer',
+        harness: 'claude',
+        model: 'claude-sonnet-4-5',
+        effort: 'medium',
+        permissionMode: 'ask',
+        reviewAttachments: []
+      }
+    })
+    await completedTurn('Take the wrong path', 'submission-wrong', 'Done')
+    await core.changeQueuedSubmissions({
+      type: 'edit',
+      input: {
+        sessionId,
+        submissionId: 'queued-before-rewind',
+        text: 'Edited after the wrong turn'
+      }
+    })
+    await core.changeQueuedSubmissions({ type: 'pause', sessionId })
+
+    const snapshot = await core.rewindConversation({
+      sessionId,
+      operationId: 'rewind-queue-updates',
+      targetEntryId: 'user:submission-wrong'
+    })
+
+    expect(snapshot.queue).toMatchObject({
+      paused: false,
+      items: [{ submissionId: 'queued-before-rewind', text: 'Original queued work' }]
+    })
+    await expect(core.nextQueuedSubmission(sessionId)).resolves.toMatchObject({
+      item: { text: 'Original queued work' }
+    })
+  })
+
   it('performs no Project file operation and keeps rewound Run changes in the Files projection', async () => {
     await core.submitConversationMessage({
       sessionId,
