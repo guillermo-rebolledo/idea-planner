@@ -433,6 +433,13 @@ export const COMPACTION_HEADROOM = 0.15
  * Whether what the Harness said about its own context leaves too little room
  * to carry on. A Harness that reports no window says nothing about headroom,
  * and a Session is never compacted on a guess.
+ *
+ * Only Codex reports one today, through `thread/tokenUsage/updated`. Claude's
+ * result frame carries token counts and no window at all, so this never fires
+ * for a Claude Session — which is the honest answer rather than a threshold
+ * invented from a model name this app keeps no list of. Claude compacts its
+ * own Thread when it runs short and says so, and that is the path a Session
+ * survives on there; asking for a compaction is always available on either.
  */
 export function headroomExhausted(usage: HarnessUsage | null): boolean {
   const window = usage?.contextWindow ?? null
