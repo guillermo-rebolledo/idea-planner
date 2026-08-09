@@ -52,6 +52,21 @@ export const skillCatalogSchema = z.object({
 })
 export type SkillCatalog = z.infer<typeof skillCatalogSchema>
 
+/**
+ * The installed Skill a draft asks for. A Skill token is command-like: it is
+ * the first thing in the message and ends at whitespace. Keeping recognition
+ * this narrow means prose and file paths containing `/` stay ordinary text.
+ */
+export function skillFromDraft(available: readonly Skill[], draft: string): Skill | null {
+  const name = /^\/([a-z0-9][a-z0-9-]*)(?=\s|$)/.exec(draft)?.[1]
+  return available.find((skill) => skill.name === name) ?? null
+}
+
+/** Completes the slash query in place; the visible token remains in the draft. */
+export function completeSkillQuery(draft: string, name: Skill['name']): string {
+  return /^\/\S*$/.test(draft) ? `/${name} ` : draft
+}
+
 export const listSkillsInputSchema = z.object({
   projectRoot: z.string().min(1),
   harness: harnessIdSchema

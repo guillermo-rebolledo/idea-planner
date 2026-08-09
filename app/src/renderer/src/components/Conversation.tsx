@@ -71,12 +71,13 @@ import {
   type ChainStepStatus
 } from '@renderer/components/ui/chain-of-thought'
 import {
-  ChosenSkillNote,
-  offeredSkill,
+  SkillAwareTextarea,
   SkillSuggestions,
+  skillInDraft,
   skillsMatching,
   useSkillCatalog
 } from '@renderer/components/Skills'
+import { completeSkillQuery } from '@shared/skill'
 import type { LiveRun } from '@renderer/lib/selected-conversation-read-model'
 import type { SelectedConversation } from '@renderer/lib/useSelectedConversation'
 import { cn } from '@renderer/lib/utils'
@@ -212,9 +213,6 @@ export function Conversation({
   // The Run whose undo is open, if any. Only ever set by the explicit button:
   // undoing a Run writes over source files, and ADR 0006 keeps it off ⌘Z.
   const [undoingRunId, setUndoingRunId] = useState<string | null>(null)
-  // No Skill by default. Most messages are not asking for a methodology, and
-  // one applied because it happened to be selected is one nobody chose.
-  const [skill, setSkill] = useState<string | null>(null)
   // One choice, not three: the model carries the Harness that reaches it.
   const { models, readiness } = useModelCatalog()
   const [chosen, setChosen] = useState<ModelChoice | null>(null)
@@ -288,13 +286,18 @@ export function Conversation({
     }
   }, [runs])
 
-  const chosenSkill = offeredSkill(catalog, skill)
+  const chosenSkill = skillInDraft(catalog, draft)
   const matchingSkills = skillsMatching(catalog, draft)
 
-  /** Takes the Skill for this message, and the `/` back out of the message. */
+  /** Completes the visible Skill token and leaves the prompt ready after it. */
   const chooseSkill = useCallback((name: string) => {
-    setSkill(name)
-    setDraft('')
+    setDraft((current) => completeSkillQuery(current, name))
+    window.requestAnimationFrame(() => {
+      const textarea = composerRef.current
+      if (!textarea) return
+      textarea.focus()
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+    })
   }, [])
 
   const send = useCallback(
@@ -345,7 +348,6 @@ export function Conversation({
         // the person's next thought while this send settles; no later callback
         // may erase whatever they type in the meantime.
         setDraft((current) => (current.trim() === text ? '' : current))
-        setSkill((current) => (current === chosenSkill ? null : current))
       }
       setBusy(true)
       setError(null)
@@ -383,7 +385,6 @@ export function Conversation({
           setError('Your message could not be sent. It has been restored to the composer.')
           if (ownsComposer) {
             setDraft((current) => (current ? current : text))
-            setSkill((current) => current ?? messageSkill)
           }
         }
       } finally {
@@ -1282,7 +1283,6 @@ export function Conversation({
                     .then((next) => {
                       adoptSnapshot(next)
                       setDraft((current) => (current === text ? '' : current))
-                      setSkill((current) => (current === chosenSkill ? null : current))
                       onClearReviewAttachments()
                       setQueueAnnouncement(durableQueueAnnouncement(next.queue.outcome))
                     })
@@ -1306,11 +1306,12 @@ export function Conversation({
                 {/* The field stays alive while a Run works: thinking happens
                   during the agent's turn, and a person mid-thought must not
                   find their keyboard confiscated. Only sending waits. */}
-                <textarea
+                <SkillAwareTextarea
                   id="conversation-composer"
-                  ref={composerRef}
+                  textareaRef={composerRef}
                   rows={3}
                   value={draft}
+                  skill={chosenSkill}
                   onChange={(event) => {
                     const nextDraft = event.target.value
                     if (nextDraft.trim() && displayedRecovery) {
@@ -1334,7 +1335,6 @@ export function Conversation({
                     }
                   }}
                   placeholder="Reply, or / for a Skill…"
-                  className="w-full resize-none bg-transparent px-3 pt-3 pb-1 text-sm outline-none placeholder:text-muted-foreground"
                 />
                 <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
                   <PermissionModePicker
@@ -1456,7 +1456,6 @@ export function Conversation({
                   <span className="font-mono text-2xs">⌘.</span> stops the Run now.
                 </p>
               )}
-              {chosenSkill && <ChosenSkillNote name={chosenSkill} onClear={() => setSkill(null)} />}
               {blocked && canDevelop && (
                 <div role="status" className="rounded-md border border-border bg-muted/50 p-2">
                   <p className="text-xs text-foreground">{canDevelop.summary}</p>

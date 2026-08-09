@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ArrowUp, Check, FolderGit2 } from 'lucide-react'
 import {
   type CheckoutRequest,
@@ -22,12 +22,13 @@ import {
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@renderer/components/ui/menu'
 import { PermissionModePicker } from '@renderer/components/PermissionModePicker'
 import {
-  ChosenSkillNote,
-  offeredSkill,
+  SkillAwareTextarea,
   SkillSuggestions,
+  skillInDraft,
   skillsMatching,
   useSkillCatalog
 } from '@renderer/components/Skills'
+import { completeSkillQuery } from '@shared/skill'
 import { cn } from '@renderer/lib/utils'
 
 interface ComposerProps {
@@ -70,9 +71,6 @@ export function Composer({
   // Ask by default: the first Run edits the Project in place, and being asked
   // first is the posture somebody would choose if they were choosing.
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
-  // No Skill by default. Most messages are not asking for a methodology, and
-  // one applied because it happened to be selected is one nobody chose.
-  const [skill, setSkill] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [pendingBootstrap, setPendingBootstrap] = useState<{
@@ -136,7 +134,7 @@ export function Composer({
   // falls back to one that can still answer a message.
   const choice = effectiveChoice(models, chosen)
   const [catalog] = useSkillCatalog({ projectRoot, harness: choice?.harness ?? null })
-  const chosenSkill = offeredSkill(catalog, skill)
+  const chosenSkill = skillInDraft(catalog, message)
   const matchingSkills = skillsMatching(catalog, message)
 
   const selected = projects.find((project) => project.root === projectRoot)
@@ -147,12 +145,16 @@ export function Composer({
     // An isolated ask needs its base settled before there is anything to cut.
     (checkout.kind !== 'isolated' || checkout.baseBranch !== '')
 
-  /** Takes the Skill for this message, and the `/` back out of the message. */
-  const chooseSkill = useCallback((name: string) => {
-    setSkill(name)
-    setMessage('')
-    messageRef.current?.focus()
-  }, [])
+  /** Completes the visible Skill token and leaves the prompt ready after it. */
+  function chooseSkill(name: string): void {
+    setMessage((current) => completeSkillQuery(current, name))
+    window.requestAnimationFrame(() => {
+      const textarea = messageRef.current
+      if (!textarea) return
+      textarea.focus()
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+    })
+  }
 
   // The most recent Sessions in the Project being sent to. Continuing one is
   // usually better than starting a second Session about the same work — and
@@ -276,13 +278,13 @@ export function Composer({
           <Label htmlFor={messageId} className="sr-only">
             Message
           </Label>
-          <textarea
+          <SkillAwareTextarea
             id={messageId}
-            ref={messageRef}
+            textareaRef={messageRef}
             rows={4}
             value={message}
+            skill={chosenSkill}
             placeholder="Describe the work, or / for a Skill…"
-            className="w-full resize-none bg-transparent px-3 pt-3 pb-1 text-sm outline-none placeholder:text-muted-foreground"
             onChange={(event) => {
               setMessage(event.target.value)
               setError(null)
@@ -337,7 +339,6 @@ export function Composer({
             </Button>
           </div>
         </div>
-        {chosenSkill && <ChosenSkillNote name={chosenSkill} onClear={() => setSkill(null)} />}
       </div>
 
       {/* Only the work already under way — no filler the app pretends to
