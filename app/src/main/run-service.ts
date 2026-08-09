@@ -1357,7 +1357,6 @@ export class RunService {
     )
   }
 
-  /** Records a Run's terminal state and closes its Conversation boundary. */
   /**
    * Replaces the agent's memory of this Session's early turns with a summary,
    * and leaves the Conversation exactly as it is. The next Run declines to
@@ -1370,10 +1369,19 @@ export class RunService {
    */
   async compact(rawInput: CompactSessionInput): Promise<ConversationSnapshot> {
     const input = compactSessionInputSchema.parse(rawInput)
+    // Held for the next Run to wait on, exactly as the automatic trigger is.
+    // Writing the summary takes a Harness request, and the composer stays live
+    // throughout: a message sent in that window would otherwise start a Run
+    // that resumed the very Thread this is retiring, and the boundary landing
+    // afterwards would then retire that Run's Thread for nothing.
+    return await this.awaitedByNextRun(input.sessionId, this.writeCompaction(input.sessionId))
+  }
+
+  private async writeCompaction(sessionId: string): Promise<ConversationSnapshot> {
     const plan = compactionPlanSchema.parse(
       await this.deps.core.send({
         type: 'conversation/compaction-plan',
-        sessionId: input.sessionId
+        sessionId: sessionId
       })
     )
     if (plan.harness === null) {
@@ -1387,13 +1395,13 @@ export class RunService {
     // The compaction's identity is the point it compacts to, so a request
     // retried after a summary that never landed writes one boundary, not two.
     const operationId = createHash('sha256')
-      .update(`${input.sessionId}\0${plan.tailFromEntryId}`)
+      .update(`${sessionId}\0${plan.tailFromEntryId}`)
       .digest('hex')
     const summary = (
       await this.runEffect(
         this.adapter(plan.harness).summarize({
           executable: harness.executablePath,
-          checkout: await this.checkoutFor(input.sessionId),
+          checkout: await this.checkoutFor(sessionId),
           runDirectory: join(this.deps.privateRoot, 'compaction', operationId),
           prompt: compactionPrompt(plan)
         })
@@ -1406,7 +1414,7 @@ export class RunService {
       await this.deps.core.send({
         type: 'conversation/compact',
         input: {
-          sessionId: input.sessionId,
+          sessionId: sessionId,
           operationId,
           runId: plan.runId,
           summary,
@@ -1419,7 +1427,7 @@ export class RunService {
     // The inbox reads a projection rather than the Conversation, so it is told
     // rather than left to find out.
     this.deps.onConversationEvent?.({
-      sessionId: input.sessionId,
+      sessionId: sessionId,
       runId: plan.runId,
       invalidation: 'mailbox',
       event: { type: 'context-compacted', summary }
@@ -1442,10 +1450,27 @@ export class RunService {
    * for one themselves.
    */
   private compactIfShortOfRoom(sessionId: string): Promise<void> {
-    const work = this.compactForHeadroom(sessionId)
-    this.compactions.set(sessionId, work)
-    void work.finally(() => {
-      if (this.compactions.get(sessionId) === work) this.compactions.delete(sessionId)
+    return this.awaitedByNextRun(sessionId, this.compactForHeadroom(sessionId))
+  }
+
+  /**
+   * Makes one compaction something the next Run of this Session holds for,
+   * whoever asked for it. Registered here rather than at each call site so a
+   * new way to ask cannot quietly opt out of the ordering the whole mechanism
+   * depends on.
+   *
+   * What is held is a shadow of the work that never rejects: a compaction that
+   * failed is a reason to carry on without one, never a reason to refuse the
+   * next Run. The caller still gets the real promise, failure and all.
+   */
+  private awaitedByNextRun<A>(sessionId: string, work: Promise<A>): Promise<A> {
+    const settled = work.then(
+      () => undefined,
+      () => undefined
+    )
+    this.compactions.set(sessionId, settled)
+    void settled.finally(() => {
+      if (this.compactions.get(sessionId) === settled) this.compactions.delete(sessionId)
     })
     return work
   }
@@ -1465,13 +1490,14 @@ export class RunService {
         (entry) => entry.kind === 'boundary' && entry.compaction !== undefined
       )
       if (latest?.kind === 'boundary' && latest.compaction?.native === true) return
-      await this.compact({ sessionId })
+      await this.writeCompaction(sessionId)
     } catch {
       // Nothing is owed here. The Run has ended either way, and the recovery
       // the person is shown offers compaction as something they can ask for.
     }
   }
 
+  /** Records a Run's terminal state and closes its Conversation boundary. */
   private async conclude(
     run: Pick<RunSnapshot, 'id' | 'sessionId'>,
     status: 'completed' | 'stopped' | 'failed' | 'policy-violation' | 'supervision-failed',

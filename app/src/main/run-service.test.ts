@@ -562,6 +562,72 @@ describe('Run service', () => {
     expect(prompts[0]).toContain('Do not produce a summary of the summary')
   })
 
+  it('holds the next Run until a compaction the person asked for has landed', async () => {
+    const root = await readyClaudeRoot('run-claude-compaction-ordering-')
+    const core = fakeCore(join(root, 'a-project'))
+    core.compactionPlan = {
+      sessionId: 'session',
+      runId: 'run-old',
+      tailFromEntryId: 'message:tail',
+      previousSummary: null,
+      material: 'User: a long session\nAssistant: indeed',
+      harness: 'claude'
+    }
+    // A summary that takes its time, as a real Harness request does.
+    let finishSummary = (): void => undefined
+    const summarized = new Promise<string>((resolve) => {
+      finishSummary = () => {
+        resolve('What this Session established.')
+      }
+    })
+    const service = new RunService({
+      core,
+      broker: fakeBroker(),
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root),
+      runBounded: () => summarized
+    })
+
+    const compacting = service.compact({ sessionId: 'session' })
+    // The composer stays live while a summary is written, so this is exactly
+    // what a person sending their next message in that window does.
+    let started = false
+    const run = service
+      .start({
+        submissionId: 'submission-1',
+        sessionId: 'session',
+        prompt: 'Continue',
+        harness: 'claude',
+        model: 'claude-sonnet-4-5',
+        effort: 'medium',
+        permissionMode: 'auto'
+      })
+      .then((snapshot) => {
+        started = true
+        return snapshot
+      })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    // A Run that began here would resume the very Thread being retired, and
+    // the boundary landing afterwards would retire its Thread for nothing.
+    expect(started).toBe(false)
+    expect(core.commands).not.toContain('run/lifecycle-open')
+
+    finishSummary()
+    await compacting
+    await run
+    expect(core.commands).toContain('conversation/compact')
+    expect(core.commands.indexOf('conversation/compact')).toBeLessThan(
+      core.commands.indexOf('run/lifecycle-open')
+    )
+  })
+
   it('compacts a Session whose latest Run left it no room, without being asked', async () => {
     const root = await readyClaudeRoot('run-claude-auto-compaction-')
     const core = fakeCore(join(root, 'a-project'))
