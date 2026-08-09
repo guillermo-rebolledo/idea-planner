@@ -19,6 +19,7 @@ const readConversation = vi.fn<() => Promise<ConversationSnapshot>>()
 
 const conversation: ConversationSnapshot = {
   sessionId: 'current-session',
+  journalPosition: 0,
   entries: [
     {
       kind: 'file-change',

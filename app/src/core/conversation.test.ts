@@ -106,6 +106,7 @@ describe('submitting to the Conversation', () => {
   it('starts with the message that created the Session and nothing else', async () => {
     const snapshot = await core.getConversation(sessionId)
     expect(messages(snapshot.entries)).toMatchObject([{ role: 'user', text: STARTING_MESSAGE }])
+    expect(snapshot.journalPosition).toBeGreaterThan(0)
     expect(snapshot.activeRunId).toBeNull()
     expect(snapshot.usage.session.totalTokens).toBe(0)
   })
@@ -599,6 +600,54 @@ describe('streaming a Run into the Conversation', () => {
       text: 'Grill me',
       source: 'composer'
     })
+  })
+
+  it('positions a live event at the durable snapshot that contains it', async () => {
+    const runId = await startRun('Track the event cursor', 'submission-1')
+    const before = await core.getConversation(sessionId)
+
+    const journalPosition = await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: { type: 'assistant-message', id: 'cursor-message', text: 'Settled', complete: true }
+    })
+    const after = await core.getConversation(sessionId)
+
+    expect(after.journalPosition).toBeGreaterThan(before.journalPosition)
+    expect(journalPosition).toBe(after.journalPosition)
+  })
+
+  it('leaves a coalesced live event unpositioned until it reaches the journal', async () => {
+    const runId = await startRun('Track a transient event cursor', 'submission-1')
+    const fixedNow = new Date(Date.UTC(2026, 6, 31, 12, 1))
+    core = createCore({
+      stateDirectory: stateDir,
+      now: () => fixedNow,
+      randomId: () => 'unused-id'
+    })
+    await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'assistant-message',
+        id: 'cursor-message',
+        text: 'Still',
+        complete: false
+      }
+    })
+
+    const journalPosition = await core.applyHarnessEvent({
+      sessionId,
+      runId,
+      event: {
+        type: 'assistant-message',
+        id: 'cursor-message',
+        text: 'Still typing',
+        complete: false
+      }
+    })
+
+    expect(journalPosition).toBeNull()
   })
 
   it('marks the Run boundary and reports the Run as active', async () => {

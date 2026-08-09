@@ -231,7 +231,7 @@ export interface ConversationEffects {
     input: QueuedSubmissionDispositionObservation
   ): Effect.Effect<QueuedSubmissionLaunchResult, CoreError>
   begin(input: BeginConversationRunInput): Effect.Effect<ConversationSnapshot, CoreError>
-  apply(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
+  apply(input: ApplyHarnessEventInput): Effect.Effect<number | null, CoreError>
   /**
    * Prepares the Adapter for a Run and returns whatever the Harness must be
    * told before it will say anything. Codex speaks only when spoken to.
@@ -300,12 +300,14 @@ export function createConversationEffects(options: ConversationOptions): Convers
 
   const sessionDirectory = options.directoryFor
 
-  const readJournalEntries = (sessionDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
+  const readJournal = (
+    sessionDir: string
+  ): Effect.Effect<{ entries: ConversationEntry[]; journalPosition: number }, CoreError> =>
     Effect.tryPromise({
       try: async () => {
-        const raw = await readFile(join(sessionDir, JOURNAL), 'utf8').catch(() => '')
+        const raw = await readFile(join(sessionDir, JOURNAL)).catch(() => Buffer.alloc(0))
         const entries: ConversationEntry[] = []
-        for (const line of raw.split('\n')) {
+        for (const line of raw.toString('utf8').split('\n')) {
           if (!line.trim()) continue
           let parsed
           try {
@@ -317,7 +319,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
           }
           if (parsed.success) entries.push(parsed.data)
         }
-        return entries
+        return { entries, journalPosition: raw.byteLength }
       },
       catch: () => new CoreError('IO_ERROR', 'The Conversation history could not be read')
     })
@@ -329,11 +331,11 @@ export function createConversationEffects(options: ConversationOptions): Convers
   }
 
   const readEntries = (sessionDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
-    readJournalEntries(sessionDir).pipe(Effect.map(latestEntries))
+    readJournal(sessionDir).pipe(Effect.map(({ entries }) => latestEntries(entries)))
 
   const readVisibleEntries = (sessionDir: string): Effect.Effect<ConversationEntry[], CoreError> =>
-    readJournalEntries(sessionDir).pipe(
-      Effect.map((entries) => latestEntries(visibleConversationEntries(entries)))
+    readJournal(sessionDir).pipe(
+      Effect.map(({ entries }) => latestEntries(visibleConversationEntries(entries)))
     )
 
   const appendMany = (
@@ -460,12 +462,13 @@ export function createConversationEffects(options: ConversationOptions): Convers
     sessionId: string,
     sessionDir: string
   ): Effect.Effect<ConversationSnapshot, CoreError> =>
-    Effect.all([readJournalEntries(sessionDir), Ref.get(queuePauseOverrides)]).pipe(
+    Effect.all([readJournal(sessionDir), Ref.get(queuePauseOverrides)]).pipe(
       Effect.map(([journal, overrides]) =>
         summarize(
           sessionId,
-          latestEntries(journal),
-          latestEntries(visibleConversationEntries(journal)),
+          latestEntries(journal.entries),
+          latestEntries(visibleConversationEntries(journal.entries)),
+          journal.journalPosition,
           overrides.get(sessionId)
         )
       )
@@ -1083,11 +1086,15 @@ export function createConversationEffects(options: ConversationOptions): Convers
       )
     })
 
-  const apply = (input: ApplyHarnessEventInput): Effect.Effect<void, CoreError> =>
+  const apply = (input: ApplyHarnessEventInput): Effect.Effect<number | null, CoreError> =>
     Effect.gen(function* () {
       const sessionDir = yield* sessionDirectory(input.sessionId)
+      const journalPath = join(sessionDir, JOURNAL)
+      let before = 0
+      let journalPosition: number | null = null
       yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
+          before = yield* journalSize(journalPath)
           const now = yield* options.clock
           const event = input.event
           switch (event.type) {
@@ -1424,8 +1431,16 @@ export function createConversationEffects(options: ConversationOptions): Convers
               // only.
               return
           }
-        })
+        }).pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              const after = yield* journalSize(journalPath)
+              journalPosition = after > before ? after : null
+            })
+          )
+        )
       )
+      return journalPosition
     })
 
   /**
@@ -1878,10 +1893,13 @@ export function createConversationEffects(options: ConversationOptions): Convers
     Effect.gen(function* () {
       const adapter = yield* adapterFor(input.runId, input.harness)
       const events = adapter.ingest(input.chunk)
+      const journalPositions: (number | null)[] = []
       for (const event of events) {
-        yield* apply({ sessionId: input.sessionId, runId: input.runId, event })
+        journalPositions.push(
+          yield* apply({ sessionId: input.sessionId, runId: input.runId, event })
+        )
       }
-      return { events, outgoing: adapter.takeOutgoing() }
+      return { events, outgoing: adapter.takeOutgoing(), journalPositions }
     })
 
   return {
@@ -2120,6 +2138,7 @@ function summarize(
   sessionId: string,
   rawEntries: ConversationEntry[],
   entries: ConversationEntry[],
+  journalPosition: number,
   queuePausedOverride?: boolean
 ): ConversationSnapshot {
   // What the Session is doing is one rule, and it lives with the projection
@@ -2160,6 +2179,7 @@ function summarize(
   }
   return {
     sessionId,
+    journalPosition,
     entries: entries.filter(
       (entry) =>
         entry.kind !== 'usage' &&

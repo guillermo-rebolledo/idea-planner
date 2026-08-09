@@ -127,7 +127,7 @@ export interface Core {
   observeQueuedSubmissionLaunch(
     input: QueuedSubmissionLaunchObservation
   ): Promise<QueuedSubmissionLaunchResult>
-  applyHarnessEvent(input: ApplyHarnessEventInput): Promise<void>
+  applyHarnessEvent(input: ApplyHarnessEventInput): Promise<number | null>
   openHarness(input: OpenHarnessInput): Promise<HarnessStream>
   answerHarnessApproval(
     input: AnswerHarnessInput
@@ -191,7 +191,7 @@ export interface CoreEffects {
   observeQueuedSubmissionLaunch(
     input: QueuedSubmissionLaunchObservation
   ): Effect.Effect<QueuedSubmissionLaunchResult, CoreError>
-  applyHarnessEvent(input: ApplyHarnessEventInput): Effect.Effect<void, CoreError>
+  applyHarnessEvent(input: ApplyHarnessEventInput): Effect.Effect<number | null, CoreError>
   openHarness(input: OpenHarnessInput): Effect.Effect<HarnessStream, CoreError>
   answerHarnessApproval(
     input: AnswerHarnessInput

@@ -128,6 +128,7 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     events: [],
     conversation: {
       sessionId: 'session',
+      journalPosition: 0,
       entries: [],
       usage: { run: null, session: emptyUsage() },
       recovery: null,
@@ -177,7 +178,14 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       return Promise.resolve({ answered: true, outgoing: ['{"id":7,"result":{}}'] })
     }
     if (command.type === 'conversation/ingest') {
-      return Promise.resolve({ events: state.events, outgoing: [] })
+      return Promise.resolve({
+        events: state.events,
+        outgoing: [],
+        journalPositions: state.events.map(() => state.conversation.journalPosition)
+      })
+    }
+    if (command.type === 'conversation/apply') {
+      return Promise.resolve(state.conversation.journalPosition)
     }
     if (command.type === 'conversation/unfinished') return Promise.resolve(state.unfinished)
     if (command.type === 'conversation/queue-launch-observed') {
@@ -1048,6 +1056,7 @@ describe('Run service', () => {
         if (command.type === 'conversation/get') {
           return Promise.resolve({
             sessionId: 'session',
+            journalPosition: 0,
             entries: [],
             usage: { run: null, session: emptyUsage() },
             recovery: null,
@@ -1081,6 +1090,7 @@ describe('Run service', () => {
                 run: next,
                 conversation: {
                   sessionId: 'session',
+                  journalPosition: 0,
                   entries: [],
                   usage: { run: null, session: emptyUsage() },
                   recovery: null,
@@ -1428,6 +1438,7 @@ describe('Run service', () => {
   it('streams normalized events to the window and keeps assistant text out of activity', async () => {
     const root = await readyHarnessRoot('run-stream-')
     const core = fakeCore(join(root, 'a-project'))
+    core.conversation = { ...core.conversation, journalPosition: 42 }
     core.events = [
       { type: 'assistant-message', id: 'item_0', text: 'Who is this for?', complete: true },
       { type: 'reasoning', summary: 'Reading the Session first.' },
@@ -1467,6 +1478,7 @@ describe('Run service', () => {
       'tool'
     ])
     expect(streamed.map((entry) => entry.invalidation)).toEqual(['mailbox', 'none', 'none', 'none'])
+    expect(streamed.map((entry) => entry.journalPosition)).toEqual([42, 42, 42, 42])
     const activity = (core.send.mock.calls as [{ type: string; input?: unknown }][])
       .filter(([command]) => command.type === 'run/event')
       .map(([command]) => command.input as { kind: string; summary: string })
