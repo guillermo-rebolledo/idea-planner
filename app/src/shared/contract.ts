@@ -25,7 +25,16 @@ import type { ListSkillsInput, SkillCatalog, TrustProjectSkillsInput } from './s
 import type { ModelCatalog } from './model'
 import { harnessIdSchema } from './readiness'
 import type { ChooseExecutableResult, HarnessId, ReadinessSnapshot } from './readiness'
-import { projectSkillsTrustSchema, type ChooseProjectResult, type ProjectView } from './project'
+import {
+  projectSkillsTrustSchema,
+  type ChooseProjectResult,
+  type GitHubRepositoryListResult,
+  type ProjectCloneEvent,
+  type ProjectCloneInput,
+  type ProjectCloneLocation,
+  type ProjectCloneStarted,
+  type ProjectView
+} from './project'
 import {
   checkoutRequestSchema,
   checkoutSchema,
@@ -77,6 +86,7 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 21: Projects can be cloned from Git URLs or an authenticated GitHub repository.
  * 20: appearance settings include persisted presets and a derived custom palette.
  * 19: Settings exposes the persisted quit-warning preference to the Renderer.
  * 18: isolated Sessions can publish a reviewed draft through the user's `gh`,
@@ -96,7 +106,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 20
+export const CONTRACT_VERSION = 21
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -442,6 +452,19 @@ export interface ShellApi {
    * decides whether it qualifies and what its root is.
    */
   chooseProject(): Promise<ChooseProjectResult>
+  /** Repositories visible to the authenticated GitHub CLI account. */
+  listGitHubRepositories(): Promise<GitHubRepositoryListResult>
+  /** Common existing parent folders, with the child path one clone would create. */
+  listProjectCloneLocations(suggestedName: string): Promise<ProjectCloneLocation[]>
+  /** Opens the native directory picker for a clone parent. */
+  chooseProjectCloneLocation(suggestedName: string): Promise<ProjectCloneLocation | null>
+  /** Starts a Main-owned clone and returns before its progress events. */
+  startProjectClone(input: ProjectCloneInput): Promise<ProjectCloneStarted>
+  /** Releases a prepared clone only after Renderer is listening for its id. */
+  beginProjectClone(operationId: string): Promise<void>
+  /** Stops one clone without deleting any partial destination it created. */
+  cancelProjectClone(operationId: string): Promise<void>
+  onProjectCloneEvent(listener: (event: ProjectCloneEvent) => void): () => void
   /**
    * Offers a folder the person already named — dropped onto the window — as
    * a Project. The same probing as `chooseProject`, without the picker.

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import { Context, Data, Effect, Layer } from 'effect'
+import { githubRepositoryListResultSchema, type GitHubRepositoryListResult } from '@shared/project'
 import {
   pullRequestSchema,
   type CreatePullRequestResult,
@@ -62,6 +63,22 @@ const ghPullRequestSchema = z.object({
   mergedAt: z.string().nullable().optional(),
   isDraft: z.boolean().optional()
 })
+
+const ghRepositorySchema = z.object({
+  full_name: z.string().min(3),
+  description: z.string().nullable(),
+  private: z.boolean(),
+  updated_at: z.string().datetime()
+})
+
+function decodeGitHubRepositories(text: string): z.infer<typeof ghRepositorySchema>[] | null {
+  try {
+    const decoded = z.array(z.array(ghRepositorySchema)).safeParse(JSON.parse(text))
+    return decoded.success ? decoded.data.flat().slice(0, 200) : null
+  } catch {
+    return null
+  }
+}
 
 function toPullRequest(value: z.infer<typeof ghPullRequestSchema>): PullRequest {
   const state = value.state.trim().toUpperCase()
@@ -210,6 +227,7 @@ export interface PublishPullRequestCommand {
 
 export interface GitHubClient {
   readiness(cwd: string): Effect.Effect<GitHubReadiness>
+  repositories(cwd: string): Effect.Effect<GitHubRepositoryListResult>
   defaultBranch(cwd: string): Effect.Effect<string | null>
   create(input: PublishPullRequestCommand): Effect.Effect<CreatePullRequestResult>
   get(cwd: string, reference: string): Effect.Effect<PullRequest | null>
@@ -256,6 +274,61 @@ export class GitHubPullRequests implements GitHubClient {
             : { status: 'unknown' as const, detail: processErrorText(error.cause) }
         )
       )
+    )
+  }
+
+  repositories(cwd: string): Effect.Effect<GitHubRepositoryListResult> {
+    return this.readiness(cwd).pipe(
+      Effect.flatMap((readiness) => {
+        if (readiness.status !== 'ready') {
+          return Effect.succeed(
+            githubRepositoryListResultSchema.parse({
+              status: readiness.status === 'unknown' ? 'failed' : readiness.status,
+              detail: readiness.detail
+            })
+          )
+        }
+        return this.execute(
+          'gh',
+          [
+            'api',
+            '--method',
+            'GET',
+            '--paginate',
+            '--slurp',
+            '-f',
+            'per_page=100',
+            '-f',
+            'sort=updated',
+            '-f',
+            'affiliation=owner,collaborator,organization_member',
+            'user/repos'
+          ],
+          cwd
+        ).pipe(
+          Effect.map((result): GitHubRepositoryListResult => {
+            const decoded = decodeGitHubRepositories(result.stdout)
+            if (!decoded) {
+              return { status: 'failed', detail: 'GitHub returned an unreadable repository list.' }
+            }
+            return githubRepositoryListResultSchema.parse({
+              status: 'ready',
+              repositories: decoded.map((repository) => ({
+                nameWithOwner: repository.full_name,
+                description: repository.description ?? '',
+                private: repository.private,
+                updatedAt: new Date(repository.updated_at).toISOString()
+              }))
+            })
+          }),
+          Effect.catchAll((error) =>
+            Effect.succeed({
+              status: 'failed' as const,
+              detail: processErrorText(error.cause)
+            })
+          )
+        )
+      })
     )
   }
 

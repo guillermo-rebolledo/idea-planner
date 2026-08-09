@@ -54,7 +54,7 @@ export function PopoverContent({
 }): React.JSX.Element {
   return (
     <BasePopover.Portal>
-      <BasePopover.Positioner align={align} side={side} sideOffset={sideOffset}>
+      <BasePopover.Positioner className="z-[60]" align={align} side={side} sideOffset={sideOffset}>
         <BasePopover.Popup
           ref={ref}
           className={cn(

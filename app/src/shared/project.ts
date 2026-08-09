@@ -52,7 +52,45 @@ export type ProjectView = z.infer<typeof projectViewSchema>
  * can name a Project from its root alone without re-inventing the rule.
  */
 export function projectDisplayName(root: string): string {
-  return root.split('/').filter(Boolean).at(-1) ?? root
+  return root.split(/[\\/]/u).filter(Boolean).at(-1) ?? root
+}
+
+/** Only network transports whose credential behavior the product can explain. */
+export function isSupportedGitRemote(remote: string): boolean {
+  let hasControlCharacter = false
+  for (let index = 0; index < remote.length; index += 1) {
+    const code = remote.charCodeAt(index)
+    if (code <= 31 || code === 127) {
+      hasControlCharacter = true
+      break
+    }
+  }
+  if (remote.length > 2048 || hasControlCharacter) return false
+  if (/^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$/u.test(remote)) return true
+  try {
+    const url = new URL(remote)
+    if (url.protocol !== 'https:' && url.protocol !== 'ssh:') return false
+    if (!url.hostname || url.password || url.search || url.hash) return false
+    if (url.protocol === 'https:' && url.username) return false
+    return url.pathname.split('/').filter(Boolean).length >= 2
+  } catch {
+    return false
+  }
+}
+
+/** A safe suggested leaf for a supported Git remote. */
+export function projectNameFromRemote(remote: string): string | null {
+  if (!isSupportedGitRemote(remote)) return null
+  const path = remote.includes('://')
+    ? new URL(remote).pathname
+    : remote.slice(remote.indexOf(':') + 1)
+  const leaf =
+    path
+      .split('/')
+      .filter(Boolean)
+      .at(-1)
+      ?.replace(/\.git$/u, '') ?? ''
+  return /^[A-Za-z0-9._-]+$/u.test(leaf) && leaf !== '.' && leaf !== '..' ? leaf : null
 }
 
 /** Why a chosen folder could not become a Project. */
@@ -84,3 +122,98 @@ export const chooseProjectResultSchema = z.union([
   })
 ])
 export type ChooseProjectResult = z.infer<typeof chooseProjectResultSchema>
+
+/** A repository the authenticated GitHub CLI account may clone. */
+export const githubRepositorySchema = z.object({
+  nameWithOwner: z.string().min(3).max(300),
+  description: z.string().max(500),
+  private: z.boolean(),
+  updatedAt: z.string().datetime()
+})
+export type GitHubRepository = z.infer<typeof githubRepositorySchema>
+
+export const githubRepositoryListResultSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('ready'), repositories: z.array(githubRepositorySchema).max(200) }),
+  z.object({
+    status: z.enum(['unavailable', 'unauthenticated', 'failed']),
+    detail: z.string().min(1).max(500)
+  })
+])
+export type GitHubRepositoryListResult = z.infer<typeof githubRepositoryListResultSchema>
+
+/** One existing parent directory and the child a clone would create inside it. */
+export const projectCloneLocationSchema = z.object({
+  label: z.string().min(1).max(100),
+  parent: z.string().min(1),
+  destination: z.string().min(1)
+})
+export type ProjectCloneLocation = z.infer<typeof projectCloneLocationSchema>
+
+const projectCloneDestinationSchema = z.string().min(1).max(4096)
+const gitUrlSchema = z.string().trim().min(1).max(2048)
+const githubNameSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)
+
+/** The two remote sources supported by the first Add Project release. */
+export const projectCloneInputSchema = z.discriminatedUnion('source', [
+  z.object({
+    source: z.literal('git-url'),
+    url: gitUrlSchema,
+    destination: projectCloneDestinationSchema
+  }),
+  z.object({
+    source: z.literal('github'),
+    repository: githubNameSchema,
+    destination: projectCloneDestinationSchema
+  })
+])
+export type ProjectCloneInput = z.infer<typeof projectCloneInputSchema>
+
+export const projectCloneStartedSchema = z.object({ operationId: z.string().uuid() })
+export type ProjectCloneStarted = z.infer<typeof projectCloneStartedSchema>
+
+export const projectCloneFailureSchema = z.enum([
+  'invalid-source',
+  'destination-exists',
+  'destination-unavailable',
+  'git-unavailable',
+  'github-unavailable',
+  'github-unauthenticated',
+  'authentication',
+  'not-found',
+  'network',
+  'timed-out',
+  'add-failed',
+  'unknown'
+])
+export type ProjectCloneFailure = z.infer<typeof projectCloneFailureSchema>
+
+/** Events from one Main-owned clone. Output is sanitized before it crosses IPC. */
+export const projectCloneEventSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('progress'),
+    operationId: z.string().uuid(),
+    phase: z.enum(['starting', 'receiving', 'resolving', 'checking-out', 'verifying', 'adding']),
+    detail: z.string().max(500)
+  }),
+  z.object({
+    type: z.literal('completed'),
+    operationId: z.string().uuid(),
+    project: projectViewSchema
+  }),
+  z.object({
+    type: z.literal('cancelled'),
+    operationId: z.string().uuid(),
+    destination: projectCloneDestinationSchema
+  }),
+  z.object({
+    type: z.literal('failed'),
+    operationId: z.string().uuid(),
+    reason: projectCloneFailureSchema,
+    detail: z.string().min(1).max(500),
+    destination: projectCloneDestinationSchema
+  })
+])
+export type ProjectCloneEvent = z.infer<typeof projectCloneEventSchema>

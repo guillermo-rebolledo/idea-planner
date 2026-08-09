@@ -24,6 +24,61 @@ afterEach(async () => {
 })
 
 describe('GitHub pull requests', () => {
+  it('lists repositories for the authenticated account and tolerates missing descriptions', async () => {
+    const client = await github({
+      run: vi
+        .fn()
+        .mockResolvedValueOnce({ stdout: 'gh version 2.80.0\n', stderr: '' })
+        .mockResolvedValueOnce({
+          stdout: '{"hosts":{"github.com":[{"active":true,"state":"success"}]}}',
+          stderr: ''
+        })
+        .mockResolvedValueOnce({
+          stdout: JSON.stringify([
+            [
+              {
+                full_name: 'example/private-project',
+                description: null,
+                private: true,
+                updated_at: '2026-08-09T12:00:00Z'
+              }
+            ]
+          ]),
+          stderr: ''
+        })
+    })
+
+    await expect(Effect.runPromise(client.repositories('/home'))).resolves.toEqual({
+      status: 'ready',
+      repositories: [
+        {
+          nameWithOwner: 'example/private-project',
+          description: '',
+          private: true,
+          updatedAt: '2026-08-09T12:00:00.000Z'
+        }
+      ]
+    })
+  })
+
+  it('reports malformed repository output without crashing the GitHub client', async () => {
+    const client = await github({
+      run: vi
+        .fn()
+        .mockResolvedValueOnce({ stdout: 'gh version 2.80.0\n', stderr: '' })
+        .mockResolvedValueOnce({
+          stdout: '{"hosts":{"github.com":[{"state":"success"}]}}',
+          stderr: ''
+        })
+        .mockResolvedValueOnce({ stdout: 'not json', stderr: '' })
+    })
+
+    await expect(Effect.runPromise(client.repositories('/home'))).resolves.toEqual({
+      status: 'failed',
+      detail: 'GitHub returned an unreadable repository list.'
+    })
+  })
+
   it('keeps valid gh list entries when another entry has drifted', () => {
     expect(
       decodePullRequests(

@@ -9,6 +9,8 @@ import * as FiberId from 'effect/FiberId'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as Scope from 'effect/Scope'
+import { nativeProjectCloneLayer } from './project-clone-native'
+import type { NativeProjectClone } from './project-clone-native'
 
 export interface SpawnedProcess {
   pid?: number
@@ -119,7 +121,7 @@ class RunScopeOwner extends Context.Tag('main/RunScopeOwner')<
   RunScopeOwnerService
 >() {}
 
-type MainRuntimeServices = NativeRun | RunScopeOwner
+type MainRuntimeServices = NativeRun | RunScopeOwner | NativeProjectClone
 
 /**
  * Main's one Effect runtime. Its root Scope follows Electron, and every Run
@@ -149,7 +151,8 @@ export function nativeRunLayer(
 
 /** Builds Main's runtime from the native layer selected at composition time. */
 export function createMainEffectRuntime(
-  native: Layer.Layer<NativeRun> = nativeRunLayer()
+  native: Layer.Layer<NativeRun> = nativeRunLayer(),
+  projectClone: Layer.Layer<NativeProjectClone> = nativeProjectCloneLayer()
 ): MainEffectRuntime {
   const scopes = Layer.scoped(
     RunScopeOwner,
@@ -157,7 +160,7 @@ export function createMainEffectRuntime(
       fork: () => Scope.fork(root, ExecutionStrategy.sequential)
     }))
   )
-  return new MainEffectRuntime(ManagedRuntime.make(Layer.merge(native, scopes)))
+  return new MainEffectRuntime(ManagedRuntime.make(Layer.mergeAll(native, scopes, projectClone)))
 }
 
 /** Owns exactly one detached OS process group for each active Run. */

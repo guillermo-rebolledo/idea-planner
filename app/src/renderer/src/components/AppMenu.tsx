@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Archive, ArrowRightLeft, Bot, FolderPlus, Lock, Settings } from 'lucide-react'
 import {
-  type ChooseProjectResult,
   type AppearanceSettings,
   type ReadinessSnapshot,
   type StandingApproval,
@@ -12,8 +11,6 @@ import {
   StandingApprovalsDialog,
   type ProjectApprovals
 } from '@renderer/components/StandingApprovals'
-import { Button } from '@renderer/components/ui/button'
-import { Modal } from '@renderer/components/ui/dialog'
 import { SettingsDialog, type SettingsSection } from '@renderer/components/Settings'
 import {
   Menu,
@@ -33,16 +30,9 @@ interface AppMenuProps {
   onShowArchived: () => void
   /** Opens the ⌘K switcher — named here so the shortcut can be learned. */
   onGoToSession: () => void
-  /** The mailbox re-reads after a Project is added, so its group appears. */
-  onProjectsChanged: () => void
+  onAddProject: () => void
   onAnnounce: (text: string) => void
 }
-
-/** A folder the app declined, with the exact path the person offered it. */
-type Refusal = Extract<ChooseProjectResult, { status: 'refused' }>
-
-/** A folder inside a Project whose root git puts somewhere else. */
-type RootConfirmation = Extract<ChooseProjectResult, { status: 'confirm-root' }>
 
 /**
  * The app menu, anchored in the sidebar footer (mockup 3c). The rarely
@@ -57,7 +47,7 @@ export function AppMenu({
   archivedTotal,
   onShowArchived,
   onGoToSession,
-  onProjectsChanged,
+  onAddProject,
   onAnnounce
 }: AppMenuProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
@@ -65,9 +55,6 @@ export function AppMenu({
   const [approvals, setApprovals] = useState<ProjectApprovals[]>([])
   const [approvalsOpen, setApprovalsOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
-  const [refusal, setRefusal] = useState<Refusal | null>(null)
-  const [confirmation, setConfirmation] = useState<RootConfirmation | null>(null)
-  const [busy, setBusy] = useState(false)
 
   const refreshReadiness = useCallback(() => {
     window.shell.getReadiness().then(setReadiness, () => setReadiness(null))
@@ -90,39 +77,6 @@ export function AppMenu({
   const needsAttention =
     readiness?.harnesses.some((harness) => !harness.capabilities.developSession.available) ?? false
   const approvalCount = approvals.reduce((count, entry) => count + entry.approvals.length, 0)
-
-  const adopt = useCallback(
-    (result: ChooseProjectResult) => {
-      if (result.status === 'cancelled') return
-      if (result.status === 'refused') {
-        setConfirmation(null)
-        setRefusal(result)
-        return
-      }
-      if (result.status === 'confirm-root') {
-        setRefusal(null)
-        setConfirmation(result)
-        return
-      }
-      setRefusal(null)
-      setConfirmation(null)
-      onAnnounce(`Added “${result.project.name}”.`)
-      onProjectsChanged()
-    },
-    [onAnnounce, onProjectsChanged]
-  )
-
-  /** Offers a folder, or answers one of the app's follow-up questions. */
-  async function offer(work: () => Promise<ChooseProjectResult>, failure: string): Promise<void> {
-    setBusy(true)
-    try {
-      adopt(await work())
-    } catch {
-      onAnnounce(failure)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   async function revoke(projectRoot: string, approval: StandingApproval): Promise<void> {
     try {
@@ -154,11 +108,7 @@ export function AppMenu({
           {needsAttention && <span className="sr-only">— a Harness needs you</span>}
         </MenuTrigger>
         <MenuContent side="top" align="start" className="m-2">
-          <MenuItem
-            onClick={() =>
-              void offer(() => window.shell.chooseProject(), 'That folder could not be added.')
-            }
-          >
+          <MenuItem onClick={onAddProject}>
             <FolderPlus aria-hidden="true" className="size-3.5 text-muted-foreground" />
             Add Project…
           </MenuItem>
@@ -226,103 +176,6 @@ export function AppMenu({
           onAppearanceChange={onAppearanceChange}
           onDismiss={() => setSettingsSection(null)}
         />
-      )}
-
-      {refusal && (
-        <Modal labelledBy="add-project-refused-title" onDismiss={() => setRefusal(null)}>
-          {refusal.reason === 'not-a-repository' ? (
-            <>
-              <h2 id="add-project-refused-title" className="text-sm font-medium">
-                That folder is not under git yet
-              </h2>
-              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                A Project has to be — every safety guarantee here comes from git.
-              </p>
-              <p className="mt-2 font-mono text-xs break-all select-text">{refusal.path}</p>
-              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                Setting it up runs <span className="font-mono">git init</span> there and changes
-                nothing else. It is the only Git command this app ever runs for you.
-              </p>
-              <div className="mt-4 flex justify-end gap-2">
-                <Button
-                  data-autofocus=""
-                  variant="secondary"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => setRefusal(null)}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  size="sm"
-                  disabled={busy}
-                  onClick={() =>
-                    void offer(
-                      () => window.shell.initializeProject(refusal.path),
-                      'git could not set it up.'
-                    )
-                  }
-                >
-                  Set up git here
-                </Button>
-              </div>
-            </>
-          ) : (
-            <>
-              <h2 id="add-project-refused-title" className="text-sm font-medium">
-                git could not be found on this machine
-              </h2>
-              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                This folder could not be added:
-              </p>
-              <p className="mt-2 font-mono text-xs break-all select-text">{refusal.path}</p>
-              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                Install git, then add the folder again.
-              </p>
-              <div className="mt-4 flex justify-end">
-                <Button data-autofocus="" size="sm" onClick={() => setRefusal(null)}>
-                  Close
-                </Button>
-              </div>
-            </>
-          )}
-        </Modal>
-      )}
-
-      {confirmation && (
-        <Modal labelledBy="add-project-confirm-title" onDismiss={() => setConfirmation(null)}>
-          <h2 id="add-project-confirm-title" className="text-sm font-medium">
-            That folder is inside a Project
-          </h2>
-          <p className="mt-2 font-mono text-xs break-all select-text">{confirmation.chosen}</p>
-          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-            The Project itself begins here, and this is what would be added:
-          </p>
-          <p className="mt-2 font-mono text-xs break-all select-text">{confirmation.root}</p>
-          <div className="mt-4 flex justify-end gap-2">
-            <Button
-              data-autofocus=""
-              variant="secondary"
-              size="sm"
-              disabled={busy}
-              onClick={() => setConfirmation(null)}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              disabled={busy}
-              onClick={() =>
-                void offer(
-                  () => window.shell.confirmProject(confirmation.root),
-                  'That Project could not be added.'
-                )
-              }
-            >
-              Add this Project
-            </Button>
-          </div>
-        </Modal>
       )}
     </>
   )

@@ -101,10 +101,13 @@ async function installFakeSkills(root: string): Promise<void> {
  * a root the person did not pick and the app confirms it first.
  */
 async function completeOnboarding(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Choose a folder…' }).click()
-  await page.getByRole('alert').getByRole('button', { name: 'Add this Project' }).click()
-  const addedCard = page.getByRole('status').filter({ hasText: basename(sandbox.projectDir) })
-  await addedCard.getByRole('button', { name: 'Continue', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Add Project' })
+  await dialog.getByRole('button', { name: 'Choose project folder…' }).click()
+  const confirmation = dialog.getByRole('alert')
+  if (await confirmation.isVisible()) {
+    await confirmation.getByRole('button', { name: 'Add this Project' }).click()
+  }
+  await page.getByRole('button', { name: 'New Session', exact: true }).waitFor()
 }
 
 /** Typing `/` offers what is installed; picking one is for that message only. */
@@ -183,9 +186,12 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
     expect(exposure.ipcRendererType).toBe('undefined')
     expect(exposure.shellKeys).toEqual([
       'applyRunUndo',
+      'beginProjectClone',
+      'cancelProjectClone',
       'cancelQueuedSubmission',
       'chooseHarnessExecutable',
       'chooseProject',
+      'chooseProjectCloneLocation',
       'clearHarnessExecutable',
       'confirmProject',
       'createPullRequest',
@@ -203,7 +209,9 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'listBranches',
       'listDamagedSessions',
       'listEditors',
+      'listGitHubRepositories',
       'listModels',
+      'listProjectCloneLocations',
       'listProjects',
       'listRuns',
       'listSessions',
@@ -213,6 +221,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'offerProject',
       'onConversationEvent',
       'onOpenSessionRequest',
+      'onProjectCloneEvent',
       'onQuitRequested',
       'onThemeChanged',
       'onToggleSidebarShortcut',
@@ -239,6 +248,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'setQuitWarningPreference',
       'setSessionArchived',
       'setSessionPinned',
+      'startProjectClone',
       'startRun',
       'startSession',
       'stopRun',
@@ -950,10 +960,9 @@ test('the sidebar groups by Project, and status is a dot that never moves a row'
     // through a symlink, so git names the root and the app confirms it first.
     await page.getByRole('button', { name: 'App menu' }).click()
     await page.getByRole('menuitem', { name: 'Add Project…' }).click()
-    await page
-      .getByRole('dialog', { name: 'That folder is inside a Project' })
-      .getByRole('button', { name: 'Add this Project' })
-      .click()
+    const addProject = page.getByRole('dialog', { name: 'Add Project' })
+    await addProject.getByRole('button', { name: 'Choose project folder…' }).click()
+    await addProject.getByRole('alert').getByRole('button', { name: 'Add this Project' }).click()
     const inboxNav = page.getByRole('navigation', { name: 'Session inbox' })
     await expect(inboxNav.getByText(basename(sandbox.plainDir), { exact: true })).toBeVisible()
 
@@ -1715,41 +1724,46 @@ test('a person adds a Project and a plain folder is refused with an offer to set
   try {
     const page = await app.firstWindow()
 
-    // The git requirement is said before any folder is chosen, not discovered
-    // on refusal: git is the only undo for the agent's edits.
     await page.getByRole('heading', { name: 'Add your first Project' }).waitFor()
-    await expect(page.getByText('Must be a git repository', { exact: false })).toBeVisible()
 
     // A folder under git becomes a Project. The sandbox reaches it through a
     // symlink, so git names a root the person did not pick, and the app says so
     // before storing anything.
-    await page.getByRole('button', { name: 'Choose a folder…' }).click()
-    const symlinked = page.getByRole('alert')
+    let addProject = page.getByRole('dialog', { name: 'Add Project' })
+    await addProject.getByRole('button', { name: 'Choose project folder…' }).click()
+    const symlinked = addProject.getByRole('alert')
     await expect(
       symlinked.getByText(await realpath(sandbox.projectDir), { exact: true })
     ).toBeVisible()
     await symlinked.getByRole('button', { name: 'Add this Project' }).click()
-    await expect(page.getByText(basename(sandbox.projectDir), { exact: true })).toBeVisible()
+    const inbox = page.getByRole('navigation', { name: 'Session inbox' })
+    await expect(inbox.getByText(basename(sandbox.projectDir), { exact: true })).toBeVisible()
 
     // A folder that is not under git is refused, naming the exact path, and
     // nothing is written until the offer is accepted.
-    await page.getByRole('button', { name: 'Choose a folder…' }).click()
-    const refusal = page.getByRole('alert')
+    await page.getByRole('button', { name: 'App menu' }).click()
+    await page.getByRole('menuitem', { name: 'Add Project…' }).click()
+    addProject = page.getByRole('dialog', { name: 'Add Project' })
+    await addProject.getByRole('button', { name: 'Choose project folder…' }).click()
+    const refusal = addProject.getByRole('alert')
     await expect(refusal.getByText(sandbox.plainDir)).toBeVisible()
     await expect(refusal.getByText('git init')).toBeVisible()
     expect(await readdir(sandbox.plainDir)).not.toContain('.git')
 
     // Accepting it runs the one Git mutation the app performs, and the folder
     // becomes a Project.
-    await refusal.getByRole('button', { name: 'Set up git here' }).click()
-    await expect(page.getByText(basename(sandbox.plainDir), { exact: true })).toBeVisible()
+    await refusal.getByRole('button', { name: 'Set up Git here' }).click()
+    await expect(inbox.getByText(basename(sandbox.plainDir), { exact: true })).toBeVisible()
     expect(await readdir(sandbox.plainDir)).toContain('.git')
 
     // Pointing inside a Project adds the Project, but says so first: git
     // resolves a root the person did not pick, and adding it silently would
     // surprise them.
-    await page.getByRole('button', { name: 'Choose a folder…' }).click()
-    const confirmation = page.getByRole('alert')
+    await page.getByRole('button', { name: 'App menu' }).click()
+    await page.getByRole('menuitem', { name: 'Add Project…' }).click()
+    addProject = page.getByRole('dialog', { name: 'Add Project' })
+    await addProject.getByRole('button', { name: 'Choose project folder…' }).click()
+    const confirmation = addProject.getByRole('alert')
     await expect(
       confirmation.getByText(join(sandbox.projectDir, 'src', 'deep'), { exact: true })
     ).toBeVisible()
@@ -1759,10 +1773,7 @@ test('a person adds a Project and a plain folder is refused with an offer to set
     ).toBeVisible()
     await confirmation.getByRole('button', { name: 'Add this Project' }).click()
 
-    // Onboarding ends with the latest addition; both Projects made it in, and
-    // the same root twice is still one Project.
-    await page.getByRole('status').getByRole('button', { name: 'Continue', exact: true }).click()
-    const inbox = page.getByRole('navigation', { name: 'Session inbox' })
+    // Both Projects made it in, and the same root twice is still one Project.
     await expect(inbox.getByText(basename(sandbox.projectDir), { exact: true })).toHaveCount(1)
     await expect(inbox.getByText(basename(sandbox.plainDir), { exact: true })).toHaveCount(1)
 

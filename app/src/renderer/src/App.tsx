@@ -107,6 +107,9 @@ export default function App(): React.JSX.Element {
     },
     [adoptTheme]
   )
+  const refreshProjects = useCallback(async () => {
+    setProjects(await window.shell.listProjects())
+  }, [])
 
   let content: React.JSX.Element
   if (bootPhase.phase === 'loading') {
@@ -142,7 +145,13 @@ export default function App(): React.JSX.Element {
   } else if (projects.length === 0) {
     content = <Onboarding onComplete={setProjects} />
   } else {
-    content = <Mailbox theme={theme} onAppearanceChange={changeAppearance} />
+    content = (
+      <Mailbox
+        theme={theme}
+        onAppearanceChange={changeAppearance}
+        onProjectsChanged={refreshProjects}
+      />
+    )
   }
 
   return (

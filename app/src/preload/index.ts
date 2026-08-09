@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC_CHANNELS } from '@shared/channels'
-import type { ConversationStreamEvent, ShellApi, ThemeState } from '@shared/contract'
+import type {
+  ConversationStreamEvent,
+  ProjectCloneEvent,
+  ShellApi,
+  ThemeState
+} from '@shared/contract'
 
 /**
  * The complete privileged surface available to the sandboxed Renderer.
@@ -10,6 +15,22 @@ import type { ConversationStreamEvent, ShellApi, ThemeState } from '@shared/cont
 const api: ShellApi = {
   getBootState: () => ipcRenderer.invoke(IPC_CHANNELS.bootState),
   chooseProject: () => ipcRenderer.invoke(IPC_CHANNELS.chooseProject),
+  listGitHubRepositories: () => ipcRenderer.invoke(IPC_CHANNELS.listGitHubRepositories),
+  listProjectCloneLocations: (suggestedName) =>
+    ipcRenderer.invoke(IPC_CHANNELS.listProjectCloneLocations, suggestedName),
+  chooseProjectCloneLocation: (suggestedName) =>
+    ipcRenderer.invoke(IPC_CHANNELS.chooseProjectCloneLocation, suggestedName),
+  startProjectClone: (input) => ipcRenderer.invoke(IPC_CHANNELS.startProjectClone, input),
+  beginProjectClone: (operationId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.beginProjectClone, operationId),
+  cancelProjectClone: (operationId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.cancelProjectClone, operationId),
+  onProjectCloneEvent: (listener) => {
+    const subscription = (_event: unknown, cloneEvent: ProjectCloneEvent): void =>
+      listener(cloneEvent)
+    ipcRenderer.on(IPC_CHANNELS.projectCloneEvent, subscription)
+    return () => ipcRenderer.off(IPC_CHANNELS.projectCloneEvent, subscription)
+  },
   offerProject: (path) => ipcRenderer.invoke(IPC_CHANNELS.offerProject, path),
   pathForFile: (file) => webUtils.getPathForFile(file),
   listProjects: () => ipcRenderer.invoke(IPC_CHANNELS.listProjects),

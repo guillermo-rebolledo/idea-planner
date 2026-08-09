@@ -59,6 +59,11 @@ import {
   queuedSubmissionIdentitySchema,
   SKILL_ATTRIBUTION,
   projectViewSchema,
+  githubRepositoryListResultSchema,
+  projectCloneEventSchema,
+  projectCloneInputSchema,
+  projectCloneLocationSchema,
+  projectCloneStartedSchema,
   type BootState,
   type Checkout,
   type ChooseProjectResult,
@@ -110,6 +115,7 @@ import { bootstrapWorktree } from './worktree-bootstrap'
 import { GitHubPullRequests } from './github'
 import { PullRequestStore } from './pull-request-store'
 import { makePullRequestService, type PullRequestService } from './pull-request-service'
+import { ProjectCloneService } from './project-clone'
 import {
   createPullRequestInputSchema,
   createPullRequestResultSchema,
@@ -132,6 +138,10 @@ const testChooseProjectDirs = (process.env['APP_TEST_CHOOSE_PROJECT_DIRS'] ?? ''
   .split(delimiter)
   .filter((entry) => entry !== '')
 let chosenProjectCount = 0
+const testChooseCloneDirs = (process.env['APP_TEST_CHOOSE_CLONE_DIRS'] ?? '')
+  .split(delimiter)
+  .filter((entry) => entry !== '')
+let chosenCloneCount = 0
 const testReadinessPath = process.env['APP_TEST_READINESS_PATH']
 const testReadinessHome = process.env['APP_TEST_READINESS_HOME']
 const testChooseExecutable = process.env['APP_TEST_CHOOSE_EXECUTABLE']
@@ -171,6 +181,8 @@ let runService: RunService
 let runUndo: RunUndoService
 let pullRequests: PullRequestService
 let pullRequestStore: PullRequestStore
+let github: GitHubPullRequests
+let projectClones: ProjectCloneService
 /** The one store of app-owned Run snapshots; Runs write it, undo reads it. */
 let snapshots: SessionSnapshotStore
 let shutdownStarted = false
@@ -281,6 +293,42 @@ async function chooseProjectDirectory(): Promise<string | undefined> {
   return result.canceled ? undefined : result.filePaths[0]
 }
 
+function cloneLocations(
+  suggestedName: string
+): { label: string; parent: string; destination: string }[] {
+  const candidates = [
+    { label: 'Home', parent: app.getPath('home') },
+    { label: 'Documents', parent: app.getPath('documents') },
+    { label: 'Desktop', parent: app.getPath('desktop') }
+  ]
+  const seen = new Set<string>()
+  return candidates.flatMap(({ label, parent }) => {
+    if (seen.has(parent)) return []
+    seen.add(parent)
+    return [{ label, parent, destination: join(parent, suggestedName) }]
+  })
+}
+
+async function chooseCloneLocation(
+  suggestedName: string
+): Promise<{ label: string; parent: string; destination: string } | null> {
+  let parent: string | undefined
+  if (testChooseCloneDirs.length > 0 && !app.isPackaged) {
+    const index = Math.min(chosenCloneCount++, testChooseCloneDirs.length - 1)
+    parent = testChooseCloneDirs[index]
+  } else if (mainWindow) {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose where to clone',
+      message: `${suggestedName} will be created inside the selected folder.`,
+      buttonLabel: 'Choose this location',
+      properties: ['openDirectory']
+    })
+    if (!result.canceled) parent = result.filePaths[0]
+  }
+  if (!parent) return null
+  return { label: basename(parent) || parent, parent, destination: join(parent, suggestedName) }
+}
+
 /**
  * Main probes with git and hands Core the root git resolved; Core decides
  * identity, duplication, and persistence (ADR 0005). Picking any folder
@@ -336,6 +384,37 @@ function registerIpc(): void {
       return addProject(path)
     }
   )
+
+  handleInvoke(IPC_CHANNELS.listGitHubRepositories, z.undefined(), async () =>
+    githubRepositoryListResultSchema.parse(
+      await mainEffectRuntime.runPromise(github.repositories(app.getPath('home')))
+    )
+  )
+
+  const suggestedCloneName = z
+    .string()
+    .regex(/^[A-Za-z0-9._-]+$/u)
+    .max(255)
+  handleInvoke(IPC_CHANNELS.listProjectCloneLocations, suggestedCloneName, (suggestedName) =>
+    projectCloneLocationSchema.array().parse(cloneLocations(suggestedName))
+  )
+  handleInvoke(
+    IPC_CHANNELS.chooseProjectCloneLocation,
+    suggestedCloneName,
+    async (suggestedName) => {
+      const location = await chooseCloneLocation(suggestedName)
+      return location === null ? null : projectCloneLocationSchema.parse(location)
+    }
+  )
+  handleInvoke(IPC_CHANNELS.startProjectClone, projectCloneInputSchema, async (input) => {
+    return projectCloneStartedSchema.parse(await projectClones.start(input))
+  })
+  handleInvoke(IPC_CHANNELS.beginProjectClone, z.string().uuid(), async (operationId) => {
+    await projectClones.begin(operationId)
+  })
+  handleInvoke(IPC_CHANNELS.cancelProjectClone, z.string().uuid(), async (operationId) => {
+    await projectClones.cancel(operationId)
+  })
 
   // A folder the person dropped onto the window: already named by them, so
   // no picker — but probed exactly like a picked one. A dropped file offers
@@ -399,8 +478,8 @@ function registerIpc(): void {
   )
 
   // Reached only from the offer the person accepted for this exact folder.
-  // `git init` is one of the app's two explicit Git mutations; publishing an
-  // isolated Checkout is the other (ADR 0007).
+  // `git init` is one explicit Git mutation; cloning and publishing an
+  // isolated Checkout are the others (ADR 0007).
   handleInvoke(
     IPC_CHANNELS.initializeProject,
     z.string().min(1),
@@ -1111,7 +1190,7 @@ void app.whenReady().then(async () => {
   })
   snapshots = new SessionSnapshotStore(join(app.getPath('userData'), 'runs'))
   pullRequestStore = new PullRequestStore(join(app.getPath('userData'), 'runs'))
-  const github = await mainEffectRuntime.runPromise(GitHubPullRequests.live)
+  github = await mainEffectRuntime.runPromise(GitHubPullRequests.live)
   pullRequests = await mainEffectRuntime.runPromise(
     makePullRequestService({ github, store: pullRequestStore })
   )
@@ -1143,6 +1222,18 @@ void app.whenReady().then(async () => {
         type: 'conversation/app-action',
         input: { ...input, action: 'run-undo' }
       })
+    }
+  })
+  projectClones = new ProjectCloneService({
+    runtime: mainEffectRuntime,
+    hooksDirectory: join(app.getPath('userData'), 'clone-hooks'),
+    resolveRoot: (path) => resolveProjectRoot(path),
+    acceptProject,
+    emit: (event) => {
+      mainWindow?.webContents.send(
+        IPC_CHANNELS.projectCloneEvent,
+        projectCloneEventSchema.parse(event)
+      )
     }
   })
   servicesReady = true
@@ -1234,8 +1325,9 @@ function requestQuit(): void {
 async function beginSafeShutdown(): Promise<void> {
   if (shutdownStarted) return
   shutdownStarted = true
-  await runService
-    .stopAll('quit')
+  await projectClones
+    .cancelAll()
+    .then(() => runService.stopAll('quit'))
     .then(() => mainEffectRuntime.dispose())
     .then(() => {
       coreClient.stop()
