@@ -260,6 +260,26 @@ describe('what a new Harness Thread is seeded with', () => {
       )
     )
   })
+
+  it('does not duplicate the current prompt that the adapter receives separately', () => {
+    const current = message('replacement prompt')
+    if (current.kind !== 'message') throw new Error('message helper returned a non-message')
+    current.id = 'user:replacement'
+    current.submissionId = 'replacement'
+    const entries = [
+      message('kept question'),
+      message('kept answer', 'assistant'),
+      rewound('run-2', 'message:bad prompt', 'message:kept question'),
+      current
+    ]
+    expect(
+      conversationSeed(conversation(entries), {
+        shape: 'rewind',
+        skill: null,
+        excludeSubmissionId: 'replacement'
+      })
+    ).toBe('Recent turns:\nUser: kept question\nAssistant: kept answer')
+  })
 })
 
 describe('a Conversation fact that vetoes Harness Thread reuse', () => {

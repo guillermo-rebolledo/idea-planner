@@ -100,6 +100,7 @@ interface FakeCore {
   unfinished: { sessionId: string; runId: string }[]
   /** What Core would answer a compaction plan with, or nothing to refuse it. */
   compactionPlan?: CompactionPlan
+  submitDisposition: 'accepted' | 'visible-replay' | 'rewound-replay'
 }
 
 let nextRunId = 0
@@ -138,7 +139,8 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     },
     standingRules: [],
     unfinished: [],
-    compactionPlan: undefined
+    compactionPlan: undefined,
+    submitDisposition: 'accepted'
   }
   const run: RunSnapshot = {
     id: runId,
@@ -199,6 +201,12 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       return Promise.resolve(state.compactionPlan)
     }
     if (command.type === 'conversation/compact') return Promise.resolve(state.conversation)
+    if (command.type === 'conversation/submit') {
+      return Promise.resolve({
+        snapshot: state.conversation,
+        disposition: state.submitDisposition
+      })
+    }
     if (command.type.startsWith('conversation/')) return Promise.resolve(state.conversation)
     return Promise.resolve({ ...run, status: 'running' })
   })
@@ -579,6 +587,7 @@ describe('Run service', () => {
   it('returns Core idempotently when a restored rewind message is sent unchanged', async () => {
     const root = await readyClaudeRoot('run-claude-rewind-replay-')
     const core = fakeCore(join(root, 'a-project'))
+    core.submitDisposition = 'rewound-replay'
     const broker = fakeBroker()
     const readiness = readyReadiness(join(root, 'claude'))
     const service = new RunService({
@@ -602,8 +611,7 @@ describe('Run service', () => {
       harness: 'claude',
       model: 'claude-sonnet-4-5',
       effort: 'medium',
-      permissionMode: 'auto',
-      replayExistingSubmission: true
+      permissionMode: 'auto'
     })
 
     expect(core.commands).toContain('conversation/submit')
@@ -959,6 +967,20 @@ describe('Run service', () => {
             rewoundToEntryId: 'message:discarded-prompt',
             tailFromEntryId: 'message:tail'
           }
+        },
+        {
+          kind: 'message',
+          id: 'user:submission-1',
+          at: '2026-07-31T12:00:04.000Z',
+          runId: null,
+          role: 'user',
+          text: 'Continue',
+          completeness: 'complete',
+          source: 'composer',
+          submissionId: 'submission-1',
+          reviewAttachments: [],
+          suggestedResponses: [],
+          plainOptions: false
         }
       ]
     }
@@ -993,6 +1015,7 @@ describe('Run service', () => {
     const args = broker.launch?.args ?? []
     expect(args).not.toContain('--resume')
     expect(args.at(-1)).toContain('User: The part that remains')
+    expect(args.at(-1)?.match(/Continue/g)).toHaveLength(1)
     expect(args.at(-1)).not.toContain('Discarded understanding')
     expect(args.at(-1)).not.toContain('Summary of this Conversation')
   })

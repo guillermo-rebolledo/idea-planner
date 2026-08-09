@@ -155,9 +155,10 @@ describe('submitting to the Conversation', () => {
       source: 'composer' as const
     }
     await core.submitConversationMessage(input)
-    const snapshot = await core.submitConversationMessage(input)
+    const replay = await core.submitConversationMessageWithResult(input)
+    expect(replay.disposition).toBe('visible-replay')
     // The starting message, and the resent one recorded once.
-    expect(messages(snapshot.entries)).toHaveLength(2)
+    expect(messages(replay.snapshot.entries)).toHaveLength(2)
   })
 
   it('rejects reusing a submission id for different content', async () => {
@@ -2434,21 +2435,25 @@ describe('rewinding the Conversation', () => {
       targetEntryId: 'user:submission-wrong'
     })
 
-    const unchanged = await core.submitConversationMessage({
+    const unchanged = await core.submitConversationMessageWithResult({
       sessionId,
       submissionId: 'submission-wrong',
       text: 'Take the wrong path',
       source: 'composer'
     })
-    expect(messages(unchanged.entries).map((entry) => entry.text)).toEqual([STARTING_MESSAGE])
+    expect(unchanged.disposition).toBe('rewound-replay')
+    expect(messages(unchanged.snapshot.entries).map((entry) => entry.text)).toEqual([
+      STARTING_MESSAGE
+    ])
 
-    const edited = await core.submitConversationMessage({
+    const edited = await core.submitConversationMessageWithResult({
       sessionId,
       submissionId: 'submission-edited',
       text: 'Take the better path',
       source: 'composer'
     })
-    expect(messages(edited.entries).map((entry) => entry.text)).toEqual([
+    expect(edited.disposition).toBe('accepted')
+    expect(messages(edited.snapshot.entries).map((entry) => entry.text)).toEqual([
       STARTING_MESSAGE,
       'Take the better path'
     ])
@@ -2470,6 +2475,33 @@ describe('rewinding the Conversation', () => {
         targetEntryId: 'user:submission-active'
       })
     ).rejects.toThrow(runId)
+  })
+
+  it('sets aside queued submissions after the rewind point so they cannot launch', async () => {
+    await completedTurn('Take the wrong path', 'submission-wrong', 'Done')
+    await core.changeQueuedSubmissions({
+      type: 'enqueue',
+      input: {
+        sessionId,
+        submissionId: 'queued-after-rewind',
+        text: 'Keep following the discarded path',
+        source: 'composer',
+        harness: 'claude',
+        model: 'claude-sonnet-4-5',
+        effort: 'medium',
+        permissionMode: 'ask',
+        reviewAttachments: []
+      }
+    })
+
+    const snapshot = await core.rewindConversation({
+      sessionId,
+      operationId: 'rewind-queue',
+      targetEntryId: 'user:submission-wrong'
+    })
+
+    expect(snapshot.queue).toMatchObject({ paused: true, items: [] })
+    expect(await core.nextQueuedSubmission(sessionId)).toBeNull()
   })
 
   it('performs no Project file operation and keeps rewound Run changes in the Files projection', async () => {

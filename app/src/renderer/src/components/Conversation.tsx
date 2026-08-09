@@ -376,8 +376,7 @@ export function Conversation({
           model: choice?.model ?? HARNESS_DEFAULT_MODEL,
           // Only what the chosen model can be asked for.
           effort: applicableEffort(models, choice),
-          permissionMode: permissionMode,
-          replayExistingSubmission: restoredSubmissionId !== undefined
+          permissionMode: permissionMode
         })
         adoptSnapshot(next)
         setOptimisticMessage(null)

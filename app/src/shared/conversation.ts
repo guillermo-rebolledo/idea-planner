@@ -40,6 +40,8 @@ export const MAX_APPROVAL_DETAIL = 4_000
  * than the Thread it replaces.
  */
 export const MAX_COMPACTION_SUMMARY = 20_000
+/** Whole recent messages retained when a context boundary starts a fresh Thread. */
+export const CONVERSATION_TAIL_MESSAGES = 8
 
 /**
  * How an Approval Request ended. `abandoned` is what an unanswered request
@@ -951,6 +953,13 @@ export const submitConversationMessageInputSchema = z.object({
 })
 export type SubmitConversationMessageInput = z.input<typeof submitConversationMessageInputSchema>
 
+/** Core's authoritative answer to whether a submit appended or replayed a message. */
+export const submitConversationMessageResultSchema = z.object({
+  snapshot: conversationSnapshotSchema,
+  disposition: z.enum(['accepted', 'visible-replay', 'rewound-replay'])
+})
+export type SubmitConversationMessageResult = z.infer<typeof submitConversationMessageResultSchema>
+
 /**
  * How a message is answered: everything chosen in a composer's chip row. The
  * same shape wherever a message is sent from, so the launch screen and the
@@ -1114,12 +1123,8 @@ export const rewindSessionInputSchema = recordRewindInputSchema
 export type RewindSessionInput = z.infer<typeof rewindSessionInputSchema>
 
 /** The Renderer's one command for developing a Session through a Conversation. */
-export const developSessionInputSchema = submitConversationMessageInputSchema
-  .merge(runRequestSchema)
-  .extend({
-    /** True only when an unchanged rewind draft reuses its original identity. */
-    replayExistingSubmission: z.boolean().default(false)
-  })
+export const developSessionInputSchema =
+  submitConversationMessageInputSchema.merge(runRequestSchema)
 export type DevelopSessionInput = z.input<typeof developSessionInputSchema>
 
 /**

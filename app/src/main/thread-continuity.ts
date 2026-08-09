@@ -1,8 +1,9 @@
-import type {
-  Compaction,
-  ConversationEntry,
-  ConversationSnapshot,
-  Rewind
+import {
+  CONVERSATION_TAIL_MESSAGES,
+  type Compaction,
+  type ConversationEntry,
+  type ConversationSnapshot,
+  type Rewind
 } from '@shared/conversation'
 import type { HarnessId } from '@shared/readiness'
 
@@ -13,9 +14,6 @@ import type { HarnessId } from '@shared/readiness'
  * question from two sides — this Conversation cannot simply be resumed, so
  * what does the Harness get instead.
  */
-
-/** How many message turns a handoff seed carries across to a new Harness Thread. */
-const HANDOFF_TURNS = 8
 
 /**
  * What a caller wants seeded into a new Harness Thread. A Run that cannot
@@ -29,6 +27,8 @@ export interface ConversationSeedRequest {
   shape: 'handoff' | 'compaction' | 'rewind'
   /** The Skill in force for the Run being seeded, or null when there is none. */
   skill: string | null
+  /** The current prompt is sent separately and must not also appear in a rewind seed. */
+  excludeSubmissionId?: string
 }
 
 /**
@@ -53,13 +53,16 @@ const SEEDS: Record<
 > = {
   handoff: (conversation, request) => handoffSeed(conversation, request.skill),
   compaction: (conversation, request) => compactionSeed(conversation, request.skill),
-  rewind: (conversation, request) => rewindSeed(conversation, request.skill)
+  rewind: (conversation, request) =>
+    rewindSeed(conversation, request.skill, request.excludeSubmissionId)
 }
 
 /** The Skill in force and the turns immediately before the new Thread. */
 function handoffSeed(conversation: ConversationSnapshot, skill: string | null): string {
   const recent = turns(
-    conversation.entries.filter((entry) => entry.kind === 'message').slice(-HANDOFF_TURNS)
+    conversation.entries
+      .filter((entry) => entry.kind === 'message')
+      .slice(-CONVERSATION_TAIL_MESSAGES)
   )
   return [...(skill ? [`Skill: ${skill}`] : []), 'Recent turns:', recent || '(none)'].join('\n')
 }
@@ -118,11 +121,19 @@ export function conversationSeedShape(
 }
 
 /** The readable tail left by the latest rewind, with no summary of discarded turns. */
-function rewindSeed(conversation: ConversationSnapshot, skill: string | null): string {
+function rewindSeed(
+  conversation: ConversationSnapshot,
+  skill: string | null,
+  excludeSubmissionId?: string
+): string {
   const rewind = latestRewind(conversation)
   if (!rewind) return handoffSeed(conversation, skill)
   const from = conversation.entries.findIndex((entry) => entry.id === rewind.tailFromEntryId)
-  const tail = turns(from === -1 ? conversation.entries : conversation.entries.slice(from))
+  const tail = turns(
+    (from === -1 ? conversation.entries : conversation.entries.slice(from)).filter(
+      (entry) => entry.kind !== 'message' || entry.submissionId !== excludeSubmissionId
+    )
+  )
   return [...(skill ? [`Skill: ${skill}`] : []), 'Recent turns:', tail || '(none)'].join('\n')
 }
 

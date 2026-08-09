@@ -662,7 +662,6 @@ function ConfirmationNotice({
 }): React.JSX.Element {
   return (
     <div role="alert" className="mt-4 rounded-md border border-notice-border bg-notice p-3 text-xs">
-      <p className="font-mono break-all select-text">{confirmation.chosen}</p>
       <p>That folder is inside a Project. Git resolves its root to:</p>
       <p className="mt-1 font-mono break-all select-text">{confirmation.root}</p>
       <div className="mt-3 flex justify-end gap-2">

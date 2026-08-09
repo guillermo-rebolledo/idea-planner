@@ -19,6 +19,7 @@ import {
   compactSessionInputSchema,
   compactionPlanSchema,
   conversationSnapshotSchema,
+  submitConversationMessageResultSchema,
   developSessionInputSchema,
   editQueuedSubmissionInputSchema,
   enqueueQueuedSubmissionInputSchema,
@@ -472,7 +473,7 @@ export class RunService {
         `Developing a Session with ${HARNESS_SPECS[input.harness].displayName} is not supported yet`
       )
     }
-    const submitted = conversationSnapshotSchema.parse(
+    const submitted = submitConversationMessageResultSchema.parse(
       await this.deps.core.send({
         type: 'conversation/submit',
         input: {
@@ -485,9 +486,9 @@ export class RunService {
       })
     )
     // The unchanged message restored by rewind is the old submission again.
-    // Core's idempotent answer is the result; starting a retry here would turn
-    // pressing Send without editing into a new Run under a derived identity.
-    if (input.replayExistingSubmission) return submitted
+    // Core owns that durable identity decision; starting a retry here would
+    // turn pressing Send without editing into a new Run under a derived id.
+    if (submitted.disposition === 'rewound-replay') return submitted.snapshot
     try {
       await this.start({
         submissionId: input.submissionId,
@@ -700,7 +701,8 @@ export class RunService {
     // retained tail so content the person removed cannot leak back in.
     const handoff = conversationSeed(conversation, {
       shape: conversationSeedShape(conversation),
-      skill: input.skill ?? null
+      skill: input.skill ?? null,
+      excludeSubmissionId: input.submissionId
     })
     const accept = (submissionId: string): Promise<unknown> =>
       this.deps.core.send({
@@ -1392,12 +1394,14 @@ export class RunService {
    */
   async rewind(rawInput: RewindSessionInput): Promise<ConversationSnapshot> {
     const input = rewindSessionInputSchema.parse(rawInput)
-    // If a summary is already being written, let its boundary land first so
-    // the rewind is unambiguously the newer context decision.
-    await this.settleCompaction(input.sessionId)
-    const snapshot = conversationSnapshotSchema.parse(
-      await this.deps.core.send({ type: 'conversation/rewind', input })
-    )
+    const snapshot = await this.queueCoordinator.exclusive(input.sessionId, async () => {
+      // If a summary is already being written, let its boundary land first so
+      // the rewind is unambiguously the newer context decision.
+      await this.settleCompaction(input.sessionId)
+      return conversationSnapshotSchema.parse(
+        await this.deps.core.send({ type: 'conversation/rewind', input })
+      )
+    })
     const boundary = snapshot.entries.findLast(
       (entry) => entry.kind === 'boundary' && entry.boundary === 'rewound'
     )

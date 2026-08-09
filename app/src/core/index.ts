@@ -113,7 +113,7 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
     case 'conversation/get':
       return core.getConversation(command.sessionId)
     case 'conversation/submit':
-      return core.submitConversationMessage(command.input)
+      return core.submitConversationMessageWithResult(command.input)
     case 'conversation/app-action':
       return core.recordAppAction(command.input)
     case 'conversation/compaction-plan':

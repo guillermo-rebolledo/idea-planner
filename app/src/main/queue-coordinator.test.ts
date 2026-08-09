@@ -99,4 +99,31 @@ describe('per-Session queue drainage', () => {
       outcome: 'not-started'
     })
   })
+
+  it('holds a context change until an already-claimed launch has settled', async () => {
+    let releaseLaunch: (() => void) | undefined
+    const coordinator = new QueueCoordinator({
+      queue: {
+        next: vi.fn(() => Promise.resolve(PLAN)),
+        observeLaunch: vi.fn(() => Promise.resolve({ continueDraining: false }))
+      },
+      start: vi.fn(
+        () =>
+          new Promise<{ status: 'running' }>((resolve) => {
+            releaseLaunch = () => resolve({ status: 'running' })
+          })
+      )
+    })
+
+    const draining = coordinator.drain('session')
+    await vi.waitFor(() => expect(releaseLaunch).toBeTypeOf('function'))
+    const contextChange = vi.fn(() => Promise.resolve('rewound'))
+    const rewinding = coordinator.exclusive('session', contextChange)
+    await Promise.resolve()
+    expect(contextChange).not.toHaveBeenCalled()
+
+    releaseLaunch?.()
+    await expect(draining).resolves.toBeUndefined()
+    await expect(rewinding).resolves.toBe('rewound')
+  })
 })

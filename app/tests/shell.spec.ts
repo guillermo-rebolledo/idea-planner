@@ -1885,9 +1885,6 @@ test('a person adds a Project and a plain folder is refused with an offer to set
     addProject = page.getByRole('dialog', { name: 'Add Project' })
     await addProject.getByRole('button', { name: 'Choose project folder…' }).click()
     const confirmation = addProject.getByRole('alert')
-    await expect(
-      confirmation.getByText(join(sandbox.projectDir, 'src', 'deep'), { exact: true })
-    ).toBeVisible()
     // Named exactly, because the root git resolves is the identity being added.
     await expect(
       confirmation.getByText(await realpath(sandbox.projectDir), { exact: true })
@@ -1898,17 +1895,13 @@ test('a person adds a Project and a plain folder is refused with an offer to set
     await expect(inbox.getByText(basename(sandbox.projectDir), { exact: true })).toHaveCount(1)
     await expect(inbox.getByText(basename(sandbox.plainDir), { exact: true })).toHaveCount(1)
 
-    // Two Projects and no history: nothing can say which repository is about
-    // to be edited, so the headline is a required picker and nothing can be
-    // sent until it is answered.
+    // Adding another Project does not discard the Project already selected in
+    // the composer. The person can still change it explicitly before sending.
     const composer = page.getByRole('form', { name: 'New chat' })
     await expect(composer.getByRole('button', { name: 'Project' })).toContainText(
-      'one of your Projects'
+      basename(sandbox.projectDir)
     )
     await composer.getByLabel('Message').fill('Anything at all')
-    await expect(composer.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
-    await composer.getByRole('button', { name: 'Project' }).click()
-    await page.getByRole('menuitem', { name: basename(sandbox.plainDir) }).click()
     await expect(composer.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
 
     // Removing a Project asks first — one menu click must not silently change
