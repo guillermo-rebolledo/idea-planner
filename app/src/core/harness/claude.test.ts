@@ -663,6 +663,21 @@ describe('the plan', () => {
     })
   })
 
+  it('reads a context Claude compacted for itself, rather than failing on it', () => {
+    const adapter = createClaudeAdapter()
+    const events = adapter.ingest(
+      `${JSON.stringify({
+        type: 'system',
+        subtype: 'compact_boundary',
+        session_id: 'thread-1',
+        compact_metadata: { trigger: 'auto', pre_tokens: 180_000 }
+      })}\n`
+    )
+    expect(events).toMatchObject([{ type: 'context-compacted' }])
+    expect(events.filter((event) => event.type === 'failed')).toEqual([])
+    expect(harnessEventSchema.safeParse(events[0]).success).toBe(true)
+  })
+
   it('is a normalized event either way, and never a tool step of its own', () => {
     const adapter = createClaudeAdapter()
     const events = adapter.ingest(

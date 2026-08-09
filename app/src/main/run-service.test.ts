@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   emptyUsage,
+  type CompactionPlan,
   type ConversationSnapshot,
   type ConversationStreamEvent,
   type HarnessEvent,
@@ -97,6 +98,8 @@ interface FakeCore {
   standingRules: string[]
   /** Runs whose Conversation still has them open, as a restart would find. */
   unfinished: { sessionId: string; runId: string }[]
+  /** What Core would answer a compaction plan with, or nothing to refuse it. */
+  compactionPlan?: CompactionPlan
 }
 
 let nextRunId = 0
@@ -134,7 +137,8 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       queue: { paused: true, items: [], outcome: null }
     },
     standingRules: [],
-    unfinished: []
+    unfinished: [],
+    compactionPlan: undefined
   }
   const run: RunSnapshot = {
     id: runId,
@@ -190,6 +194,11 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
         queueDisposition: completed.status === 'completed' ? 'advance' : 'pause'
       })
     }
+    if (command.type === 'conversation/compaction-plan') {
+      if (!state.compactionPlan) return Promise.reject(new Error('nothing to compact'))
+      return Promise.resolve(state.compactionPlan)
+    }
+    if (command.type === 'conversation/compact') return Promise.resolve(state.conversation)
     if (command.type.startsWith('conversation/')) return Promise.resolve(state.conversation)
     return Promise.resolve({ ...run, status: 'running' })
   })
@@ -393,6 +402,433 @@ describe('Run service', () => {
     })
     expect(broker.launch?.args).toEqual(expect.arrayContaining(['--resume', 'saved-thread']))
   })
+
+  it('seeds the Harness from local history when the saved Thread is gone', async () => {
+    const root = await readyClaudeRoot('run-claude-lost-thread-')
+    const core = fakeCore(join(root, 'a-project'))
+    core.conversation = {
+      ...core.conversation,
+      harnessThreads: { claude: 'saved-thread' },
+      entries: [
+        {
+          kind: 'boundary',
+          id: 'boundary:old:started',
+          at: '2026-07-31T12:00:00.000Z',
+          runId: 'old',
+          boundary: 'run-started',
+          summary: 'Wayfinder via Claude',
+          submissionId: 'old-submission',
+          recovery: null,
+          harness: 'claude',
+          skill: 'wayfinder',
+          model: 'claude-sonnet-4-5'
+        },
+        {
+          kind: 'message',
+          id: 'message:1',
+          at: '2026-07-31T12:00:01.000Z',
+          runId: 'old',
+          role: 'user',
+          text: 'Where did we get to?',
+          completeness: 'complete',
+          source: 'composer',
+          submissionId: 'old-submission',
+          reviewAttachments: [],
+          suggestedResponses: [],
+          plainOptions: false
+        }
+      ]
+    }
+    // The rollout behind `saved-thread` is deliberately not on disk.
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            harnesses: [
+              {
+                harness: 'claude',
+                available: true,
+                executablePath: join(root, 'claude'),
+                version: '2.1.220 (Claude Code)'
+              }
+            ]
+          })
+        )
+      },
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      sessionId: 'session',
+      prompt: 'Continue',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      skill: 'wayfinder',
+      permissionMode: 'auto'
+    })
+    const args = broker.launch?.args ?? []
+    expect(args).not.toContain('--resume')
+    expect(args.at(-1)).toBe(
+      '/wayfinder Continue\n\nDeterministic handoff from the Conversation so far:\nSkill: wayfinder\nRecent turns:\nUser: Where did we get to?'
+    )
+  })
+
+  /** A service whose Harness answers one bounded request with `answer`. */
+  function compactingService(
+    core: FakeCore,
+    root: string,
+    answer: string
+  ): { service: RunService; prompts: string[] } {
+    const prompts: string[] = []
+    const service = new RunService({
+      core,
+      broker: fakeBroker(),
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root),
+      runBounded: (request) => {
+        prompts.push(request.stdin)
+        return Promise.resolve(answer)
+      }
+    })
+    return { service, prompts }
+  }
+
+  it('writes the summary a compaction carries through one bounded Harness request', async () => {
+    const root = await readyClaudeRoot('run-claude-compaction-')
+    const core = fakeCore(join(root, 'a-project'))
+    core.compactionPlan = {
+      sessionId: 'session',
+      runId: 'run-old',
+      tailFromEntryId: 'message:tail',
+      previousSummary: null,
+      material: 'User: set up receipts\nAssistant: done',
+      harness: 'claude'
+    }
+    const { service, prompts } = compactingService(
+      core,
+      root,
+      '  Receipts are offline-first; the tests are green.\n'
+    )
+
+    await service.compact({ sessionId: 'session' })
+
+    // Asked as prose, and told not to touch anything while it answers.
+    expect(prompts[0]).toContain('Do not use any tools')
+    expect(prompts[0]).toContain('User: set up receipts')
+    const recorded = core.send.mock.calls
+      .map(([command]) => command as { type: string; input?: Record<string, unknown> })
+      .find((command) => command.type === 'conversation/compact')
+    expect(recorded?.input).toMatchObject({
+      sessionId: 'session',
+      runId: 'run-old',
+      tailFromEntryId: 'message:tail',
+      summary: 'Receipts are offline-first; the tests are green.',
+      native: false
+    })
+  })
+
+  it('hands a second compaction the summary in force, to be rewritten rather than nested', async () => {
+    const root = await readyClaudeRoot('run-claude-recompaction-')
+    const core = fakeCore(join(root, 'a-project'))
+    core.compactionPlan = {
+      sessionId: 'session',
+      runId: 'run-old',
+      tailFromEntryId: 'message:tail',
+      previousSummary: 'Receipts render offline.',
+      material: 'User: now make them printable\nAssistant: done',
+      harness: 'claude'
+    }
+    const { service, prompts } = compactingService(core, root, 'One summary, brought up to date.')
+
+    await service.compact({ sessionId: 'session' })
+
+    expect(prompts[0]).toContain('Receipts render offline.')
+    expect(prompts[0]).toContain('Do not produce a summary of the summary')
+  })
+
+  it('holds the next Run until a compaction the person asked for has landed', async () => {
+    const root = await readyClaudeRoot('run-claude-compaction-ordering-')
+    const core = fakeCore(join(root, 'a-project'))
+    core.compactionPlan = {
+      sessionId: 'session',
+      runId: 'run-old',
+      tailFromEntryId: 'message:tail',
+      previousSummary: null,
+      material: 'User: a long session\nAssistant: indeed',
+      harness: 'claude'
+    }
+    // A summary that takes its time, as a real Harness request does.
+    let finishSummary = (): void => undefined
+    const summarized = new Promise<string>((resolve) => {
+      finishSummary = () => {
+        resolve('What this Session established.')
+      }
+    })
+    const service = new RunService({
+      core,
+      broker: fakeBroker(),
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root),
+      runBounded: () => summarized
+    })
+
+    const compacting = service.compact({ sessionId: 'session' })
+    // The composer stays live while a summary is written, so this is exactly
+    // what a person sending their next message in that window does.
+    let started = false
+    const run = service
+      .start({
+        submissionId: 'submission-1',
+        sessionId: 'session',
+        prompt: 'Continue',
+        harness: 'claude',
+        model: 'claude-sonnet-4-5',
+        effort: 'medium',
+        permissionMode: 'auto'
+      })
+      .then((snapshot) => {
+        started = true
+        return snapshot
+      })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    // A Run that began here would resume the very Thread being retired, and
+    // the boundary landing afterwards would retire its Thread for nothing.
+    expect(started).toBe(false)
+    expect(core.commands).not.toContain('run/lifecycle-open')
+
+    finishSummary()
+    await compacting
+    await run
+    expect(core.commands).toContain('conversation/compact')
+    expect(core.commands.indexOf('conversation/compact')).toBeLessThan(
+      core.commands.indexOf('run/lifecycle-open')
+    )
+  })
+
+  it('compacts a Session whose latest Run left it no room, without being asked', async () => {
+    const root = await readyClaudeRoot('run-claude-auto-compaction-')
+    const core = fakeCore(join(root, 'a-project'))
+    core.conversation = {
+      ...core.conversation,
+      usage: {
+        run: { ...emptyUsage(), contextWindow: 200_000, contextUsed: 190_000 },
+        session: emptyUsage()
+      }
+    }
+    core.compactionPlan = {
+      sessionId: 'session',
+      runId: 'run-old',
+      tailFromEntryId: 'message:tail',
+      previousSummary: null,
+      material: 'User: a long session\nAssistant: indeed',
+      harness: 'claude'
+    }
+    const { service } = compactingService(core, root, 'What this Session established.')
+
+    await service.start({
+      submissionId: 'submission-1',
+      sessionId: 'session',
+      prompt: 'Continue',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      permissionMode: 'auto'
+    })
+    await service.stop(core.conversation.activeRunId ?? 'run-1', 'session')
+
+    // Written beside the Run that ended rather than inside it: pressing Stop
+    // does not wait on a Harness being asked for prose.
+    await vi.waitFor(() => {
+      expect(core.commands).toContain('conversation/compact')
+    })
+  })
+
+  it('leaves a Session with room to spare alone', async () => {
+    const root = await readyClaudeRoot('run-claude-room-to-spare-')
+    const core = fakeCore(join(root, 'a-project'))
+    core.conversation = {
+      ...core.conversation,
+      usage: {
+        run: { ...emptyUsage(), contextWindow: 200_000, contextUsed: 20_000 },
+        session: emptyUsage()
+      }
+    }
+    core.compactionPlan = {
+      sessionId: 'session',
+      runId: 'run-old',
+      tailFromEntryId: 'message:tail',
+      previousSummary: null,
+      material: 'User: short\nAssistant: yes',
+      harness: 'claude'
+    }
+    const { service } = compactingService(core, root, 'Never asked for.')
+
+    await service.start({
+      submissionId: 'submission-1',
+      sessionId: 'session',
+      prompt: 'Continue',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      permissionMode: 'auto'
+    })
+    await service.stop(core.conversation.activeRunId ?? 'run-1', 'session')
+    // The next Run waits on any compaction in flight, so starting one is how
+    // this test proves there was never one to wait for.
+    await service.start({
+      submissionId: 'submission-2',
+      sessionId: 'session',
+      prompt: 'Carry on',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      permissionMode: 'auto'
+    })
+
+    expect(core.commands).not.toContain('conversation/compact')
+  })
+
+  it('starts a fresh Thread from the summary and the tail after a compaction', async () => {
+    const root = await readyClaudeRoot('run-claude-compacted-')
+    const core = fakeCore(join(root, 'a-project'))
+    core.conversation = {
+      ...core.conversation,
+      harnessThreads: { claude: 'saved-thread' },
+      entries: [
+        {
+          kind: 'boundary',
+          id: 'boundary:old:started',
+          at: '2026-07-31T12:00:00.000Z',
+          runId: 'old',
+          boundary: 'run-started',
+          summary: 'Wayfinder via Claude',
+          submissionId: 'old-submission',
+          recovery: null,
+          harness: 'claude',
+          skill: 'wayfinder',
+          model: 'claude-sonnet-4-5'
+        },
+        {
+          kind: 'message',
+          id: 'message:answer',
+          at: '2026-07-31T12:00:01.000Z',
+          runId: 'old',
+          role: 'assistant',
+          text: 'Receipts render offline now',
+          completeness: 'complete',
+          source: 'harness',
+          submissionId: null,
+          reviewAttachments: [],
+          suggestedResponses: [],
+          plainOptions: false
+        },
+        {
+          kind: 'boundary',
+          id: 'boundary:compacted:compaction-1',
+          at: '2026-07-31T12:00:02.000Z',
+          runId: 'old',
+          boundary: 'compacted',
+          summary: 'Compacted',
+          submissionId: null,
+          recovery: null,
+          compaction: {
+            summary: 'Receipts are offline-first; the tests are green.',
+            tailFromEntryId: 'message:tail',
+            native: false
+          }
+        },
+        {
+          kind: 'message',
+          id: 'message:tail',
+          at: '2026-07-31T12:00:03.000Z',
+          runId: null,
+          role: 'user',
+          text: 'Where did we get to?',
+          completeness: 'complete',
+          source: 'composer',
+          submissionId: null,
+          reviewAttachments: [],
+          suggestedResponses: [],
+          plainOptions: false
+        }
+      ]
+    }
+    // The rollout behind `saved-thread` is on disk and still resumable; the
+    // compaction is what declines it.
+    const projectKey = join(root, 'a-project').replaceAll('/', '-')
+    await mkdir(join(root, '.claude', 'projects', projectKey), { recursive: true })
+    await writeFile(join(root, '.claude', 'projects', projectKey, 'saved-thread.jsonl'), '{}\n')
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            harnesses: [
+              {
+                harness: 'claude',
+                available: true,
+                executablePath: join(root, 'claude'),
+                version: '2.1.220 (Claude Code)'
+              }
+            ]
+          })
+        )
+      },
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
+    })
+
+    await service.start({
+      submissionId: 'submission-1',
+      sessionId: 'session',
+      prompt: 'Continue',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      skill: 'wayfinder',
+      permissionMode: 'auto'
+    })
+
+    const args = broker.launch?.args ?? []
+    // The compacted Thread is not resumed, however resumable it still is.
+    expect(args).not.toContain('--resume')
+    expect(args.at(-1)).toContain('Summary of this Conversation up to the turns below:')
+    expect(args.at(-1)).toContain('Receipts are offline-first; the tests are green.')
+    expect(args.at(-1)).toContain('User: Where did we get to?')
+    // The turns the summary stands in for are not sent again beside it.
+    expect(args.at(-1)).not.toContain('Receipts render offline now')
+  })
+
   it('freezes executable and Skill provenance into the durable lifecycle', async () => {
     const root = await mkdtemp(join(tmpdir(), 'run-service-'))
     temporaryDirectories.push(root)

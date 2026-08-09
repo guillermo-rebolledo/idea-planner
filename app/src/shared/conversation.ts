@@ -34,6 +34,14 @@ export type SuggestedResponse = z.infer<typeof suggestedResponseSchema>
 export const MAX_APPROVAL_DETAIL = 4_000
 
 /**
+ * How much summary is worth carrying forward. Long enough to hold what a long
+ * Session accumulated — the file layout, the conventions, what was tried and
+ * rejected — and short enough that seeding a fresh Thread with it is cheaper
+ * than the Thread it replaces.
+ */
+export const MAX_COMPACTION_SUMMARY = 20_000
+
+/**
  * How an Approval Request ended. `abandoned` is what an unanswered request
  * becomes when its Run ends first — a request nobody answered must never read
  * back as one somebody allowed.
@@ -305,6 +313,18 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
     remembered: z.boolean().default(false)
   }),
   z.object({ type: z.literal('usage'), usage: harnessUsageSchema }),
+  /**
+   * The Harness saying it has compacted its own Thread. Both Harnesses do this
+   * on their own initiative — Codex answers `thread/compact/start` and says so,
+   * Claude announces a boundary it decided on alone — and neither is a protocol
+   * failure. The Thread survives, so nothing about the app's own continuity
+   * changes; the Conversation records it so it still explains itself.
+   */
+  z.object({
+    type: z.literal('context-compacted'),
+    /** What the Harness says it kept, when it says. */
+    summary: z.string().max(MAX_COMPACTION_SUMMARY).default('')
+  }),
   z.object({
     type: z.literal('thread-ready'),
     harness: harnessIdSchema,
@@ -372,9 +392,61 @@ export const conversationBoundarySchema = z.enum([
   'run-completed',
   'run-stopped',
   'run-failed',
-  'configuration'
+  'configuration',
+  /**
+   * The agent's memory of the turns before it was replaced by a summary. It
+   * belongs to no Run's beginning or end — it is a thing that happened between
+   * them — and it changes only what the Harness is told next. Everything the
+   * person can read is untouched.
+   */
+  'compacted'
 ])
 export type ConversationBoundaryKind = z.infer<typeof conversationBoundarySchema>
+
+/**
+ * What one compaction did. The summary is what the agent is told in place of
+ * the turns before the tail; the tail is everything from `tailFromEntryId`
+ * onwards, carried across untouched.
+ *
+ * `native` says the Harness compacted its own Thread rather than the app
+ * declining to resume it. The distinction is the whole of the difference: a
+ * natively compacted Thread is still the Thread, and reusing it is right;
+ * an app-side compaction has no Thread left to reuse, so the next Run starts
+ * a fresh one from this summary and this tail.
+ */
+export const compactionSchema = z.object({
+  summary: z.string().min(1).max(MAX_COMPACTION_SUMMARY),
+  tailFromEntryId: z.string().min(1),
+  native: z.boolean()
+})
+export type Compaction = z.infer<typeof compactionSchema>
+
+/**
+ * How little headroom is left before a Session is compacted without being
+ * asked. Chosen so the compaction lands while there is still room for the
+ * request that produces it, rather than at the edge where the Run that would
+ * have carried it is the one that dies.
+ */
+export const COMPACTION_HEADROOM = 0.15
+
+/**
+ * Whether what the Harness said about its own context leaves too little room
+ * to carry on. A Harness that reports no window says nothing about headroom,
+ * and a Session is never compacted on a guess.
+ *
+ * Only Codex reports one today, through `thread/tokenUsage/updated`. Claude's
+ * result frame carries token counts and no window at all, so this never fires
+ * for a Claude Session — which is the honest answer rather than a threshold
+ * invented from a model name this app keeps no list of. Claude compacts its
+ * own Thread when it runs short and says so, and that is the path a Session
+ * survives on there; asking for a compaction is always available on either.
+ */
+export function headroomExhausted(usage: HarnessUsage | null): boolean {
+  const window = usage?.contextWindow ?? null
+  const used = usage?.contextUsed ?? null
+  if (window === null || used === null) return false
+  return window - used < window * COMPACTION_HEADROOM
+}
 
 /**
  * What the person can safely do after a Run ended badly. Every category keeps
@@ -539,7 +611,9 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
       .enum(['completed', 'stopped', 'failed', 'policy-violation', 'supervision-failed'])
       .optional(),
     /** Exact terminal activity projection, so restart does not rewrite its meaning. */
-    terminalActivityKind: runActivityKindSchema.optional()
+    terminalActivityKind: runActivityKindSchema.optional(),
+    /** What was summarized, and from where the turns are carried whole. */
+    compaction: compactionSchema.optional()
   }),
   z.object({
     kind: z.literal('usage'),
@@ -966,6 +1040,55 @@ export const recordAppActionInputSchema = z.object({
   unlisted: z.number().int().nonnegative().default(0)
 })
 export type RecordAppActionInput = z.input<typeof recordAppActionInputSchema>
+
+/**
+ * What a compaction has to be written from, decided by Core before anything
+ * contacts a Harness. Core owns where the tail begins and what the summary
+ * must account for; producing the summary itself is Main's, because only Main
+ * speaks to a process.
+ */
+export const compactionPlanSchema = z.object({
+  sessionId: z.string().min(1),
+  /** The Run this compaction follows, which is what the boundary is filed under. */
+  runId: z.string().min(1),
+  /** The first entry carried across untouched; everything before it is summarized. */
+  tailFromEntryId: z.string().min(1),
+  /**
+   * The summary this Session is already carrying, when it has been compacted
+   * before. It goes into the request as material to be rewritten rather than
+   * summarized again: a summary of a summary decays into noise.
+   */
+  previousSummary: z.string().max(MAX_COMPACTION_SUMMARY).nullable(),
+  /** The turns before the tail, as the Conversation recorded them. */
+  material: z.string(),
+  /** The Harness that answered most recently, which is the one asked to summarize. */
+  harness: harnessIdSchema.nullable()
+})
+export type CompactionPlan = z.infer<typeof compactionPlanSchema>
+
+export const recordCompactionInputSchema = z.object({
+  sessionId: z.string().min(1),
+  /**
+   * The compaction's identity. A record whose append failed and was retried
+   * lands once, under the same name — the bargain an app action already makes.
+   */
+  operationId: z.string().min(1).max(200),
+  runId: z.string().min(1),
+  summary: z.string().min(1).max(MAX_COMPACTION_SUMMARY),
+  tailFromEntryId: z.string().min(1),
+  /** True only when the Harness compacted its own Thread and still holds it. */
+  native: z.boolean().default(false)
+})
+export type RecordCompactionInput = z.input<typeof recordCompactionInputSchema>
+
+/**
+ * The Renderer asking for a Session to be compacted now, rather than waiting
+ * for its headroom to run out. Nothing else is chosen here: the Harness asked
+ * to write the summary is the one that has been answering, because a summary
+ * of this Conversation is not somewhere to switch agents.
+ */
+export const compactSessionInputSchema = z.object({ sessionId: z.string().min(1) })
+export type CompactSessionInput = z.infer<typeof compactSessionInputSchema>
 
 /** The Renderer's one command for developing a Session through a Conversation. */
 export const developSessionInputSchema =

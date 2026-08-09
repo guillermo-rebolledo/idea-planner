@@ -5,8 +5,10 @@ import {
   queuedSubmissionChangeSchema,
   queuedSubmissionLaunchObservationSchema,
   recordAppActionInputSchema,
+  recordCompactionInputSchema,
   runRequestSchema,
   submitConversationMessageInputSchema,
+  type CompactSessionInput,
   type ConversationSnapshot,
   type ConversationStreamEvent,
   type DevelopSessionInput,
@@ -86,7 +88,9 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
- * 21: Projects can be cloned from Git URLs or an authenticated GitHub repository.
+ * 22: Projects can be cloned from Git URLs or an authenticated GitHub repository.
+ * 21: a Session survives its context window — Conversations carry a compacted
+ *     boundary, and compaction can be planned, recorded, and asked for.
  * 20: appearance settings include persisted presets and a derived custom palette.
  * 19: Settings exposes the persisted quit-warning preference to the Renderer.
  * 18: isolated Sessions can publish a reviewed draft through the user's `gh`,
@@ -106,7 +110,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 21
+export const CONTRACT_VERSION = 22
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -387,6 +391,8 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('conversation/get'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('conversation/submit'), input: submitConversationMessageInputSchema }),
   z.object({ type: z.literal('conversation/app-action'), input: recordAppActionInputSchema }),
+  z.object({ type: z.literal('conversation/compaction-plan'), sessionId: z.string().min(1) }),
+  z.object({ type: z.literal('conversation/compact'), input: recordCompactionInputSchema }),
   z.object({ type: z.literal('conversation/queue-change'), input: queuedSubmissionChangeSchema }),
   z.object({ type: z.literal('conversation/queue-next'), sessionId: z.string().min(1) }),
   z.object({
@@ -569,6 +575,13 @@ export interface ShellApi {
    * survives even when the Run never reaches the Harness.
    */
   developSession(input: DevelopSessionInput): Promise<ConversationSnapshot>
+  /**
+   * Replaces the agent's memory of this Session's early turns with a summary,
+   * so a Conversation that has run out of context can carry on in place. The
+   * Conversation itself is untouched: every message, command and output stays
+   * exactly where it was, and stays readable.
+   */
+  compactSession(input: CompactSessionInput): Promise<ConversationSnapshot>
   /** Adds a captured submission to the Session-owned durable queue. */
   enqueueQueuedSubmission(input: EnqueueQueuedSubmissionInput): Promise<ConversationSnapshot>
   editQueuedSubmission(input: EditQueuedSubmissionInput): Promise<ConversationSnapshot>

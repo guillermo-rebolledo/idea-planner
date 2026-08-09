@@ -80,6 +80,10 @@ _Avoid_: Provider, model, backend
 The Harness-specific continuity record behind a Conversation, such as a Codex thread or Claude session. A Conversation may cross Harness Threads when the user switches Harness.
 _Avoid_: Conversation, Run, Harness Session
 
+**Compaction**:
+Replacing what the agent remembers of a Session's early turns with a summary, so the Session survives running out of Harness context. It happens on its own when headroom runs short, and can be asked for at any time. The **tail** — the last few turns — is carried across untouched beside the summary; a second Compaction rewrites the summary in force rather than summarizing it again. Where a Harness compacts its own Thread the app records that it happened and nothing else changes; where the app compacts, the saved Harness Thread is not resumed and a fresh one is seeded from the summary and the tail. Compaction never removes anything: the Conversation still reads back whole, and the journal still holds every entry.
+_Avoid_: Truncate, prune, summarize away, trim
+
 **Adapter**:
 The translation between one Harness's own protocol and the events the rest of the app understands, so nothing outside it sees a raw Harness frame. A Harness the app has no Adapter for can be perfectly usable and still unable to run a Session here, which is why the Launch Gate asks about Sessions rather than about Readiness.
 _Avoid_: Driver, integration, plugin, connector

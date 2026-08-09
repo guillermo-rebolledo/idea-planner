@@ -15,16 +15,22 @@ import {
 } from '@shared/contract'
 import {
   MAX_APPROVAL_DETAIL,
+  MAX_COMPACTION_SUMMARY,
+  compactSessionInputSchema,
+  compactionPlanSchema,
   conversationSnapshotSchema,
   developSessionInputSchema,
   editQueuedSubmissionInputSchema,
   enqueueQueuedSubmissionInputSchema,
   harnessEventSchema,
+  headroomExhausted,
   moveQueuedSubmissionInputSchema,
   queuedSubmissionIdentitySchema,
   redactCredentials,
   startingSubmissionId,
   unfinishedRunSchema,
+  type CompactSessionInput,
+  type CompactionPlan,
   type ConversationSnapshot,
   type ConversationEvent,
   type ConversationStreamEvent,
@@ -66,8 +72,10 @@ import {
   createHarnessAdapter,
   harnessAdapterLayer,
   type AdapterRequestProposal,
+  type BoundedRunner,
   type HarnessAdapter
 } from './harness-adapter'
+import { conversationSeed, latestCompaction, threadReuseVetoed } from './thread-continuity'
 
 interface CorePort {
   send(command: CoreCommand): Promise<unknown>
@@ -111,6 +119,8 @@ interface RunServiceDeps {
   skills: (projectRoot: string, harness: HarnessId) => Promise<SkillCatalog>
   /** Overridable so a test can stage settings this app would never write. */
   stageSettings?: (permissionMode: PermissionMode) => unknown
+  /** How a bounded, non-mutating request reaches a Harness; injectable for tests. */
+  runBounded?: BoundedRunner
   /** How long a Harness is given to end its own turn before it is stopped. */
   interruptGraceMs?: number
   /** Delivers normalized assistant and control events straight to the window. */
@@ -148,6 +158,30 @@ class ProjectSkillTrustChanged extends Error {
   constructor() {
     super(PROJECT_SKILL_TRUST_FAILURE)
   }
+}
+
+/**
+ * What the Harness is asked when a Session is compacted. A second compaction
+ * hands the summary already in force over as material to be rewritten rather
+ * than summarized again: preserve what is still true, drop what is stale, and
+ * merge in what is new. A summary of a summary decays into noise.
+ */
+function compactionPrompt(plan: CompactionPlan): string {
+  return [
+    ...(plan.previousSummary
+      ? [
+          'A summary of the earlier part of this session is already in force:',
+          plan.previousSummary,
+          '',
+          'Rewrite it into a single summary using the turns below: keep what is still true, drop what is stale, and merge in what is new. Do not produce a summary of the summary.',
+          ''
+        ]
+      : ['Summarize the session below into a single summary that lets the work continue.', '']),
+    'Keep what the next turn would need: the shape of the codebase, the conventions in force, the decisions taken, and what was tried and rejected.',
+    '',
+    'The session so far:',
+    plan.material || '(nothing yet)'
+  ].join('\n')
 }
 
 /** A short, path-free fact prepended to a Run only when Git is not clean. */
@@ -209,6 +243,12 @@ export class RunService {
   private readonly baselines = new Map<string, CheckoutBaseline>()
   /** The selected implementation for each active Run. */
   private readonly adapters = new Map<string, HarnessAdapter>()
+  /**
+   * The compaction each Session has in flight. Anything that would start the
+   * next Run waits on it: a Run that began first would resume the Thread the
+   * compaction is in the middle of retiring.
+   */
+  private readonly compactions = new Map<string, Promise<void>>()
 
   constructor(private readonly deps: RunServiceDeps) {
     this.queueCoordinator = new QueueCoordinator({
@@ -232,7 +272,8 @@ export class RunService {
         proxyScript: this.deps.proxyScript,
         claudeOauthToken: this.deps.claudeOauthToken,
         stageSettings: this.deps.stageSettings,
-        writeFrame: (runId, frame) => this.deps.broker.write(runId, frame)
+        writeFrame: (runId, frame) => this.deps.broker.write(runId, frame),
+        ...(this.deps.runBounded ? { runBounded: this.deps.runBounded } : {})
       })
     )
   }
@@ -619,6 +660,9 @@ export class RunService {
       checkout,
       permissionMode: input.permissionMode
     }
+    // A compaction still being written is one this Run must be seeded from,
+    // not one it races: starting first would resume the Thread it is retiring.
+    await this.settleCompaction(input.sessionId)
     const conversation = await this.readConversation(input.sessionId)
     const latestHarness = [...conversation.entries]
       .reverse()
@@ -639,10 +683,17 @@ export class RunService {
       latestHarnessBoundary !== undefined &&
       latestHarnessBoundary.skill === input.skill &&
       latestHarnessBoundary.model === input.model &&
+      !threadReuseVetoed(conversation, input.harness) &&
       (await this.runEffect(adapter.threadExists(checkout, savedThread)))
     const restoreFromHistory =
       switchedHarness || (latestHarness === input.harness && !threadCompatible)
-    const handoff = deterministicHandoff(conversation, input.skill ?? null)
+    // A Session that has been compacted is seeded from its summary and the
+    // turns it kept whole, rather than from the last few turns alone: the
+    // summary is the whole reason the Thread was not resumed.
+    const handoff = conversationSeed(conversation, {
+      shape: latestCompaction(conversation) ? 'compaction' : 'handoff',
+      skill: input.skill ?? null
+    })
     const accept = (submissionId: string): Promise<unknown> =>
       this.deps.core.send({
         type: 'run/lifecycle-open',
@@ -1306,6 +1357,146 @@ export class RunService {
     )
   }
 
+  /**
+   * Replaces the agent's memory of this Session's early turns with a summary,
+   * and leaves the Conversation exactly as it is. The next Run declines to
+   * resume the Thread this compaction retired and starts a fresh one from the
+   * summary and the turns it kept whole.
+   *
+   * Core decides what a compaction means — where the tail begins, what the
+   * summary has to account for, and whether one may happen at all. Only the
+   * writing of the summary is here, because only Main can speak to a Harness.
+   */
+  async compact(rawInput: CompactSessionInput): Promise<ConversationSnapshot> {
+    const input = compactSessionInputSchema.parse(rawInput)
+    // Held for the next Run to wait on, exactly as the automatic trigger is.
+    // Writing the summary takes a Harness request, and the composer stays live
+    // throughout: a message sent in that window would otherwise start a Run
+    // that resumed the very Thread this is retiring, and the boundary landing
+    // afterwards would then retire that Run's Thread for nothing.
+    return await this.awaitedByNextRun(input.sessionId, this.writeCompaction(input.sessionId))
+  }
+
+  private async writeCompaction(sessionId: string): Promise<ConversationSnapshot> {
+    const plan = compactionPlanSchema.parse(
+      await this.deps.core.send({
+        type: 'conversation/compaction-plan',
+        sessionId: sessionId
+      })
+    )
+    if (plan.harness === null) {
+      throw new Error('No Harness has answered in this Session, so none can summarize it')
+    }
+    const readiness = await this.deps.readiness.refresh(plan.harness)
+    const harness = readiness.harnesses.find((entry) => entry.harness === plan.harness)
+    if (!harness?.available || !harness.executablePath) {
+      throw new Error(`${plan.harness} is not ready to summarize this Session`)
+    }
+    // The compaction's identity is the point it compacts to, so a request
+    // retried after a summary that never landed writes one boundary, not two.
+    const operationId = createHash('sha256')
+      .update(`${sessionId}\0${plan.tailFromEntryId}`)
+      .digest('hex')
+    const summary = (
+      await this.runEffect(
+        this.adapter(plan.harness).summarize({
+          executable: harness.executablePath,
+          checkout: await this.checkoutFor(sessionId),
+          runDirectory: join(this.deps.privateRoot, 'compaction', operationId),
+          prompt: compactionPrompt(plan)
+        })
+      )
+    ).slice(0, MAX_COMPACTION_SUMMARY)
+    if (!summary) {
+      throw new Error(`${plan.harness} returned no summary, so nothing was compacted`)
+    }
+    const snapshot = conversationSnapshotSchema.parse(
+      await this.deps.core.send({
+        type: 'conversation/compact',
+        input: {
+          sessionId: sessionId,
+          operationId,
+          runId: plan.runId,
+          summary,
+          tailFromEntryId: plan.tailFromEntryId,
+          // The app is compacting, not the Harness: this Thread is retired.
+          native: false
+        }
+      })
+    )
+    // The inbox reads a projection rather than the Conversation, so it is told
+    // rather than left to find out.
+    this.deps.onConversationEvent?.({
+      sessionId: sessionId,
+      runId: plan.runId,
+      invalidation: 'mailbox',
+      event: { type: 'context-compacted', summary }
+    })
+    return snapshot
+  }
+
+  /**
+   * Compacts a Session whose latest Run left it too little room to carry on,
+   * without being asked.
+   *
+   * It runs beside the Run that ended rather than inside it: writing the
+   * summary is a Harness request, and a person who pressed Stop must not wait
+   * on one. Everything that would start the *next* Run waits on it instead —
+   * the queue draining, and a message sent from the composer — because a Run
+   * that started first would resume the very Thread this is retiring.
+   *
+   * Best-effort by construction: a compaction that cannot be made must not
+   * turn a Run that ended into a Run that failed, and the person can still ask
+   * for one themselves.
+   */
+  private compactIfShortOfRoom(sessionId: string): Promise<void> {
+    return this.awaitedByNextRun(sessionId, this.compactForHeadroom(sessionId))
+  }
+
+  /**
+   * Makes one compaction something the next Run of this Session holds for,
+   * whoever asked for it. Registered here rather than at each call site so a
+   * new way to ask cannot quietly opt out of the ordering the whole mechanism
+   * depends on.
+   *
+   * What is held is a shadow of the work that never rejects: a compaction that
+   * failed is a reason to carry on without one, never a reason to refuse the
+   * next Run. The caller still gets the real promise, failure and all.
+   */
+  private awaitedByNextRun<A>(sessionId: string, work: Promise<A>): Promise<A> {
+    const settled = work.then(
+      () => undefined,
+      () => undefined
+    )
+    this.compactions.set(sessionId, settled)
+    void settled.finally(() => {
+      if (this.compactions.get(sessionId) === settled) this.compactions.delete(sessionId)
+    })
+    return work
+  }
+
+  /** Whatever compaction this Session already has in flight, if any. */
+  private async settleCompaction(sessionId: string): Promise<void> {
+    await this.compactions.get(sessionId)
+  }
+
+  private async compactForHeadroom(sessionId: string): Promise<void> {
+    try {
+      const conversation = await this.readConversation(sessionId)
+      if (!headroomExhausted(conversation.usage.run)) return
+      // A Harness that compacted its own Thread since the last app-side
+      // compaction has already made the room this would be making.
+      const latest = conversation.entries.findLast(
+        (entry) => entry.kind === 'boundary' && entry.compaction !== undefined
+      )
+      if (latest?.kind === 'boundary' && latest.compaction?.native === true) return
+      await this.writeCompaction(sessionId)
+    } catch {
+      // Nothing is owed here. The Run has ended either way, and the recovery
+      // the person is shown offers compaction as something they can ask for.
+    }
+  }
+
   /** Records a Run's terminal state and closes its Conversation boundary. */
   private async conclude(
     run: Pick<RunSnapshot, 'id' | 'sessionId'>,
@@ -1361,8 +1552,13 @@ export class RunService {
             ? { type: 'stopped' }
             : { type: 'failed', category: category ?? 'unknown', summary: explained }
     })
+    // Before the next message goes anywhere near this Session. A Session that
+    // has run out of room is one whose next Run would die of it, and the
+    // person is not made to notice first — but this Run is over now, and
+    // saying so does not wait on a summary being written.
+    const compacted = this.compactIfShortOfRoom(run.sessionId)
     if (terminal.queueDisposition === 'advance') {
-      void this.queueCoordinator.drain(run.sessionId).catch(() => undefined)
+      void compacted.then(() => this.queueCoordinator.drain(run.sessionId)).catch(() => undefined)
     }
     return terminal.run
   }
@@ -1521,27 +1717,7 @@ function terminalObservation(
  * so the two can never drift apart.
  */
 
-/**
- * What a new Harness Thread needs to continue the Conversation: the Skill in
- * force and the turns immediately before it.
- */
-function deterministicHandoff(conversation: ConversationSnapshot, skill: string | null): string {
-  const recent = conversation.entries
-    .filter((entry) => entry.kind === 'message')
-    .slice(-8)
-    .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.text}`)
-    .join('\n')
-  return [...(skill ? [`Skill: ${skill}`] : []), 'Recent turns:', recent || '(none)'].join('\n')
-}
-
-/**
- * Whether Codex still holds the rollout behind a saved Harness Thread. Codex
- * refuses to resume a thread whose rollout file is gone — "no rollout found
- * for thread id …" — and retrying the same id can never succeed, so a thread
- * that is not on disk takes the restore-from-history path instead of failing
- * the Run. Rollouts live under `sessions/YYYY/MM/DD/rollout-…-<threadId>.jsonl`;
- * checked on disk like Claude's, because the app-server is not running yet.
- */
+/** The Harness executable exactly as it was when a Run was accepted. */
 async function hashFile(path: string): Promise<string> {
   return createHash('sha256')
     .update(await readFile(path))
@@ -1624,7 +1800,10 @@ function describeActivity(
     // rather than of anything it did. An approval is recorded where it is
     // decided, with the wording the person actually saw; repeating it here
     // would say it twice.
+    // A compaction is Conversation content too: it is drawn where it happened,
+    // beside the turns it stands in for.
     case 'plan':
+    case 'context-compacted':
     case 'approval-request':
     case 'approval-resolved':
     case 'assistant-message':

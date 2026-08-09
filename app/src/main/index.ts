@@ -52,6 +52,7 @@ import {
   editorCatalogSchema,
   openInEditorInputSchema,
   conversationSnapshotSchema,
+  compactSessionInputSchema,
   developSessionInputSchema,
   editQueuedSubmissionInputSchema,
   enqueueQueuedSubmissionInputSchema,
@@ -908,6 +909,9 @@ function registerIpc(): void {
   )
   handleInvoke(IPC_CHANNELS.developSession, developSessionInputSchema, async (input) =>
     conversationSnapshotSchema.parse(await runService.develop(input))
+  )
+  handleInvoke(IPC_CHANNELS.compactSession, compactSessionInputSchema, async (input) =>
+    conversationSnapshotSchema.parse(await runService.compact(input))
   )
   handleInvoke(
     IPC_CHANNELS.enqueueQueuedSubmission,

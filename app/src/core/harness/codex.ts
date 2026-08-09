@@ -177,9 +177,14 @@ const APPROVAL_METHODS: Record<string, StandingApprovalKind> = {
  * holds file by file. `item/plan/delta` is Plan mode rather than the
  * checklist — a different thing that shares a word — and its own bindings warn
  * that concatenated deltas need not match the finished item.
+ *
+ * `thread/compacted` is the deprecated half of a fact this Adapter reads from
+ * the `contextCompaction` item instead — its own bindings say so — and reading
+ * both would record one compaction as two.
  */
 const IGNORED_METHODS = new Set([
   'thread/started',
+  'thread/compacted',
   'thread/status/changed',
   'turn/started',
   'turn/diff/updated',
@@ -694,6 +699,16 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
       }
       case 'collabAgentToolCall':
         return describeCollabCall(item)
+      case 'contextCompaction':
+        // Codex compacted its own Thread — on its own initiative, or because
+        // it was asked to. It still holds the Thread afterwards, so this is
+        // something observed rather than protocol this app could not read.
+        return [
+          {
+            type: 'context-compacted',
+            summary: 'Codex summarized its own context and kept working in the same Thread.'
+          }
+        ]
       case 'userMessage':
       case 'plan':
       case 'todoList':

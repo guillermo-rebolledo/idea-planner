@@ -139,26 +139,29 @@ const defaults: NativeProjectCloneServices = {
       })
 
       return Effect.async<unknown>((finished) => {
-        if (settled) {
-          finished(Effect.succeed(undefined))
-          return
-        }
-        const force = setTimeout(() => terminate('SIGKILL'), 2_000)
-        const deadline = setTimeout(() => {
-          settled = true
-          clearTimeout(inactivity)
-          finished(Effect.succeed(undefined))
-        }, 5_000)
+        let cancellationFinished = false
+        const timers: { force?: NodeJS.Timeout; deadline?: NodeJS.Timeout } = {}
         const exited = (): void => {
-          if (settled) return
+          if (cancellationFinished) return
+          cancellationFinished = true
           settled = true
           clearTimeout(inactivity)
-          clearTimeout(force)
-          clearTimeout(deadline)
+          if (timers.force) clearTimeout(timers.force)
+          if (timers.deadline) clearTimeout(timers.deadline)
+          child.off('close', exited)
+          child.off('error', exited)
           finished(Effect.succeed(undefined))
         }
         child.once('close', exited)
         child.once('error', exited)
+        // Register first, then observe process state. If close happened in the
+        // gap before registration, Node has already populated one of these.
+        if (settled || child.exitCode !== null || child.signalCode !== null) {
+          exited()
+          return
+        }
+        timers.force = setTimeout(() => terminate('SIGKILL'), 2_000)
+        timers.deadline = setTimeout(exited, 5_000)
         terminate('SIGTERM')
       })
     })

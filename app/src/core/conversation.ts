@@ -19,8 +19,12 @@ import {
   queueOutcomeEntrySchema,
   isActiveQueuedSubmission,
   recordAppActionInputSchema,
+  recordCompactionInputSchema,
   setConversationQueuePausedInputSchema,
+  MAX_COMPACTION_SUMMARY,
+  type CompactionPlan,
   type RecordAppActionInput,
+  type RecordCompactionInput,
   type ChangedFile,
   type DiffHunk,
   submitConversationMessageInputSchema,
@@ -243,6 +247,17 @@ export interface ConversationEffects {
   finalize(input: FinalizeRunInput): Effect.Effect<ConversationSnapshot, CoreError>
   /** Appends what the app itself did to the Checkout, without rewriting a Run. */
   recordAppAction(input: RecordAppActionInput): Effect.Effect<ConversationSnapshot, CoreError>
+  /**
+   * What a compaction of this Session would have to be written from: where the
+   * untouched tail begins, the summary already being carried, and the turns
+   * before the tail that the next summary has to account for.
+   *
+   * It decides nothing about how the summary is produced. Core owns what a
+   * compaction means; only Main can speak to a Harness.
+   */
+  compactionPlan(sessionId: string): Effect.Effect<CompactionPlan, CoreError>
+  /** Records that the agent's memory of the turns before the tail is now a summary. */
+  compact(input: RecordCompactionInput): Effect.Effect<ConversationSnapshot, CoreError>
 }
 
 /**
@@ -1135,6 +1150,38 @@ export function createConversationEffects(options: ConversationOptions): Convers
               }
               return
             }
+            case 'context-compacted': {
+              // The Harness compacted its own Thread. It still holds it, so
+              // nothing about continuity changes and nothing is reseeded; the
+              // Conversation records it so the person can see why the agent's
+              // memory of the early turns is now a summary.
+              const entries = yield* readEntries(sessionDir)
+              const already = entries.filter(
+                (entry) => entry.kind === 'boundary' && entry.boundary === 'compacted'
+              ).length
+              const tail = entries.findLast((entry) => entry.kind === 'message')
+              yield* append(
+                sessionDir,
+                conversationEntrySchema.parse({
+                  kind: 'boundary',
+                  id: compactionEntryId(`native:${input.runId}:${String(already + 1)}`),
+                  at: now.toISOString(),
+                  runId: input.runId,
+                  boundary: 'compacted',
+                  summary: 'The Harness summarized its own memory of the turns before this',
+                  compaction: {
+                    summary:
+                      redactCredentials(event.summary).slice(0, MAX_COMPACTION_SUMMARY) ||
+                      'The Harness kept its own summary and did not say what is in it.',
+                    // The newest turn is where what it still remembers whole
+                    // begins, as far as this app can honestly say.
+                    tailFromEntryId: tail?.id ?? `boundary:${input.runId}:started`,
+                    native: true
+                  }
+                })
+              )
+              return
+            }
             case 'unsupported':
               yield* Ref.update(drift, (current) =>
                 new Map(current).set(input.runId, (current.get(input.runId) ?? 0) + 1)
@@ -1565,6 +1612,117 @@ export function createConversationEffects(options: ConversationOptions): Convers
       )
     })
 
+  const compactionPlan = (sessionId: string): Effect.Effect<CompactionPlan, CoreError> =>
+    Effect.gen(function* () {
+      const sessionDir = yield* sessionDirectory(sessionId)
+      const entries = yield* readEntries(sessionDir)
+      // A Run stopped in front of an Approval Request is a Run mid-decision.
+      // Replacing what the agent remembers while it waits would answer the
+      // question for it, from a context it can no longer see.
+      if (deriveState(entries, 0).openApprovals.length > 0) {
+        return yield* Effect.fail(
+          new CoreError(
+            'INVALID_INPUT',
+            'This Session is waiting on an Approval Request; answer it before compacting'
+          )
+        )
+      }
+      const opening = entries.findLast(
+        (entry) => entry.kind === 'boundary' && entry.boundary === 'run-started'
+      )
+      if (opening?.kind !== 'boundary') {
+        return yield* Effect.fail(
+          new CoreError('INVALID_INPUT', 'This Session has no Harness Thread to compact yet')
+        )
+      }
+      const tailFrom = tailStart(entries)
+      if (tailFrom === null) {
+        return yield* Effect.fail(
+          new CoreError('INVALID_INPUT', 'There is not enough of this Conversation to compact yet')
+        )
+      }
+      // Everything the summary in force already accounts for is left out of
+      // the material: a second compaction rewrites that summary rather than
+      // reading the same turns a second time.
+      //
+      // Only a summary this app wrote counts. What a Harness kept for itself
+      // is inside that Harness and cannot be read, let alone rewritten — so
+      // treating its record as a summary in force would drop every turn before
+      // it from the material and carry a note about it forward in their place.
+      const carried = entries.findLast(
+        (entry) =>
+          entry.kind === 'boundary' && entry.compaction !== undefined && !entry.compaction.native
+      )
+      const from = carried ? entries.indexOf(carried) + 1 : 0
+      const material = entries.slice(from, entries.indexOf(tailFrom))
+      // The Harness that has been answering. A summary of this Conversation is
+      // not somewhere to switch agents, so the one that wrote it is asked.
+      const answering = entries.findLast(
+        (entry): entry is Extract<ConversationEntry, { kind: 'boundary' }> =>
+          entry.kind === 'boundary' && entry.harness !== undefined
+      )
+      return {
+        sessionId,
+        runId: opening.runId,
+        tailFromEntryId: tailFrom.id,
+        previousSummary:
+          carried?.kind === 'boundary' ? (carried.compaction?.summary ?? null) : null,
+        material: transcript(material),
+        harness: answering?.harness ?? null
+      }
+    })
+
+  const compact = (
+    rawInput: RecordCompactionInput
+  ): Effect.Effect<ConversationSnapshot, CoreError> =>
+    Effect.gen(function* () {
+      const parsed = recordCompactionInputSchema.safeParse(rawInput)
+      if (!parsed.success) {
+        return yield* Effect.fail(
+          new CoreError('INVALID_INPUT', parsed.error.issues[0]?.message ?? 'Invalid compaction')
+        )
+      }
+      const input = parsed.data
+      const sessionDir = yield* sessionDirectory(input.sessionId)
+      return yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const entries = yield* readEntries(sessionDir)
+          const id = compactionEntryId(input.operationId)
+          if (entries.some((entry) => entry.id === id)) {
+            return yield* snapshot(input.sessionId, sessionDir)
+          }
+          // A tail nobody can find is a tail nothing would be seeded with, and
+          // the Conversation would say it had carried turns across that it had
+          // not.
+          if (!entries.some((entry) => entry.id === input.tailFromEntryId)) {
+            return yield* Effect.fail(
+              new CoreError(
+                'INVALID_INPUT',
+                'The untouched tail begins at no entry of this Session'
+              )
+            )
+          }
+          const entry = conversationEntrySchema.parse({
+            kind: 'boundary',
+            id,
+            at: (yield* options.clock).toISOString(),
+            runId: input.runId,
+            boundary: 'compacted',
+            summary: input.native
+              ? 'The Harness summarized its own memory of the turns before this'
+              : 'The turns before this are a summary from here on; nothing above has changed',
+            compaction: {
+              summary: redactCredentials(input.summary).slice(0, MAX_COMPACTION_SUMMARY),
+              tailFromEntryId: input.tailFromEntryId,
+              native: input.native
+            }
+          })
+          yield* append(sessionDir, entry)
+          return yield* snapshot(input.sessionId, sessionDir)
+        })
+      )
+    })
+
   const adapterFor = (
     runId: string,
     harness: HarnessId,
@@ -1645,7 +1803,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
     interrupt,
     ingest,
     finalize,
-    recordAppAction
+    recordAppAction,
+    compactionPlan,
+    compact
   }
 }
 
@@ -1656,6 +1816,81 @@ export function createConversationEffects(options: ConversationOptions): Convers
  */
 function sameAttachments(left: ReviewAttachment[], right: ReviewAttachment[]): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
+}
+
+/**
+ * How many message turns a compaction carries across whole. The turns nearest
+ * the person's next message are the ones a summary is worst at replacing —
+ * they are what was just said — so they are not summarized at all.
+ */
+const COMPACTION_TAIL_TURNS = 8
+
+/**
+ * How much of the Conversation one summary request is given. The end is kept
+ * rather than the start: a second compaction already carries the earlier work
+ * as a summary, and the turns nearest the tail are the ones that summary knows
+ * least about.
+ */
+const MAX_COMPACTION_MATERIAL = 100_000
+
+/** One compaction's durable identity, so a retried record lands once. */
+function compactionEntryId(operationId: string): string {
+  return `boundary:compacted:${operationId}`
+}
+
+/**
+ * The first entry of the untouched tail, or nothing when there is no tail to
+ * separate: a Conversation with nothing before its last few turns has nothing
+ * a summary could stand in for.
+ */
+function tailStart(entries: ConversationEntry[]): ConversationEntry | null {
+  const turns = entries.filter((entry) => entry.kind === 'message')
+  if (turns.length <= COMPACTION_TAIL_TURNS) return null
+  return turns[turns.length - COMPACTION_TAIL_TURNS] ?? null
+}
+
+/**
+ * The Conversation as prose a Harness can be asked to summarize: who said
+ * what, what was run and what it printed, what was changed, and what was
+ * permitted. Everything else is app bookkeeping and says nothing about the
+ * work.
+ */
+function transcript(entries: ConversationEntry[]): string {
+  const lines = entries.flatMap((entry) => {
+    switch (entry.kind) {
+      case 'message':
+        return [`${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.text}`]
+      case 'command':
+        return [
+          `Ran: ${entry.command}${entry.failed ? ' (failed)' : ''}`,
+          ...(entry.output ? [`Printed: ${entry.output}`] : [])
+        ]
+      case 'file-change':
+        return [`Changed ${entry.path} (+${String(entry.added)} −${String(entry.removed)})`]
+      case 'read':
+        return [`Read ${entry.path}`]
+      case 'approval':
+        return entry.decision === null ? [] : [`Approval ${entry.decision}: ${entry.summary}`]
+      case 'plan':
+        return [`Plan: ${entry.steps.map((step) => step.step).join('; ')}`]
+      case 'subagent':
+        return [`Delegated to ${entry.name}: ${entry.result ?? entry.status}`]
+      // App bookkeeping: what a Run's boundaries were, what it cost, which
+      // Thread it ran on, what the queue did. None of it is the work.
+      case 'boundary':
+      case 'usage':
+      case 'thread':
+      case 'app-action':
+      case 'queued-submission':
+      case 'queue-state':
+      case 'queue-outcome':
+        return []
+    }
+  })
+  const text = lines.join('\n')
+  return text.length <= MAX_COMPACTION_MATERIAL
+    ? text
+    : `… earlier turns not carried …\n${text.slice(-MAX_COMPACTION_MATERIAL)}`
 }
 
 /** One approval's durable identity: the Run, and the Harness's tool-use id. */
