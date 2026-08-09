@@ -64,6 +64,10 @@ _Avoid_: Review comment, annotation, code selection, snippet
 A worker a Run dispatched to do one piece of its work and report back, carrying a name, the brief it was given where the Harness supplies one, and — once it ends — what it reported. Its own commands, reads and prose are its work rather than the Run's, and never appear as steps the Run took. The Run stays responsible for it: a Subagent has no Conversation of its own and is never spoken to directly.
 _Avoid_: Child agent, task, worker thread, delegate
 
+**Plan**:
+The checklist a Run is working through, written by the agent for itself: an ordered list of **Plan steps**, each not started, in progress, or done. Both Harnesses resend the whole Plan every time it changes, so a Plan is a snapshot rather than an accumulation, and a Run has at most one — rewriting it revises the Plan rather than starting another. It is the agent's own account of its intent, never a control: neither Harness accepts an edited Plan back, so it is read and never answered. Unrelated to plan mode, which is a one-off proposal the user approves before work starts.
+_Avoid_: Todo list, checklist, task list, TODO, plan mode
+
 **Subagents dock**:
 The surface holding one Run's Subagents, beside the Conversation rather than inside it, which collapses to a rail that keeps every Subagent's state visible. The Conversation itself says only that they exist.
 _Avoid_: Sidebar, panel, drawer, fleet view

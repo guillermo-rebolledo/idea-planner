@@ -1,0 +1,15 @@
+/* The app's own stylesheet, tokens and all. Nothing is restated here: a
+   prototype that redefines the palette is answering a question about the
+   prototype. */
+@import '../../../app/src/renderer/src/styles.css';
+
+/* Tailwind's automatic detection roots at the imported stylesheet, so the app's
+   components are scanned already; this line adds the prototype itself. */
+@source '.';
+
+/* The prototype is a browser page rather than a window, and its chrome is a
+   switcher bar nobody is meant to admire. Text stays selectable so a variant
+   can be quoted into an issue. */
+body {
+  user-select: text;
+}

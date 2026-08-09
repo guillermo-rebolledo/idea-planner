@@ -1,9 +1,11 @@
 import { z } from 'zod'
 import {
   diffHunkSchema,
+  MAX_PLAN_STEPS,
   redactCredentials,
   type HarnessEvent,
   type HarnessFailureCategory,
+  type PlanStepStatus,
   type SubagentStatus
 } from '@shared/conversation'
 import { interruptWorking, subagentEvent, type Dispatch } from './subagent'
@@ -150,6 +152,8 @@ export function createClaudeAdapter(): HarnessAdapter {
   // by, and the task ids that only `task_updated` uses.
   const subagents = new Map<string, Dispatch>()
   const taskIds = new Map<string, string>()
+  /** The checklist the Run is working through, however this CLI reports one. */
+  const plan = createPlanTracker()
 
   /** The subagent as it stands now, which is the whole of what an event says. */
   function report(dispatch: Dispatch): HarnessEvent[] {
@@ -221,10 +225,13 @@ export function createClaudeAdapter(): HarnessAdapter {
         return [protocolFailure(`Unsupported Claude stream event: ${eventType || 'unknown'}`)]
       }
       case 'assistant':
-        return describeAssistant(frame['message'], pendingCommands, dispatchSubagent)
+        return describeAssistant(frame['message'], pendingCommands, dispatchSubagent, plan)
       case 'result':
         return describeResult(frame)
       case 'user':
+        // A created task learns the id every later update names it by here and
+        // nowhere else: the call that made it carried none.
+        bindCreatedTasks(frame, plan)
         return [
           ...describeCommandResult(frame, pendingCommands),
           ...describeFileChange(frame['tool_use_result'])
@@ -413,10 +420,167 @@ function describeSystem(frame: Record<string, unknown>): HarnessEvent[] {
  */
 const SUBAGENT_TOOL = 'Agent'
 
+/**
+ * The two ways Claude keeps a checklist, because the installed CLI decides
+ * which one a Run uses and the app drives more than one version of it.
+ *
+ * `TodoWrite` sends the whole list every time and is the easy one. It has been
+ * off by default since 2.1.142, superseded by four Task tools that send
+ * *changes* instead — a create names no id, and the id it was given comes back
+ * only in the result frame. So the list a Plan event carries is assembled
+ * here, and the Adapter is the only place that knows either shape.
+ *
+ * Both are read: the app's supported band straddles the version that switched.
+ */
+const TODO_TOOL = 'TodoWrite'
+const TASK_TOOLS = new Set(['TaskCreate', 'TaskUpdate'])
+
+/** Claude's spelling of a step's state, in this app's. */
+const PLAN_STEP_STATUS: Record<string, PlanStepStatus> = {
+  pending: 'pending',
+  in_progress: 'in-progress',
+  completed: 'completed'
+}
+
+const todoWriteSchema = z.object({
+  todos: z.array(
+    z.object({
+      content: z.string().min(1),
+      status: z.string(),
+      activeForm: z.string().optional()
+    })
+  )
+})
+
+/**
+ * A Task tool call as it arrives on the wire — which is raw model output. The
+ * CLI repairs the keys (`id`/`task_id` to `taskId`, `active_form` to
+ * `activeForm`) only *after* streaming it, so every alias is read here.
+ */
+const taskWriteSchema = z
+  .object({
+    taskId: z.string().min(1).optional(),
+    task_id: z.string().min(1).optional(),
+    id: z.string().min(1).optional(),
+    subject: z.string().min(1).optional(),
+    description: z.string().min(1).optional(),
+    activeForm: z.string().optional(),
+    active_form: z.string().optional(),
+    status: z.string().optional()
+  })
+  .passthrough()
+
+/** The id the CLI assigned a created task, which only its result frame says. */
+const taskCreatedSchema = z.object({ task: z.object({ id: z.string().min(1) }) })
+
+/** One step of the Plan as this Adapter is assembling it. */
+interface TrackedStep {
+  /** Null until the create's result frame comes back and names it. */
+  taskId: string | null
+  step: string
+  activeForm: string | null
+  status: PlanStepStatus
+}
+
+/**
+ * The Plan this Run is working through, assembled from whichever mechanism the
+ * installed CLI uses. A Run uses one or the other — the Task tools are enabled
+ * exactly when `TodoWrite` is not — so the last one to say anything is the one
+ * telling the truth.
+ */
+function createPlanTracker(): {
+  todoWrite: (input: unknown) => HarnessEvent[]
+  taskWrite: (name: string, toolUseId: string, input: unknown) => HarnessEvent[]
+  taskCreated: (toolUseId: string, result: unknown) => void
+} {
+  let steps: TrackedStep[] = []
+  /** Creates whose result has not come back yet, by the call that made them. */
+  const awaitingId = new Map<string, TrackedStep>()
+
+  const snapshot = (): HarnessEvent[] => {
+    const named = steps.filter((step) => step.step)
+    // A Plan of nothing is not a Plan: `TodoWrite` legitimately sends an empty
+    // list, and announcing a checklist with no steps in it says nothing.
+    if (named.length === 0) return []
+    return [
+      {
+        type: 'plan',
+        // Claude gives no reason for a change; only Codex does.
+        explanation: null,
+        steps: named.slice(0, MAX_PLAN_STEPS).map((step) => ({
+          step: redactCredentials(step.step).slice(0, 500),
+          activeForm:
+            step.activeForm === null ? null : redactCredentials(step.activeForm).slice(0, 500),
+          status: step.status
+        }))
+      }
+    ]
+  }
+
+  return {
+    todoWrite(input) {
+      const parsed = todoWriteSchema.safeParse(input)
+      if (!parsed.success) return []
+      steps = parsed.data.todos.map((todo) => ({
+        taskId: null,
+        step: todo.content,
+        activeForm: todo.activeForm ?? null,
+        status: PLAN_STEP_STATUS[todo.status] ?? 'pending'
+      }))
+      return snapshot()
+    },
+
+    taskWrite(name, toolUseId, input) {
+      const parsed = taskWriteSchema.safeParse(input)
+      if (!parsed.success) return []
+      const { taskId, task_id: taskIdSnake, id, subject, description } = parsed.data
+      const activeForm = parsed.data.activeForm ?? parsed.data.active_form ?? null
+      const status = parsed.data.status
+      if (name === 'TaskCreate') {
+        const created: TrackedStep = {
+          taskId: null,
+          step: subject ?? description ?? '',
+          activeForm,
+          status: PLAN_STEP_STATUS[status ?? ''] ?? 'pending'
+        }
+        steps.push(created)
+        awaitingId.set(toolUseId, created)
+        return snapshot()
+      }
+      const named = taskId ?? taskIdSnake ?? id
+      const existing = steps.find((step) => step.taskId !== null && step.taskId === named)
+      // An update naming a task this Adapter never saw created is an update to
+      // a Plan it does not hold. Inventing a step for it would put a checklist
+      // on screen assembled from half the story.
+      if (existing === undefined) return []
+      // Deleting is the only status that is not a state a step can be in.
+      if (status === 'deleted') {
+        steps = steps.filter((step) => step !== existing)
+        return snapshot()
+      }
+      if (subject !== undefined) existing.step = subject
+      if (activeForm !== null) existing.activeForm = activeForm
+      const moved = PLAN_STEP_STATUS[status ?? '']
+      if (moved !== undefined) existing.status = moved
+      return snapshot()
+    },
+
+    taskCreated(toolUseId, result) {
+      const waiting = awaitingId.get(toolUseId)
+      if (waiting === undefined) return
+      const parsed = taskCreatedSchema.safeParse(result)
+      if (!parsed.success) return
+      awaitingId.delete(toolUseId)
+      waiting.taskId = parsed.data.task.id
+    }
+  }
+}
+
 function describeAssistant(
   raw: unknown,
   pendingCommands: Map<string, string>,
-  onDispatch: (id: string, input: z.infer<typeof agentDispatchSchema>) => HarnessEvent[]
+  onDispatch: (id: string, input: z.infer<typeof agentDispatchSchema>) => HarnessEvent[],
+  plan: ReturnType<typeof createPlanTracker>
 ): HarnessEvent[] {
   const parsed = assistantSchema.safeParse(raw)
   if (!parsed.success) return [protocolFailure('Invalid Claude assistant event')]
@@ -443,6 +607,16 @@ function describeAssistant(
         events.push(...onDispatch(block.id, dispatch.data))
         continue
       }
+    }
+    // The checklist is not a tool call worth a line of its own: what it says
+    // is the Plan, and the Plan is the thing the Conversation shows.
+    if (block.name === TODO_TOOL) {
+      events.push(...plan.todoWrite(block.input))
+      continue
+    }
+    if (TASK_TOOLS.has(block.name)) {
+      events.push(...plan.taskWrite(block.name, block.id, block.input))
+      continue
     }
     // A command is held until its result arrives, so the Conversation can
     // report what it printed rather than only that it was called.
@@ -501,6 +675,24 @@ function readPathOf(name: string, input: unknown): string | null {
   if (name !== 'Read') return null
   const parsed = z.object({ file_path: z.string().min(1) }).safeParse(input)
   return parsed.success ? parsed.data.file_path : null
+}
+
+/**
+ * Hands each created task the id its result frame assigned it. Nothing is
+ * emitted: the step is already on the Plan under the name the create gave it,
+ * and this only makes it findable by the updates that follow.
+ */
+function bindCreatedTasks(
+  frame: Record<string, unknown>,
+  plan: ReturnType<typeof createPlanTracker>
+): void {
+  const message = object(frame['message'])
+  const blocks = Array.isArray(message['content']) ? message['content'] : []
+  for (const raw of blocks) {
+    const block = toolResultBlockSchema.safeParse(raw)
+    if (!block.success) continue
+    plan.taskCreated(block.data.tool_use_id, frame['tool_use_result'])
+  }
 }
 
 /**

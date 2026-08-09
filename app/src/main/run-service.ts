@@ -1619,8 +1619,12 @@ function describeActivity(
             kind: event.status === 'failed' ? 'error' : 'output',
             summary: `Subagent ${event.name} ${event.status === 'done' ? 'reported back' : event.status}`
           }
-    // An approval is recorded where it is decided, with the wording the person
-    // actually saw; repeating it here would say it twice.
+    // The Plan is Conversation content: it is drawn in the transcript, and an
+    // activity line per rewrite would be a log of the agent revising a list
+    // rather than of anything it did. An approval is recorded where it is
+    // decided, with the wording the person actually saw; repeating it here
+    // would say it twice.
+    case 'plan':
     case 'approval-request':
     case 'approval-resolved':
     case 'assistant-message':

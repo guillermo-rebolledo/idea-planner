@@ -457,3 +457,78 @@ describe('failure', () => {
     expect(adapter.flush()).toEqual([{ type: 'unsupported', detail: 'unreadable protocol line' }])
   })
 })
+
+/**
+ * The checklist Codex keeps for a turn, from hand-written frames rather than
+ * from the recording: neither recorded session asked for work long enough for
+ * the model to write a plan, so there is no `turn/plan/updated` in either
+ * fixture. Re-record with `pnpm codex:record` against a task that earns one
+ * and these become assertions about a real session.
+ *
+ * The shapes below are the generated bindings' own — `TurnPlanUpdatedNotification`
+ * and `TurnPlanStep` in `codex-protocol/v2`.
+ */
+describe('the plan', () => {
+  function planFrame(
+    plan: { step: string; status: string }[],
+    explanation: string | null = null
+  ): string {
+    return `${JSON.stringify({
+      method: 'turn/plan/updated',
+      params: { threadId: 'thread-1', turnId: 'turn-1', explanation, plan }
+    })}\n`
+  }
+
+  it('reads the whole checklist, in this app’s spelling of its states', () => {
+    const adapter = createCodexAdapter(launch())
+    const [plan] = adapter.ingest(
+      planFrame([
+        { step: 'Read the Adapter', status: 'completed' },
+        { step: 'Map the notification', status: 'inProgress' },
+        { step: 'Record a fixture', status: 'pending' }
+      ])
+    )
+    expect(plan).toEqual({
+      type: 'plan',
+      explanation: null,
+      steps: [
+        { step: 'Read the Adapter', activeForm: null, status: 'completed' },
+        { step: 'Map the notification', activeForm: null, status: 'in-progress' },
+        { step: 'Record a fixture', activeForm: null, status: 'pending' }
+      ]
+    })
+  })
+
+  it('carries the reason Codex gives for changing it', () => {
+    const adapter = createCodexAdapter(launch())
+    const [plan] = adapter.ingest(
+      planFrame(
+        [{ step: 'Split the reading out', status: 'inProgress' }],
+        'The Claude side needs its own step.'
+      )
+    )
+    expect(plan).toMatchObject({ explanation: 'The Claude side needs its own step.' })
+  })
+
+  it('says nothing for a plan of no steps, rather than announcing an empty one', () => {
+    const adapter = createCodexAdapter(launch())
+    expect(adapter.ingest(planFrame([]))).toEqual([])
+  })
+
+  it('is no longer reported as protocol this Adapter does not understand', () => {
+    const adapter = createCodexAdapter(launch())
+    const events = adapter.ingest(planFrame([{ step: 'Do the thing', status: 'pending' }]))
+    expect(events.filter((event) => event.type === 'unsupported')).toEqual([])
+  })
+
+  it('leaves plan mode alone, which shares the word and nothing else', () => {
+    const adapter = createCodexAdapter(launch())
+    const events = adapter.ingest(
+      `${JSON.stringify({
+        method: 'item/plan/delta',
+        params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'item-1', delta: '## Plan' }
+      })}\n`
+    )
+    expect(events).toEqual([])
+  })
+})
