@@ -393,6 +393,87 @@ describe('Run service', () => {
     })
     expect(broker.launch?.args).toEqual(expect.arrayContaining(['--resume', 'saved-thread']))
   })
+
+  it('seeds the Harness from local history when the saved Thread is gone', async () => {
+    const root = await readyClaudeRoot('run-claude-lost-thread-')
+    const core = fakeCore(join(root, 'a-project'))
+    core.conversation = {
+      ...core.conversation,
+      harnessThreads: { claude: 'saved-thread' },
+      entries: [
+        {
+          kind: 'boundary',
+          id: 'boundary:old:started',
+          at: '2026-07-31T12:00:00.000Z',
+          runId: 'old',
+          boundary: 'run-started',
+          summary: 'Wayfinder via Claude',
+          submissionId: 'old-submission',
+          recovery: null,
+          harness: 'claude',
+          skill: 'wayfinder',
+          model: 'claude-sonnet-4-5'
+        },
+        {
+          kind: 'message',
+          id: 'message:1',
+          at: '2026-07-31T12:00:01.000Z',
+          runId: 'old',
+          role: 'user',
+          text: 'Where did we get to?',
+          completeness: 'complete',
+          source: 'composer',
+          submissionId: 'old-submission',
+          reviewAttachments: [],
+          suggestedResponses: [],
+          plainOptions: false
+        }
+      ]
+    }
+    // The rollout behind `saved-thread` is deliberately not on disk.
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            harnesses: [
+              {
+                harness: 'claude',
+                available: true,
+                executablePath: join(root, 'claude'),
+                version: '2.1.220 (Claude Code)'
+              }
+            ]
+          })
+        )
+      },
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      sessionId: 'session',
+      prompt: 'Continue',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      skill: 'wayfinder',
+      permissionMode: 'auto'
+    })
+    const args = broker.launch?.args ?? []
+    expect(args).not.toContain('--resume')
+    expect(args.at(-1)).toBe(
+      '/wayfinder Continue\n\nDeterministic handoff from the Conversation so far:\nSkill: wayfinder\nRecent turns:\nUser: Where did we get to?'
+    )
+  })
+
   it('freezes executable and Skill provenance into the durable lifecycle', async () => {
     const root = await mkdtemp(join(tmpdir(), 'run-service-'))
     temporaryDirectories.push(root)

@@ -299,6 +299,15 @@ function createCodexAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter 
     launchEnvironment(executable, runDirectory) {
       return this.environment(executable, runDirectory)
     },
+    /**
+     * Whether Codex still holds the rollout behind a saved Harness Thread.
+     * Codex refuses to resume a thread whose rollout file is gone — "no
+     * rollout found for thread id …" — and retrying the same id can never
+     * succeed, so a thread that is not on disk takes the restore-from-history
+     * path instead of failing the Run. Rollouts live under
+     * `sessions/YYYY/MM/DD/rollout-…-<threadId>.jsonl`; checked on disk like
+     * Claude's, because the app-server is not running yet.
+     */
     threadExists(_checkout, threadId) {
       return withExternal(layer, 'inspect Codex Thread continuity', async (dependencies) => {
         const sessions = join(dependencies.homeDirectory, '.codex', 'sessions')
