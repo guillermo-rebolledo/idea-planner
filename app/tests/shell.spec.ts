@@ -1968,6 +1968,15 @@ test('a Project’s own Skills are shown, trusted once, and then offered', async
     const composer = page.getByLabel('Your message')
     await expect(composer).toHaveValue('/grilling ')
     await expect(composer).toHaveAccessibleDescription('grilling Skill recognized')
+    // Keyboard completion follows command-palette convention: both Tab and
+    // Enter accept the first match without moving focus or sending the token.
+    await composer.fill('/way')
+    await composer.press('Tab')
+    await expect(composer).toBeFocused()
+    await expect(composer).toHaveValue('/wayfinder ')
+    await composer.fill('/gri')
+    await composer.press('Enter')
+    await expect(composer).toHaveValue('/grilling ')
     await composer.fill('/grilling Grill me on this')
     await page.getByRole('button', { name: 'Send', exact: true }).click()
     // Gone with the message it was part of: the next one asks for nothing.

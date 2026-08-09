@@ -1329,6 +1329,19 @@ export function Conversation({
                     setDraft(nextDraft)
                   }}
                   onKeyDown={(event) => {
+                    if (
+                      matchingSkills?.[0] &&
+                      (event.key === 'Enter' || event.key === 'Tab') &&
+                      !event.nativeEvent.isComposing &&
+                      !event.shiftKey &&
+                      !event.altKey &&
+                      !event.ctrlKey &&
+                      !event.metaKey
+                    ) {
+                      event.preventDefault()
+                      chooseSkill(matchingSkills[0].name)
+                      return
+                    }
                     if (event.key !== 'Enter') return
                     // Mid-composition Enter belongs to the input method.
                     if (event.nativeEvent.isComposing) return
