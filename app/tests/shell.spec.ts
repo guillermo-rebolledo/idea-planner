@@ -444,18 +444,55 @@ test('a person organizes the mailbox: pin, search, archive with undo, rename, co
     await expect(home.getByText('Offline recipe planner')).toBeVisible()
     await expect(home.getByText('Community tool library')).toBeVisible()
 
+    // Both Runs finish before the pin, so the outcome measured below is the
+    // pin's own: a Run ending speaks too, and its announcement would restart
+    // the strip's clock partway through the window this test times.
+    await expect(inbox.getByRole('img', { name: 'Running' })).toHaveCount(0)
+
+    // A routine outcome arrives once, remains available, and owns its short
+    // exit phase before leaving the live region. The whole lifecycle is still
+    // six seconds rather than six seconds plus the animation — timed in the
+    // page from the moment the pill appears, because polling from the test
+    // side cannot see a 160ms phase without racing its own deadline.
+    const timing = page.evaluate(
+      () =>
+        new Promise<{ exiting: number; gone: number }>((resolve) => {
+          let pill: Element | null = null
+          let appeared = 0
+          let exiting = 0
+          const observer = new MutationObserver(() => {
+            if (!pill) {
+              const found = document.querySelector('.outcome-notice')
+              if (!found?.textContent.includes('Pinned')) return
+              pill = found
+              appeared = performance.now()
+            }
+            if (!exiting && pill.getAttribute('data-exiting') === 'true')
+              exiting = performance.now()
+            if (pill.isConnected) return
+            observer.disconnect()
+            resolve({ exiting: exiting - appeared, gone: performance.now() - appeared })
+          })
+          observer.observe(document.body, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            attributeFilter: ['data-exiting']
+          })
+        })
+    )
+
     // Pin lifts the Session into Pinned, still under its Project.
     await inbox.getByRole('button', { name: 'Pin “Offline recipe planner”' }).click()
     await expect(pinnedGroup.getByText('Offline recipe planner')).toBeVisible()
     await expect(home.getByText('Offline recipe planner')).toHaveCount(0)
 
-    // A routine outcome arrives once, remains available, and owns its short
-    // exit phase before leaving the live region. The whole lifecycle is still
-    // six seconds rather than six seconds plus the animation.
-    const outcome = page.locator('.outcome-notice')
-    await expect(outcome).toHaveAttribute('data-exiting', 'false')
-    await expect(outcome).toHaveAttribute('data-exiting', 'true', { timeout: 6_000 })
-    await expect(outcome).toHaveCount(0, { timeout: 1_000 })
+    const { exiting, gone } = await timing
+    expect(exiting).toBeGreaterThan(4_000)
+    expect(exiting).toBeLessThan(6_000)
+    expect(gone).toBeGreaterThan(exiting)
+    expect(gone).toBeLessThan(6_500)
+    await expect(page.locator('.outcome-notice')).toHaveCount(0)
 
     // Search narrows to matching Sessions; no-results is a visible, recoverable state.
     const search = page.getByRole('searchbox', { name: 'Search Sessions' })
