@@ -29,8 +29,8 @@ export default function App(): React.JSX.Element {
   const [theme, setTheme] = useState<ThemeState | null>(null)
 
   const adoptTheme = useCallback((next: ThemeState) => {
-    // Presets use the audited light/dark tokens. Custom themes override only
-    // neutral and brand roles, leaving semantic status colors intact.
+    // Custom palettes use fixed semantic seeds in addition to the person's
+    // neutral and brand colors, so status meaning survives every canvas.
     document.documentElement.dataset['theme'] = next.resolved
     const style = document.documentElement.style
     for (const [property, value] of Object.entries({
@@ -46,7 +46,24 @@ export default function App(): React.JSX.Element {
       '--primary': next.palette?.primary,
       '--primary-hover': next.palette?.primaryHover,
       '--primary-foreground': next.palette?.primaryForeground,
-      '--ring': next.palette?.ring
+      '--ring': next.palette?.ring,
+      '--positive': next.palette?.positive,
+      '--destructive': next.palette?.destructive,
+      '--destructive-hover': next.palette?.destructiveHover,
+      '--destructive-foreground': next.palette?.destructiveForeground,
+      '--notice': next.palette?.notice,
+      '--notice-border': next.palette?.noticeBorder,
+      '--notice-foreground': next.palette?.noticeForeground,
+      '--diff-added-foreground': next.palette?.diffAddedForeground,
+      '--diff-added-surface': next.palette?.diffAddedSurface,
+      '--diff-removed-foreground': next.palette?.diffRemovedForeground,
+      '--diff-removed-surface': next.palette?.diffRemovedSurface,
+      '--status-running': next.palette?.statusRunning,
+      '--status-blocked': next.palette?.statusBlocked,
+      '--status-blocked-surface': next.palette?.statusBlockedSurface,
+      '--status-blocked-border': next.palette?.statusBlockedBorder,
+      '--status-idle': next.palette?.statusIdle,
+      '--status-failed': next.palette?.statusFailed
     })) {
       if (value === undefined) style.removeProperty(property)
       else style.setProperty(property, value)

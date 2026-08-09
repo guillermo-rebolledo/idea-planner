@@ -42,6 +42,23 @@ export interface ThemePalette {
   primaryHover: string
   primaryForeground: string
   ring: string
+  positive: string
+  destructive: string
+  destructiveHover: string
+  destructiveForeground: string
+  notice: string
+  noticeBorder: string
+  noticeForeground: string
+  diffAddedForeground: string
+  diffAddedSurface: string
+  diffRemovedForeground: string
+  diffRemovedSurface: string
+  statusRunning: string
+  statusBlocked: string
+  statusBlockedSurface: string
+  statusBlockedBorder: string
+  statusIdle: string
+  statusFailed: string
 }
 
 export interface ResolvedAppearance {
@@ -109,7 +126,24 @@ export const themePaletteSchema = z.object({
   primary: hexColorSchema,
   primaryHover: hexColorSchema,
   primaryForeground: hexColorSchema,
-  ring: hexColorSchema
+  ring: hexColorSchema,
+  positive: hexColorSchema,
+  destructive: hexColorSchema,
+  destructiveHover: hexColorSchema,
+  destructiveForeground: hexColorSchema,
+  notice: hexColorSchema,
+  noticeBorder: hexColorSchema,
+  noticeForeground: hexColorSchema,
+  diffAddedForeground: hexColorSchema,
+  diffAddedSurface: hexColorSchema,
+  diffRemovedForeground: hexColorSchema,
+  diffRemovedSurface: hexColorSchema,
+  statusRunning: hexColorSchema,
+  statusBlocked: hexColorSchema,
+  statusBlockedSurface: hexColorSchema,
+  statusBlockedBorder: hexColorSchema,
+  statusIdle: hexColorSchema,
+  statusFailed: hexColorSchema
 })
 
 export const PRESET_COLORS = {
@@ -198,8 +232,8 @@ export function appearanceForBackground(background: string): ResolvedTheme {
 }
 
 /**
- * Derives only neutral and brand roles. Product colors (diffs, failures, blocked work) remain the
- * audited Light/Dark families in CSS and therefore cannot be spent by customization.
+ * Derives neutral and brand roles from the user's two colors. Product colors keep fixed semantic
+ * seeds (never the user's accent), with lightness adjusted only as needed for the chosen canvas.
  */
 export function derivePalette(definition: ThemeColors): ThemePalette {
   const background = definition.background.toLowerCase()
@@ -240,6 +274,10 @@ export function derivePalette(definition: ThemeColors): ThemePalette {
     dark ? '#ffffff' : '#000000'
   )
   const accent = mix(background, primary, dark ? 17 : 10)
+  const green = semanticFamily('#3f9b61', background, surface, dark)
+  const red = semanticFamily('#c94b55', background, surface, dark)
+  const amber = semanticFamily('#a06f13', background, surface, dark)
+  const cyan = semanticFamily('#20859a', background, surface, dark)
 
   return {
     background,
@@ -254,8 +292,58 @@ export function derivePalette(definition: ThemeColors): ThemePalette {
     primary,
     primaryHover,
     primaryForeground,
-    ring
+    ring,
+    positive: green.foreground,
+    destructive: red.foreground,
+    destructiveHover: contrastColor(
+      mix(red.foreground, bestInk(background), 12),
+      [background, surface],
+      4.5,
+      bestInk(background)
+    ),
+    destructiveForeground: bestInk(red.foreground),
+    notice: amber.surface,
+    noticeBorder: amber.border,
+    noticeForeground: amber.foreground,
+    diffAddedForeground: green.foreground,
+    diffAddedSurface: green.surface,
+    diffRemovedForeground: red.foreground,
+    diffRemovedSurface: red.surface,
+    statusRunning: cyan.foreground,
+    statusBlocked: amber.foreground,
+    statusBlockedSurface: amber.surface,
+    statusBlockedBorder: amber.border,
+    statusIdle: mutedForeground,
+    statusFailed: red.foreground
   }
+}
+
+function semanticFamily(
+  seed: string,
+  background: string,
+  surface: string,
+  dark: boolean
+): { foreground: string; surface: string; border: string } {
+  const toward = dark ? '#ffffff' : '#000000'
+  let foreground = contrastColor(seed, [background, surface], 4.5, toward)
+  let semanticSurface = semanticSurfaceFor(background, foreground, seed, dark)
+  foreground = contrastColor(foreground, [background, surface, semanticSurface], 4.5, toward)
+  semanticSurface = semanticSurfaceFor(background, foreground, seed, dark)
+  return {
+    foreground,
+    surface: semanticSurface,
+    border: contrastColor(seed, [semanticSurface], 3, toward)
+  }
+}
+
+function semanticSurfaceFor(
+  background: string,
+  foreground: string,
+  seed: string,
+  dark: boolean
+): string {
+  const oppositePole = foreground === '#ffffff' ? '#000000' : '#ffffff'
+  return mix(background, mix(oppositePole, seed, 18), dark ? 14 : 8)
 }
 
 function contrastColor(

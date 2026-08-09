@@ -9,15 +9,35 @@ import { cn } from '@renderer/lib/utils'
 
 export type SettingsSection = 'general' | 'harnesses' | 'appearance'
 
-const SECTIONS: readonly {
+interface SectionDetails {
   id: SettingsSection
   label: string
+  description: string
   icon: ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }>
-}[] = [
-  { id: 'general', label: 'General', icon: Settings2 },
-  { id: 'harnesses', label: 'Harnesses', icon: Bot },
-  { id: 'appearance', label: 'Appearance', icon: Palette }
-]
+}
+
+const SECTION_BY_ID = {
+  general: {
+    id: 'general',
+    label: 'General',
+    description: 'Everyday application behavior.',
+    icon: Settings2
+  },
+  harnesses: {
+    id: 'harnesses',
+    label: 'Harnesses',
+    description: 'See what can run a Session and what needs attention.',
+    icon: Bot
+  },
+  appearance: {
+    id: 'appearance',
+    label: 'Appearance',
+    description: 'Choose a preset or make Argos yours.',
+    icon: Palette
+  }
+} as const satisfies Record<SettingsSection, SectionDetails>
+
+const SECTIONS: readonly SectionDetails[] = Object.values(SECTION_BY_ID)
 
 export function SettingsDialog({
   theme,
@@ -37,6 +57,7 @@ export function SettingsDialog({
   const [customDraft, setCustomDraft] = useState<AppearanceSettings['custom'] | null>(null)
   const [appearanceError, setAppearanceError] = useState(false)
   const [appVersion, setAppVersion] = useState<string | null>(null)
+  const activeSection = SECTION_BY_ID[section]
 
   useEffect(() => {
     void window.shell
@@ -148,8 +169,8 @@ export function SettingsDialog({
         <div className="flex min-w-0 flex-col overflow-hidden">
           <header className="flex h-16 shrink-0 items-center justify-between border-b border-border px-6">
             <div>
-              <h2 className="text-sm font-semibold">{titleFor(section)}</h2>
-              <p className="mt-0.5 text-2xs text-muted-foreground">{descriptionFor(section)}</p>
+              <h2 className="text-sm font-semibold">{activeSection.label}</h2>
+              <p className="mt-0.5 text-2xs text-muted-foreground">{activeSection.description}</p>
             </div>
             <Button variant="ghost" size="icon" aria-label="Close Settings" onClick={onDismiss}>
               <X aria-hidden="true" className="size-4" />
@@ -184,18 +205,6 @@ export function SettingsDialog({
       </div>
     </Modal>
   )
-}
-
-function titleFor(section: SettingsSection): string {
-  if (section === 'general') return 'General'
-  if (section === 'harnesses') return 'Harnesses'
-  return 'Appearance'
-}
-
-function descriptionFor(section: SettingsSection): string {
-  if (section === 'general') return 'Everyday application behavior.'
-  if (section === 'harnesses') return 'See what can run a Session and what needs attention.'
-  return 'Choose a preset or make Argos yours.'
 }
 
 function GeneralSettings({

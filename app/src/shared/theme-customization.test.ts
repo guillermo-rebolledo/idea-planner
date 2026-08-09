@@ -122,6 +122,39 @@ describe('a derived custom palette', () => {
       expect(contrast(palette.ring, palette.surface)).toBeGreaterThanOrEqual(3)
       expect(contrast(palette.border, palette.background)).toBeGreaterThanOrEqual(1.2)
       expect(contrast(palette.border, palette.surface)).toBeGreaterThanOrEqual(1.2)
+      for (const [role, semantic] of Object.entries({
+        positive: palette.positive,
+        destructive: palette.destructive,
+        noticeForeground: palette.noticeForeground,
+        diffAddedForeground: palette.diffAddedForeground,
+        diffRemovedForeground: palette.diffRemovedForeground,
+        statusRunning: palette.statusRunning,
+        statusBlocked: palette.statusBlocked,
+        statusIdle: palette.statusIdle,
+        statusFailed: palette.statusFailed
+      })) {
+        expect(
+          contrast(semantic, palette.background),
+          `${role} on background`
+        ).toBeGreaterThanOrEqual(4.5)
+        expect(contrast(semantic, palette.surface), `${role} on surface`).toBeGreaterThanOrEqual(
+          4.5
+        )
+      }
+      expect(
+        contrast(palette.diffAddedForeground, palette.diffAddedSurface)
+      ).toBeGreaterThanOrEqual(4.5)
+      expect(
+        contrast(palette.diffRemovedForeground, palette.diffRemovedSurface)
+      ).toBeGreaterThanOrEqual(4.5)
+      expect(contrast(palette.statusBlocked, palette.statusBlockedSurface)).toBeGreaterThanOrEqual(
+        4.5
+      )
+      expect(contrast(palette.noticeForeground, palette.notice)).toBeGreaterThanOrEqual(4.5)
+      expect(contrast(palette.noticeBorder, palette.notice)).toBeGreaterThanOrEqual(3)
+      expect(
+        contrast(palette.statusBlockedBorder, palette.statusBlockedSurface)
+      ).toBeGreaterThanOrEqual(3)
     })
   }
 })

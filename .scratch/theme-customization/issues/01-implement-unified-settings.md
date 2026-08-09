@@ -7,10 +7,6 @@ Spec: `.scratch/theme-customization/spec.md`
 Implement the validated Variant A design in production, including persistence, contrast-safe custom
 palette derivation, the consolidated Harnesses surface, and focused verification.
 
-## Comments
-
-- Prototype evidence currently lives under `prototypes/theme-picker/` on this feature branch.
-
 ## Answer
 
 Implemented Variant A as the production Settings surface. General and Harnesses now share the large
