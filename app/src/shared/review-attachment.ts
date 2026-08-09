@@ -51,6 +51,14 @@ export const reviewAttachmentSchema = z.object({
 })
 export type ReviewAttachment = z.infer<typeof reviewAttachmentSchema>
 
+/** Submission identity includes the exact reviewed-code snapshots, in order. */
+export function sameReviewAttachments(
+  left: ReviewAttachment[],
+  right: ReviewAttachment[]
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
 /** One recorded hunk, structurally the Conversation's own `DiffHunk`. */
 export interface ReviewHunk {
   oldStart: number

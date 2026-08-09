@@ -58,6 +58,7 @@ import {
   enqueueQueuedSubmissionInputSchema,
   moveQueuedSubmissionInputSchema,
   queuedSubmissionIdentitySchema,
+  rewindSessionInputSchema,
   SKILL_ATTRIBUTION,
   projectViewSchema,
   githubRepositoryListResultSchema,
@@ -912,6 +913,9 @@ function registerIpc(): void {
   )
   handleInvoke(IPC_CHANNELS.compactSession, compactSessionInputSchema, async (input) =>
     conversationSnapshotSchema.parse(await runService.compact(input))
+  )
+  handleInvoke(IPC_CHANNELS.rewindSession, rewindSessionInputSchema, async (input) =>
+    conversationSnapshotSchema.parse(await runService.rewind(input))
   )
   handleInvoke(
     IPC_CHANNELS.enqueueQueuedSubmission,

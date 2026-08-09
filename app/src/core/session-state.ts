@@ -98,6 +98,25 @@ export const EMPTY_STATE: SessionState = {
   journalBytes: 0
 }
 
+/**
+ * The readable Conversation projected from the append-only journal. A rewind
+ * cuts the view back to the chosen user message, excludes that message, and
+ * leaves its boundary in place. The raw entries remain untouched on disk.
+ */
+export function visibleConversationEntries(entries: ConversationEntry[]): ConversationEntry[] {
+  let visible: ConversationEntry[] = []
+  for (const entry of entries) {
+    if (entry.kind === 'boundary' && entry.boundary === 'rewound' && entry.rewind) {
+      const target = visible.findIndex(
+        (candidate) => candidate.id === entry.rewind?.rewoundToEntryId
+      )
+      if (target !== -1) visible = visible.slice(0, target)
+    }
+    visible.push(entry)
+  }
+  return visible
+}
+
 /** One more entry, folded into what the Session was already doing. */
 export function advance(state: SessionState, entry: ConversationEntry): SessionState {
   if (entry.kind === 'boundary') {
@@ -106,7 +125,7 @@ export function advance(state: SessionState, entry: ConversationEntry): SessionS
     // which is not a fact about whether a Run is working — and a Session that
     // read as finished because its context was replaced would be a Session the
     // inbox lies about.
-    if (entry.boundary === 'compacted') return state
+    if (entry.boundary === 'compacted' || entry.boundary === 'rewound') return state
     if (entry.boundary === 'run-started') {
       // A new Run starts its own count of steps and running commands.
       return {
@@ -182,7 +201,7 @@ export function advance(state: SessionState, entry: ConversationEntry): SessionS
 
 /** The state a whole journal describes, used to rebuild a projection. */
 export function deriveState(entries: ConversationEntry[], journalBytes: number): SessionState {
-  return { ...entries.reduce(advance, EMPTY_STATE), journalBytes }
+  return { ...visibleConversationEntries(entries).reduce(advance, EMPTY_STATE), journalBytes }
 }
 
 /**

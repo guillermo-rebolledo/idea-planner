@@ -702,6 +702,7 @@ export function Mailbox({
               reviewAttachments={reviewAttachments}
               onRemoveReviewAttachment={removeReviewedCode}
               onClearReviewAttachments={() => setReviewAttachments([])}
+              onRestoreReviewAttachments={setReviewAttachments}
             />
           ) : (
             <Composer

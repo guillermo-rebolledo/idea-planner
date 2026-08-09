@@ -59,6 +59,7 @@ export const IPC_CHANNELS = {
   getConversation: 'conversation:get',
   developSession: 'conversation:develop',
   compactSession: 'conversation:compact',
+  rewindSession: 'conversation:rewind',
   enqueueQueuedSubmission: 'conversation:queue-enqueue',
   editQueuedSubmission: 'conversation:queue-edit',
   moveQueuedSubmission: 'conversation:queue-move',

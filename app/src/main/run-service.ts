@@ -19,6 +19,7 @@ import {
   compactSessionInputSchema,
   compactionPlanSchema,
   conversationSnapshotSchema,
+  submitConversationMessageResultSchema,
   developSessionInputSchema,
   editQueuedSubmissionInputSchema,
   enqueueQueuedSubmissionInputSchema,
@@ -26,6 +27,7 @@ import {
   headroomExhausted,
   moveQueuedSubmissionInputSchema,
   queuedSubmissionIdentitySchema,
+  rewindSessionInputSchema,
   redactCredentials,
   startingSubmissionId,
   unfinishedRunSchema,
@@ -39,6 +41,7 @@ import {
   type HarnessFailureCategory,
   type RunRequest,
   type QueuedSubmissionLaunchPlan,
+  type RewindSessionInput,
   type UnfinishedRun
 } from '@shared/conversation'
 import { harnessPromptWithReviewAttachments } from '@shared/review-attachment'
@@ -76,7 +79,7 @@ import {
   type BoundedRunner,
   type HarnessAdapter
 } from './harness-adapter'
-import { conversationSeed, latestCompaction, threadReuseVetoed } from './thread-continuity'
+import { conversationSeed, conversationSeedShape, threadReuseVetoed } from './thread-continuity'
 
 interface CorePort {
   send(command: CoreCommand): Promise<unknown>
@@ -482,16 +485,22 @@ export class RunService {
         `Developing a Session with ${HARNESS_SPECS[input.harness].displayName} is not supported yet`
       )
     }
-    await this.deps.core.send({
-      type: 'conversation/submit',
-      input: {
-        sessionId: input.sessionId,
-        submissionId: input.submissionId,
-        text: input.text,
-        source: input.source,
-        reviewAttachments: input.reviewAttachments
-      }
-    })
+    const submitted = submitConversationMessageResultSchema.parse(
+      await this.deps.core.send({
+        type: 'conversation/submit',
+        input: {
+          sessionId: input.sessionId,
+          submissionId: input.submissionId,
+          text: input.text,
+          source: input.source,
+          reviewAttachments: input.reviewAttachments
+        }
+      })
+    )
+    // The unchanged message restored by rewind is the old submission again.
+    // Core owns that durable identity decision; starting a retry here would
+    // turn pressing Send without editing into a new Run under a derived id.
+    if (submitted.disposition === 'rewound-replay') return submitted.snapshot
     try {
       await this.start({
         submissionId: input.submissionId,
@@ -699,12 +708,13 @@ export class RunService {
       (await this.runEffect(adapter.threadExists(checkout, savedThread)))
     const restoreFromHistory =
       switchedHarness || (latestHarness === input.harness && !threadCompatible)
-    // A Session that has been compacted is seeded from its summary and the
-    // turns it kept whole, rather than from the last few turns alone: the
-    // summary is the whole reason the Thread was not resumed.
+    // A boundary that retires the Thread defines the seed for its successor.
+    // Compaction carries a summary; rewind intentionally carries only the
+    // retained tail so content the person removed cannot leak back in.
     const handoff = conversationSeed(conversation, {
-      shape: latestCompaction(conversation) ? 'compaction' : 'handoff',
-      skill: input.skill ?? null
+      shape: conversationSeedShape(conversation),
+      skill: input.skill ?? null,
+      excludeSubmissionId: input.submissionId
     })
     const accept = (submissionId: string): Promise<unknown> =>
       this.deps.core.send({
@@ -1398,6 +1408,33 @@ export class RunService {
     // that resumed the very Thread this is retiring, and the boundary landing
     // afterwards would then retire that Run's Thread for nothing.
     return await this.awaitedByNextRun(input.sessionId, this.writeCompaction(input.sessionId))
+  }
+
+  /**
+   * Rewinds only the durable Conversation. This deliberately has no Checkout,
+   * snapshot, Git, or Run Undo dependency: changing files is not among the
+   * operations this path can perform.
+   */
+  async rewind(rawInput: RewindSessionInput): Promise<ConversationSnapshot> {
+    const input = rewindSessionInputSchema.parse(rawInput)
+    const snapshot = await this.queueCoordinator.exclusive(input.sessionId, async () => {
+      // If a summary is already being written, let its boundary land first so
+      // the rewind is unambiguously the newer context decision.
+      await this.settleCompaction(input.sessionId)
+      return conversationSnapshotSchema.parse(
+        await this.deps.core.send({ type: 'conversation/rewind', input })
+      )
+    })
+    const boundary = snapshot.entries.findLast(
+      (entry) => entry.kind === 'boundary' && entry.boundary === 'rewound'
+    )
+    this.deps.onConversationEvent?.({
+      sessionId: input.sessionId,
+      runId: boundary?.kind === 'boundary' ? boundary.runId : '',
+      invalidation: 'mailbox',
+      event: { type: 'rewound' }
+    })
+    return snapshot
   }
 
   private async writeCompaction(sessionId: string): Promise<ConversationSnapshot> {
