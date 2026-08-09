@@ -7,6 +7,7 @@ import {
   app,
   dialog,
   ipcMain,
+  nativeImage,
   nativeTheme,
   session,
   shell,
@@ -137,6 +138,15 @@ const devServerUrl = process.env['ELECTRON_RENDERER_URL']
 // cannot orphan a person's history (ADR 0002).
 app.setName(PRODUCT_NAME)
 app.setAboutPanelOptions({ applicationName: PRODUCT_NAME, applicationVersion: app.getVersion() })
+// A packaged build wears the icon baked into its bundle by the packager
+// (`build/icon.icns`). Unpackaged, the Dock would show Electron's own icon
+// instead, so point it at the same artwork by hand. `build/` sits beside the
+// bundled output rather than inside it, and an icon is decoration: if it ever
+// goes missing that is not a reason to refuse to start.
+if (process.platform === 'darwin' && !app.isPackaged) {
+  const icon = nativeImage.createFromPath(join(__dirname, '../../build/icon.png'))
+  if (!icon.isEmpty()) app.dock?.setIcon(icon)
+}
 // Shell acceptance tests exercise the real app without taking over the
 // person's desktop. Accessory apps do not appear in the Dock or menu bar.
 if (testBackground && process.platform === 'darwin') app.setActivationPolicy('accessory')
