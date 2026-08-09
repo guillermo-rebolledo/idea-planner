@@ -91,7 +91,7 @@ export function Modal({
 
   return (
     <div
-      className="absolute inset-0 z-50 flex items-center justify-center bg-background/60 p-6"
+      className="modal-backdrop absolute inset-0 z-50 flex items-center justify-center bg-background/60 p-6"
       role="presentation"
       onClick={(event) => {
         if (event.target === event.currentTarget) onDismiss()
@@ -104,7 +104,7 @@ export function Modal({
         aria-labelledby={labelledBy}
         tabIndex={-1}
         className={cn(
-          'dialog-viewport w-full max-w-sm overflow-y-auto rounded-xl border border-border bg-surface-raised p-4 shadow-lg outline-none',
+          'dialog-viewport modal-panel w-full max-w-sm overflow-y-auto rounded-xl border border-border bg-surface-raised p-4 shadow-lg outline-none',
           className
         )}
       >

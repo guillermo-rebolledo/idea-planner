@@ -18,6 +18,13 @@ const electronBinary = require('electron') as unknown as string
 const mainEntry = join(__dirname, '../out/main/index.js')
 const stylesheet = readFileSync(join(__dirname, '../src/renderer/src/styles.css'), 'utf8')
 
+function cssBlock(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(stylesheet)
+  expect(match, `missing CSS block for ${selector}`).not.toBeNull()
+  return match?.[1] ?? ''
+}
+
 /**
  * Every role a theme states — the blocks up to `@theme inline`, which is the
  * app's type, radius and motion scale rather than any one theme's.
@@ -67,6 +74,34 @@ test.afterEach(async () => {
   await rm(sandbox.readinessBinDir, { recursive: true, force: true })
   await rm(sandbox.readinessHomeDir, { recursive: true, force: true })
   await rm(sandbox.projectDir, { recursive: true, force: true })
+})
+
+test('shared surfaces own restrained compositor-only arrival motion', () => {
+  expect(cssBlock('.modal-backdrop')).toContain(
+    'animation: modal-backdrop-enter 200ms var(--ease-out) both'
+  )
+  expect(cssBlock('.modal-panel')).toContain(
+    'animation: modal-panel-enter 200ms var(--ease-out) both'
+  )
+  expect(cssBlock('.modal-panel')).toContain('transform-origin: center')
+  expect(cssBlock('@keyframes modal-panel-enter')).toContain(
+    'transform: translateY(4px) scale(0.97)'
+  )
+  expect(cssBlock('@keyframes modal-panel-enter')).not.toContain('scale(0)')
+
+  const filesPanel = cssBlock('.files-panel-enter')
+  expect(filesPanel).toContain('animation: files-panel-enter 220ms var(--ease-drawer) both')
+  expect(filesPanel).not.toMatch(/(?:^|[;\\s])(?:min-)?width\\s*:/)
+  expect(cssBlock('@keyframes files-panel-enter')).toContain('transform: translateX(100%)')
+
+  expect(cssBlock('.outcome-notice')).toContain(
+    'animation: outcome-notice-enter 180ms var(--ease-out) both'
+  )
+  expect(cssBlock(".outcome-notice[data-exiting='true']")).toContain(
+    'animation: outcome-notice-exit 160ms var(--ease-out) both'
+  )
+  expect(cssBlock('@keyframes outcome-notice-enter')).toContain('transform: translateY(100%)')
+  expect(cssBlock('@keyframes outcome-notice-exit')).toContain('transform: translateY(100%)')
 })
 
 async function launchShell(): Promise<ElectronApplication> {

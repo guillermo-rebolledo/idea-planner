@@ -449,6 +449,14 @@ test('a person organizes the mailbox: pin, search, archive with undo, rename, co
     await expect(pinnedGroup.getByText('Offline recipe planner')).toBeVisible()
     await expect(home.getByText('Offline recipe planner')).toHaveCount(0)
 
+    // A routine outcome arrives once, remains available, and owns its short
+    // exit phase before leaving the live region. The whole lifecycle is still
+    // six seconds rather than six seconds plus the animation.
+    const outcome = page.locator('.outcome-notice')
+    await expect(outcome).toHaveAttribute('data-exiting', 'false')
+    await expect(outcome).toHaveAttribute('data-exiting', 'true', { timeout: 6_000 })
+    await expect(outcome).toHaveCount(0, { timeout: 1_000 })
+
     // Search narrows to matching Sessions; no-results is a visible, recoverable state.
     const search = page.getByRole('searchbox', { name: 'Search Sessions' })
     await search.fill('recipe')
