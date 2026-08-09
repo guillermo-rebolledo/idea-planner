@@ -1620,6 +1620,83 @@ const TWO_TURN_CODEX = `case "$1" in
 esac
 exit 1`
 
+/**
+ * A recorded-shape Codex approval exchange. Its response contract accepts only
+ * `decline`, so Argos must deliver the person's instruction as the next turn.
+ */
+const DENIAL_INSTRUCTION_CODEX = `case "$1" in
+  --version) echo "codex-cli 0.146.0"; exit 0;;
+  login) exit 0;;
+  app-server)
+    while IFS= read -r line; do
+      case "$line" in
+        *'"initialize"'*) printf '{"jsonrpc":"2.0","id":1,"result":{}}\n';;
+        *'"model/list"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"data":[{"id":"gpt-5.6-sol","displayName":"GPT-5.6-Sol","description":"The default","hidden":false,"isDefault":true,"supportedReasoningEfforts":[{"reasoningEffort":"low"}],"defaultReasoningEffort":"low"}],"nextCursor":null}}'
+          ;;
+        *'"thread/start"'*|*'"thread/resume"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-1"}}}'
+          ;;
+        *'"turn/start"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn-1"}}}'
+          case "$line" in
+            *'Run the focused tests instead'*)
+              printf '%s\n' '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"agentMessage","id":"message-2","text":"I will run the focused tests instead."}}}'
+              printf '%s\n' '{"jsonrpc":"2.0","method":"turn/completed","params":{}}'
+              ;;
+            *)
+              printf '%s\n' '{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"exec-1","startedAtMs":1,"command":"rm -rf build","cwd":"/a-project"}}'
+              ;;
+          esac
+          ;;
+        *'"id":7'*'"decline"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"commandExecution","id":"exec-1","command":"rm -rf build","cwd":"/a-project","status":"declined","commandActions":[],"aggregatedOutput":""}}}'
+          printf '%s\n' '{"jsonrpc":"2.0","method":"turn/completed","params":{}}'
+          ;;
+      esac
+    done
+    exit 0;;
+esac
+exit 1`
+
+test('denying an Approval Request can instruct the installed-shape Harness in one action', async () => {
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    // Onboarding uses the baseline ready Harness; this Session specifically
+    // exercises Codex, whose approval response cannot carry feedback.
+    await installFakeHarness('codex', DENIAL_INSTRUCTION_CODEX)
+    await installFakeHarness('claude', 'exit 1')
+    await startSession(page, 'Remove the build output')
+
+    const approval = page.getByRole('alert', { name: 'Approval request' })
+    await expect(approval).toBeVisible()
+    await approval.getByLabel('Do this instead (optional)').fill('Run the focused tests instead')
+    await approval.getByRole('button', { name: 'Deny' }).click()
+
+    const history = page.getByRole('log', { name: 'Conversation history' })
+    await expect(history.getByText(/Run the focused tests instead/)).toBeVisible()
+    await expect(history.getByText('I will run the focused tests instead.')).toBeVisible()
+    const snapshot = await page.evaluate(async () => {
+      const [session] = await window.shell.listSessions()
+      if (!session) throw new Error('Session missing')
+      return await window.shell.getConversation(session.id)
+    })
+    expect(snapshot.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'approval',
+          decision: 'denied',
+          message: 'Run the focused tests instead'
+        })
+      ])
+    )
+  } finally {
+    await app.close()
+  }
+})
+
 test('Codex completes a second message without losing Core', async () => {
   await installFakeHarness('codex', TWO_TURN_CODEX)
   await installFakeHarness('claude', 'exit 1')

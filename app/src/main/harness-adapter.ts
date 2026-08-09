@@ -17,12 +17,14 @@ import {
   APPROVAL_TOOL,
   MCP_SERVER_NAME,
   SESSION_DIFF_TOOL_NAME,
-  type PermissionMode
+  type PermissionMode,
+  type SkillName
 } from '@shared/run'
 import type { RunConfiguration } from '@shared/run'
 import type { HarnessId } from '@shared/readiness'
 import type { ProposedRule } from '@shared/approval'
 import type { CoreCommand } from '@shared/contract'
+import { redactCredentials } from '@shared/redaction'
 
 export interface HarnessAdapterCorePort {
   send(command: CoreCommand): Promise<unknown>
@@ -44,6 +46,8 @@ export interface HarnessAdapterDeps {
   stageSettings?: (permissionMode: PermissionMode) => unknown
   validateExecpolicy?: (executable: string, rulesFile: string) => Promise<void>
   writeFrame?: (runId: string, frame: string) => void
+  /** Stable domain identity generation, injectable with every other external. */
+  randomId: () => string
   /** How a bounded request reaches a Harness process; injectable for tests. */
   runBounded?: BoundedRunner
 }
@@ -143,11 +147,21 @@ export interface AdapterTerminalFact {
   summary: string
 }
 
+export interface AdapterContinuation {
+  harness: HarnessId
+  model: string
+  effort: RunConfiguration['effort']
+  skill: SkillName | null
+  permissionMode: PermissionMode
+}
+
 export interface AdapterRequestProposal {
   projectRoot: string
   harness: HarnessId
   proposed: ProposedRule | null
   summary: string
+  /** The exact choices the fallback next turn must keep. */
+  continuation: AdapterContinuation
 }
 
 interface ApprovalHost {
@@ -164,11 +178,13 @@ interface ApprovalHost {
 }
 
 export interface AdapterApprovalAnswer {
+  sessionId: string
   runId: string
   approvalId: string
   allowed: boolean
   remembered: boolean
-  message: string
+  /** Present only when the person supplied an alternative instruction. */
+  reason: string | undefined
   proposal: AdapterRequestProposal
   host?: ApprovalHost
 }
@@ -538,6 +554,31 @@ function createCodexAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter 
           })
         )
         for (const frame of answer.outgoing) dependencies.writeFrame?.(input.runId, frame)
+        // Codex's installed approval response accepts only a decision. Preserve
+        // its native decline, then use the ordinary durable queue for the
+        // person's requested alternative. The adapter owns this fallback;
+        // RunService does not need to know which Harness lacks feedback.
+        if (answer.answered && !input.allowed && input.reason) {
+          const continuation = input.proposal.continuation
+          await dependencies.core.send({
+            type: 'conversation/queue-change',
+            input: {
+              type: 'enqueue',
+              input: {
+                sessionId: input.sessionId,
+                submissionId: `approval-denial:${dependencies.randomId()}`,
+                text: redactCredentials(input.reason).slice(0, 2_000),
+                source: 'composer',
+                reviewAttachments: [],
+                harness: continuation.harness,
+                model: continuation.model,
+                effort: continuation.effort,
+                permissionMode: continuation.permissionMode,
+                ...(continuation.skill ? { skill: continuation.skill } : {})
+              }
+            }
+          })
+        }
         return answer.answered
       })
     },
@@ -700,7 +741,11 @@ function createClaudeAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter
                       }
                     : {})
                 }
-              : { behavior: 'deny', message: input.message }
+              : {
+                  behavior: 'deny',
+                  message:
+                    input.reason ?? 'You declined this in the app. Ask before trying it again.'
+                }
           )
         },
         catch: (cause) => new HarnessAdapterError('answer the Claude Approval Request', cause)

@@ -71,6 +71,7 @@ import { QueueCoordinator } from './queue-coordinator'
 import {
   createHarnessAdapter,
   harnessAdapterLayer,
+  type AdapterContinuation,
   type AdapterRequestProposal,
   type BoundedRunner,
   type HarnessAdapter
@@ -202,6 +203,16 @@ interface CheckoutBaseline {
 /** What one outstanding request could be turned into, if the person asks. */
 type RequestProposal = AdapterRequestProposal
 
+function approvalContinuation(configuration: RunSnapshot['configuration']): AdapterContinuation {
+  return {
+    harness: configuration.harness,
+    model: configuration.model,
+    effort: configuration.effort,
+    skill: configuration.skill?.name ?? null,
+    permissionMode: configuration.permissionMode
+  }
+}
+
 /**
  * Main's Harness-independent Run owner. It observes native facts, delegates
  * every Harness-specific fact to the selected Adapter, and sends one opening
@@ -273,6 +284,7 @@ export class RunService {
         claudeOauthToken: this.deps.claudeOauthToken,
         stageSettings: this.deps.stageSettings,
         writeFrame: (runId, frame) => this.deps.broker.write(runId, frame),
+        randomId: randomUUID,
         ...(this.deps.runBounded ? { runBounded: this.deps.runBounded } : {})
       })
     )
@@ -1108,7 +1120,8 @@ export class RunService {
           projectRoot: checkout,
           harness: adapter.id,
           proposed: event.proposedRule,
-          summary: event.summary
+          summary: event.summary,
+          continuation: approvalContinuation(run.configuration)
         })
         this.proposals.set(run.id, proposals)
         await this.record(run, 'waiting', 'blocked', `Waiting for you to approve ${event.summary}`)
@@ -1180,7 +1193,7 @@ export class RunService {
    * Harness stays held in its tool call until `resolveApproval` answers it.
    */
   private async requestApproval(
-    run: Pick<RunSnapshot, 'id' | 'sessionId'>,
+    run: Pick<RunSnapshot, 'id' | 'sessionId' | 'configuration'>,
     /**
      * The Project this Run works in, which is also its Checkout while a
      * Session edits its Project in place (ADR 0004). A Standing Approval
@@ -1200,7 +1213,13 @@ export class RunService {
     )
     const summary = sanitize(described.summary, projectRoot)
     const proposals = this.proposals.get(run.id) ?? new Map<string, RequestProposal>()
-    proposals.set(request.id, { projectRoot, harness, proposed: proposedRule, summary })
+    proposals.set(request.id, {
+      projectRoot,
+      harness,
+      proposed: proposedRule,
+      summary,
+      continuation: approvalContinuation(run.configuration)
+    })
     this.proposals.set(run.id, proposals)
     const event: HarnessEvent = {
       type: 'approval-request',
@@ -1232,9 +1251,9 @@ export class RunService {
   async resolveApproval(rawInput: ResolveApprovalInput): Promise<ConversationSnapshot> {
     const input = resolveApprovalInputSchema.parse(rawInput)
     const written = input.message?.trim() ?? ''
+    const reason = written === '' ? undefined : written
     // A refusal the agent cannot read is one it will simply try again.
-    const message =
-      written === '' ? 'You declined this in the app. Ask before trying it again.' : written
+    const denialMessage = reason ?? 'You declined this in the app. Ask before trying it again.'
     const allowed = input.decision === 'allow'
     const proposal = this.proposals.get(input.runId)?.get(input.approvalId)
     if (!proposal) {
@@ -1265,7 +1284,7 @@ export class RunService {
     const answered = await this.answerApproval(input, {
       allowed,
       remembered,
-      message,
+      reason,
       proposal
     })
     if (!answered) throw new Error('That request is no longer waiting for an answer')
@@ -1273,7 +1292,10 @@ export class RunService {
       type: 'approval-resolved',
       id: input.approvalId,
       decision: allowed ? 'allowed' : 'denied',
-      message: allowed ? '' : message,
+      // The Harness receives the person's original instruction. Everything
+      // durable or streamed back to the window receives the write-boundary
+      // form, as every other stored Conversation text does.
+      message: allowed ? '' : redactCredentials(denialMessage).slice(0, 2_000),
       remembered
     }
     await this.deps.core.send({
@@ -1298,7 +1320,7 @@ export class RunService {
         ? remembered && proposal.proposed
           ? `You approved the request, and always allow ${ruleText(proposal.proposed)}`
           : 'You approved the request'
-        : `You declined: ${message}`
+        : `You declined: ${denialMessage}`
     )
     return await this.readConversation(input.sessionId)
   }
@@ -1339,18 +1361,19 @@ export class RunService {
     decided: {
       allowed: boolean
       remembered: boolean
-      message: string
+      reason: string | undefined
       proposal: RequestProposal
     }
   ): Promise<boolean> {
     const adapter = this.adapters.get(input.runId) ?? this.adapter(decided.proposal.harness)
     return await this.runEffect(
       adapter.answerApproval({
+        sessionId: input.sessionId,
         runId: input.runId,
         approvalId: input.approvalId,
         allowed: decided.allowed,
         remembered: decided.remembered,
-        message: decided.message,
+        reason: decided.reason,
         proposal: decided.proposal,
         host: this.toolHosts.get(input.runId)
       })
