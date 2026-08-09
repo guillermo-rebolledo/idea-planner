@@ -27,6 +27,7 @@ import {
   type ReviewAttachment
 } from '@shared/contract'
 import type {
+  AppearanceSettings,
   MailboxProject,
   MailboxQuery,
   MailboxSession,
@@ -34,7 +35,6 @@ import type {
   SessionStatus,
   SessionSummary,
   StartedSessionResult,
-  ThemePreference,
   ThemeState
 } from '@shared/contract'
 import { AppMenu } from '@renderer/components/AppMenu'
@@ -53,7 +53,6 @@ import {
   MenuShortcut,
   MenuTrigger
 } from '@renderer/components/ui/menu'
-import { ReadinessDialog } from '@renderer/components/Readiness'
 import { SessionSwitcher } from '@renderer/components/SessionSwitcher'
 import { FilesPanel } from '@renderer/components/FilesPanel'
 import { WhereAmI } from '@renderer/components/WhereAmI'
@@ -66,7 +65,7 @@ import { pullRequestPresentation } from '@shared/pull-request-presentation'
 
 interface MailboxProps {
   theme: ThemeState | null
-  onThemePreferenceChange: (preference: ThemePreference) => void
+  onAppearanceChange: (appearance: AppearanceSettings) => Promise<void>
 }
 
 type CenterSurface =
@@ -113,10 +112,9 @@ function ownsUndo(target: Element | null): boolean {
  * (expanded list or compact rail), the app menu in its footer, and the
  * primary center surface for starting and reading Sessions.
  */
-export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React.JSX.Element {
+export function Mailbox({ theme, onAppearanceChange }: MailboxProps): React.JSX.Element {
   const [surface, setSurface] = useState<CenterSurface>({ kind: 'new-chat' })
   const [inboxCollapsed, setInboxCollapsed] = useState(false)
-  const [readinessOpen, setReadinessOpen] = useState(false)
   // What just happened, said once for everyone: the strip below renders it
   // visibly and is itself the polite live region, so a failed action never
   // reads as an ignored click and the ⌘Z hint is discoverable by sight.
@@ -671,10 +669,9 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
             </nav>
             <AppMenu
               theme={theme}
-              onThemeChange={onThemePreferenceChange}
+              onAppearanceChange={onAppearanceChange}
               archivedTotal={snapshot?.archivedTotal ?? null}
               onShowArchived={() => setQuery((current) => ({ ...current, view: 'archived' }))}
-              onOpenHarnesses={() => setReadinessOpen(true)}
               onGoToSession={() =>
                 void window.shell.listSessions().then(setSwitcher, () => undefined)
               }
@@ -764,7 +761,6 @@ export function Mailbox({ theme, onThemePreferenceChange }: MailboxProps): React
         />
       )}
 
-      {readinessOpen && <ReadinessDialog onClose={() => setReadinessOpen(false)} />}
       {switcher !== null && (
         <SessionSwitcher
           sessions={switcher}

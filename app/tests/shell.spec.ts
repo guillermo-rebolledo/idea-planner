@@ -193,6 +193,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'developSession',
       'editQueuedSubmission',
       'enqueueQueuedSubmission',
+      'getAppearanceSettings',
       'getBootState',
       'getCheckoutFacts',
       'getConversation',
@@ -233,11 +234,11 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'resumeWorktreeBootstrap',
       'revokeStandingApproval',
       'sendQueuedSubmissionNow',
+      'setAppearanceSettings',
       'setLoginShellDiscovery',
       'setQuitWarningPreference',
       'setSessionArchived',
       'setSessionPinned',
-      'setThemePreference',
       'startRun',
       'startSession',
       'stopRun',
@@ -573,7 +574,7 @@ test('quitting with active agents warns, safely exits, and remembers the reversi
     })
     await expect(preference).not.toBeChecked()
     await preference.check()
-    await settings.getByRole('button', { name: 'Done' }).click()
+    await settings.getByRole('button', { name: 'Close Settings' }).click()
 
     await startSession(page, 'Warn me again before quitting')
     await expect(page.getByRole('img', { name: 'Run in progress' })).toBeVisible()
@@ -1789,7 +1790,11 @@ test('readiness reports Codex and Claude independently, with safe repair and re-
     // Harnesses live behind the app menu in the sidebar footer.
     await page.getByRole('button', { name: 'App menu' }).click()
     await page.getByRole('menuitem', { name: 'Harnesses' }).click()
-    const dialog = page.getByRole('dialog', { name: 'Harnesses' })
+    const dialog = page.getByRole('dialog', { name: 'Settings' })
+    await expect(dialog.getByRole('button', { name: 'Harnesses' })).toHaveAttribute(
+      'aria-current',
+      'page'
+    )
     const codexCard = dialog.getByRole('region', { name: 'Codex readiness' })
     const claudeCard = dialog.getByRole('region', { name: 'Claude Code readiness' })
 
@@ -1826,7 +1831,54 @@ test('readiness reports Codex and Claude independently, with safe repair and re-
     await expect(claudeCard.getByText('Installed', { exact: true })).toBeVisible()
     await expect(claudeCard.getByText('Usable', { exact: true })).toBeVisible()
 
-    await dialog.getByRole('button', { name: 'Close Harnesses' }).click()
+    await dialog.getByRole('button', { name: 'Close Settings' }).click()
+  } finally {
+    await app.close()
+  }
+})
+
+test('custom appearance is contextual, explicit, and readable on a black canvas', async () => {
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await page.getByRole('button', { name: 'App menu' }).click()
+    await page.getByRole('menuitem', { name: 'Settings…' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Settings' })
+    await dialog.getByRole('button', { name: 'Appearance' }).click()
+
+    const custom = dialog.getByRole('button', { name: /Custom My Theme/ })
+    const light = dialog.getByRole('button', { name: /Light Quiet and bright/ })
+    await expect(custom).toHaveAttribute('aria-pressed', 'false')
+    await expect(dialog.getByRole('complementary', { name: 'Custom theme editor' })).toHaveCount(0)
+
+    await custom.click()
+    const editor = dialog.getByRole('complementary', { name: 'Custom theme editor' })
+    await expect(editor).toBeVisible()
+    await expect(custom).toHaveAttribute('aria-pressed', 'true')
+
+    // A preset dismisses the contextual editor and takes the full library width again.
+    await light.click()
+    await expect(editor).toHaveCount(0)
+    await expect(light).toHaveAttribute('aria-pressed', 'true')
+
+    await custom.click()
+    await editor.getByRole('switch', { name: 'Use the same colors for light and dark' }).click()
+    const activeBeforeEdit = await page.evaluate(() => document.documentElement.dataset['theme'])
+    await editor.getByRole('textbox', { name: 'Background hex value' }).fill('#000000')
+    // Drafting never changes the active canvas. Save & apply is the explicit boundary.
+    expect(await page.evaluate(() => document.documentElement.dataset['theme'])).toBe(
+      activeBeforeEdit
+    )
+    await editor.getByRole('button', { name: 'Save & apply' }).click()
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.dataset['theme']))
+      .toBe('dark')
+    expect(
+      await page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue('--background')
+      )
+    ).toBe('#000000')
   } finally {
     await app.close()
   }

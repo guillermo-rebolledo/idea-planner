@@ -1,28 +1,59 @@
-import { useEffect, useState } from 'react'
-import type { ThemePreference, ThemeState } from '@shared/contract'
+import { useEffect, useState, type ComponentType } from 'react'
+import { Bot, Palette, Settings2, X } from 'lucide-react'
+import type { AppearanceSettings, ReadinessSnapshot, ThemeState } from '@shared/contract'
+import { AppearanceSettingsPanel } from '@renderer/components/AppearanceSettings'
+import { ReadinessPanel } from '@renderer/components/Readiness'
 import { Button } from '@renderer/components/ui/button'
 import { Modal } from '@renderer/components/ui/dialog'
 import { cn } from '@renderer/lib/utils'
 
-const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
-  { value: 'system', label: 'System' },
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' }
+export type SettingsSection = 'general' | 'harnesses' | 'appearance'
+
+const SECTIONS: readonly {
+  id: SettingsSection
+  label: string
+  icon: ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }>
+}[] = [
+  { id: 'general', label: 'General', icon: Settings2 },
+  { id: 'harnesses', label: 'Harnesses', icon: Bot },
+  { id: 'appearance', label: 'Appearance', icon: Palette }
 ]
 
 export function SettingsDialog({
   theme,
-  onThemeChange,
+  initialSection = 'general',
+  onAppearanceChange,
   onDismiss
 }: {
   theme: ThemeState | null
-  onThemeChange: (preference: ThemePreference) => void
+  initialSection?: SettingsSection
+  onAppearanceChange: (appearance: AppearanceSettings) => Promise<void>
   onDismiss: () => void
 }): React.JSX.Element {
+  const [section, setSection] = useState<SettingsSection>(initialSection)
   const [warnBeforeQuit, setWarnBeforeQuit] = useState<boolean | null>(null)
+  const [readiness, setReadiness] = useState<ReadinessSnapshot | null>(null)
+  const [appearance, setAppearance] = useState<AppearanceSettings | null>(null)
+  const [customDraft, setCustomDraft] = useState<AppearanceSettings['custom'] | null>(null)
+  const [appearanceError, setAppearanceError] = useState(false)
+  const [appVersion, setAppVersion] = useState<string | null>(null)
 
   useEffect(() => {
-    void window.shell.getQuitWarningPreference().then(setWarnBeforeQuit)
+    void window.shell
+      .getQuitWarningPreference()
+      .then(setWarnBeforeQuit, () => setWarnBeforeQuit(true))
+    void window.shell.getReadiness().then(setReadiness, () => undefined)
+    void window.shell.getBootState().then(
+      (boot) => setAppVersion(boot.appVersion),
+      () => undefined
+    )
+    void window.shell.getAppearanceSettings().then(
+      (savedAppearance) => {
+        setAppearance(savedAppearance)
+        setCustomDraft(savedAppearance.custom)
+      },
+      () => setAppearanceError(true)
+    )
   }, [])
 
   function changeQuitWarning(enabled: boolean): void {
@@ -30,63 +61,197 @@ export function SettingsDialog({
     void window.shell.setQuitWarningPreference(enabled).catch(() => setWarnBeforeQuit(!enabled))
   }
 
+  async function applyAppearance(next: AppearanceSettings): Promise<void> {
+    const previous = appearance
+    setAppearance(next)
+    setAppearanceError(false)
+    try {
+      await onAppearanceChange(next)
+    } catch {
+      setAppearance(previous)
+      setAppearanceError(true)
+      throw new Error('Appearance could not be saved')
+    }
+  }
+
   return (
-    <Modal labelledBy="settings-title" onDismiss={onDismiss} className="max-w-md">
-      <h2 id="settings-title" className="text-sm font-medium">
-        Settings
-      </h2>
-      <section className="mt-4" aria-labelledby="appearance-settings-title">
-        <h3 id="appearance-settings-title" className="text-xs font-medium">
-          Appearance
-        </h3>
-        <div
-          role="group"
-          aria-label="Theme"
-          className="mt-2 inline-flex gap-0.5 rounded-md border border-border p-0.5"
-        >
-          {THEME_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              aria-pressed={(theme?.preference ?? 'system') === option.value}
-              onClick={() => onThemeChange(option.value)}
-              className={cn(
-                'rounded px-2 py-0.5 text-2xs transition-colors focus-visible:ring-2 focus-visible:ring-ring',
-                (theme?.preference ?? 'system') === option.value
-                  ? 'bg-accent font-medium text-foreground'
-                  : 'text-muted-foreground hover:text-foreground'
-              )}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      </section>
-      <section className="mt-4 border-t border-border pt-4" aria-labelledby="quit-settings-title">
-        <h3 id="quit-settings-title" className="text-xs font-medium">
-          Quitting
-        </h3>
-        <label className="mt-2 flex items-start gap-2 text-xs">
-          <input
-            type="checkbox"
-            className="mt-0.5 accent-primary"
-            checked={warnBeforeQuit ?? true}
-            disabled={warnBeforeQuit === null}
-            onChange={(event) => changeQuitWarning(event.currentTarget.checked)}
-          />
-          <span>
-            Warn before quitting with active agents
-            <span className="mt-1 block leading-relaxed text-muted-foreground">
-              Argos safely stops active processes on exit whether this warning is on or off.
+    <Modal
+      labelledBy="settings-title"
+      onDismiss={onDismiss}
+      className="settings-dialog overflow-hidden p-0"
+    >
+      <div className="settings-dialog-layout grid h-full">
+        <aside className="flex min-h-0 flex-col bg-background/55 p-3">
+          <div className="flex h-11 items-center gap-2 px-2">
+            <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground">
+              <Settings2 aria-hidden="true" className="size-3.5" />
             </span>
-          </span>
-        </label>
-      </section>
-      <div className="mt-4 flex justify-end">
-        <Button data-autofocus="" size="sm" onClick={onDismiss}>
-          Done
-        </Button>
+            <div>
+              <h1 id="settings-title" className="text-sm font-semibold">
+                Settings
+              </h1>
+              <p className="text-2xs text-muted-foreground">Argos preferences</p>
+            </div>
+          </div>
+
+          <nav className="mt-4 space-y-1" aria-label="Settings sections">
+            {SECTIONS.map((item) => {
+              const Icon = item.icon
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  data-autofocus={item.id === initialSection ? '' : undefined}
+                  aria-current={section === item.id ? 'page' : undefined}
+                  onClick={() => setSection(item.id)}
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors focus-visible:ring-2 focus-visible:ring-ring',
+                    section === item.id
+                      ? 'bg-accent font-medium text-foreground'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  )}
+                >
+                  <Icon aria-hidden="true" className="size-3.5" />
+                  {item.label}
+                  {item.id === 'harnesses' && readiness ? (
+                    <span className="ml-auto flex gap-1">
+                      {readiness.harnesses.map((harness) => (
+                        <span
+                          key={harness.harness}
+                          role="img"
+                          aria-label={`${harness.displayName}: ${
+                            harness.capabilities.developSession.available ? 'ready' : 'needs you'
+                          }`}
+                          className={cn(
+                            'size-1.5 rounded-full',
+                            harness.capabilities.developSession.available
+                              ? 'bg-positive'
+                              : 'bg-status-blocked'
+                          )}
+                        />
+                      ))}
+                    </span>
+                  ) : null}
+                </button>
+              )
+            })}
+          </nav>
+
+          <div className="mt-auto px-2 pt-3">
+            <p className="text-2xs text-muted-foreground">
+              Argos{appVersion ? ` ${appVersion}` : ''}
+            </p>
+            <p className="mt-0.5 text-2xs text-muted-foreground">Settings stay on this Mac.</p>
+          </div>
+        </aside>
+
+        <div className="flex min-w-0 flex-col overflow-hidden">
+          <header className="flex h-16 shrink-0 items-center justify-between border-b border-border px-6">
+            <div>
+              <h2 className="text-sm font-semibold">{titleFor(section)}</h2>
+              <p className="mt-0.5 text-2xs text-muted-foreground">{descriptionFor(section)}</p>
+            </div>
+            <Button variant="ghost" size="icon" aria-label="Close Settings" onClick={onDismiss}>
+              <X aria-hidden="true" className="size-4" />
+            </Button>
+          </header>
+
+          {section === 'general' ? (
+            <GeneralSettings
+              warnBeforeQuit={warnBeforeQuit}
+              appVersion={appVersion}
+              onWarnBeforeQuit={changeQuitWarning}
+            />
+          ) : section === 'harnesses' ? (
+            <div className="flex-1 overflow-y-auto p-6">
+              <ReadinessPanel
+                className="mx-auto max-w-3xl"
+                onSnapshot={(snapshot) => setReadiness(snapshot)}
+              />
+            </div>
+          ) : (
+            <AppearanceSettingsPanel
+              theme={theme}
+              appearance={appearance}
+              customDraft={customDraft}
+              error={appearanceError}
+              onCustomDraft={setCustomDraft}
+              onApply={applyAppearance}
+              onCancel={() => setCustomDraft(appearance?.custom ?? null)}
+            />
+          )}
+        </div>
       </div>
     </Modal>
+  )
+}
+
+function titleFor(section: SettingsSection): string {
+  if (section === 'general') return 'General'
+  if (section === 'harnesses') return 'Harnesses'
+  return 'Appearance'
+}
+
+function descriptionFor(section: SettingsSection): string {
+  if (section === 'general') return 'Everyday application behavior.'
+  if (section === 'harnesses') return 'See what can run a Session and what needs attention.'
+  return 'Choose a preset or make Argos yours.'
+}
+
+function GeneralSettings({
+  warnBeforeQuit,
+  appVersion,
+  onWarnBeforeQuit
+}: {
+  warnBeforeQuit: boolean | null
+  appVersion: string | null
+  onWarnBeforeQuit: (enabled: boolean) => void
+}): React.JSX.Element {
+  return (
+    <div className="flex-1 overflow-y-auto p-6">
+      <div className="mx-auto max-w-3xl">
+        <section aria-labelledby="quitting-title">
+          <h3 id="quitting-title" className="text-xs font-medium">
+            Quitting
+          </h3>
+          <div className="mt-3 rounded-lg border border-border bg-surface">
+            <label className="flex cursor-pointer items-start gap-3 p-4 text-xs">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-primary"
+                checked={warnBeforeQuit ?? true}
+                disabled={warnBeforeQuit === null}
+                onChange={(event) => onWarnBeforeQuit(event.currentTarget.checked)}
+              />
+              <span className="font-medium">
+                Warn before quitting with active agents
+                <span className="mt-1 block max-w-xl leading-relaxed text-muted-foreground">
+                  Argos safely stops active processes on exit whether this warning is on or off.
+                </span>
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section className="mt-7" aria-labelledby="about-title">
+          <h3 id="about-title" className="text-xs font-medium">
+            About
+          </h3>
+          <dl className="mt-3 rounded-lg border border-border bg-surface text-xs">
+            <Fact label="Application" value={`Argos${appVersion ? ` ${appVersion}` : ''}`} />
+            <Fact label="Application data" value="Stored locally on this Mac" />
+          </dl>
+        </section>
+      </div>
+    </div>
+  )
+}
+
+function Fact({ label, value }: { label: string; value: string }): React.JSX.Element {
+  return (
+    <div className="flex items-center justify-between gap-6 px-4 py-3">
+      <dt>{label}</dt>
+      <dd className="text-muted-foreground">{value}</dd>
+    </div>
   )
 }

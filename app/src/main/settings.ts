@@ -1,15 +1,18 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
+import { editorIdSchema, type EditorId } from '@shared/contract'
 import {
-  editorIdSchema,
+  DEFAULT_CUSTOM_THEME,
+  customThemeSchema,
   themePreferenceSchema,
-  type EditorId,
+  type CustomTheme,
   type ThemePreference
-} from '@shared/contract'
+} from '@shared/theme'
 
 const settingsSchema = z.object({
   themePreference: themePreferenceSchema.default('system'),
+  customTheme: customThemeSchema,
   /** Ask before quitting while one or more Runs still own a Harness process. */
   warnBeforeQuitWithActiveRuns: z.boolean().default(true),
   /** Days without activity after which a pinned Session shows as Dormant. */
@@ -24,6 +27,7 @@ const settingsSchema = z.object({
 
 export interface Settings {
   themePreference: ThemePreference
+  customTheme: CustomTheme
   warnBeforeQuitWithActiveRuns: boolean
   dormantAfterDays: number
   harnessExecutables: Record<string, string>
@@ -66,6 +70,7 @@ export class SettingsStore {
     }
     return {
       themePreference: 'system',
+      customTheme: DEFAULT_CUSTOM_THEME,
       warnBeforeQuitWithActiveRuns: true,
       dormantAfterDays: 14,
       harnessExecutables: {},
