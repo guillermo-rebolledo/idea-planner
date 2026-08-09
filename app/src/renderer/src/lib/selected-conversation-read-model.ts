@@ -127,6 +127,13 @@ export class SelectedConversationReadModel {
     // Lifecycle invalidation is published only after its durable write. Any
     // read already in flight therefore predates this push and must lose.
     if (streamed.invalidation === 'mailbox') this.revision += 1
+    // A rewind carries no live Run content. Its durable snapshot is the whole
+    // answer; folding it as a Run event would briefly invent activity for the
+    // old Run it names.
+    if (streamed.event.type === 'rewound') {
+      if (streamed.invalidation === 'mailbox') this.invalidateDurableRead()
+      return
+    }
     if (streamed.event.type === 'started') this.failureSummary = null
     if (streamed.event.type === 'failed') this.failureSummary = streamed.event.summary
     this.streamed.push(streamed)

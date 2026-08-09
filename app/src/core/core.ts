@@ -35,7 +35,9 @@ import type {
   QueuedSubmissionLaunchResult,
   RecordAppActionInput,
   RecordCompactionInput,
+  RecordRewindInput,
   SubmitConversationMessageInput,
+  SubmitConversationMessageResult,
   UnfinishedRun
 } from '@shared/conversation'
 import type { ProjectSkillsTrust, ProjectView } from '@shared/project'
@@ -113,9 +115,13 @@ export interface Core {
   recordRunEvent(input: RecordRunEventInput): Promise<RunSnapshot>
   getConversation(sessionId: string): Promise<ConversationSnapshot>
   submitConversationMessage(input: SubmitConversationMessageInput): Promise<ConversationSnapshot>
+  submitConversationMessageWithResult(
+    input: SubmitConversationMessageInput
+  ): Promise<SubmitConversationMessageResult>
   recordAppAction(input: RecordAppActionInput): Promise<ConversationSnapshot>
   planCompaction(sessionId: string): Promise<CompactionPlan>
   compactConversation(input: RecordCompactionInput): Promise<ConversationSnapshot>
+  rewindConversation(input: RecordRewindInput): Promise<ConversationSnapshot>
   changeQueuedSubmissions(input: QueuedSubmissionChange): Promise<ConversationSnapshot>
   nextQueuedSubmission(sessionId: string): Promise<QueuedSubmissionLaunchPlan | null>
   observeQueuedSubmissionLaunch(
@@ -169,9 +175,13 @@ export interface CoreEffects {
   submitConversationMessage(
     input: SubmitConversationMessageInput
   ): Effect.Effect<ConversationSnapshot, CoreError>
+  submitConversationMessageWithResult(
+    input: SubmitConversationMessageInput
+  ): Effect.Effect<SubmitConversationMessageResult, CoreError>
   recordAppAction(input: RecordAppActionInput): Effect.Effect<ConversationSnapshot, CoreError>
   planCompaction(sessionId: string): Effect.Effect<CompactionPlan, CoreError>
   compactConversation(input: RecordCompactionInput): Effect.Effect<ConversationSnapshot, CoreError>
+  rewindConversation(input: RecordRewindInput): Effect.Effect<ConversationSnapshot, CoreError>
   changeQueuedSubmissions(
     input: QueuedSubmissionChange
   ): Effect.Effect<ConversationSnapshot, CoreError>
@@ -796,9 +806,11 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     recordRunEvent,
     getConversation: (sessionId) => conversation.get(sessionId),
     submitConversationMessage: (input) => conversation.submit(input),
+    submitConversationMessageWithResult: (input) => conversation.submitWithResult(input),
     recordAppAction: (input) => conversation.recordAppAction(input),
     planCompaction: (sessionId) => conversation.compactionPlan(sessionId),
     compactConversation: (input) => conversation.compact(input),
+    rewindConversation: (input) => conversation.rewind(input),
     changeQueuedSubmissions: (input) => queuedSubmissions.change(input),
     nextQueuedSubmission: (sessionId) => queuedSubmissions.next(sessionId),
     observeQueuedSubmissionLaunch: (input) => queuedSubmissions.observeLaunch(input),
@@ -941,9 +953,12 @@ export function createCore(deps: CoreDeps = {}): Core {
     recordRunEvent: (input) => run(core.recordRunEvent(input)),
     getConversation: (sessionId) => run(core.getConversation(sessionId)),
     submitConversationMessage: (input) => run(core.submitConversationMessage(input)),
+    submitConversationMessageWithResult: (input) =>
+      run(core.submitConversationMessageWithResult(input)),
     recordAppAction: (input) => run(core.recordAppAction(input)),
     planCompaction: (sessionId) => run(core.planCompaction(sessionId)),
     compactConversation: (input) => run(core.compactConversation(input)),
+    rewindConversation: (input) => run(core.rewindConversation(input)),
     changeQueuedSubmissions: (input) => run(core.changeQueuedSubmissions(input)),
     nextQueuedSubmission: (sessionId) => run(core.nextQueuedSubmission(sessionId)),
     observeQueuedSubmissionLaunch: (input) => run(core.observeQueuedSubmissionLaunch(input)),

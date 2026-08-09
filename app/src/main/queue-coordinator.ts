@@ -79,6 +79,15 @@ export class QueueCoordinator {
     return this.deps.runEffect ? this.deps.runEffect(program) : Effect.runPromise(program)
   }
 
+  /** Runs a context-changing operation between queued launches for this Session. */
+  exclusive<A>(sessionId: string, operation: () => Promise<A>): Promise<A> {
+    const program = Effect.gen(this, function* () {
+      const semaphore = yield* this.sessionSemaphore(sessionId)
+      return yield* semaphore.withPermits(1)(Effect.promise(operation))
+    })
+    return this.deps.runEffect ? this.deps.runEffect(program) : Effect.runPromise(program)
+  }
+
   private sessionSemaphore(sessionId: string): Effect.Effect<Effect.Semaphore> {
     return Effect.gen(this, function* () {
       const known = (yield* Ref.get(this.sessions)).get(sessionId)

@@ -40,6 +40,8 @@ export const MAX_APPROVAL_DETAIL = 4_000
  * than the Thread it replaces.
  */
 export const MAX_COMPACTION_SUMMARY = 20_000
+/** Whole recent messages retained when a context boundary starts a fresh Thread. */
+export const CONVERSATION_TAIL_MESSAGES = 8
 
 /**
  * How an Approval Request ended. `abandoned` is what an unanswered request
@@ -401,7 +403,9 @@ export const conversationBoundarySchema = z.enum([
    * them — and it changes only what the Harness is told next. Everything the
    * person can read is untouched.
    */
-  'compacted'
+  'compacted',
+  /** The chosen message and every turn after it were set aside from the readable Conversation. */
+  'rewound'
 ])
 export type ConversationBoundaryKind = z.infer<typeof conversationBoundarySchema>
 
@@ -422,6 +426,13 @@ export const compactionSchema = z.object({
   native: z.boolean()
 })
 export type Compaction = z.infer<typeof compactionSchema>
+
+/** What one rewind set aside, and where the tail for the next fresh Thread begins. */
+export const rewindSchema = z.object({
+  rewoundToEntryId: z.string().min(1),
+  tailFromEntryId: z.string().min(1)
+})
+export type Rewind = z.infer<typeof rewindSchema>
 
 /**
  * How little headroom is left before a Session is compacted without being
@@ -615,7 +626,9 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     /** Exact terminal activity projection, so restart does not rewrite its meaning. */
     terminalActivityKind: runActivityKindSchema.optional(),
     /** What was summarized, and from where the turns are carried whole. */
-    compaction: compactionSchema.optional()
+    compaction: compactionSchema.optional(),
+    /** Present only on a rewind boundary. */
+    rewind: rewindSchema.optional()
   }),
   z.object({
     kind: z.literal('usage'),
@@ -944,6 +957,13 @@ export const submitConversationMessageInputSchema = z.object({
 })
 export type SubmitConversationMessageInput = z.input<typeof submitConversationMessageInputSchema>
 
+/** Core's authoritative answer to whether a submit appended or replayed a message. */
+export const submitConversationMessageResultSchema = z.object({
+  snapshot: conversationSnapshotSchema,
+  disposition: z.enum(['accepted', 'visible-replay', 'rewound-replay'])
+})
+export type SubmitConversationMessageResult = z.infer<typeof submitConversationMessageResultSchema>
+
 /**
  * How a message is answered: everything chosen in a composer's chip row. The
  * same shape wherever a message is sent from, so the launch screen and the
@@ -1085,6 +1105,14 @@ export const recordCompactionInputSchema = z.object({
 })
 export type RecordCompactionInput = z.input<typeof recordCompactionInputSchema>
 
+/** Appends one rewind boundary without deleting any journal entry. */
+export const recordRewindInputSchema = z.object({
+  sessionId: z.string().min(1),
+  operationId: z.string().min(1).max(200),
+  targetEntryId: z.string().min(1)
+})
+export type RecordRewindInput = z.infer<typeof recordRewindInputSchema>
+
 /**
  * The Renderer asking for a Session to be compacted now, rather than waiting
  * for its headroom to run out. Nothing else is chosen here: the Harness asked
@@ -1093,6 +1121,10 @@ export type RecordCompactionInput = z.input<typeof recordCompactionInputSchema>
  */
 export const compactSessionInputSchema = z.object({ sessionId: z.string().min(1) })
 export type CompactSessionInput = z.infer<typeof compactSessionInputSchema>
+
+/** The Renderer choosing the user message it wants returned to the composer. */
+export const rewindSessionInputSchema = recordRewindInputSchema
+export type RewindSessionInput = z.infer<typeof rewindSessionInputSchema>
 
 /** The Renderer's one command for developing a Session through a Conversation. */
 export const developSessionInputSchema =
@@ -1111,7 +1143,7 @@ export function startingSubmissionId(sessionId: string): string {
 
 /** App-owned Run boundaries that no Harness Adapter can report for itself. */
 export const conversationLifecycleEventSchema = z.object({
-  type: z.enum(['started', 'stopped'])
+  type: z.enum(['started', 'stopped', 'rewound'])
 })
 export type ConversationLifecycleEvent = z.infer<typeof conversationLifecycleEventSchema>
 

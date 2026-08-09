@@ -6,6 +6,7 @@ import {
   queuedSubmissionLaunchObservationSchema,
   recordAppActionInputSchema,
   recordCompactionInputSchema,
+  recordRewindInputSchema,
   runRequestSchema,
   submitConversationMessageInputSchema,
   type CompactSessionInput,
@@ -15,7 +16,8 @@ import {
   type EditQueuedSubmissionInput,
   type EnqueueQueuedSubmissionInput,
   type MoveQueuedSubmissionInput,
-  type QueuedSubmissionIdentity
+  type QueuedSubmissionIdentity,
+  type RewindSessionInput
 } from './conversation'
 import {
   grantStandingApprovalInputSchema,
@@ -88,6 +90,7 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 23: a Conversation can be rewound without deleting journal entries or touching files.
  * 22: Projects can be cloned from Git URLs or an authenticated GitHub repository.
  * 21: a Session survives its context window — Conversations carry a compacted
  *     boundary, and compaction can be planned, recorded, and asked for.
@@ -110,7 +113,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 22
+export const CONTRACT_VERSION = 23
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -393,6 +396,7 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('conversation/app-action'), input: recordAppActionInputSchema }),
   z.object({ type: z.literal('conversation/compaction-plan'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('conversation/compact'), input: recordCompactionInputSchema }),
+  z.object({ type: z.literal('conversation/rewind'), input: recordRewindInputSchema }),
   z.object({ type: z.literal('conversation/queue-change'), input: queuedSubmissionChangeSchema }),
   z.object({ type: z.literal('conversation/queue-next'), sessionId: z.string().min(1) }),
   z.object({
@@ -582,6 +586,8 @@ export interface ShellApi {
    * exactly where it was, and stays readable.
    */
   compactSession(input: CompactSessionInput): Promise<ConversationSnapshot>
+  /** Sets aside the chosen message and later turns; files are never touched. */
+  rewindSession(input: RewindSessionInput): Promise<ConversationSnapshot>
   /** Adds a captured submission to the Session-owned durable queue. */
   enqueueQueuedSubmission(input: EnqueueQueuedSubmissionInput): Promise<ConversationSnapshot>
   editQueuedSubmission(input: EditQueuedSubmissionInput): Promise<ConversationSnapshot>
