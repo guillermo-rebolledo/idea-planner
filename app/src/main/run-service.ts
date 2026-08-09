@@ -1526,14 +1526,7 @@ function terminalObservation(
  * so the two can never drift apart.
  */
 
-/**
- * Whether Codex still holds the rollout behind a saved Harness Thread. Codex
- * refuses to resume a thread whose rollout file is gone — "no rollout found
- * for thread id …" — and retrying the same id can never succeed, so a thread
- * that is not on disk takes the restore-from-history path instead of failing
- * the Run. Rollouts live under `sessions/YYYY/MM/DD/rollout-…-<threadId>.jsonl`;
- * checked on disk like Claude's, because the app-server is not running yet.
- */
+/** The Harness executable exactly as it was when a Run was accepted. */
 async function hashFile(path: string): Promise<string> {
   return createHash('sha256')
     .update(await readFile(path))
