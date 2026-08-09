@@ -6,6 +6,10 @@ Date: 2026-08-07
 Amends [ADR 0004](./0004-in-place-primary-checkout.md) and extends
 [ADR 0002](./0002-app-owned-session-state.md).
 
+Publishing is the sole exception to the no-commit rule below, and only for an explicit action against
+a reviewed Checkout tree; Local publishing adds the fail-closed baseline, index, and tree-token guards
+defined by [ADR 0007](./0007-user-triggered-worktree-publishing.md).
+
 ## Context
 
 ADR 0004 said **git is the only undo**, and that is still the shape of the
@@ -32,11 +36,11 @@ made.
   content-addressed object store** in application support, alongside per-Run
   metadata naming the two trees and the Checkout they describe.
 - Undo is expressed as a **Git patch inverting the Run**, applied with
-  `git apply`. The app writes no commits, no refs, and no new mechanism.
+  `git apply`. Snapshot and undo behavior writes no commits, no refs, and no new mechanism.
 - Snapshot data follows **Session lifetime**: Archive retains it, and deleting a
   Session removes it. This is app-owned state under ADR 0002, and losing it
   loses undo, never work.
-- The user's repository is **never written into**. Snapshots are staged through
+- The user's repository is **never written into by snapshot or undo behavior**. Snapshots are staged through
   a **fresh temporary index** per capture and the Project's own object directory
   is added only as a **read-only alternate**, so every object the app writes
   lands in app-owned state.

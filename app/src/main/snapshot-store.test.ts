@@ -43,6 +43,56 @@ describe('a Session’s snapshot store', () => {
     expect(record?.before).not.toBe(record?.after)
   })
 
+  it('compares the original Session baseline with the publishable Checkout now', async () => {
+    await store.capture({ sessionId: 's', runId: 'r', checkout, phase: 'before' })
+    await writeFile(join(checkout, 'tracked.ts'), 'temporary\n')
+    await store.capture({ sessionId: 's', runId: 'r', checkout, phase: 'after' })
+    await writeFile(join(checkout, 'tracked.ts'), 'base\n')
+    await writeFile(join(checkout, 'published.ts'), 'ship this\n')
+
+    await expect(store.compareCurrent('s', checkout)).resolves.toMatchObject({
+      changes: [{ path: 'published.ts', changeKind: 'added' }],
+      unlisted: 0
+    })
+  })
+
+  it('reviews a Local commit only from a clean baseline and unchanged index', async () => {
+    await store.capture({ sessionId: 's', runId: 'r', checkout, phase: 'before' })
+    await writeFile(join(checkout, 'published.ts'), 'ship this\n')
+
+    const safety = await store.localPublishSafety('s', checkout)
+
+    expect(safety.status).toBe('safe')
+    if (safety.status !== 'safe') throw new Error(safety.detail)
+    expect(typeof safety.expectedTree).toBe('string')
+    expect(safety.comparison).toMatchObject({
+      changes: [{ path: 'published.ts', changeKind: 'added' }],
+      unlisted: 0
+    })
+  })
+
+  it('refuses a Local commit when the Session began with uncommitted work', async () => {
+    await writeFile(join(checkout, 'mine.ts'), 'already here\n')
+    await store.capture({ sessionId: 's', runId: 'r', checkout, phase: 'before' })
+    await writeFile(join(checkout, 'published.ts'), 'ship this\n')
+
+    const safety = await store.localPublishSafety('s', checkout)
+    expect(safety.status).toBe('unavailable')
+    if (safety.status !== 'unavailable') throw new Error('Local publishing was unexpectedly safe')
+    expect(safety.detail).toContain('already modified')
+  })
+
+  it('refuses a Local commit while the person has staged changes', async () => {
+    await store.capture({ sessionId: 's', runId: 'r', checkout, phase: 'before' })
+    await writeFile(join(checkout, 'published.ts'), 'ship this\n')
+    await git('git', ['add', 'published.ts'], { cwd: checkout })
+
+    const safety = await store.localPublishSafety('s', checkout)
+    expect(safety.status).toBe('unavailable')
+    if (safety.status !== 'unavailable') throw new Error('Local publishing was unexpectedly safe')
+    expect(safety.detail).toContain('Unstage')
+  })
+
   it('stores one copy of content two Runs left identical', async () => {
     await store.capture({ sessionId: 's', runId: 'one', checkout, phase: 'before' })
     await store.capture({ sessionId: 's', runId: 'two', checkout, phase: 'before' })

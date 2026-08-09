@@ -30,6 +30,7 @@ import {
   MenuTrigger
 } from '@renderer/components/ui/menu'
 import { cn } from '@renderer/lib/utils'
+import { PullRequestAction } from '@renderer/components/PullRequestAction'
 
 /**
  * The title-bar "where am I?" cluster (mockup 2a): branch · Local/Worktree ·
@@ -50,6 +51,7 @@ interface WhereAmIProps {
   /** Opens the panel without toggling, as the card's Changes row does. */
   onShowFiles: () => void
   onAnnounce: (text: string) => void
+  onPullRequestPublished: () => void
 }
 
 /** The last segment of a Project root: how the person knows the folder. */
@@ -90,7 +92,8 @@ export function WhereAmI({
   filesOpen,
   onToggleFiles,
   onShowFiles,
-  onAnnounce
+  onAnnounce,
+  onPullRequestPublished
 }: WhereAmIProps): React.JSX.Element {
   const [facts, setFacts] = useState<CheckoutFacts | null>(null)
   const [editors, setEditors] = useState<EditorCatalog | null>(null)
@@ -141,6 +144,11 @@ export function WhereAmI({
 
   return (
     <div className="flex items-center gap-1.5">
+      <PullRequestAction
+        session={session}
+        onPublished={onPullRequestPublished}
+        onAnnounce={onAnnounce}
+      />
       <Popover open={cardOpen} onOpenChange={setCardOpen}>
         {/* One trigger wearing two chips: branch and Checkout open the same
             Project card, and splitting them would be two buttons for one

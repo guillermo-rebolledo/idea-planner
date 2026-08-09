@@ -382,6 +382,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
           conversation.state(session.id).pipe(
             Effect.map((state): MailboxSession => ({
               ...session,
+              pullRequest: null,
               dormant:
                 query.view === 'active' &&
                 session.pinned &&
@@ -394,6 +395,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
             Effect.catchAll(() =>
               Effect.succeed<MailboxSession>({
                 ...session,
+                pullRequest: null,
                 dormant: false,
                 status: 'idle',
                 waitingFor: null

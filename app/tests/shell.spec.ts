@@ -33,7 +33,9 @@ interface Sandbox {
 
 let sandbox: Sandbox
 
-async function launchShell(options: { quitWarning?: boolean } = {}): Promise<ElectronApplication> {
+async function launchShell(
+  options: { quitWarning?: boolean; github?: boolean } = {}
+): Promise<ElectronApplication> {
   return electron.launch({
     executablePath: electronBinary,
     args: [mainEntry],
@@ -43,6 +45,9 @@ async function launchShell(options: { quitWarning?: boolean } = {}): Promise<Ele
       APP_TEST_BACKGROUND: '1',
       APP_TEST_READINESS_PATH: sandbox.readinessBinDir,
       APP_TEST_READINESS_HOME: sandbox.readinessHomeDir,
+      ...(options.github
+        ? { PATH: [sandbox.readinessBinDir, process.env['PATH'] ?? ''].join(delimiter) }
+        : {}),
       ...(options.quitWarning ? { APP_TEST_QUIT_WARNING: '1' } : {}),
       // Successive answers from the Project picker, in order.
       APP_TEST_CHOOSE_PROJECT_DIRS: [
@@ -183,6 +188,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'chooseProject',
       'clearHarnessExecutable',
       'confirmProject',
+      'createPullRequest',
       'deleteSession',
       'developSession',
       'editQueuedSubmission',
@@ -212,8 +218,10 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'onUndoShortcut',
       'openExternalLink',
       'openInEditor',
+      'openPullRequest',
       'pathForFile',
       'pauseConversationQueue',
+      'preparePullRequest',
       'prepareRunUndo',
       'queryMailbox',
       'refreshReadiness',
@@ -1238,6 +1246,7 @@ test('a change nobody reported is still listed, and says nobody reported it', as
 })
 
 test('the title bar states where a Session works — Local, or an isolated Worktree', async () => {
+  await installFakeHarness('gh', READY_GH_FAKE)
   const gitc = (args: string[]): Promise<unknown> =>
     git('git', ['-c', 'user.email=a@b', '-c', 'user.name=t', ...args], {
       cwd: sandbox.projectDir
@@ -1250,7 +1259,7 @@ test('the title bar states where a Session works — Local, or an isolated Workt
   await gitc(['commit', '--quiet', '-m', 'init'])
   await gitc(['checkout', '--quiet', '-b', 'trunk'])
   await writeFile(join(sandbox.projectDir, '.env.local'), 'checkout-only\n')
-  const app = await launchShell()
+  const app = await launchShell({ github: true })
   try {
     const page = await app.firstWindow()
     await completeOnboarding(page)
@@ -1260,6 +1269,72 @@ test('the title bar states where a Session works — Local, or an isolated Workt
     const chips = page.getByRole('button', { name: /Project card for/ })
     await expect(chips).toContainText('trunk')
     await expect(chips).toContainText('Local')
+    await expect(page.getByRole('button', { name: 'Create a Pull Request' })).toBeEnabled()
+
+    // Availability is quiet and current: staged Local work disables the
+    // action in place, and focus re-checks after the person unstages it.
+    await writeFile(join(sandbox.projectDir, 'staged-by-person.ts'), 'keep separate\n')
+    await gitc(['add', 'staged-by-person.ts'])
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await expect(page.getByRole('button', { name: 'Create a Pull Request' })).toBeDisabled()
+    await expect(page.getByRole('button', { name: 'Create a Pull Request' })).toHaveAttribute(
+      'title',
+      /Unstage/
+    )
+    await gitc(['restore', '--staged', 'staged-by-person.ts'])
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await expect(page.getByRole('button', { name: 'Create a Pull Request' })).toBeEnabled()
+    await page.getByRole('button', { name: 'Create a Pull Request' }).click()
+    const localPullRequestDialog = page.getByRole('dialog', { name: 'Create Pull Request' })
+    await expect(localPullRequestDialog).toContainText('Local Checkout safety')
+    await localPullRequestDialog.getByRole('button', { name: 'Cancel' }).click()
+
+    const localPublishing = await page.evaluate(async () => {
+      const session = (await window.shell.listSessions())[0]
+      if (!session) throw new Error('The Local Session was not stored')
+      return {
+        refusedDrift: await window.shell.createPullRequest({
+          sessionId: session.id,
+          baseBranch: 'trunk',
+          title: 'Must match the review',
+          body: '## Summary\n\n- Must match the review',
+          publishMode: 'local',
+          expectedTree: '1111111111111111111111111111111111111111'
+        }),
+        sessionId: session.id
+      }
+    })
+    expect(localPublishing.refusedDrift).toEqual({
+      status: 'failed',
+      detail: 'The Local Checkout changed after this Pull Request was reviewed.'
+    })
+
+    // A persisted association is visible after navigating away and back; the
+    // link is not merely state held by the component that created it.
+    const pullRequestDirectory = join(
+      sandbox.appDataDir,
+      'com.memojiinc.argos',
+      'runs',
+      'pull-requests'
+    )
+    await mkdir(pullRequestDirectory, { recursive: true })
+    await writeFile(
+      join(pullRequestDirectory, `${encodeURIComponent(localPublishing.sessionId)}.json`),
+      JSON.stringify({
+        number: 9,
+        url: 'https://github.com/example/argos/pull/9',
+        title: 'Stored PR',
+        state: 'merged'
+      })
+    )
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await expect(page.getByRole('img', { name: 'PR merged: #9, Stored PR' })).toBeVisible()
+    await page.getByRole('button', { name: 'New Session', exact: true }).click()
+    await page
+      .getByRole('navigation', { name: 'Session inbox' })
+      .getByRole('button', { name: /^Local facts PR merged/ })
+      .click()
+    await expect(page.getByRole('button', { name: 'Open PR #9' })).toBeVisible()
 
     // Clicking them opens the Project card (2b) with every fact on it.
     await chips.click()
@@ -1304,6 +1379,7 @@ test('the title bar states where a Session works — Local, or an isolated Workt
     // from the message that started the Session.
     await expect(chips).toContainText('Worktree')
     await expect(chips).toContainText('fix-the-location-crash')
+    await expect(page.getByRole('button', { name: 'Create a Pull Request' })).toBeEnabled()
     await chips.click()
     await expect(card.getByText(/worktrees/)).toBeVisible()
     await expect(card.getByText('working copy')).toHaveCount(0)
@@ -1682,6 +1758,13 @@ const READY_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
   -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
 esac`
+
+const READY_GH_FAKE = `case "$1:$2" in
+  --version:*) echo "gh version 2.80.0"; exit 0;;
+  auth:status) echo '{"hosts":{"github.com":[{"state":"success"}]}}'; exit 0;;
+  repo:view) echo "trunk"; exit 0;;
+esac
+exit 1`
 
 const LONG_RUNNING_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;

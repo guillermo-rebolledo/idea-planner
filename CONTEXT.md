@@ -38,6 +38,10 @@ _Avoid_: Backup, version, checkpoint, commit
 Putting one Run's file changes back, from its Run Snapshot. Never automatic and never ⌘Z: the person asks for it on the Run. A **Worktree** Checkout may be restored **directly**, and only when every path it changed still holds exactly what the Run left there; anything else — every **Local** Checkout, and any Worktree where something has moved — is a **review**, where the inverse patch is read first and one confirmation applies only the **safe** paths. A path is safe, **diverged** (changed since, and never written to), or **already restored**. Undo appends to the Conversation and never rewrites it: the Run and its diff stay exactly as they were recorded.
 _Avoid_: Revert, rollback, discard, restore point
 
+**Pull Request**:
+The GitHub proposal created when a person explicitly publishes a Session. Publishing is a reviewed staircase — commit, push, then create — driven through the person's authenticated `gh`; Worktrees commit their isolated changes, while Local Checkouts require a clean original baseline, an unstaged index, and an unchanged reviewed tree. Argos stores only the PR link and remotely observed draft, open, merged, or closed state. The state is an inbox adornment, never what the Session is doing, and Archive keeps it while Delete removes it.
+_Avoid_: Change Request, merge request, PR status as Session status
+
 ### Conversation
 
 **Conversation**:

@@ -48,6 +48,10 @@ Explicitly surface output that contradicts an existing ADR rather than silently 
   Submission carrying them. Their bounds, identity-reuse rule, and Harness
   prompt serialization live in the shared contract, so Renderer never decides
   what may be sent and the Conversation keeps only the person's prose.
+- **Pull Request associations** are external source-control facts owned by Main
+  beside its native `gh` process behavior (ADR 0007), not Conversation facts.
+  Their app-owned record follows Session lifetime and is joined into the
+  mailbox read model as a nullable, potentially stale adornment.
 
 Effect is confined to Core and Main product behavior. Core process transport,
 Electron IPC, Preload, shared contracts, and Renderer state are Promise/zod or

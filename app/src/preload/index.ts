@@ -48,6 +48,9 @@ const api: ShellApi = {
   setLoginShellDiscovery: (consent) =>
     ipcRenderer.invoke(IPC_CHANNELS.setLoginShellDiscovery, consent),
   openExternalLink: (url) => ipcRenderer.invoke(IPC_CHANNELS.openExternalLink, url),
+  preparePullRequest: (input) => ipcRenderer.invoke(IPC_CHANNELS.preparePullRequest, input),
+  createPullRequest: (input) => ipcRenderer.invoke(IPC_CHANNELS.createPullRequest, input),
+  openPullRequest: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.openPullRequest, sessionId),
   startRun: (input) => ipcRenderer.invoke(IPC_CHANNELS.startRun, input),
   listRuns: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.listRuns, sessionId),
   stopRun: (input) => ipcRenderer.invoke(IPC_CHANNELS.stopRun, input),

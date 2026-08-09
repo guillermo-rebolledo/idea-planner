@@ -1,7 +1,14 @@
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { z } from 'zod'
-import { snapshotCheckout, type CheckoutSnapshot } from './git'
+import {
+  diffSnapshots,
+  snapshotCheckout,
+  type CheckoutSnapshot,
+  type SnapshotComparison
+} from './git'
 
 /**
  * The Git objects this app keeps for itself, one store per Session (ADR 0006).
@@ -20,6 +27,11 @@ import { snapshotCheckout, type CheckoutSnapshot } from './git'
 
 const STORES = 'session-snapshots'
 const RUNS = 'runs'
+const run = promisify(execFile)
+
+export type LocalPublishSafety =
+  | { status: 'safe'; expectedTree: string | null; comparison: SnapshotComparison }
+  | { status: 'unavailable'; detail: string }
 
 /** What was captured for one Run, kept so a restart can still read it. */
 export const runSnapshotRecordSchema = z.object({
@@ -91,6 +103,89 @@ export class SessionSnapshotStore {
   /** What was captured for one Run, or nothing anybody can act on. */
   read(sessionId: string, runId: string): Promise<RunSnapshotRecord | null> {
     return this.readPath(this.recordPath(sessionId, runId))
+  }
+
+  /** Compares the Session's original baseline with the publishable Checkout now. */
+  async compareCurrent(sessionId: string, checkout: string): Promise<SnapshotComparison | null> {
+    try {
+      const records = await this.recordsFor(sessionId, checkout)
+      const baseline = records[0]?.before
+      if (!baseline) return null
+      const current = await snapshotCheckout(checkout, this.directoryFor(sessionId))
+      return await diffSnapshots(
+        checkout,
+        this.directoryFor(sessionId),
+        { status: 'taken', tree: baseline },
+        current
+      )
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Local publishing is safe only from a clean Session baseline and a clean
+   * real index. The current tree becomes a review token checked again after
+   * staging, so edits made after the dialog opened cannot enter the commit.
+   */
+  async localPublishSafety(sessionId: string, checkout: string): Promise<LocalPublishSafety> {
+    try {
+      const records = await this.recordsFor(sessionId, checkout)
+      const baseline = records[0]?.before
+      if (!baseline) {
+        return {
+          status: 'unavailable',
+          detail:
+            'This Session has no original Checkout snapshot. Start a new Session to publish safely.'
+        }
+      }
+      const staged = await run('git', ['diff', '--cached', '--name-only', '-z'], { cwd: checkout })
+      if (staged.stdout.length > 0) {
+        return {
+          status: 'unavailable',
+          detail: 'Unstage your existing changes before publishing from the Local Checkout.'
+        }
+      }
+      const current = await snapshotCheckout(checkout, this.directoryFor(sessionId))
+      if (current.status !== 'taken') {
+        return { status: 'unavailable', detail: 'The Local Checkout cannot be captured safely.' }
+      }
+      const comparison = await diffSnapshots(
+        checkout,
+        this.directoryFor(sessionId),
+        { status: 'taken', tree: baseline },
+        current
+      )
+      const head = (await run('git', ['rev-parse', 'HEAD^{tree}'], { cwd: checkout })).stdout.trim()
+      if (current.tree !== head && head !== baseline) {
+        return {
+          status: 'unavailable',
+          detail:
+            'The Local Checkout was already modified or its branch moved after this Session began. Commit those changes yourself or use an isolated Worktree Session.'
+        }
+      }
+      return {
+        status: 'safe',
+        expectedTree: current.tree === head ? null : current.tree,
+        comparison
+      }
+    } catch {
+      return { status: 'unavailable', detail: 'The Local Checkout cannot be verified safely.' }
+    }
+  }
+
+  private async recordsFor(sessionId: string, checkout: string): Promise<RunSnapshotRecord[]> {
+    const runs = join(this.directoryFor(sessionId), RUNS)
+    return (
+      await Promise.all(
+        (await readdir(runs, { withFileTypes: true }))
+          .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+          .map((entry) => this.readPath(join(runs, entry.name)))
+      )
+    )
+      .filter((record): record is RunSnapshotRecord => record !== null)
+      .filter((record) => record.checkout === checkout && record.before !== null)
+      .sort((left, right) => left.capturedAt.localeCompare(right.capturedAt))
   }
 
   /**
