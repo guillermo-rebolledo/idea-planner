@@ -418,7 +418,7 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('harness/interrupt'), runId: z.string().min(1) }),
   z.object({
     type: z.literal('harness/steer'),
-    runId: z.string().min(1),
+    input: runSteerAdmissionInputSchema,
     prompt: z.string().min(1).max(100_000)
   }),
   z.object({

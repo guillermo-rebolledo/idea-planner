@@ -56,6 +56,9 @@ _Avoid_: Conversation, turn, Harness Thread
 A durable, editable request waiting inside one Session while another Run is active. It captures the message and its Run configuration when queued, keeps a stable submission identity through edits and reordering, and contacts a Harness only when Main claims it after an explicit Resume or a completed Run.
 _Avoid_: Held message, draft, follow-up, pending prompt
 
+**Steer**:
+A user message durably admitted to one exact active Run and offered to that same native Harness turn. If the Run is no longer active or the Harness rejects its active-turn precondition, the same submission becomes an ordinary Queued Submission. A Steer changes what the active Run should do; it does not Stop or interrupt the Run.
+
 **Review Attachment**:
 Code the user selected while reading what a Session changed — a whole recorded write, one hunk, or a range of its lines — copied at the moment of selecting it and carried by exactly one message or Queued Submission. It is historical context for the Harness, never a live reference: later writes to the same file leave it untouched, and it has no thread, reply, resolved state, or synchronization anywhere.
 _Avoid_: Review comment, annotation, code selection, snippet

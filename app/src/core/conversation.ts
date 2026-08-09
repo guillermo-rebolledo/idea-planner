@@ -248,7 +248,7 @@ export interface ConversationEffects {
   ): Effect.Effect<{ answered: boolean; outgoing: string[] }, CoreError>
   /** Adds a correction to the Harness turn currently in progress. */
   steer(
-    runId: string,
+    input: RunSteerAdmissionInput,
     prompt: string
   ): Effect.Effect<{ steered: boolean; outgoing: string[] }, CoreError>
   /** Asks the Harness to end the turn it is running, if it can be asked. */
@@ -298,6 +298,9 @@ export function createConversationEffects(options: ConversationOptions): Convers
   // Intentionally process-local. A new Core starts every non-empty queue paused,
   // even when the last durable transition before shutdown was Resume.
   const queuePauseOverrides = Effect.runSync(Ref.make<ReadonlyMap<string, boolean>>(new Map()))
+  const pendingSteers = Effect.runSync(
+    Ref.make<ReadonlyMap<string, RunSteerAdmissionInput>>(new Map())
+  )
   // One writer at a time: a streaming checkpoint must never interleave with a
   // submission or a finalize on the same journal.
   const writeLock = Effect.runSync(Effect.makeSemaphore(1))
@@ -1084,6 +1087,10 @@ export function createConversationEffects(options: ConversationOptions): Convers
         (current) => new Map([...current].filter(([, state]) => state.runId !== runId))
       ),
       Ref.update(adapters, (current) => without(current, runId)),
+      Ref.update(
+        pendingSteers,
+        (current) => new Map([...current].filter(([key]) => !key.startsWith(`${runId}\0`)))
+      ),
       Ref.update(drift, (current) => without(current, runId))
     ]).pipe(Effect.asVoid)
 
@@ -1261,6 +1268,24 @@ export function createConversationEffects(options: ConversationOptions): Convers
                   }
                 })
               )
+              return
+            }
+            case 'steer-accepted':
+              yield* Ref.update(pendingSteers, (current) =>
+                without(current, `${input.runId}\0${event.submissionId}`)
+              )
+              return
+            case 'steer-rejected': {
+              const key = `${input.runId}\0${event.submissionId}`
+              const fallback = (yield* Ref.get(pendingSteers)).get(key)
+              if (!fallback) return
+              const entries = yield* readEntries(sessionDir)
+              yield* enqueueLocked(
+                enqueueQueuedSubmissionInputSchema.parse(fallback),
+                sessionDir,
+                entries
+              )
+              yield* Ref.update(pendingSteers, (current) => without(current, key))
               return
             }
             case 'unsupported':
@@ -1856,15 +1881,17 @@ export function createConversationEffects(options: ConversationOptions): Convers
     )
 
   const steer = (
-    runId: string,
+    input: RunSteerAdmissionInput,
     prompt: string
   ): Effect.Effect<{ steered: boolean; outgoing: string[] }, CoreError> =>
     Ref.get(adapters).pipe(
-      Effect.map((current) => {
-        const adapter = current.get(runId)
-        if (!adapter) return { steered: false, outgoing: [] }
-        const steered = adapter.steer(prompt)
-        return { steered, outgoing: adapter.takeOutgoing() }
+      Effect.flatMap((current) => {
+        const adapter = current.get(input.runId)
+        if (!adapter) return Effect.succeed({ steered: false, outgoing: [] })
+        const steered = adapter.steer(prompt, input.submissionId)
+        return Ref.update(pendingSteers, (pending) =>
+          steered ? new Map(pending).set(`${input.runId}\0${input.submissionId}`, input) : pending
+        ).pipe(Effect.as({ steered, outgoing: adapter.takeOutgoing() }))
       })
     )
 

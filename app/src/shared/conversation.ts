@@ -345,6 +345,14 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('completed') }),
   z.object({
+    type: z.literal('steer-accepted'),
+    submissionId: z.string().min(1).max(200)
+  }),
+  z.object({
+    type: z.literal('steer-rejected'),
+    submissionId: z.string().min(1).max(200)
+  }),
+  z.object({
     type: z.literal('failed'),
     category: harnessFailureCategorySchema,
     summary: z.string().min(1).max(2_000)
@@ -970,6 +978,7 @@ export const runSteerAdmissionInputSchema = enqueueQueuedSubmissionInputSchema.e
   runId: z.string().min(1)
 })
 export type RunSteerAdmissionInput = z.input<typeof runSteerAdmissionInputSchema>
+export type RunSteerAdmission = z.output<typeof runSteerAdmissionInputSchema>
 
 export const editQueuedSubmissionInputSchema = z.object({
   sessionId: z.string().min(1),

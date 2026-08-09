@@ -146,6 +146,7 @@ const MAILBOX_INVALIDATING_EVENT_TYPES: ReadonlySet<ConversationEvent['type']> =
   'choices',
   'approval-request',
   'approval-resolved',
+  'steer-rejected',
   'completed',
   'failed'
 ])
@@ -496,12 +497,10 @@ export class RunService {
       )
       if (admission.delivery === 'queue') return admission.conversation
       const adapter = this.adapters.get(input.delivery.runId)
-      const steered =
-        adapter?.id === input.harness &&
-        (await this.runEffect(adapter.steer(input.delivery.runId, prompt)))
-      // Core admitted the message first. If native delivery is no longer
-      // possible, preserve the same submission in the ordinary durable queue.
-      return steered ? admission.conversation : await this.enqueueQueuedSubmission(input)
+      if (adapter?.id === input.harness) {
+        await this.runEffect(adapter.steer({ ...input, runId: input.delivery.runId }, prompt))
+      }
+      return admission.conversation
     }
     await this.deps.core.send({
       type: 'conversation/submit',
@@ -1848,6 +1847,8 @@ function describeActivity(
     // beside the turns it stands in for.
     case 'plan':
     case 'context-compacted':
+    case 'steer-accepted':
+    case 'steer-rejected':
     case 'approval-request':
     case 'approval-resolved':
     case 'assistant-message':

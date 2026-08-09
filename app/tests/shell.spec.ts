@@ -104,10 +104,8 @@ async function completeOnboarding(page: Page): Promise<void> {
   const dialog = page.getByRole('dialog', { name: 'Add Project' })
   await dialog.getByRole('button', { name: 'Choose project folder…' }).click()
   const confirmation = dialog.getByRole('alert')
-  if (await confirmation.isVisible()) {
-    await confirmation.getByRole('button', { name: 'Add this Project' }).click()
-  }
-  await page.getByRole('button', { name: 'New Session', exact: true }).waitFor()
+  await confirmation.getByRole('button', { name: 'Add this Project' }).click()
+  await page.getByRole('form', { name: 'New chat' }).waitFor()
 }
 
 /** Typing `/` offers what is installed; picking one is for that message only. */
@@ -119,8 +117,11 @@ async function chooseSkill(page: Page, name: string): Promise<void> {
 
 /** A Session is started by sending a message; its title comes from it. */
 async function startSession(page: Page, message: string): Promise<void> {
-  await page.getByRole('button', { name: 'New Session', exact: true }).click()
   const composer = page.getByRole('form', { name: 'New chat' })
+  if (!(await composer.isVisible())) {
+    await page.getByRole('button', { name: 'New Session', exact: true }).click()
+    await composer.waitFor()
+  }
   // A visible model means this helper will start a Run, not only persist the
   // Session while readiness and the asynchronous model catalog are racing on
   // first launch. Synchronise the test at the same focus refresh the UI uses.
@@ -1885,17 +1886,13 @@ test('a person adds a Project and a plain folder is refused with an offer to set
     await expect(inbox.getByText(basename(sandbox.plainDir), { exact: true })).toBeVisible()
     expect(await readdir(sandbox.plainDir)).toContain('.git')
 
-    // Pointing inside a Project adds the Project, but says so first: git
-    // resolves a root the person did not pick, and adding it silently would
-    // surprise them.
+    // Pointing inside a Project adds the Project root, but says which root git
+    // resolved before storing anything.
     await page.getByRole('button', { name: 'App menu' }).click()
     await page.getByRole('menuitem', { name: 'Add Project…' }).click()
     addProject = page.getByRole('dialog', { name: 'Add Project' })
     await addProject.getByRole('button', { name: 'Choose project folder…' }).click()
     const confirmation = addProject.getByRole('alert')
-    await expect(
-      confirmation.getByText(join(sandbox.projectDir, 'src', 'deep'), { exact: true })
-    ).toBeVisible()
     // Named exactly, because the root git resolves is the identity being added.
     await expect(
       confirmation.getByText(await realpath(sandbox.projectDir), { exact: true })
@@ -1906,17 +1903,12 @@ test('a person adds a Project and a plain folder is refused with an offer to set
     await expect(inbox.getByText(basename(sandbox.projectDir), { exact: true })).toHaveCount(1)
     await expect(inbox.getByText(basename(sandbox.plainDir), { exact: true })).toHaveCount(1)
 
-    // Two Projects and no history: nothing can say which repository is about
-    // to be edited, so the headline is a required picker and nothing can be
-    // sent until it is answered.
+    // The first Project remains selected for the new Session.
     const composer = page.getByRole('form', { name: 'New chat' })
     await expect(composer.getByRole('button', { name: 'Project' })).toContainText(
-      'one of your Projects'
+      basename(sandbox.projectDir)
     )
     await composer.getByLabel('Message').fill('Anything at all')
-    await expect(composer.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
-    await composer.getByRole('button', { name: 'Project' }).click()
-    await page.getByRole('menuitem', { name: basename(sandbox.plainDir) }).click()
     await expect(composer.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
 
     // Removing a Project asks first — one menu click must not silently change

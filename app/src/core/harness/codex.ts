@@ -48,7 +48,7 @@ export interface HarnessAdapter {
    */
   answerApproval(approvalId: string, answer: ApprovalAnswer): boolean
   /** Adds the person's correction to the turn currently in progress. */
-  steer(prompt: string): boolean
+  steer(prompt: string, submissionId: string): boolean
   /** Asks the Harness to end the turn it is running, if it can be asked. */
   interrupt(): void
 }
@@ -78,7 +78,7 @@ const INITIALIZE_ID = 1
 const THREAD_ID = 2
 const TURN_ID = 3
 const INTERRUPT_ID = 4
-const STEER_ID = 5
+const FIRST_STEER_ID = 5
 
 const responseSchema = z.object({
   id: z.number(),
@@ -418,6 +418,8 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
     return []
   }
   let turn: string | null = null
+  let nextSteerId = FIRST_STEER_ID
+  const pendingSteers = new Map<number, string>()
 
   const send = (message: Record<string, unknown>): void => {
     outgoing.push(JSON.stringify({ jsonrpc: '2.0', ...message }))
@@ -517,6 +519,16 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
   }
 
   function consumeResponse(raw: z.infer<typeof responseSchema>): HarnessEvent[] {
+    const steerSubmissionId = pendingSteers.get(raw.id)
+    if (steerSubmissionId !== undefined) {
+      pendingSteers.delete(raw.id)
+      return [
+        {
+          type: raw.error ? 'steer-rejected' : 'steer-accepted',
+          submissionId: steerSubmissionId
+        }
+      ]
+    }
     if (raw.error) {
       return [
         {
@@ -800,14 +812,16 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
       proposedPrefixes.delete(approvalId)
       return true
     },
-    steer(prompt) {
+    steer(prompt, submissionId) {
       if (!thread || !turn) return false
       const params: TurnSteerParams = {
         threadId: thread,
         expectedTurnId: turn,
         input: [{ type: 'text', text: prompt, text_elements: [] }]
       }
-      send({ id: STEER_ID, method: 'turn/steer', params })
+      const requestId = nextSteerId++
+      pendingSteers.set(requestId, submissionId)
+      send({ id: requestId, method: 'turn/steer', params })
       return true
     },
     interrupt() {

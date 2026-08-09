@@ -58,6 +58,19 @@ const configuration = {
   skill: { name: 'grilling', path: '/skills/grilling', hash: 'a'.repeat(64) }
 }
 
+const steerInput = {
+  sessionId: 'session-1',
+  submissionId: 'correction-1',
+  runId: 'run-1',
+  text: 'Correct course',
+  source: 'composer' as const,
+  harness: 'codex' as const,
+  model: 'model-1',
+  effort: 'high' as const,
+  permissionMode: 'ask' as const,
+  reviewAttachments: []
+}
+
 describe('Harness adapter contract', () => {
   it('puts Codex preparation, continuity, protocol launch, interruption, and completion behind one adapter', async () => {
     const root = await mkdtemp(join(tmpdir(), 'codex-adapter-'))
@@ -123,7 +136,7 @@ describe('Harness adapter contract', () => {
     })
     expect(await Effect.runPromise(adapter.interrupt('run-1'))).toBe(true)
     expect(deps.writeFrame).toHaveBeenCalledWith('run-1', 'interrupt-frame')
-    expect(await Effect.runPromise(adapter.steer('run-1', 'Correct course'))).toBe(true)
+    expect(await Effect.runPromise(adapter.steer(steerInput, 'Correct course'))).toBe(true)
     expect(deps.writeFrame).toHaveBeenCalledWith('run-1', 'steer-frame')
     expect(
       await Effect.runPromise(
@@ -264,7 +277,9 @@ describe('Harness adapter contract', () => {
     ).toEqual(expect.arrayContaining(['--permission-mode', 'default', '--resume', 'thread-1']))
     expect(adapter.terminalFact({ type: 'completed' })).toBeNull()
     expect(await Effect.runPromise(adapter.interrupt('run-1'))).toBe(false)
-    expect(await Effect.runPromise(adapter.steer('run-1', 'Correct course'))).toBe(false)
+    expect(
+      await Effect.runPromise(adapter.steer({ ...steerInput, harness: 'claude' }, 'Correct course'))
+    ).toBe(false)
     expect(
       await Effect.runPromise(
         adapter.open({

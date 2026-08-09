@@ -144,7 +144,7 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
     case 'harness/interrupt':
       return core.interruptHarness(command.runId)
     case 'harness/steer':
-      return core.steerHarness(command.runId, command.prompt)
+      return core.steerHarness(command.input, command.prompt)
     case 'conversation/ingest':
       return core.ingestHarnessOutput({
         sessionId: command.sessionId,

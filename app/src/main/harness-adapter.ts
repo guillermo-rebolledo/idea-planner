@@ -10,7 +10,8 @@ import {
   HARNESS_DEFAULT_MODEL,
   harnessEventSchema,
   type CodexLaunch,
-  type HarnessEvent
+  type HarnessEvent,
+  type RunSteerAdmission
 } from '@shared/conversation'
 import {
   APP_TOOLS,
@@ -218,7 +219,7 @@ export interface HarnessAdapter {
    */
   summarize(input: HarnessSummaryRequest): Effect.Effect<string, HarnessAdapterError>
   /** Delivers a correction to the active turn when this Harness supports it. */
-  steer(runId: string, prompt: string): Effect.Effect<boolean, HarnessAdapterError>
+  steer(input: RunSteerAdmission, prompt: string): Effect.Effect<boolean, HarnessAdapterError>
   interrupt(runId: string): Effect.Effect<boolean, HarnessAdapterError>
   answerApproval(input: AdapterApprovalAnswer): Effect.Effect<boolean, HarnessAdapterError>
   terminalFact(event: HarnessEvent): AdapterTerminalFact | null
@@ -536,12 +537,12 @@ function createCodexAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter 
         return (await readFile(answerPath, 'utf8')).trim()
       })
     },
-    steer(runId, prompt) {
+    steer(input, prompt) {
       return withExternal(layer, 'steer Codex', async (dependencies) => {
         const answer = steerSchema.parse(
-          await dependencies.core.send({ type: 'harness/steer', runId, prompt })
+          await dependencies.core.send({ type: 'harness/steer', input, prompt })
         )
-        for (const frame of answer.outgoing) dependencies.writeFrame?.(runId, frame)
+        for (const frame of answer.outgoing) dependencies.writeFrame?.(input.runId, frame)
         return answer.steered
       })
     },

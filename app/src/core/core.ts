@@ -129,7 +129,10 @@ export interface Core {
   answerHarnessApproval(
     input: AnswerHarnessInput
   ): Promise<{ answered: boolean; outgoing: string[] }>
-  steerHarness(runId: string, prompt: string): Promise<{ steered: boolean; outgoing: string[] }>
+  steerHarness(
+    input: RunSteerAdmissionInput,
+    prompt: string
+  ): Promise<{ steered: boolean; outgoing: string[] }>
   interruptHarness(runId: string): Promise<string[]>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Promise<HarnessStream>
   listUnfinishedRuns(): Promise<UnfinishedRun[]>
@@ -192,7 +195,7 @@ export interface CoreEffects {
     input: AnswerHarnessInput
   ): Effect.Effect<{ answered: boolean; outgoing: string[] }, CoreError>
   steerHarness(
-    runId: string,
+    input: RunSteerAdmissionInput,
     prompt: string
   ): Effect.Effect<{ steered: boolean; outgoing: string[] }, CoreError>
   interruptHarness(runId: string): Effect.Effect<string[], CoreError>
@@ -815,7 +818,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     applyHarnessEvent: (input) => conversation.apply(input),
     openHarness: (input) => conversation.open(input),
     answerHarnessApproval: (input) => conversation.answer(input),
-    steerHarness: (runId, prompt) => conversation.steer(runId, prompt),
+    steerHarness: (input, prompt) => conversation.steer(input, prompt),
     interruptHarness: (runId) => conversation.interrupt(runId),
     ingestHarnessOutput: (input) => conversation.ingest(input),
     listUnfinishedRuns
@@ -962,7 +965,7 @@ export function createCore(deps: CoreDeps = {}): Core {
     applyHarnessEvent: (input) => run(core.applyHarnessEvent(input)),
     openHarness: (input) => run(core.openHarness(input)),
     answerHarnessApproval: (input) => run(core.answerHarnessApproval(input)),
-    steerHarness: (runId, prompt) => run(core.steerHarness(runId, prompt)),
+    steerHarness: (input, prompt) => run(core.steerHarness(input, prompt)),
     interruptHarness: (runId) => run(core.interruptHarness(runId)),
     ingestHarnessOutput: (input) => run(core.ingestHarnessOutput(input)),
     listUnfinishedRuns: () => run(core.listUnfinishedRuns())

@@ -447,6 +447,54 @@ describe('mid-Run delivery admission', () => {
       expect.objectContaining({ submissionId: 'correction-1', status: 'pending' })
     )
   })
+
+  it('queues a correction when Codex rejects the active-turn precondition', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    const launch = {
+      cwd: projectRoot,
+      approvalPolicy: 'untrusted' as const,
+      sandbox: 'workspace-write' as const,
+      model: 'gpt-5-codex',
+      effort: 'medium',
+      developerInstructions: '',
+      prompt: 'Change the API'
+    }
+    await core.openHarness({ runId, harness: 'codex', launch })
+    await core.ingestHarnessOutput({
+      sessionId,
+      runId,
+      harness: 'codex',
+      chunk: `${JSON.stringify({ id: 1, result: {} })}\n`
+    })
+    await core.ingestHarnessOutput({
+      sessionId,
+      runId,
+      harness: 'codex',
+      chunk: `${JSON.stringify({ id: 2, result: { thread: { id: 'thread-1' } } })}\n`
+    })
+    await core.ingestHarnessOutput({
+      sessionId,
+      runId,
+      harness: 'codex',
+      chunk: `${JSON.stringify({ id: 3, result: { turn: { id: 'turn-1' } } })}\n`
+    })
+    const input = correction(runId)
+    await core.admitRunSteer(input)
+    const delivery = await core.steerHarness(input, input.text)
+    expect(delivery.steered).toBe(true)
+
+    const rejected = await core.ingestHarnessOutput({
+      sessionId,
+      runId,
+      harness: 'codex',
+      chunk: `${JSON.stringify({ id: 5, error: { code: -32602, message: 'turn ended' } })}\n`
+    })
+
+    expect(rejected.events).toEqual([{ type: 'steer-rejected', submissionId: 'correction-1' }])
+    expect((await core.getConversation(sessionId)).queue.items).toContainEqual(
+      expect.objectContaining({ submissionId: 'correction-1', status: 'pending' })
+    )
+  })
 })
 
 describe('Review Attachments on durable submissions', () => {

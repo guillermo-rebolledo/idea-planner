@@ -96,9 +96,11 @@ describe('the exchange', () => {
     adapter.takeOutgoing()
     adapter.ingest(`${JSON.stringify({ id: 3, result: { turn: { id: 'turn-1' } } })}\n`)
 
-    expect(adapter.steer('Correct course now')).toBe(true)
-    expect(frames(adapter.takeOutgoing())).toEqual([
+    expect(adapter.steer('Correct course now', 'correction-1')).toBe(true)
+    const [first] = frames(adapter.takeOutgoing())
+    expect(first).toEqual(
       expect.objectContaining({
+        id: 5,
         method: 'turn/steer',
         params: {
           threadId: 'thread-1',
@@ -106,6 +108,19 @@ describe('the exchange', () => {
           input: [{ type: 'text', text: 'Correct course now', text_elements: [] }]
         }
       })
+    )
+
+    expect(adapter.steer('One more correction', 'correction-2')).toBe(true)
+    expect(frames(adapter.takeOutgoing())).toEqual([
+      expect.objectContaining({ id: 6, method: 'turn/steer' })
+    ])
+    expect(
+      adapter.ingest(
+        `${JSON.stringify({ id: 5, error: { code: -32602, message: 'turn ended' } })}\n`
+      )
+    ).toEqual([{ type: 'steer-rejected', submissionId: 'correction-1' }])
+    expect(adapter.ingest(`${JSON.stringify({ id: 6, result: { turnId: 'turn-1' } })}\n`)).toEqual([
+      { type: 'steer-accepted', submissionId: 'correction-2' }
     ])
   })
 
