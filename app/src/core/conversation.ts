@@ -22,6 +22,7 @@ import {
   recordAppActionInputSchema,
   recordCompactionInputSchema,
   runSteerAdmissionInputSchema,
+  steerDispositionEntrySchema,
   setConversationQueuePausedInputSchema,
   MAX_COMPACTION_SUMMARY,
   type CompactionPlan,
@@ -49,6 +50,7 @@ import {
   type QueueOutcome,
   type RunSteerAdmissionInput,
   type RunSteerAdmissionResult,
+  type SteerDispositionEntry,
   type SetConversationQueuePausedInput,
   type SuggestedResponse
 } from '@shared/conversation'
@@ -71,8 +73,8 @@ import { createClaudeAdapter } from './harness/claude'
 
 type ValidatedQueuedSubmissionInput = z.output<typeof enqueueQueuedSubmissionInputSchema>
 
-const steerIdentity = (runId: string, submissionId: string): string => `${runId}\0${submissionId}`
-const steerRunPrefix = (runId: string): string => `${runId}\0`
+const steerDispositionId = (runId: string, submissionId: string): string =>
+  `steer:${encodeURIComponent(runId)}:${encodeURIComponent(submissionId)}`
 
 /**
  * The Session's one permanent Conversation, inside the app-owned Session
@@ -304,9 +306,6 @@ export function createConversationEffects(options: ConversationOptions): Convers
   // Intentionally process-local. A new Core starts every non-empty queue paused,
   // even when the last durable transition before shutdown was Resume.
   const queuePauseOverrides = Effect.runSync(Ref.make<ReadonlyMap<string, boolean>>(new Map()))
-  const pendingSteers = Effect.runSync(
-    Ref.make<ReadonlyMap<string, RunSteerAdmissionInput>>(new Map())
-  )
   // One writer at a time: a streaming checkpoint must never interleave with a
   // submission or a finalize on the same journal.
   const writeLock = Effect.runSync(Effect.makeSemaphore(1))
@@ -658,24 +657,50 @@ export function createConversationEffects(options: ConversationOptions): Convers
       )
     })
 
+  const steerDisposition = (
+    input: RunSteerAdmissionInput,
+    disposition: SteerDispositionEntry['disposition'],
+    at: string
+  ): SteerDispositionEntry =>
+    steerDispositionEntrySchema.parse({
+      ...input,
+      kind: 'steer-disposition',
+      id: steerDispositionId(input.runId, input.submissionId),
+      at,
+      disposition
+    })
+
+  const pendingSteersFor = (entries: ConversationEntry[], runId: string): SteerDispositionEntry[] =>
+    entries.filter(
+      (entry): entry is SteerDispositionEntry =>
+        entry.kind === 'steer-disposition' &&
+        entry.runId === runId &&
+        entry.disposition === 'pending'
+    )
+
   /** Moves every unacknowledged correction into the ordinary queue before a Run is forgotten. */
-  const queuePendingSteers = (runId: string, sessionDir: string): Effect.Effect<void, CoreError> =>
+  const queuePendingSteers = (
+    sessionId: string,
+    runId: string,
+    sessionDir: string
+  ): Effect.Effect<void, CoreError> =>
     Effect.gen(function* () {
-      const pending = yield* Ref.get(pendingSteers)
-      const fallbacks = [...pending]
-        .filter(([key]) => key.startsWith(steerRunPrefix(runId)))
-        .map(([, input]) => input)
-      for (const fallback of fallbacks) {
+      const entries = yield* readEntries(sessionDir)
+      for (const fallback of pendingSteersFor(entries, runId)) {
+        const input = runSteerAdmissionInputSchema.parse({
+          ...fallback,
+          sessionId
+        })
         yield* enqueueLocked(
-          enqueueQueuedSubmissionInputSchema.parse(fallback),
+          enqueueQueuedSubmissionInputSchema.parse({ ...input, sessionId: input.sessionId }),
           sessionDir,
           yield* readEntries(sessionDir)
         )
+        yield* append(
+          sessionDir,
+          steerDisposition(input, 'queued', (yield* options.clock).toISOString())
+        )
       }
-      yield* Ref.update(
-        pendingSteers,
-        (current) => new Map([...current].filter(([key]) => !key.startsWith(steerRunPrefix(runId))))
-      )
     })
 
   const admitRunSteer = (
@@ -733,7 +758,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
             suggestedResponses: [],
             plainOptions: false
           })
-          yield* append(sessionDir, entry)
+          yield* appendMany(sessionDir, [entry, steerDisposition(input, 'pending', entry.at)])
           return {
             delivery: 'steer' as const,
             conversation: yield* queueSnapshot(input.sessionId, [...entries, entry])
@@ -1113,10 +1138,6 @@ export function createConversationEffects(options: ConversationOptions): Convers
         (current) => new Map([...current].filter(([, state]) => state.runId !== runId))
       ),
       Ref.update(adapters, (current) => without(current, runId)),
-      Ref.update(
-        pendingSteers,
-        (current) => new Map([...current].filter(([key]) => !key.startsWith(steerRunPrefix(runId))))
-      ),
       Ref.update(drift, (current) => without(current, runId))
     ]).pipe(Effect.asVoid)
 
@@ -1296,22 +1317,42 @@ export function createConversationEffects(options: ConversationOptions): Convers
               )
               return
             }
-            case 'steer-accepted':
-              yield* Ref.update(pendingSteers, (current) =>
-                without(current, steerIdentity(input.runId, event.submissionId))
-              )
-              return
-            case 'steer-rejected': {
-              const key = steerIdentity(input.runId, event.submissionId)
-              const fallback = (yield* Ref.get(pendingSteers)).get(key)
-              if (!fallback) return
+            case 'steer-accepted': {
               const entries = yield* readEntries(sessionDir)
+              const pending = pendingSteersFor(entries, input.runId).find(
+                (entry) => entry.submissionId === event.submissionId
+              )
+              if (pending) {
+                yield* append(
+                  sessionDir,
+                  steerDisposition(
+                    { ...pending, sessionId: input.sessionId },
+                    'accepted',
+                    now.toISOString()
+                  )
+                )
+              }
+              return
+            }
+            case 'steer-rejected': {
+              const entries = yield* readEntries(sessionDir)
+              const fallback = pendingSteersFor(entries, input.runId).find(
+                (entry) => entry.submissionId === event.submissionId
+              )
+              if (!fallback) return
+              const fallbackInput = runSteerAdmissionInputSchema.parse({
+                ...fallback,
+                sessionId: input.sessionId
+              })
               yield* enqueueLocked(
-                enqueueQueuedSubmissionInputSchema.parse(fallback),
+                enqueueQueuedSubmissionInputSchema.parse(fallbackInput),
                 sessionDir,
                 entries
               )
-              yield* Ref.update(pendingSteers, (current) => without(current, key))
+              yield* append(
+                sessionDir,
+                steerDisposition(fallbackInput, 'queued', now.toISOString())
+              )
               return
             }
             case 'unsupported':
@@ -1614,7 +1655,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
               )
               if (missing.length) yield* appendMany(sessionDir, missing)
             }
-            yield* queuePendingSteers(input.runId, sessionDir)
+            yield* queuePendingSteers(input.sessionId, input.runId, sessionDir)
             yield* forgetRun(input.runId)
             return yield* snapshot(input.sessionId, sessionDir)
           }
@@ -1704,7 +1745,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
               new Map(current).set(input.sessionId, input.queuePaused ?? true)
             )
           }
-          yield* queuePendingSteers(input.runId, sessionDir)
+          yield* queuePendingSteers(input.sessionId, input.runId, sessionDir)
           yield* forgetRun(input.runId)
           return yield* snapshot(input.sessionId, sessionDir)
         })
@@ -1916,14 +1957,23 @@ export function createConversationEffects(options: ConversationOptions): Convers
     CoreError
   > =>
     Effect.gen(function* () {
-      const adapter = (yield* Ref.get(adapters)).get(input.runId)
-      if (!adapter?.steer(prompt, input.submissionId)) {
-        const conversation = yield* enqueue(input)
+      const validated = runSteerAdmissionInputSchema.parse(input)
+      const adapter = (yield* Ref.get(adapters)).get(validated.runId)
+      if (!adapter?.steer(prompt, validated.submissionId)) {
+        const sessionDir = yield* sessionDirectory(validated.sessionId)
+        const conversation = yield* writeLock.withPermits(1)(
+          Effect.gen(function* () {
+            const entries = yield* readEntries(sessionDir)
+            const queued = yield* enqueueLocked(validated, sessionDir, entries)
+            yield* append(
+              sessionDir,
+              steerDisposition(validated, 'queued', (yield* options.clock).toISOString())
+            )
+            return queued
+          })
+        )
         return { steered: false, outgoing: [], conversation }
       }
-      yield* Ref.update(pendingSteers, (pending) =>
-        new Map(pending).set(steerIdentity(input.runId, input.submissionId), input)
-      )
       return { steered: true, outgoing: adapter.takeOutgoing(), conversation: null }
     })
 
@@ -2037,6 +2087,7 @@ function transcript(entries: ConversationEntry[]): string {
       case 'thread':
       case 'app-action':
       case 'queued-submission':
+      case 'steer-disposition':
       case 'queue-state':
       case 'queue-outcome':
         return []
@@ -2235,6 +2286,7 @@ function summarize(
         entry.kind !== 'usage' &&
         entry.kind !== 'thread' &&
         entry.kind !== 'queued-submission' &&
+        entry.kind !== 'steer-disposition' &&
         entry.kind !== 'queue-state' &&
         entry.kind !== 'queue-outcome'
     ),

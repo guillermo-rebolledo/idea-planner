@@ -2492,6 +2492,7 @@ function groupEntries(entries: ConversationEntry[]): ConversationItem[] {
       case 'usage':
       case 'thread':
       case 'queued-submission':
+      case 'steer-disposition':
       case 'queue-state':
       case 'queue-outcome':
         break

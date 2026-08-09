@@ -529,6 +529,54 @@ describe('mid-Run delivery admission', () => {
       expect.objectContaining({ submissionId: 'correction-1', status: 'pending' })
     )
   })
+
+  it('recovers an unacknowledged correction after Core restarts', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    const input = correction(runId)
+    await core.admitRunSteer(input)
+
+    core = makeCore()
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness ended while Core was restarting'
+    })
+
+    expect((await core.getConversation(sessionId)).queue.items).toContainEqual(
+      expect.objectContaining({
+        submissionId: 'correction-1',
+        text: input.text,
+        status: 'pending'
+      })
+    )
+  })
+
+  it('does not queue an acknowledged correction after Core restarts', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    await openCodexTurn(runId, 'Change the API')
+    const input = correction(runId)
+    await core.admitRunSteer(input)
+    expect((await core.steerHarness(input, input.text)).steered).toBe(true)
+    await core.ingestHarnessOutput({
+      sessionId,
+      runId,
+      harness: 'codex',
+      chunk: `${JSON.stringify({ id: 5, result: {} })}\n`
+    })
+
+    core = makeCore()
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness accepted the correction before Core restarted'
+    })
+
+    expect((await core.getConversation(sessionId)).queue.items).toEqual([])
+  })
 })
 
 describe('Review Attachments on durable submissions', () => {

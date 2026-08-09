@@ -559,6 +559,30 @@ export const queueOutcomeEntrySchema = z.object({
 })
 export type QueueOutcome = Pick<z.infer<typeof queueOutcomeEntrySchema>, 'type' | 'submissionId'>
 
+/**
+ * Core's durable receipt for a correction offered to an active native turn.
+ * `pending` means the exact submission must still fall back to the ordinary
+ * queue unless the Harness acknowledges it. Replacing this entry with a
+ * terminal disposition makes that rule recoverable across a Core restart.
+ */
+export const steerDispositionEntrySchema = z.object({
+  kind: z.literal('steer-disposition'),
+  id: z.string().min(1),
+  at: z.string().datetime(),
+  runId: z.string().min(1),
+  submissionId: z.string().min(1).max(200),
+  text: z.string().min(1).max(100_000),
+  source: z.enum(['composer', 'suggested-response']),
+  harness: harnessIdSchema,
+  model: z.string().min(1).max(200),
+  effort: z.string().min(1).max(50).nullable(),
+  skill: skillNameSchema.optional(),
+  permissionMode: permissionModeSchema,
+  reviewAttachments: z.array(reviewAttachmentSchema).max(MAX_REVIEW_ATTACHMENTS).default([]),
+  disposition: z.enum(['pending', 'accepted', 'queued'])
+})
+export type SteerDispositionEntry = z.infer<typeof steerDispositionEntrySchema>
+
 export const conversationEntrySchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('message'),
@@ -839,6 +863,7 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     unlisted: z.number().int().nonnegative().default(0)
   }),
   queuedSubmissionEntrySchema,
+  steerDispositionEntrySchema,
   queueStateEntrySchema,
   queueOutcomeEntrySchema
 ])
