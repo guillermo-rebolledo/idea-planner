@@ -1005,7 +1005,7 @@ describe('Run service', () => {
         return { delivery: 'steer', conversation: core.conversation }
       }
       if (command.type === 'harness/steer') {
-        return { steered: true, outgoing: ['steer-frame'] }
+        return { steered: true, outgoing: ['steer-frame'], conversation: null }
       }
       return await Promise.resolve(original(command) as unknown)
     })
@@ -1083,7 +1083,20 @@ describe('Run service', () => {
     const service = new RunService({
       core,
       broker,
-      readiness: readyReadiness(join(root, 'claude')),
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            harnesses: [
+              {
+                harness: 'codex',
+                available: true,
+                executablePath: join(root, 'codex'),
+                version: 'codex-cli 0.146.0'
+              }
+            ]
+          })
+        )
+      },
       homeDirectory: root,
       privateRoot: join(root, 'private'),
       snapshots: new SessionSnapshotStore(join(root, 'private')),
@@ -1091,6 +1104,20 @@ describe('Run service', () => {
       proxyScript: '/tmp/mcp-proxy.js',
       skills: fakeSkills(root)
     })
+    await service.develop({
+      sessionId: 'session',
+      submissionId: 'submission-1',
+      text: 'Start here',
+      source: 'composer',
+      harness: 'codex',
+      model: 'gpt-5-codex',
+      effort: 'medium',
+      permissionMode: 'auto'
+    })
+    const runId = broker.launch?.id
+    if (!runId) throw new Error('Run did not launch')
+    core.commands.length = 0
+    core.send.mockClear()
 
     await service.develop({
       sessionId: 'session',
@@ -1101,7 +1128,7 @@ describe('Run service', () => {
       model: 'gpt-5-codex',
       effort: 'medium',
       permissionMode: 'auto',
-      delivery: { type: 'steer', runId: 'ended-run' }
+      delivery: { type: 'steer', runId }
     })
 
     const commands = core.send.mock.calls.map(([command]) => (command as { type: string }).type)
@@ -1140,6 +1167,38 @@ describe('Run service', () => {
     expect(core.commands).toContain('conversation/queue-change')
     expect(core.commands).not.toContain('harness/steer')
     expect(core.commands).not.toContain('run/lifecycle-open')
+  })
+
+  it('queues a steer intent when Main has no supported native steering path', async () => {
+    const root = await readyHarnessRoot('run-steer-unsupported-')
+    const core = fakeCore(join(root, 'a-project'))
+    const service = new RunService({
+      core,
+      broker: fakeBroker(),
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
+    })
+
+    await service.develop({
+      sessionId: 'session',
+      submissionId: 'correction-1',
+      text: 'Keep the API compatible',
+      source: 'composer',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'high',
+      permissionMode: 'auto',
+      delivery: { type: 'steer', runId: 'active-claude-run' }
+    })
+
+    expect(core.commands).toContain('conversation/queue-change')
+    expect(core.commands).not.toContain('conversation/admit-steer')
+    expect(core.commands).not.toContain('harness/steer')
   })
 
   it('sends reviewed code to the Harness while the Conversation keeps the prose', async () => {

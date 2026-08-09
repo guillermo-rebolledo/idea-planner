@@ -71,6 +71,9 @@ import { createClaudeAdapter } from './harness/claude'
 
 type ValidatedQueuedSubmissionInput = z.output<typeof enqueueQueuedSubmissionInputSchema>
 
+const steerIdentity = (runId: string, submissionId: string): string => `${runId}\0${submissionId}`
+const steerRunPrefix = (runId: string): string => `${runId}\0`
+
 /**
  * The Session's one permanent Conversation, inside the app-owned Session
  * directory (ADR 0002). Nothing about it is written into the Project.
@@ -250,7 +253,10 @@ export interface ConversationEffects {
   steer(
     input: RunSteerAdmissionInput,
     prompt: string
-  ): Effect.Effect<{ steered: boolean; outgoing: string[] }, CoreError>
+  ): Effect.Effect<
+    { steered: boolean; outgoing: string[]; conversation: ConversationSnapshot | null },
+    CoreError
+  >
   /** Asks the Harness to end the turn it is running, if it can be asked. */
   interrupt(runId: string): Effect.Effect<string[], CoreError>
   /** Parses one raw Harness chunk and applies everything it completed. */
@@ -649,6 +655,26 @@ export function createConversationEffects(options: ConversationOptions): Convers
           const entries = yield* readEntries(sessionDir)
           return yield* enqueueLocked(input, sessionDir, entries)
         })
+      )
+    })
+
+  /** Moves every unacknowledged correction into the ordinary queue before a Run is forgotten. */
+  const queuePendingSteers = (runId: string, sessionDir: string): Effect.Effect<void, CoreError> =>
+    Effect.gen(function* () {
+      const pending = yield* Ref.get(pendingSteers)
+      const fallbacks = [...pending]
+        .filter(([key]) => key.startsWith(steerRunPrefix(runId)))
+        .map(([, input]) => input)
+      for (const fallback of fallbacks) {
+        yield* enqueueLocked(
+          enqueueQueuedSubmissionInputSchema.parse(fallback),
+          sessionDir,
+          yield* readEntries(sessionDir)
+        )
+      }
+      yield* Ref.update(
+        pendingSteers,
+        (current) => new Map([...current].filter(([key]) => !key.startsWith(steerRunPrefix(runId))))
       )
     })
 
@@ -1089,7 +1115,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
       Ref.update(adapters, (current) => without(current, runId)),
       Ref.update(
         pendingSteers,
-        (current) => new Map([...current].filter(([key]) => !key.startsWith(`${runId}\0`)))
+        (current) => new Map([...current].filter(([key]) => !key.startsWith(steerRunPrefix(runId))))
       ),
       Ref.update(drift, (current) => without(current, runId))
     ]).pipe(Effect.asVoid)
@@ -1272,11 +1298,11 @@ export function createConversationEffects(options: ConversationOptions): Convers
             }
             case 'steer-accepted':
               yield* Ref.update(pendingSteers, (current) =>
-                without(current, `${input.runId}\0${event.submissionId}`)
+                without(current, steerIdentity(input.runId, event.submissionId))
               )
               return
             case 'steer-rejected': {
-              const key = `${input.runId}\0${event.submissionId}`
+              const key = steerIdentity(input.runId, event.submissionId)
               const fallback = (yield* Ref.get(pendingSteers)).get(key)
               if (!fallback) return
               const entries = yield* readEntries(sessionDir)
@@ -1588,6 +1614,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
               )
               if (missing.length) yield* appendMany(sessionDir, missing)
             }
+            yield* queuePendingSteers(input.runId, sessionDir)
             yield* forgetRun(input.runId)
             return yield* snapshot(input.sessionId, sessionDir)
           }
@@ -1677,6 +1704,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
               new Map(current).set(input.sessionId, input.queuePaused ?? true)
             )
           }
+          yield* queuePendingSteers(input.runId, sessionDir)
           yield* forgetRun(input.runId)
           return yield* snapshot(input.sessionId, sessionDir)
         })
@@ -1883,17 +1911,21 @@ export function createConversationEffects(options: ConversationOptions): Convers
   const steer = (
     input: RunSteerAdmissionInput,
     prompt: string
-  ): Effect.Effect<{ steered: boolean; outgoing: string[] }, CoreError> =>
-    Ref.get(adapters).pipe(
-      Effect.flatMap((current) => {
-        const adapter = current.get(input.runId)
-        if (!adapter) return Effect.succeed({ steered: false, outgoing: [] })
-        const steered = adapter.steer(prompt, input.submissionId)
-        return Ref.update(pendingSteers, (pending) =>
-          steered ? new Map(pending).set(`${input.runId}\0${input.submissionId}`, input) : pending
-        ).pipe(Effect.as({ steered, outgoing: adapter.takeOutgoing() }))
-      })
-    )
+  ): Effect.Effect<
+    { steered: boolean; outgoing: string[]; conversation: ConversationSnapshot | null },
+    CoreError
+  > =>
+    Effect.gen(function* () {
+      const adapter = (yield* Ref.get(adapters)).get(input.runId)
+      if (!adapter?.steer(prompt, input.submissionId)) {
+        const conversation = yield* enqueue(input)
+        return { steered: false, outgoing: [], conversation }
+      }
+      yield* Ref.update(pendingSteers, (pending) =>
+        new Map(pending).set(steerIdentity(input.runId, input.submissionId), input)
+      )
+      return { steered: true, outgoing: adapter.takeOutgoing(), conversation: null }
+    })
 
   const ingest = (input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError> =>
     Effect.gen(function* () {

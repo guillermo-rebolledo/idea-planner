@@ -488,6 +488,10 @@ export class RunService {
       return await this.enqueueQueuedSubmission(input)
     }
     if (input.delivery?.type === 'steer') {
+      const adapter = this.adapters.get(input.delivery.runId)
+      if (HARNESS_SPECS[input.harness].steering === null || adapter?.id !== input.harness) {
+        return await this.enqueueQueuedSubmission(input)
+      }
       const prompt = harnessPromptWithReviewAttachments(input.text, input.reviewAttachments)
       const admission = runSteerAdmissionResultSchema.parse(
         await this.deps.core.send({
@@ -496,11 +500,10 @@ export class RunService {
         })
       )
       if (admission.delivery === 'queue') return admission.conversation
-      const adapter = this.adapters.get(input.delivery.runId)
-      if (adapter?.id === input.harness) {
-        await this.runEffect(adapter.steer({ ...input, runId: input.delivery.runId }, prompt))
-      }
-      return admission.conversation
+      const delivered = await this.runEffect(
+        adapter.steer({ ...input, runId: input.delivery.runId }, prompt)
+      )
+      return delivered.conversation ?? admission.conversation
     }
     await this.deps.core.send({
       type: 'conversation/submit',

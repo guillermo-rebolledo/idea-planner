@@ -132,7 +132,11 @@ export interface Core {
   steerHarness(
     input: RunSteerAdmissionInput,
     prompt: string
-  ): Promise<{ steered: boolean; outgoing: string[] }>
+  ): Promise<{
+    steered: boolean
+    outgoing: string[]
+    conversation: ConversationSnapshot | null
+  }>
   interruptHarness(runId: string): Promise<string[]>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Promise<HarnessStream>
   listUnfinishedRuns(): Promise<UnfinishedRun[]>
@@ -197,7 +201,10 @@ export interface CoreEffects {
   steerHarness(
     input: RunSteerAdmissionInput,
     prompt: string
-  ): Effect.Effect<{ steered: boolean; outgoing: string[] }, CoreError>
+  ): Effect.Effect<
+    { steered: boolean; outgoing: string[]; conversation: ConversationSnapshot | null },
+    CoreError
+  >
   interruptHarness(runId: string): Effect.Effect<string[], CoreError>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
   listUnfinishedRuns(): Effect.Effect<UnfinishedRun[], CoreError>
