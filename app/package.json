@@ -6,7 +6,13 @@
   "description": "Local-first desktop app for working with a coding agent on a git Project",
   "main": "out/main/index.js",
   "build": {
-    "appId": "com.memojiinc.argos"
+    "appId": "com.memojiinc.argos",
+    "directories": {
+      "buildResources": "build"
+    },
+    "mac": {
+      "icon": "build/icon.icns"
+    }
   },
   "scripts": {
     "dev": "electron-vite dev",
