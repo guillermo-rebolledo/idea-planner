@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { proposeStandingApproval, ruleText } from './approval'
+import { permits, proposeStandingApproval, ruleText } from './approval'
 
 /**
  * A Standing Approval is a rule the Harness consults *before* it asks, so an
@@ -113,6 +113,42 @@ describe('repo-wide edit approval', () => {
       const proposed = proposeStandingApproval(tool, { file_path: `${PROJECT}/a.ts` }, PROJECT)
       expect(proposed && ruleText(proposed)).toBe('Edit(//Users/someone/dev/receipts/**)')
     }
+  })
+})
+
+describe('a rule answering the requests still standing', () => {
+  const command = (text: string) => proposeStandingApproval('Bash', { command: text }, PROJECT)
+  const edit = (path: string) => proposeStandingApproval('Edit', { file_path: path }, PROJECT)
+
+  it('answers another request the same rule was written from', () => {
+    // The stored rule is consulted before the approval tool runs, so the next
+    // `pnpm test …` is allowed silently. One already waiting is the same
+    // question, and it is not asked again for having arrived first.
+    const granted = command('pnpm test')
+    expect(granted && permits(granted, command('pnpm test --watch src/'))).toBe(true)
+    const project = edit(`${PROJECT}/src/app.ts`)
+    expect(project && permits(project, edit(`${PROJECT}/src/other.ts`))).toBe(true)
+  })
+
+  it('leaves anything the rule does not cover to be asked', () => {
+    const granted = command('pnpm test')
+    expect(granted && permits(granted, command('pnpm build'))).toBe(false)
+    expect(granted && permits(granted, edit(`${PROJECT}/src/app.ts`))).toBe(false)
+    // A request the app could not narrow proposed nothing, and nothing is
+    // covered by nothing.
+    expect(granted && permits(granted, command('rm -rf ./dist'))).toBe(false)
+    expect(granted && permits(granted, null)).toBe(false)
+  })
+
+  it('never hands one Harness a rule written for the other', () => {
+    // The same words mean different things to Claude and to Codex, and neither
+    // reads the other's file.
+    const claude = command('pnpm test')
+    const codex = { harness: 'codex' as const, kind: 'command' as const, pattern: ['pnpm', 'test'] }
+    expect(claude && permits(claude, codex)).toBe(false)
+    expect(claude && permits(codex, claude)).toBe(false)
+    expect(permits(codex, { ...codex })).toBe(true)
+    expect(permits(codex, { ...codex, pattern: ['pnpm', 'build'] })).toBe(false)
   })
 })
 

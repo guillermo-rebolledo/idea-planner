@@ -45,12 +45,14 @@ import {
   type UnfinishedRun
 } from '@shared/conversation'
 import { harnessPromptWithReviewAttachments } from '@shared/review-attachment'
-import { proposeStandingApproval, ruleText } from '@shared/approval'
+import { permits, proposeStandingApproval, ruleText, type ProposedRule } from '@shared/approval'
 import {
+  denyApprovalsInputSchema,
   resolveApprovalInputSchema,
   runSnapshotSchema,
   startRunInputSchema,
   PROJECT_SKILL_TRUST_FAILURE,
+  type DenyApprovalsInput,
   type PermissionMode,
   type ResolveApprovalInput,
   type RunActivityKind,
@@ -208,6 +210,9 @@ interface CheckoutBaseline {
 
 /** What one outstanding request could be turned into, if the person asks. */
 type RequestProposal = AdapterRequestProposal
+
+/** A refusal the agent cannot read is one it will simply try again. */
+const DECLINED_IN_APP = 'You declined this in the app. Ask before trying it again.'
 
 function approvalContinuation(configuration: RunSnapshot['configuration']): AdapterContinuation {
   return {
@@ -1264,13 +1269,18 @@ export class RunService {
   /**
    * The person's answer. The Harness is told first — it is the one waiting —
    * and the Conversation records what was decided either way.
+   *
+   * One answer can settle more than the request it was given for. A permission
+   * rule is consulted before the approval tool ever runs, so once a Standing
+   * Approval is stored, every future occurrence of what it permits is allowed
+   * silently — and a request still standing that the new rule permits is
+   * asking a question that has just been answered. It is settled here rather
+   * than asked once more for having arrived first.
    */
   async resolveApproval(rawInput: ResolveApprovalInput): Promise<ConversationSnapshot> {
     const input = resolveApprovalInputSchema.parse(rawInput)
     const written = input.message?.trim() ?? ''
     const reason = written === '' ? undefined : written
-    // A refusal the agent cannot read is one it will simply try again.
-    const denialMessage = reason ?? 'You declined this in the app. Ask before trying it again.'
     const allowed = input.decision === 'allow'
     const proposal = this.proposals.get(input.runId)?.get(input.approvalId)
     if (!proposal) {
@@ -1285,50 +1295,179 @@ export class RunService {
     if (input.remember && !remembered) {
       throw new Error('That request cannot be turned into a Standing Approval')
     }
-    if (remembered && proposal.proposed) {
+    const rule = remembered ? proposal.proposed : null
+    if (rule) {
       await this.deps.core.send({
         type: 'approval/grant',
         // The rule carries its own Harness, so it is stored exactly as it was
         // proposed — synthesised for Claude, computed by Codex for Codex.
         input: {
-          ...proposal.proposed,
+          ...rule,
           projectRoot: proposal.projectRoot,
           summary: proposal.summary
         }
       })
     }
-    this.proposals.get(input.runId)?.delete(input.approvalId)
-    const answered = await this.answerApproval(input, {
+    // Read once, before anything is answered: a request arriving while the set
+    // is being settled was never part of what the person decided about.
+    const settled = rule ? this.permittedBy(input.runId, input.approvalId, proposal, rule) : []
+    const answered = await this.answerOne({
+      sessionId: input.sessionId,
+      runId: input.runId,
+      approvalId: input.approvalId,
+      proposal,
       allowed,
       remembered,
+      storesRule: remembered,
       reason,
-      proposal
+      deliverInstruction: true,
+      summary: allowed
+        ? rule
+          ? `You approved the request, and always allow ${ruleText(rule)}`
+          : 'You approved the request'
+        : `You declined: ${reason ?? DECLINED_IN_APP}`
     })
     if (!answered) throw new Error('That request is no longer waiting for an answer')
+    if (rule) {
+      for (const [approvalId, sibling] of settled) {
+        // Recorded one at a time, so a person reading this back sees what was
+        // decided about each request rather than one entry standing in for
+        // several. A sibling the Harness has since stopped waiting on simply
+        // answers nothing, which is what `answerOne` reports by returning false.
+        await this.answerOne({
+          sessionId: input.sessionId,
+          runId: input.runId,
+          approvalId,
+          proposal: sibling,
+          allowed: true,
+          // The rule is what answered it, and the Conversation says so. It is
+          // not stored again: one grant is one rule, and handing the Harness
+          // the same amendment per sibling would write it more than once.
+          remembered: true,
+          storesRule: false,
+          reason: undefined,
+          deliverInstruction: false,
+          summary: `Allowed by the rule you stored: ${ruleText(rule)}`
+        })
+      }
+    }
+    return await this.readConversation(input.sessionId)
+  }
+
+  /**
+   * Refusing several requests as one decision. Stopping a Run that has gone
+   * wrong should take one action, not one per request it happens to have
+   * outstanding.
+   *
+   * The set is named by the caller rather than described, so it is exactly the
+   * requests that were pending when the person chose: one arriving while this
+   * is in flight is not in the list, and is still asked. A request already
+   * answered by the time this lands is skipped rather than failing the rest.
+   */
+  async denyApprovals(rawInput: DenyApprovalsInput): Promise<ConversationSnapshot> {
+    const input = denyApprovalsInputSchema.parse(rawInput)
+    const written = input.message?.trim() ?? ''
+    const reason = written === '' ? undefined : written
+    const pending = input.approvalIds.flatMap((approvalId) => {
+      const proposal = this.proposals.get(input.runId)?.get(approvalId)
+      return proposal ? [[approvalId, proposal] as const] : []
+    })
+    if (pending.length === 0) {
+      throw new Error('Those requests are no longer waiting for an answer')
+    }
+    let carried = false
+    for (const [approvalId, proposal] of pending) {
+      const answered = await this.answerOne({
+        sessionId: input.sessionId,
+        runId: input.runId,
+        approvalId,
+        proposal,
+        allowed: false,
+        remembered: false,
+        storesRule: false,
+        // Every refusal tells the agent what to do instead, and exactly one
+        // carries it forward as a turn where the Harness cannot: the person
+        // wrote one instruction and should be answered once.
+        reason,
+        deliverInstruction: !carried,
+        summary: `You declined: ${reason ?? DECLINED_IN_APP}`
+      })
+      if (answered) carried = true
+    }
+    return await this.readConversation(input.sessionId)
+  }
+
+  /**
+   * The other requests this Run still has outstanding that a rule just stored
+   * genuinely permits, checked rather than assumed. Batch resolution applies
+   * what was granted consistently; it is never a way to widen it, so a
+   * candidate the rule does not cover stays outstanding and is asked.
+   *
+   * Never across Projects: a Standing Approval belongs to one Project by the
+   * root git resolved (ADR 0005), and two clones of one remote are two
+   * Projects that lend each other nothing.
+   */
+  private permittedBy(
+    runId: string,
+    answeredId: string,
+    granted: RequestProposal,
+    rule: ProposedRule
+  ): [string, RequestProposal][] {
+    const outstanding = this.proposals.get(runId)
+    if (!outstanding) return []
+    return [...outstanding].filter(
+      ([id, candidate]) =>
+        id !== answeredId &&
+        candidate.projectRoot === granted.projectRoot &&
+        permits(rule, candidate.proposed)
+    )
+  }
+
+  /**
+   * One request answered whole: the Harness told, the decision written into
+   * the Conversation, and the Run's activity recorded. False means the Harness
+   * was no longer holding it, and nothing was written.
+   */
+  private async answerOne(decided: {
+    sessionId: string
+    runId: string
+    approvalId: string
+    proposal: RequestProposal
+    allowed: boolean
+    /** What the Conversation records: whether a stored rule answered this. */
+    remembered: boolean
+    /** Whether telling the Harness also hands it the rule to keep. */
+    storesRule: boolean
+    reason: string | undefined
+    deliverInstruction: boolean
+    /** What the Run's activity says this one decision was. */
+    summary: string
+  }): Promise<boolean> {
+    this.proposals.get(decided.runId)?.delete(decided.approvalId)
+    const answered = await this.answerApproval(decided)
+    if (!answered) return false
     const event: HarnessEvent = {
       type: 'approval-resolved',
-      id: input.approvalId,
-      decision: allowed ? 'allowed' : 'denied',
+      id: decided.approvalId,
+      decision: decided.allowed ? 'allowed' : 'denied',
       // The Harness receives the person's original instruction. Everything
       // durable or streamed back to the window receives the write-boundary
       // form, as every other stored Conversation text does.
-      message: allowed ? '' : redactCredentials(denialMessage).slice(0, 2_000),
-      remembered
+      message: decided.allowed
+        ? ''
+        : redactCredentials(decided.reason ?? DECLINED_IN_APP).slice(0, 2_000),
+      remembered: decided.remembered
     }
-    await this.applyConversationEvent(input.sessionId, input.runId, event)
+    await this.applyConversationEvent(decided.sessionId, decided.runId, event)
     // A denial is an answer, not a failure: the agent was told and carries on.
     // The Run leaves the blocked state once nothing else is outstanding.
     await this.record(
-      { id: input.runId, sessionId: input.sessionId },
-      this.proposals.get(input.runId)?.size ? undefined : 'running',
-      allowed ? 'allowed' : 'blocked',
-      allowed
-        ? remembered && proposal.proposed
-          ? `You approved the request, and always allow ${ruleText(proposal.proposed)}`
-          : 'You approved the request'
-        : `You declined: ${denialMessage}`
+      { id: decided.runId, sessionId: decided.sessionId },
+      this.proposals.get(decided.runId)?.size ? undefined : 'running',
+      decided.allowed ? 'allowed' : 'blocked',
+      decided.summary
     )
-    return await this.readConversation(input.sessionId)
+    return true
   }
 
   /**
@@ -1362,26 +1501,28 @@ export class RunService {
    * either side of this — the Conversation, the Run's blocked state, the
    * Standing Approval — is the same for both.
    */
-  private async answerApproval(
-    input: ResolveApprovalInput,
-    decided: {
-      allowed: boolean
-      remembered: boolean
-      reason: string | undefined
-      proposal: RequestProposal
-    }
-  ): Promise<boolean> {
-    const adapter = this.adapters.get(input.runId) ?? this.adapter(decided.proposal.harness)
+  private async answerApproval(decided: {
+    sessionId: string
+    runId: string
+    approvalId: string
+    allowed: boolean
+    storesRule: boolean
+    reason: string | undefined
+    deliverInstruction: boolean
+    proposal: RequestProposal
+  }): Promise<boolean> {
+    const adapter = this.adapters.get(decided.runId) ?? this.adapter(decided.proposal.harness)
     return await this.runEffect(
       adapter.answerApproval({
-        sessionId: input.sessionId,
-        runId: input.runId,
-        approvalId: input.approvalId,
+        sessionId: decided.sessionId,
+        runId: decided.runId,
+        approvalId: decided.approvalId,
         allowed: decided.allowed,
-        remembered: decided.remembered,
+        remembered: decided.storesRule,
         reason: decided.reason,
+        deliverInstruction: decided.deliverInstruction,
         proposal: decided.proposal,
-        host: this.toolHosts.get(input.runId)
+        host: this.toolHosts.get(decided.runId)
       })
     )
   }

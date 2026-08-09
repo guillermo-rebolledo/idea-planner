@@ -68,6 +68,7 @@ export const IPC_CHANNELS = {
   resumeConversationQueue: 'conversation:queue-resume',
   sendQueuedSubmissionNow: 'conversation:queue-send-now',
   resolveApproval: 'conversation:resolve-approval',
+  denyApprovals: 'conversation:deny-approvals',
   prepareRunUndo: 'run:undo-prepare',
   applyRunUndo: 'run:undo-apply',
   conversationEvent: 'conversation:event',

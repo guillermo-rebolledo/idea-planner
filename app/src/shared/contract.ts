@@ -58,6 +58,7 @@ import type {
 } from './run-undo'
 import {
   recordRunEventInputSchema,
+  type DenyApprovalsInput,
   type ResolveApprovalInput,
   type RunSnapshot,
   type StartRunInput,
@@ -598,9 +599,16 @@ export interface ShellApi {
   sendQueuedSubmissionNow(input: QueuedSubmissionIdentity): Promise<ConversationSnapshot>
   /**
    * Answers the approval a Run is blocked on. Approving lets the agent
-   * proceed; denying hands it the message and it carries on without.
+   * proceed; denying hands it the message and it carries on without. An
+   * approval that stores a Standing Approval also settles the other requests
+   * still standing that the new rule permits.
    */
   resolveApproval(input: ResolveApprovalInput): Promise<ConversationSnapshot>
+  /**
+   * Refuses several outstanding requests at once, exactly the ones named.
+   * Each is recorded in the Conversation as its own decision.
+   */
+  denyApprovals(input: DenyApprovalsInput): Promise<ConversationSnapshot>
   /**
    * What undoing a Run would mean right now: every path it changed, how each
    * one stands against what the Run left there, and the inverse patch. Reads

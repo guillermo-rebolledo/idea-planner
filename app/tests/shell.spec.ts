@@ -209,6 +209,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'confirmProject',
       'createPullRequest',
       'deleteSession',
+      'denyApprovals',
       'developSession',
       'editQueuedSubmission',
       'enqueueQueuedSubmission',
@@ -1761,6 +1762,162 @@ test('denying an Approval Request can instruct the installed-shape Harness in on
         })
       ])
     )
+  } finally {
+    await app.close()
+  }
+})
+
+/**
+ * A recorded-shape Codex turn that asks for three things at once: two a single
+ * prefix rule covers, and one it does not. This is the case one decision can
+ * logically answer more than one of.
+ */
+const THREE_APPROVALS_CODEX = `case "$1" in
+  --version) echo "codex-cli 0.146.0"; exit 0;;
+  login) exit 0;;
+  app-server)
+    while IFS= read -r line; do
+      case "$line" in
+        *'"initialize"'*) printf '{"jsonrpc":"2.0","id":1,"result":{}}\n';;
+        *'"model/list"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"data":[{"id":"gpt-5.6-sol","displayName":"GPT-5.6-Sol","description":"The default","hidden":false,"isDefault":true,"supportedReasoningEfforts":[{"reasoningEffort":"low"}],"defaultReasoningEffort":"low"}],"nextCursor":null}}'
+          ;;
+        *'"thread/start"'*|*'"thread/resume"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-1"}}}'
+          ;;
+        *'"turn/start"'*)
+          printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn-1"}}}'
+          case "$line" in
+            *'Stop and check with me first'*)
+              printf '%s\n' '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"agentMessage","id":"message-2","text":"Understood, I will check first."}}}'
+              printf '%s\n' '{"jsonrpc":"2.0","method":"turn/completed","params":{}}'
+              ;;
+            *)
+              printf '%s\n' '{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"exec-1","startedAtMs":1,"command":"pnpm test","cwd":"/a-project","proposedExecpolicyAmendment":["pnpm","test"]}}'
+              printf '%s\n' '{"jsonrpc":"2.0","id":8,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"exec-2","startedAtMs":1,"command":"pnpm test src/app.test.ts","cwd":"/a-project","proposedExecpolicyAmendment":["pnpm","test"]}}'
+              printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"exec-3","startedAtMs":1,"command":"pnpm build","cwd":"/a-project","proposedExecpolicyAmendment":["pnpm","build"]}}'
+              ;;
+          esac
+          ;;
+        *'"id":9'*)
+          printf '%s\n' '{"jsonrpc":"2.0","method":"turn/completed","params":{}}'
+          ;;
+      esac
+    done
+    exit 0;;
+esac
+exit 1`
+
+/** Every approval this Session recorded, in the order they were decided. */
+async function decidedApprovals(
+  page: Page
+): Promise<{ summary: string; decision: string | null; message: string; remembered: boolean }[]> {
+  return await page.evaluate(async () => {
+    const [session] = await window.shell.listSessions()
+    if (!session) throw new Error('Session missing')
+    const snapshot = await window.shell.getConversation(session.id)
+    return snapshot.entries
+      .filter((entry) => entry.kind === 'approval')
+      .map((entry) => ({
+        summary: entry.summary,
+        decision: entry.decision,
+        message: entry.message,
+        remembered: entry.remembered
+      }))
+  })
+}
+
+test('one Standing Approval answers the waiting requests it permits, and no others', async () => {
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await installFakeHarness('codex', THREE_APPROVALS_CODEX)
+    await installFakeHarness('claude', 'exit 1')
+    await startSession(page, 'Get the tests passing')
+
+    const approval = page.getByRole('alert', { name: 'Approval request' })
+    await expect(approval).toContainText('3 requests')
+    await expect(approval).toContainText('pnpm test')
+
+    // The rule is still shown literally before it is stored, and now also says
+    // what else it answers — a decision that settles more than one request has
+    // to say so while it can still be declined.
+    await approval.getByRole('button', { name: /^Always allow for/ }).click()
+    await expect(approval).toContainText(
+      'prefix_rule(pattern = ["pnpm", "test"], decision = "allow")'
+    )
+    await expect(approval).toContainText('1 other waiting request')
+    await approval.getByRole('button', { name: 'Store this rule' }).click()
+
+    // What the rule permits is settled; `pnpm build` is not, and is asked.
+    await expect(approval).toContainText('pnpm build')
+    await expect(approval.getByRole('button', { name: /^Deny all/ })).toHaveCount(0)
+    expect(await decidedApprovals(page)).toEqual([
+      // Recorded individually, each saying the rule is what answered it.
+      { summary: 'pnpm test', decision: 'allowed', message: '', remembered: true },
+      {
+        summary: 'pnpm test src/app.test.ts',
+        decision: 'allowed',
+        message: '',
+        remembered: true
+      },
+      { summary: 'pnpm build', decision: null, message: '', remembered: false }
+    ])
+
+    // One grant, belonging to this Project alone.
+    expect(
+      await page.evaluate(async () => {
+        const [session] = await window.shell.listSessions()
+        if (!session) throw new Error('Session missing')
+        return (await window.shell.listStandingApprovals(session.projectRoot)).length
+      })
+    ).toBe(1)
+  } finally {
+    await app.close()
+  }
+})
+
+test('one refusal can settle every request a Run has outstanding', async () => {
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await installFakeHarness('codex', THREE_APPROVALS_CODEX)
+    await installFakeHarness('claude', 'exit 1')
+    await startSession(page, 'Get the tests passing')
+
+    const approval = page.getByRole('alert', { name: 'Approval request' })
+    await expect(approval).toContainText('3 requests')
+    await approval.getByLabel('Do this instead (optional)').fill('Stop and check with me first')
+    // Refusing the set is its own action, never what Deny quietly did.
+    await approval.getByRole('button', { name: 'Deny all 3' }).click()
+
+    await expect(approval).toHaveCount(0)
+    expect(await decidedApprovals(page)).toEqual([
+      {
+        summary: 'pnpm test',
+        decision: 'denied',
+        message: 'Stop and check with me first',
+        remembered: false
+      },
+      {
+        summary: 'pnpm test src/app.test.ts',
+        decision: 'denied',
+        message: 'Stop and check with me first',
+        remembered: false
+      },
+      {
+        summary: 'pnpm build',
+        decision: 'denied',
+        message: 'Stop and check with me first',
+        remembered: false
+      }
+    ])
+    // The person wrote one instruction, and the agent reads it once.
+    const history = page.getByRole('log', { name: 'Conversation history' })
+    await expect(history.getByText('Understood, I will check first.')).toBeVisible()
+    await expect(history.getByText('Stop and check with me first', { exact: true })).toHaveCount(1)
   } finally {
     await app.close()
   }

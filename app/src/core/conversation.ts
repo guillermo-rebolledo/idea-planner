@@ -2196,8 +2196,10 @@ function summarize(
     // The Run is blocked for exactly as long as a request stands unanswered.
     // The oldest is the one put to the person, so that answering it reveals
     // the next: a Harness may have several in flight, and picking the newest
-    // would leave the ones behind it unanswerable.
-    pendingApprovalId: state.openApprovals[0] ?? null,
+    // would leave the ones behind it unanswerable. The rest travel with it,
+    // because one decision can answer several and the surface offering that
+    // has to name the exact set it is offering it for.
+    pendingApprovalIds: state.openApprovals,
     queue: {
       paused,
       items: queued.map((item) => {

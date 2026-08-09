@@ -49,7 +49,7 @@ function conversation(
     harnessThreads: {},
     changedFiles: [],
     activeRunId,
-    pendingApprovalId: null,
+    pendingApprovalIds: [],
     queue: { paused: true, items: [], outcome: null }
   }
 }

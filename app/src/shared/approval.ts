@@ -70,6 +70,32 @@ export function ruleText(rule: ProposedRule): string {
 }
 
 /**
+ * Whether a rule that has just been stored already answers a request still
+ * standing. A permission rule short-circuits before the approval tool runs, so
+ * every future occurrence of a covered request is allowed silently — one that
+ * happened to arrive first is asking a question that has been answered.
+ *
+ * The check is the rule the candidate proposed for itself. `proposeStandingApproval`
+ * is deterministic and says what would stop that request being asked again, so
+ * an identical rule is a rule that provably covers it. Nothing wider is
+ * inferred: a stored `Bash(pnpm test:*)` settles another `pnpm test …`, and
+ * leaves `pnpm build …` to be asked. That is deliberately conservative —
+ * guessing at a Harness's matching would turn one grant into a wider one, and
+ * the cost of guessing short is only that the person answers a request they
+ * were going to be asked anyway.
+ *
+ * A request the app could not narrow proposed nothing, and nothing is covered
+ * by nothing.
+ */
+export function permits(granted: ProposedRule, candidate: ProposedRule | null): boolean {
+  if (candidate === null) return false
+  // The Harness is part of the rule, not a label on it: the same text means
+  // different things to Claude and to Codex, and neither reads the other's.
+  if (candidate.harness !== granted.harness) return false
+  return ruleText(candidate) === ruleText(granted)
+}
+
+/**
  * A granted permission: the rule, and what it belongs to. The rule carries its
  * own Harness, so one written in Claude's syntax can never be handed to Codex.
  */

@@ -31,7 +31,7 @@ function conversation(entries: ConversationEntry[]): ConversationSnapshot {
     harnessThreads: { claude: 'saved-thread' },
     changedFiles: [],
     activeRunId: null,
-    pendingApprovalId: null,
+    pendingApprovalIds: [],
     queue: { paused: true, items: [], outcome: null }
   }
 }

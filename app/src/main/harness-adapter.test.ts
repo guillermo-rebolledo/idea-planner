@@ -129,6 +129,7 @@ describe('Harness adapter contract', () => {
           allowed: true,
           remembered: false,
           reason: undefined,
+          deliverInstruction: true,
           proposal: {
             projectRoot: '/project',
             harness: 'codex',
@@ -168,6 +169,7 @@ describe('Harness adapter contract', () => {
           allowed: false,
           remembered: false,
           reason: 'Run tests with token=secret-value instead',
+          deliverInstruction: true,
           proposal: {
             projectRoot: '/project',
             harness: 'codex',
@@ -302,6 +304,7 @@ describe('Harness adapter contract', () => {
           allowed: true,
           remembered: true,
           reason: undefined,
+          deliverInstruction: true,
           proposal,
           host
         })
@@ -319,6 +322,7 @@ describe('Harness adapter contract', () => {
         allowed: false,
         remembered: false,
         reason: 'Run the focused tests instead',
+        deliverInstruction: true,
         proposal,
         host
       })
@@ -343,6 +347,7 @@ describe('Harness adapter contract', () => {
         allowed: false,
         remembered: false,
         reason: undefined,
+        deliverInstruction: true,
         proposal: {
           projectRoot: '/project',
           harness: 'codex',
