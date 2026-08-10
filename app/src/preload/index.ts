@@ -4,7 +4,8 @@ import type {
   ConversationStreamEvent,
   ProjectCloneEvent,
   ShellApi,
-  ThemeState
+  ThemeState,
+  UpdateAvailability
 } from '@shared/contract'
 
 /**
@@ -70,6 +71,8 @@ const api: ShellApi = {
   setLoginShellDiscovery: (consent) =>
     ipcRenderer.invoke(IPC_CHANNELS.setLoginShellDiscovery, consent),
   openExternalLink: (url) => ipcRenderer.invoke(IPC_CHANNELS.openExternalLink, url),
+  getUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.getUpdate),
+  openUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.openUpdate),
   preparePullRequest: (input) => ipcRenderer.invoke(IPC_CHANNELS.preparePullRequest, input),
   createPullRequest: (input) => ipcRenderer.invoke(IPC_CHANNELS.createPullRequest, input),
   openPullRequest: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.openPullRequest, sessionId),
@@ -128,6 +131,12 @@ const api: ShellApi = {
     const subscription = (): void => listener()
     ipcRenderer.on(IPC_CHANNELS.toggleSidebarShortcut, subscription)
     return () => ipcRenderer.off(IPC_CHANNELS.toggleSidebarShortcut, subscription)
+  },
+  onUpdateAvailable: (listener) => {
+    const subscription = (_event: unknown, availability: UpdateAvailability): void =>
+      listener(availability)
+    ipcRenderer.on(IPC_CHANNELS.updateAvailable, subscription)
+    return () => ipcRenderer.off(IPC_CHANNELS.updateAvailable, subscription)
   },
   onOpenSessionRequest: (listener) => {
     const subscription = (_event: unknown, sessionId: string): void => {

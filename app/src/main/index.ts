@@ -71,6 +71,7 @@ import {
   type ChooseProjectResult,
   type ConversationStreamEvent,
   quitRequestResponseSchema,
+  updateAvailabilitySchema,
   type AppearanceSettings,
   type ThemeState
 } from '@shared/contract'
@@ -88,8 +89,9 @@ import {
   readinessSnapshotSchema,
   refreshReadinessInputSchema
 } from '@shared/readiness'
-import { PRODUCT_NAME, stateDirectory } from './identity'
+import { PRODUCT_NAME, releaseFeedUrl, releasePagePrefix, stateDirectory } from './identity'
 import { unpackedPath } from './packaging'
+import { UpdateService } from './update'
 import {
   confirmProjectSkillsTrust,
   diffProjectSkillManifests,
@@ -152,6 +154,16 @@ const testReadinessPath = process.env['APP_TEST_READINESS_PATH']
 const testReadinessHome = process.env['APP_TEST_READINESS_HOME']
 const testChooseExecutable = process.env['APP_TEST_CHOOSE_EXECUTABLE']
 const testBackground = !app.isPackaged && process.env['APP_TEST_BACKGROUND'] === '1'
+// A published release, answered without a network. Only a packaged build looks
+// for one for real, so this is also how the behavior is exercised at all.
+const testUpdateRelease = !app.isPackaged ? process.env['APP_TEST_UPDATE_RELEASE'] : undefined
+const answerUpdateFeedInTests: typeof globalThis.fetch = () =>
+  Promise.resolve(
+    new Response(testUpdateRelease, {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    })
+  )
 const devServerUrl = process.env['ELECTRON_RENDERER_URL']
 
 // Who the app says it is, before anything reads it. Packaged, the bundle
@@ -197,6 +209,7 @@ let reviews: ReviewService
 let reviewStore: ReviewStore
 let github: GitHubPullRequests
 let projectClones: ProjectCloneService
+let updates: UpdateService
 /** The one store of app-owned Run snapshots; Runs write it, undo reads it. */
 let snapshots: SessionSnapshotStore
 let shutdownStarted = false
@@ -821,6 +834,21 @@ function registerIpc(): void {
     await shell.openExternal(parsed.toString())
   })
 
+  // What Main already learned, never a network call the window waits behind.
+  handleInvoke(IPC_CHANNELS.getUpdate, z.undefined(), () =>
+    updateAvailabilitySchema.parse(updates.latest())
+  )
+
+  // Taking the update is the person's action, and it ends in their browser:
+  // Argos opens the release and stops there (ADR 0009). The Renderer asks for
+  // "the update" and never supplies an address, so this is not a way to open
+  // an arbitrary URL — Main opens the one it validated when it learned it.
+  handleInvoke(IPC_CHANNELS.openUpdate, z.undefined(), async () => {
+    const releaseUrl = updates.releaseUrl()
+    if (!releaseUrl) throw new Error('There is no published update to open')
+    await shell.openExternal(releaseUrl)
+  })
+
   handleInvoke(IPC_CHANNELS.preparePullRequest, preparePullRequestInputSchema, async (input) => {
     const session = sessionSummarySchema.parse(
       await coreClient.send({ type: 'session/get', sessionId: input.sessionId })
@@ -1295,7 +1323,26 @@ void app.whenReady().then(async () => {
       )
     }
   })
+  updates = new UpdateService({
+    // From the bundle, which the packager wrote from the manifest — the same
+    // identity packaging and signing use, read rather than restated.
+    installedVersion: app.getVersion(),
+    feedUrl: releaseFeedUrl(),
+    releasePagePrefix: releasePagePrefix(),
+    fetchImpl: testUpdateRelease === undefined ? undefined : answerUpdateFeedInTests,
+    // A window that has been open for days is told without being reopened —
+    // both when there is something to take and when there stops being.
+    onChanged: (availability) => {
+      mainWindow?.webContents.send(IPC_CHANNELS.updateAvailable, availability)
+    }
+  })
   servicesReady = true
+
+  // Nothing is awaited here and nothing on screen waits for it: a check that
+  // hangs or fails leaves the app exactly as it would have been without one.
+  // Only a packaged build asks — running from source, the version in the
+  // manifest is not a version anybody published a newer copy of.
+  if (app.isPackaged || testUpdateRelease !== undefined) updates.start()
 
   // A Run the app never got to finish still has a record of what it changed
   // waiting to be compared (12e), and a Conversation that still has it open
@@ -1380,6 +1427,7 @@ function requestQuit(): void {
 async function beginSafeShutdown(): Promise<void> {
   if (shutdownStarted) return
   shutdownStarted = true
+  updates.stop()
   await projectClones
     .cancelAll()
     .then(() => runService.stopAll('quit'))

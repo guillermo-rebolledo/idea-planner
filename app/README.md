@@ -47,6 +47,23 @@ APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER       # an App Store Connect k
 A packaged build keeps its state where an unpackaged one does, so a Session made before
 packaging is there after it. Windows and Linux are deferred.
 
+## Updates
+
+A packaged Argos asks the release feed once at launch, and once a day after that, whether a
+newer version has been published. If one has, it says so quietly — a dot on the sidebar footer,
+a row in Settings ▸ About — and taking it opens the release in the browser, where the person
+installs it themselves.
+
+Argos never downloads, replaces, or relaunches itself; see
+[ADR 0009](../docs/adr/0009-notify-only-updates.md) for why an app that spawns agents with write
+access to repositories does not take an update channel into its own bundle. A check that fails is
+silent and holds nothing up, and nothing is awaited on the way to a window.
+
+The feed and the release page are both derived from `RELEASE_REPOSITORY` in `src/main/identity.ts`,
+which `package.json` is tested to agree with, and the version compared against it comes from the
+bundle. An update is an ordinary reinstall, so Sessions and Standing Approvals are exactly where
+they were: the state directory is keyed by the bundle identifier (ADR 0002), not by the build.
+
 ## Visual identity
 
 `src/renderer/src/styles.css` holds the whole identity in two layers: families

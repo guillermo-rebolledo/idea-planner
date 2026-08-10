@@ -14,7 +14,7 @@ Choices this ticket has to make, none of which the rename could make for it: the
 - [x] It is signed and notarized under `com.memojiinc.argos`, with credentials from the environment and never in the repo
 - [x] The packaged app reads and writes `~/Library/Application Support/com.memojiinc.argos`, the same directory the unpackaged app uses
 - [x] The application menu and About panel read Argos in the packaged build, taken from `Info.plist` rather than from `package.json`
-- [ ] Update-feed and release configuration, if any, reference the same identifier — deferred to MEM-131; packaging emits the `zip` such a feed would serve
+- [x] Update-feed and release configuration, if any, reference the same identifier — done in [MEM-131](https://linear.app/memoji-inc/issue/MEM-131/argos-tells-you-an-update-exists-and-lets-you-take-it): the release repository is stated once in `identity.ts` and the feed derived from it, and Argos notifies without ever installing ([ADR 0009](../../../docs/adr/0009-notify-only-updates.md))
 - [x] `pnpm verify` passes
 
 ## Answer

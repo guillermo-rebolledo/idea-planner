@@ -1,10 +1,16 @@
 import { useEffect, useState, type ComponentType } from 'react'
 import { Bot, Palette, Settings2, X } from 'lucide-react'
-import type { AppearanceSettings, ReadinessSnapshot, ThemeState } from '@shared/contract'
+import type {
+  AppearanceSettings,
+  ReadinessSnapshot,
+  ThemeState,
+  UpdateAvailability
+} from '@shared/contract'
 import { AppearanceSettingsPanel } from '@renderer/components/AppearanceSettings'
 import { ReadinessPanel } from '@renderer/components/Readiness'
 import { Button } from '@renderer/components/ui/button'
 import { Modal } from '@renderer/components/ui/dialog'
+import { useUpdateAvailability } from '@renderer/lib/useUpdateAvailability'
 import { cn } from '@renderer/lib/utils'
 
 export type SettingsSection = 'general' | 'harnesses' | 'appearance'
@@ -57,6 +63,12 @@ export function SettingsDialog({
   const [customDraft, setCustomDraft] = useState<AppearanceSettings['custom'] | null>(null)
   const [appearanceError, setAppearanceError] = useState(false)
   const [appVersion, setAppVersion] = useState<string | null>(null)
+  // Whether the version About states is still the newest one. Nothing waits on
+  // it, and a check that never landed leaves About saying exactly what it said
+  // before there was one. Settings can outlive a check — it is open while the
+  // launch-time one finishes, and can be open for the daily one — so it is
+  // told, rather than only asking once on the way in.
+  const update = useUpdateAvailability()
   const activeSection = SECTION_BY_ID[section]
 
   useEffect(() => {
@@ -181,6 +193,7 @@ export function SettingsDialog({
             <GeneralSettings
               warnBeforeQuit={warnBeforeQuit}
               appVersion={appVersion}
+              update={update}
               onWarnBeforeQuit={changeQuitWarning}
             />
           ) : section === 'harnesses' ? (
@@ -210,10 +223,12 @@ export function SettingsDialog({
 function GeneralSettings({
   warnBeforeQuit,
   appVersion,
+  update,
   onWarnBeforeQuit
 }: {
   warnBeforeQuit: boolean | null
   appVersion: string | null
+  update: UpdateAvailability | null
   onWarnBeforeQuit: (enabled: boolean) => void
 }): React.JSX.Element {
   return (
@@ -250,6 +265,33 @@ function GeneralSettings({
             <Fact label="Application" value={`Argos${appVersion ? ` ${appVersion}` : ''}`} />
             <Fact label="Application data" value="Stored locally on this Mac" />
           </dl>
+
+          {/*
+            Only ever shown when there is something to say. A check that failed,
+            or found nothing, leaves About exactly the length it was: nobody
+            needs a line telling them their app is not out of date, and nobody
+            opened a coding app to be told about their network.
+          */}
+          {update?.available ? (
+            <div className="mt-3 flex items-start justify-between gap-6 rounded-lg border border-border bg-surface p-4 text-xs">
+              <p className="font-medium">
+                Argos {update.available.version} is available
+                <span className="mt-1 block max-w-xl leading-relaxed font-normal text-muted-foreground">
+                  Opens the release in your browser, where you install it yourself. Argos never
+                  downloads or replaces itself while you are working.
+                </span>
+              </p>
+              <Button
+                variant="secondary"
+                className="shrink-0"
+                // The card goes when the release does, so a click that finds
+                // nothing left to open is a race with that and nothing more.
+                onClick={() => void window.shell.openUpdate().catch(() => undefined)}
+              >
+                Get the update
+              </Button>
+            </div>
+          ) : null}
         </section>
       </div>
     </div>

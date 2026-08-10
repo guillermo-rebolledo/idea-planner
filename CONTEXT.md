@@ -124,3 +124,7 @@ _Avoid_: Health, status, setup
 **Launch Gate**:
 The app opening only when at least one Harness can run a Session. That is narrower than usable: a Harness this app cannot drive yet is one the person would send their first message to and watch do nothing. Stated per Harness, repaired in the user's own terminal, and re-checked without restarting.
 _Avoid_: Blocker, paywall, splash
+
+**Update**:
+A newer version of Argos having been published. The app looks, says so quietly, and stops: taking one opens the release in the person's browser, where they install it themselves. Argos never downloads or replaces itself, because it holds agents with write access to repositories and git is the only undo (ADR 0009). A check that fails is silent and never delays a launch — the absence of an update and the failure to look for one are deliberately the same thing on screen.
+_Avoid_: Auto-update, upgrade, patch, release channel

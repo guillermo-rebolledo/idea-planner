@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Archive, ArrowRightLeft, Bot, FolderPlus, Lock, Settings } from 'lucide-react'
+import { Archive, ArrowRightLeft, Bot, Download, FolderPlus, Lock, Settings } from 'lucide-react'
 import {
   type AppearanceSettings,
   type ReadinessSnapshot,
@@ -20,6 +20,7 @@ import {
   MenuShortcut,
   MenuTrigger
 } from '@renderer/components/ui/menu'
+import { useUpdateAvailability } from '@renderer/lib/useUpdateAvailability'
 import { cn } from '@renderer/lib/utils'
 
 interface AppMenuProps {
@@ -55,6 +56,9 @@ export function AppMenu({
   const [approvals, setApprovals] = useState<ProjectApprovals[]>([])
   const [approvalsOpen, setApprovalsOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
+  // A newer Argos is news, not an interruption: it arrives as a dot on a
+  // footer nobody has to look at, and waits there.
+  const update = useUpdateAvailability()
 
   const refreshReadiness = useCallback(() => {
     window.shell.getReadiness().then(setReadiness, () => setReadiness(null))
@@ -77,6 +81,25 @@ export function AppMenu({
   const needsAttention =
     readiness?.harnesses.some((harness) => !harness.capabilities.developSession.available) ?? false
   const approvalCount = approvals.reduce((count, entry) => count + entry.approvals.length, 0)
+  const updateAvailable = update?.available ?? null
+  // The footer is a button, so what it has to say has to be in its name: text
+  // inside it is never read once the button is labelled.
+  const menuLabel = [
+    'App menu',
+    needsAttention ? 'a Harness needs you' : null,
+    updateAvailable ? `Argos ${updateAvailable.version} is available` : null
+  ]
+    .filter((part) => part !== null)
+    .join(' — ')
+
+  async function takeUpdate(): Promise<void> {
+    try {
+      await window.shell.openUpdate()
+      onAnnounce('Opening the release in your browser. Argos installs nothing on its own.')
+    } catch {
+      onAnnounce('That release could not be opened.')
+    }
+  }
 
   async function revoke(projectRoot: string, approval: StandingApproval): Promise<void> {
     try {
@@ -92,20 +115,24 @@ export function AppMenu({
     <>
       <Menu open={open} onOpenChange={setOpen}>
         <MenuTrigger
-          aria-label="App menu"
+          aria-label={menuLabel}
           className="flex w-full items-center gap-2 border-t border-border px-4 py-2.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent data-popup-open:text-foreground"
         >
           <span className="relative">
             <Bot aria-hidden="true" className="size-3.5" />
-            {needsAttention && (
+            {(needsAttention || updateAvailable) && (
               <span
                 aria-hidden="true"
-                className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-status-blocked"
+                className={cn(
+                  'absolute -top-0.5 -right-0.5 size-1.5 rounded-full',
+                  // A Harness that cannot run is between the person and their
+                  // work. A newer version is not, and waits behind it.
+                  needsAttention ? 'bg-status-blocked' : 'bg-primary'
+                )}
               />
             )}
           </span>
           Argos
-          {needsAttention && <span className="sr-only">— a Harness needs you</span>}
         </MenuTrigger>
         <MenuContent side="top" align="start" className="m-2">
           <MenuItem onClick={onAddProject}>
@@ -141,6 +168,13 @@ export function AppMenu({
             </span>
           </MenuItem>
           <MenuSeparator />
+          {updateAvailable && (
+            <MenuItem onClick={() => void takeUpdate()}>
+              <Download aria-hidden="true" className="size-3.5 text-muted-foreground" />
+              Argos {updateAvailable.version} is available
+              <span className="ml-auto text-2xs text-muted-foreground">Get it</span>
+            </MenuItem>
+          )}
           <MenuItem onClick={() => setSettingsSection('general')}>
             <Settings aria-hidden="true" className="size-3.5 text-muted-foreground" />
             Settings…

@@ -34,7 +34,7 @@ interface Sandbox {
 let sandbox: Sandbox
 
 async function launchShell(
-  options: { quitWarning?: boolean; github?: boolean } = {}
+  options: { quitWarning?: boolean; github?: boolean; publishedRelease?: unknown } = {}
 ): Promise<ElectronApplication> {
   return electron.launch({
     executablePath: electronBinary,
@@ -45,6 +45,11 @@ async function launchShell(
       APP_TEST_BACKGROUND: '1',
       APP_TEST_READINESS_PATH: sandbox.readinessBinDir,
       APP_TEST_READINESS_HOME: sandbox.readinessHomeDir,
+      // The release feed, answered without a network. Absent — as it is for
+      // every other test here — the app never looks for an update at all.
+      ...(options.publishedRelease === undefined
+        ? {}
+        : { APP_TEST_UPDATE_RELEASE: JSON.stringify(options.publishedRelease) }),
       ...(options.github
         ? { PATH: [sandbox.readinessBinDir, process.env['PATH'] ?? ''].join(delimiter) }
         : {}),
@@ -179,6 +184,87 @@ test('the app is Argos to the person and to macOS, and keeps its state under its
   }
 })
 
+/**
+ * A version no build reaches, so the comparison the app makes is a real one
+ * against whatever version it is actually running. The suite launches the
+ * built output rather than a bundle, and the app takes its version from the
+ * bundle it is in — which here is Electron's own.
+ */
+const NEWER_THAN_ANY_BUILD = '999.0.0'
+
+/**
+ * Argos is distributed outside the App Store, so nobody else tells a person
+ * their copy is old. It tells them — and stops there (ADR 0009).
+ */
+test('a newer Argos is offered quietly, and taking it stays the person’s action', async () => {
+  const app = await launchShell({
+    publishedRelease: {
+      tag_name: `v${NEWER_THAN_ANY_BUILD}`,
+      html_url: `https://github.com/guillermo-rebolledo/idea-planner/releases/tag/v${NEWER_THAN_ANY_BUILD}`
+    }
+  })
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+
+    // Nothing stood in the way of getting here: no dialog, no alert, no wait.
+    // The news is a dot on a footer, and it waits to be looked at.
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    const menu = page.getByRole('button', { name: 'App menu' })
+    await expect(menu).toHaveAccessibleName(/Argos 999\.0\.0 is available/)
+
+    await menu.click()
+    await expect(page.getByRole('menuitem', { name: 'Argos 999.0.0 is available' })).toBeVisible()
+    await page.keyboard.press('Escape')
+
+    // Settings says the same thing beside the version it is newer than, and
+    // says plainly that taking it is something the person does.
+    await menu.click()
+    await page.getByRole('menuitem', { name: 'Settings…' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Settings' })
+    await expect(dialog.getByText('Argos 999.0.0')).toBeVisible()
+    await expect(dialog.getByRole('button', { name: 'Get the update' })).toBeVisible()
+    await expect(dialog.getByText('Argos never downloads or replaces itself')).toBeVisible()
+
+    // And it did not take it. The app running after being told is the app that
+    // was told: an update is a thing to go and get, not a thing that arrives.
+    expect(await app.evaluate(({ app: electronApp }) => electronApp.getVersion())).not.toBe(
+      NEWER_THAN_ANY_BUILD
+    )
+  } finally {
+    await app.close()
+  }
+})
+
+test('an update check that finds nothing, or never lands, is silent', async () => {
+  // What GitHub answers with when it will not answer. Every other test in this
+  // file launches with no feed at all, which is the unreachable-network case.
+  const app = await launchShell({ publishedRelease: { message: 'API rate limit exceeded' } })
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+
+    // The check ran and came back with nothing to say, which is the same thing
+    // it says when the network is down.
+    expect((await page.evaluate(() => window.shell.getUpdate())).available).toBeNull()
+
+    const menu = page.getByRole('button', { name: 'App menu' })
+    await expect(menu).not.toHaveAccessibleName(/is available/)
+    await menu.click()
+    await expect(page.getByRole('menuitem', { name: /is available/ })).toHaveCount(0)
+
+    // Nor does About grow a row saying the app failed to look, or that it is
+    // up to date. Nobody opened a coding app to be told about the network.
+    await page.getByRole('menuitem', { name: 'Settings…' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Settings' })
+    await expect(dialog.getByText('Application data')).toBeVisible()
+    await expect(dialog.getByRole('button', { name: 'Get the update' })).toHaveCount(0)
+    await expect(dialog.getByText('Update', { exact: true })).toHaveCount(0)
+  } finally {
+    await app.close()
+  }
+})
+
 test('renderer is sandboxed with only the narrow preload surface', async () => {
   const app = await launchShell()
   try {
@@ -221,6 +307,8 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'getConversation',
       'getQuitWarningPreference',
       'getReadiness',
+      'getSessionReview',
+      'getUpdate',
       'initializeProject',
       'listBranches',
       'listDamagedSessions',
@@ -242,9 +330,11 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'onThemeChanged',
       'onToggleSidebarShortcut',
       'onUndoShortcut',
+      'onUpdateAvailable',
       'openExternalLink',
       'openInEditor',
       'openPullRequest',
+      'openUpdate',
       'pathForFile',
       'pauseConversationQueue',
       'preparePullRequest',
@@ -253,6 +343,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'refreshReadiness',
       'removeProject',
       'renameSession',
+      'requestSessionReview',
       'resolveApproval',
       'respondToQuitRequest',
       'resumeConversationQueue',
@@ -594,9 +685,20 @@ test('a person organizes the mailbox: pin, search, archive with undo, rename, co
  * A Harness that answers the readiness probe (`-p`) and then, for a real Run
  * (`--print`), starts and keeps working — so a Run is genuinely running.
  */
+/**
+ * A Harness that starts its turn and stays in it.
+ *
+ * The Run branch names a thread and a model, because a real `init` frame does
+ * and the app refuses one that does not — an agent whose first frame it cannot
+ * read is not one it will let go on working. The readiness probe is a
+ * different question and reads none of that.
+ */
 const BUSY_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
-  -p|--print) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  --print)
+    echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
+    /bin/sleep 30;;
 esac`
 
 test('quitting with active agents warns, safely exits, and remembers the reversible choice', async () => {
@@ -1377,7 +1479,7 @@ const QUIET_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
   -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
   --print)
-    echo '{"type":"system","subtype":"init"}'
+    echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
     printf 'quietly changed\n' >> quiet.ts
     rm -f doomed.ts
     echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}]},"session_id":"thread-1"}'
@@ -2043,7 +2145,7 @@ exit 1`
 const LONG_RUNNING_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
 esac
-echo '{"type":"system","subtype":"init"}'
+echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
 trap 'exit 0' TERM INT
 while :; do /bin/sleep 1; done`
 

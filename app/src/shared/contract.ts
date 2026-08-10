@@ -67,6 +67,7 @@ import {
 } from './run'
 import { pullRequestSchema } from './pull-request'
 import { reviewLaunchSchema, type ReviewState } from './review'
+import type { UpdateAvailability } from './update'
 import {
   appearanceSettingsSchema,
   resolvedThemeSchema,
@@ -93,6 +94,7 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 27: the app can say a newer version of itself has been published.
  * 26: Claude is launched through its own protocol frames, so `harness/open`
  *     carries either Harness's launch payload.
  * 25: a Session's changes can be reviewed on a detached thread, and the
@@ -121,7 +123,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 26
+export const CONTRACT_VERSION = 27
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -591,6 +593,20 @@ export interface ShellApi {
   setLoginShellDiscovery(consent: boolean): Promise<ReadinessSnapshot>
   /** Opens one of the fixed readiness-guidance URLs in the default browser. */
   openExternalLink(url: string): Promise<void>
+  /**
+   * Whether a newer Argos has been published. Answers from what Main already
+   * learned — it never waits on a network — and says nothing at all when the
+   * check has not finished, failed, or found this to be the newest version.
+   */
+  getUpdate(): Promise<UpdateAvailability>
+  /**
+   * Takes the update: opens the published release in the person's browser,
+   * where they install it themselves. Argos downloads and replaces nothing
+   * (ADR 0009). The Renderer names no URL — Main opens the one it validated.
+   */
+  openUpdate(): Promise<void>
+  /** Main saying a check has just found a newer version, mid-session. */
+  onUpdateAvailable(listener: (availability: UpdateAvailability) => void): () => void
   /** Prepares editable publishing prose without changing Git or contacting a Harness. */
   preparePullRequest(input: PreparePullRequestInput): Promise<PreparePullRequestResult>
   /** Explicitly commits and pushes an isolated Checkout, then creates its GitHub PR. */
@@ -694,3 +710,4 @@ export * from './review'
 export * from './review-attachment'
 export * from './run'
 export * from './run-undo'
+export * from './update'

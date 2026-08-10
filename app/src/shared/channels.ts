@@ -73,5 +73,8 @@ export const IPC_CHANNELS = {
   prepareRunUndo: 'run:undo-prepare',
   applyRunUndo: 'run:undo-apply',
   conversationEvent: 'conversation:event',
-  openSessionRequest: 'session:open-request'
+  openSessionRequest: 'session:open-request',
+  getUpdate: 'update:get',
+  openUpdate: 'update:open',
+  updateAvailable: 'update:available'
 } as const
