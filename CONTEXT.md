@@ -56,6 +56,14 @@ _Avoid_: Conversation, turn, Harness Thread
 A durable, editable request waiting inside one Session while another Run is active. It captures the message and its Run configuration when queued, keeps a stable submission identity through edits and reordering, and contacts a Harness only when Main claims it after an explicit Resume or a completed Run.
 _Avoid_: Held message, draft, follow-up, pending prompt
 
+**Review**:
+What a Harness says about the code a Session changed, asked for once and answered as Findings rather than as prose to re-locate by hand. It runs on a **detached thread**, not as a Run: it appends nothing to the Conversation and spends none of the Session's context, which is what makes it worth having in exactly the long Sessions where a check is most useful. It reads and never writes, it is Harness-conditional — Codex offers one, Claude offers none, and the app says so rather than offering an action that does nothing — and a Review that fails says why and leaves the Session otherwise untouched. Nothing in one can be accepted or rejected, for the same reason a changed file cannot be: the code is already on disk and git decides what to keep.
+_Avoid_: Code review, PR review, lint, audit
+
+**Finding**:
+One thing a Review found, carrying a title, a body, a file, and a line range, and drawn on the changed-files surface beside the change it is about. The range is what makes it a Finding rather than a paragraph: opening one opens the place it points at.
+_Avoid_: Comment, issue, error, warning
+
 **Review Attachment**:
 Code the user selected while reading what a Session changed — a whole recorded write, one hunk, or a range of its lines — copied at the moment of selecting it and carried by exactly one message or Queued Submission. It is historical context for the Harness, never a live reference: later writes to the same file leave it untouched, and it has no thread, reply, resolved state, or synchronization anywhere.
 _Avoid_: Review comment, annotation, code selection, snippet

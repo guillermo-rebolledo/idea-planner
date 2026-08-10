@@ -4,11 +4,13 @@ import {
   captureReviewAttachment,
   type ChangeKind,
   type ChangedFile,
+  type Finding,
   type ReviewAttachment,
   type ReviewSelection
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
 import { DiffCounts, DiffView } from '@renderer/components/Diff'
+import { ReviewFindings } from '@renderer/components/ReviewFindings'
 import type { FileChangeEntry, SessionChanges } from '@renderer/lib/useSessionChanges'
 import { cn } from '@renderer/lib/utils'
 
@@ -40,6 +42,8 @@ const CHANGE_WORD: Record<ChangeKind, string> = {
 }
 
 interface FilesPanelProps {
+  /** The Session whose changes these are, and whose Review answers about them. */
+  sessionId: string
   changes: SessionChanges
   /** The file whose diff is open underneath, when one is. */
   focusedPath: string | null
@@ -60,6 +64,7 @@ const MAX_WIDTH = 800
 const RESIZE_STEP = 24
 
 export function FilesPanel({
+  sessionId,
   changes,
   focusedPath,
   onFocus,
@@ -68,6 +73,14 @@ export function FilesPanel({
 }: FilesPanelProps): React.JSX.Element {
   const { files, entries, totals } = changes
   const focused = files.find((file) => file.path === focusedPath) ?? null
+  // The Finding whose code is open. Opening one opens the file it points at,
+  // because a Finding that named a place and then showed nothing would be the
+  // paragraph this surface exists to replace.
+  const [openFinding, setOpenFinding] = useState<Finding | null>(null)
+  const highlight =
+    openFinding !== null && openFinding.path === focusedPath
+      ? { startLine: openFinding.startLine, endLine: openFinding.endLine }
+      : undefined
   // Diffs are 80–120 columns wide; a review surface must not be a keyhole.
   // The width is the reader's to set, per visit, between honest bounds.
   const [width, setWidth] = useState(DEFAULT_WIDTH)
@@ -136,6 +149,16 @@ export function FilesPanel({
         Already on disk. git is the undo.
       </p>
 
+      <ReviewFindings
+        sessionId={sessionId}
+        changedPaths={new Set(files.map((file) => file.path))}
+        openFindingId={openFinding?.id ?? null}
+        onOpenFinding={(finding) => {
+          setOpenFinding(finding)
+          if (finding !== null) onFocus(finding.path)
+        }}
+      />
+
       {files.length === 0 ? (
         <p className="px-4 py-3 text-xs text-muted-foreground">
           Nothing changed yet. Rows appear here as the agent works, whether it reports an edit or a
@@ -158,6 +181,7 @@ export function FilesPanel({
               file={focused}
               changes={entries.filter((entry) => entry.path === focused.path)}
               onAttach={onAttach}
+              highlight={highlight}
             />
           )}
         </>
@@ -231,11 +255,13 @@ function writeClock(at: string): string {
 function FocusedDiff({
   file,
   changes,
-  onAttach
+  onAttach,
+  highlight
 }: {
   file: ChangedFile
   changes: FileChangeEntry[]
   onAttach: (attachment: ReviewAttachment) => void
+  highlight?: { startLine: number; endLine: number }
 }): React.JSX.Element {
   /**
    * The snapshot is taken from the recorded entry at the moment of asking,
@@ -298,6 +324,7 @@ function FocusedDiff({
             </div>
             <DiffView
               hunks={entry.hunks}
+              highlight={highlight}
               attach={{
                 path: file.path,
                 onAttachHunk: (hunkIndex) => attachFrom(entry, { scope: 'hunk', hunkIndex }),

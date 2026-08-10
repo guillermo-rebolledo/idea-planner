@@ -2,8 +2,10 @@
 
 `app/src/core/harness/codex-protocol/` is generated from the installed Codex
 binary and never edited by hand. `app/src/core/harness/fixtures/codex-app-server.jsonl`
-is a session recorded from that same binary. Both are pinned to one version,
-and both are regenerated together when it moves.
+is a session recorded from that same binary, and
+`app/src/core/harness/fixtures/codex-review.jsonl` is a detached review
+recorded from it. All three are pinned to one version, and all three are
+regenerated together when it moves.
 
 ## Why generated rather than written
 
@@ -22,10 +24,19 @@ yesterday. The binary can emit its own contract, so it does.
 ## Regenerating, when the supported version moves
 
 ```
-pnpm codex:protocol   # rewrites the bindings from the installed binary
-pnpm codex:record     # re-records the contract fixture (costs one Codex request)
+pnpm codex:protocol       # rewrites the bindings from the installed binary
+pnpm codex:record         # re-records the contract fixture (costs one Codex request)
+pnpm codex:record-review  # re-records the review fixture (costs one more)
 pnpm verify
 ```
+
+A review is protocol of its own rather than a variant of a turn: `review/start`
+answers with the id of a thread Codex runs the review on, and everything worth
+reading arrives under that id. So it has its own recording and its own suite,
+`app/src/core/harness/codex-review.test.ts`. The review itself answers in
+prose — findings first, `[P1] Title — path:line`, one paragraph each — and
+`parseReviewReport` in `@shared/review` is what turns that into located
+Findings. When the shape of that prose moves, the recording is what proves it.
 
 Read both diffs. The bindings are types, so a shape change becomes a compile
 error — `app/src/core/harness/codex.ts` deliberately asserts that the wire
