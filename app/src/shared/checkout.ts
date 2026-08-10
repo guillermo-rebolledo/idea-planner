@@ -31,14 +31,17 @@ export const worktreeBootstrapSkipReasonSchema = z.enum([
   'not-regular',
   'permission-denied',
   'destination-exists',
+  // The filesystem cannot copy-on-write clone, so a directory was not carried.
+  'clone-unsupported',
   'copy-failed'
 ])
 export type WorktreeBootstrapSkipReason = z.infer<typeof worktreeBootstrapSkipReasonSchema>
 
 /**
- * The filenames considered while preparing an isolated Checkout. Contents
- * never cross this boundary: only Project-relative names and typed outcomes
- * are durable or visible to the Renderer.
+ * The names considered while preparing an isolated Checkout — a carried
+ * directory keeps Git's trailing slash, so `node_modules/` reads as the tree
+ * it is. Contents never cross this boundary: only Project-relative names and
+ * typed outcomes are durable or visible to the Renderer.
  */
 export const worktreeBootstrapResultSchema = z.object({
   outcome: z.enum(['copied', 'partial', 'skipped']),

@@ -396,11 +396,11 @@ export function Composer({
           className="bg-card mx-auto w-full max-w-xl rounded-lg border border-border p-4 text-sm"
         >
           <h2 id="worktree-bootstrap-heading" className="font-medium">
-            Some local files could not be copied
+            Some local files and directories could not be carried
           </h2>
           {pendingBootstrap.result.copied.length > 0 && (
             <div className="mt-3">
-              <h3 className="text-xs font-medium text-muted-foreground">Copied</h3>
+              <h3 className="text-xs font-medium text-muted-foreground">Carried</h3>
               <ul className="mt-1 list-inside list-disc">
                 {pendingBootstrap.result.copied.map((path) => (
                   <li key={path}>{path}</li>
@@ -425,7 +425,7 @@ export function Composer({
               disabled={sending}
               onClick={() => void resolveBootstrap('continue')}
             >
-              Continue without files
+              Continue without them
             </Button>
             <Button type="button" disabled={sending} onClick={() => void resolveBootstrap('retry')}>
               Retry copying

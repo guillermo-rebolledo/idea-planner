@@ -1726,12 +1726,12 @@ test('a partial Checkout bootstrap keeps the Worktree and offers accessible reco
     await composer.getByRole('button', { name: 'Send' }).click()
 
     const recovery = composer.getByRole('region', {
-      name: 'Some local files could not be copied'
+      name: 'Some local files and directories could not be carried'
     })
     await expect(recovery.getByText('.env.local')).toBeVisible()
     await expect(recovery.getByText(/\.env\.private.*permission denied/)).toBeVisible()
     await expect(recovery.getByRole('button', { name: 'Retry copying' })).toBeVisible()
-    await recovery.getByRole('button', { name: 'Continue without files' }).click()
+    await recovery.getByRole('button', { name: 'Continue without them' }).click()
     await expect(page.getByRole('heading', { name: 'Keep the partial Checkout' })).toBeVisible()
 
     const { stdout } = await git('git', ['worktree', 'list', '--porcelain'], {
