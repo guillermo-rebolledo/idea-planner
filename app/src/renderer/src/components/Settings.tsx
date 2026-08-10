@@ -74,10 +74,6 @@ export function SettingsDialog({
       (boot) => setAppVersion(boot.appVersion),
       () => undefined
     )
-    // Whether the version above is still the newest one. Nothing here waits on
-    // it, and a check that never landed leaves About saying exactly what it
-    // said before there was one.
-    void window.shell.getUpdate().then(setUpdate, () => undefined)
     void window.shell.getAppearanceSettings().then(
       (savedAppearance) => {
         setAppearance(savedAppearance)
@@ -85,6 +81,16 @@ export function SettingsDialog({
       },
       () => setAppearanceError(true)
     )
+  }, [])
+
+  // Whether the version About states is still the newest one. Nothing waits on
+  // it, and a check that never landed leaves About saying exactly what it said
+  // before there was one. Settings can outlive a check — it is open while the
+  // launch-time one finishes, and can be open for the daily one — so it is
+  // told, rather than only asking once on the way in.
+  useEffect(() => {
+    void window.shell.getUpdate().then(setUpdate, () => undefined)
+    return window.shell.onUpdateAvailable(setUpdate)
   }, [])
 
   function changeQuitWarning(enabled: boolean): void {
