@@ -28,8 +28,13 @@ export interface UpdateServiceOptions {
   feedUrl: string
   /** The only prefix a release URL may have before it reaches a browser. */
   releasePagePrefix: string
-  /** Told once, when a version worth mentioning is first found. */
-  onAvailable?: (availability: UpdateAvailability) => void
+  /**
+   * Told once whenever what is known changes — a version worth mentioning
+   * found, and equally one that is no longer on offer. A surface that was told
+   * about a release has to be told when it goes, or it goes on offering an
+   * update nobody can take.
+   */
+  onChanged?: (availability: UpdateAvailability) => void
   /** Test seam: answers the feed without a network. */
   fetchImpl?: typeof globalThis.fetch
   /** A check that has not answered by now is a check nobody is waiting for. */
@@ -95,7 +100,10 @@ export class UpdateService {
     if (found === undefined) return this.known
     const changed = found?.version !== this.known.available?.version
     this.known = { installed: this.options.installedVersion, available: found }
-    if (changed && found) this.options.onAvailable?.(this.known)
+    // Including a release that has stopped being on offer — withdrawn, or
+    // republished as a draft. A surface still showing the old one would offer
+    // an action that cannot be carried out, because the URL behind it is gone.
+    if (changed) this.options.onChanged?.(this.known)
     return this.known
   }
 

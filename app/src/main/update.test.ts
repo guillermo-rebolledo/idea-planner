@@ -18,14 +18,14 @@ function feedAnswering(body: unknown, init: { ok?: boolean } = {}): typeof globa
 
 function service(
   fetchImpl: typeof globalThis.fetch,
-  onAvailable?: (availability: UpdateAvailability) => void
+  onChanged?: (availability: UpdateAvailability) => void
 ): UpdateService {
   return new UpdateService({
     installedVersion: '0.1.0',
     feedUrl: FEED,
     releasePagePrefix: PREFIX,
     fetchImpl,
-    onAvailable
+    onChanged
   })
 }
 
@@ -65,6 +65,52 @@ describe('learning that a newer Argos exists', () => {
       installed: '0.1.0',
       available: { version: '0.2.0', url: RELEASE }
     })
+  })
+
+  // A release can stop being on offer — withdrawn, or republished as a draft.
+  // A surface that was told about it goes on offering it unless it is told
+  // again, and the action it offers cannot be carried out: the URL behind it
+  // is exactly what Main has just let go of.
+  it('says so when the release it was offering is gone', async () => {
+    const announced = vi.fn()
+    const updates = new UpdateService({
+      installedVersion: '0.1.0',
+      feedUrl: FEED,
+      releasePagePrefix: PREFIX,
+      onChanged: announced,
+      fetchImpl: vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ tag_name: 'v0.2.0', html_url: RELEASE })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ tag_name: 'v0.1.0', html_url: `${PREFIX}tag/v0.1.0` })
+        })
+    })
+
+    await updates.check()
+    await updates.check()
+
+    expect(updates.releaseUrl()).toBeNull()
+    expect(announced).toHaveBeenCalledTimes(2)
+    expect(announced).toHaveBeenLastCalledWith({ installed: '0.1.0', available: null })
+  })
+
+  // Only a change. Nothing to say is the state it starts in, so the ordinary
+  // check that finds nothing must not announce that it found nothing.
+  it('stays quiet when a check confirms what was already true', async () => {
+    const announced = vi.fn()
+    const updates = service(
+      feedAnswering({ tag_name: 'v0.1.0', html_url: `${PREFIX}tag/v0.1.0` }),
+      announced
+    )
+
+    await updates.check()
+    await updates.check()
+
+    expect(announced).not.toHaveBeenCalled()
   })
 
   it('asks the feed once while a check is still in flight', async () => {

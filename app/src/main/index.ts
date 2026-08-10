@@ -1330,8 +1330,9 @@ void app.whenReady().then(async () => {
     feedUrl: releaseFeedUrl(),
     releasePagePrefix: releasePagePrefix(),
     fetchImpl: testUpdateRelease === undefined ? undefined : answerUpdateFeedInTests,
-    // A window that has been open for days is told without being reopened.
-    onAvailable: (availability) => {
+    // A window that has been open for days is told without being reopened —
+    // both when there is something to take and when there stops being.
+    onChanged: (availability) => {
       mainWindow?.webContents.send(IPC_CHANNELS.updateAvailable, availability)
     }
   })

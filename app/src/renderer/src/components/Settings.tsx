@@ -284,7 +284,9 @@ function GeneralSettings({
               <Button
                 variant="secondary"
                 className="shrink-0"
-                onClick={() => void window.shell.openUpdate()}
+                // The card goes when the release does, so a click that finds
+                // nothing left to open is a race with that and nothing more.
+                onClick={() => void window.shell.openUpdate().catch(() => undefined)}
               >
                 Get the update
               </Button>
