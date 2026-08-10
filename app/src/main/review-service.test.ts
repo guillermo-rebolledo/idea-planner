@@ -88,6 +88,38 @@ const printsOnce: ReviewProcessRunner = async (request) => {
   await request.onOutput('{"method":"turn/completed"}\n')
 }
 
+/** A Harness that never answers, so the wait can be interrupted from outside. */
+function neverAnswers(): {
+  runProcess: ReviewProcessRunner
+  started: Promise<void>
+  stopped: () => boolean
+} {
+  let aborted = false
+  let running = (): void => undefined
+  const started = new Promise<void>((resolve) => {
+    running = resolve
+  })
+  return {
+    started,
+    stopped: () => aborted,
+    runProcess: (request) =>
+      new Promise((resolve) => {
+        const stop = (): void => {
+          aborted = true
+          resolve()
+        }
+        // The runner's contract: an already-raised signal is honoured before
+        // anything is spawned, and a later one is listened for.
+        if (request.signal.aborted) {
+          stop()
+          return
+        }
+        request.signal.addEventListener('abort', stop)
+        running()
+      })
+  }
+}
+
 describe('ReviewService', () => {
   let root: string
 
@@ -210,6 +242,30 @@ describe('ReviewService', () => {
     const reviewing = service(new FakeCore([COMPLETED]))
     await reviewing.request(SESSION.id)
     await reviewing.forget(SESSION.id)
+    expect((await reviewing.state(SESSION.id)).review).toBeNull()
+  })
+
+  it('stops a Review in flight when its Session is deleted, and writes nothing', async () => {
+    const harness = neverAnswers()
+    const reviewing = service(new FakeCore([COMPLETED]), { runProcess: harness.runProcess })
+    const asked = reviewing.request(SESSION.id)
+    await harness.started
+    await reviewing.forget(SESSION.id)
+    // The Harness is stopped rather than left reading a deleted Session's
+    // Checkout, and the answer it never gave recreates nothing.
+    expect(harness.stopped()).toBe(true)
+    const state = await asked
+    expect(state.review).toBeNull()
+    expect(state.failure).toBeNull()
+    expect((await reviewing.state(SESSION.id)).review).toBeNull()
+  })
+
+  it('keeps an abandoned Review from overwriting a record deleted after it', async () => {
+    const reviewing = service(new FakeCore([COMPLETED]))
+    await reviewing.request(SESSION.id)
+    const second = reviewing.request(SESSION.id)
+    await reviewing.forget(SESSION.id)
+    await second
     expect((await reviewing.state(SESSION.id)).review).toBeNull()
   })
 })

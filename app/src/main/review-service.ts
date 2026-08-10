@@ -50,6 +50,12 @@ export interface ReviewProcessRequest {
    * process: an app-server asked for one review does not end by itself.
    */
   onOutput: (chunk: string) => Promise<{ frames: string[]; done: boolean }>
+  /**
+   * Raised when nobody is waiting for this Review any more. The process is
+   * stopped where it stands: abandoning is not a failure, so the runner
+   * returns rather than throwing.
+   */
+  signal: AbortSignal
 }
 
 export type ReviewProcessRunner = (request: ReviewProcessRequest) => Promise<void>
@@ -83,8 +89,14 @@ export class ReviewService {
   private readonly now: () => Date
   private readonly randomId: () => string
   private readonly runProcess: ReviewProcessRunner
-  /** One Review per Session at a time; a second ask joins the first. */
-  private readonly running = new Map<string, Promise<ReviewState>>()
+  /**
+   * The Review each Session has in flight, and the handle that abandons it.
+   * One per Session at a time; a second ask joins the first.
+   */
+  private readonly running = new Map<
+    string,
+    { work: Promise<ReviewState>; abandon: AbortController }
+  >()
   /** Why the last attempt did not answer, until another one does. */
   private readonly failures = new Map<string, string>()
 
@@ -113,26 +125,50 @@ export class ReviewService {
    * disagree about which one the surface is showing.
    */
   request(sessionId: string): Promise<ReviewState> {
-    const running = this.running.get(sessionId)
-    if (running) return running
-    const work = this.review(sessionId).finally(() => {
-      this.running.delete(sessionId)
+    const inFlight = this.running.get(sessionId)
+    if (inFlight) return inFlight.work
+    const abandon = new AbortController()
+    const work = this.review(sessionId, abandon.signal).finally(() => {
+      if (this.running.get(sessionId)?.abandon === abandon) this.running.delete(sessionId)
     })
-    this.running.set(sessionId, work)
+    this.running.set(sessionId, { work, abandon })
     return work
   }
 
-  forget(sessionId: string): Promise<void> {
+  /**
+   * Forgets the Review a Session was given, and abandons the one it has in
+   * flight. Stopping the Harness is the point rather than a tidy-up: a Review
+   * left running for a deleted Session reads a Checkout nothing owns any more
+   * for another quarter of an hour, and then writes its answer back under an
+   * id that was deleted — recreating exactly the Session-owned state Delete
+   * was asked to remove.
+   *
+   * The abandoned Review is waited on before the record goes, so it cannot
+   * land between the abandonment and the delete.
+   */
+  async forget(sessionId: string): Promise<void> {
+    const inFlight = this.running.get(sessionId)
+    inFlight?.abandon.abort()
+    await inFlight?.work.catch(() => undefined)
+    this.running.delete(sessionId)
     this.failures.delete(sessionId)
-    return this.deps.store.forget(sessionId)
+    await this.deps.store.forget(sessionId)
   }
 
-  private async review(sessionId: string): Promise<ReviewState> {
+  private async review(sessionId: string, signal: AbortSignal): Promise<ReviewState> {
+    /** Read through a call, so a check after an await is a real check. */
+    const abandoned = (): boolean => signal.aborted
+    // Abandoned before it began — deleted in the same tick it was asked for.
+    // No Harness is started for a Session that is already gone.
+    if (abandoned()) return await this.state(sessionId)
     const harness = await this.deps.harnessFor(sessionId)
     if (harness === null || !harnessReviews(harness)) return await this.state(sessionId)
     const requestedAt = this.now().toISOString()
     try {
-      const outcome = await this.ask(sessionId, harness)
+      const outcome = await this.ask(sessionId, harness, signal)
+      // Nobody is waiting for this any more: the Session it belonged to is
+      // gone, so its answer is not written and its failure is not reported.
+      if (abandoned()) return await this.state(sessionId)
       if (outcome.type === 'review-failed') {
         this.failures.set(sessionId, outcome.summary)
         return await this.state(sessionId)
@@ -150,13 +186,17 @@ export class ReviewService {
     } catch (cause) {
       // A Review that fails says why and leaves the Session otherwise
       // untouched: nothing is written, and the previous Review stays readable.
-      this.failures.set(sessionId, describe(cause))
+      if (!abandoned()) this.failures.set(sessionId, describe(cause))
     }
     return await this.state(sessionId)
   }
 
   /** Drives one Harness process to the single event that ends the Review. */
-  private async ask(sessionId: string, harness: HarnessId): Promise<ReviewEvent> {
+  private async ask(
+    sessionId: string,
+    harness: HarnessId,
+    signal: AbortSignal
+  ): Promise<ReviewEvent> {
     const session = await this.deps.session(sessionId)
     const checkout = checkoutDirectory(session.projectRoot, session.checkout)
     const snapshot = await this.deps.readiness.refresh(harness)
@@ -204,6 +244,7 @@ export class ReviewService {
         },
         workingDirectory: checkout,
         timeoutMs: REVIEW_TIMEOUT_MS,
+        signal,
         opening: opening.outgoing,
         onOutput: async (chunk) => {
           const stream = reviewStreamSchema.parse(
@@ -259,6 +300,15 @@ function runCodexAppServer(request: ReviewProcessRequest): Promise<void> {
       () => finish(new Error('The review did not answer in time')),
       request.timeoutMs
     )
+    // Abandoning is not a failure: nobody is waiting for an answer, so the
+    // process is stopped and the runner simply returns.
+    request.signal.addEventListener('abort', () => {
+      finish()
+    })
+    if (request.signal.aborted) {
+      finish()
+      return
+    }
     for (const frame of request.opening) child.stdin.write(`${frame}\n`)
     child.stdout.setEncoding('utf8')
     // Chunks are handed over strictly in order. Reading them is a round trip

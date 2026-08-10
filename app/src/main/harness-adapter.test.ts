@@ -32,6 +32,9 @@ function dependencies(root: string): HarnessAdapterDeps & {
           return Promise.resolve({ events: [], outgoing: ['opening-frame'] })
         }
         if (command.type === 'harness/interrupt') return Promise.resolve(['interrupt-frame'])
+        if (command.type === 'harness/steer') {
+          return Promise.resolve({ steered: true, outgoing: ['steer-frame'], conversation: null })
+        }
         if (command.type === 'harness/answer') {
           return Promise.resolve({ answered: true, outgoing: ['approval-frame'] })
         }
@@ -53,6 +56,19 @@ const configuration = {
   model: 'model-1',
   effort: 'high' as const,
   skill: { name: 'grilling', path: '/skills/grilling', hash: 'a'.repeat(64) }
+}
+
+const steerInput = {
+  sessionId: 'session-1',
+  submissionId: 'correction-1',
+  runId: 'run-1',
+  text: 'Correct course',
+  source: 'composer' as const,
+  harness: 'codex' as const,
+  model: 'model-1',
+  effort: 'high' as const,
+  permissionMode: 'ask' as const,
+  reviewAttachments: []
 }
 
 describe('Harness adapter contract', () => {
@@ -120,6 +136,11 @@ describe('Harness adapter contract', () => {
     })
     expect(await Effect.runPromise(adapter.interrupt('run-1'))).toBe(true)
     expect(deps.writeFrame).toHaveBeenCalledWith('run-1', 'interrupt-frame')
+    expect(await Effect.runPromise(adapter.steer(steerInput, 'Correct course'))).toEqual({
+      steered: true,
+      conversation: null
+    })
+    expect(deps.writeFrame).toHaveBeenCalledWith('run-1', 'steer-frame')
     expect(
       await Effect.runPromise(
         adapter.answerApproval({
@@ -259,6 +280,9 @@ describe('Harness adapter contract', () => {
     ).toEqual(expect.arrayContaining(['--permission-mode', 'default', '--resume', 'thread-1']))
     expect(adapter.terminalFact({ type: 'completed' })).toBeNull()
     expect(await Effect.runPromise(adapter.interrupt('run-1'))).toBe(false)
+    expect(
+      await Effect.runPromise(adapter.steer({ ...steerInput, harness: 'claude' }, 'Correct course'))
+    ).toEqual({ steered: false, conversation: null })
     expect(
       await Effect.runPromise(
         adapter.open({

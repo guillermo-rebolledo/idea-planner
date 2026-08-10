@@ -56,6 +56,9 @@ _Avoid_: Conversation, turn, Harness Thread
 A durable, editable request waiting inside one Session while another Run is active. It captures the message and its Run configuration when queued, keeps a stable submission identity through edits and reordering, and contacts a Harness only when Main claims it after an explicit Resume or a completed Run.
 _Avoid_: Held message, draft, follow-up, pending prompt
 
+**Steer**:
+A user message durably admitted to one exact active Run and offered to that same native Harness turn. If the Run is no longer active or the Harness rejects its active-turn precondition, the same submission becomes an ordinary Queued Submission. A Steer changes what the active Run should do; it does not Stop or interrupt the Run.
+
 **Review**:
 What a Harness says about the code a Session changed, asked for once and answered as Findings rather than as prose to re-locate by hand. It runs on a **detached thread**, not as a Run: it appends nothing to the Conversation and spends none of the Session's context, which is what makes it worth having in exactly the long Sessions where a check is most useful. It reads and never writes, it is Harness-conditional — Codex offers one, Claude offers none, and the app says so rather than offering an action that does nothing — and a Review that fails says why and leaves the Session otherwise untouched. Nothing in one can be accepted or rejected, for the same reason a changed file cannot be: the code is already on disk and git decides what to keep.
 _Avoid_: Code review, PR review, lint, audit

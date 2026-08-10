@@ -126,8 +126,11 @@ async function chooseSkill(page: Page, name: string): Promise<void> {
 
 /** A Session is started by sending a message; its title comes from it. */
 async function startSession(page: Page, message: string): Promise<void> {
-  await page.getByRole('button', { name: 'New Session', exact: true }).click()
   const composer = page.getByRole('form', { name: 'New chat' })
+  if (!(await composer.isVisible())) {
+    await page.getByRole('button', { name: 'New Session', exact: true }).click()
+    await composer.waitFor()
+  }
   // A visible model means this helper will start a Run, not only persist the
   // Session while readiness and the asynchronous model catalog are racing on
   // first launch. Synchronise the test at the same focus refresh the UI uses.
@@ -1954,9 +1957,8 @@ test('a person adds a Project and a plain folder is refused with an offer to set
     await expect(inbox.getByText(basename(sandbox.plainDir), { exact: true })).toBeVisible()
     expect(await readdir(sandbox.plainDir)).toContain('.git')
 
-    // Pointing inside a Project adds the Project, but says so first: git
-    // resolves a root the person did not pick, and adding it silently would
-    // surprise them.
+    // Pointing inside a Project adds the Project root, but says which root git
+    // resolved before storing anything.
     await page.getByRole('button', { name: 'App menu' }).click()
     await page.getByRole('menuitem', { name: 'Add Project…' }).click()
     addProject = page.getByRole('dialog', { name: 'Add Project' })

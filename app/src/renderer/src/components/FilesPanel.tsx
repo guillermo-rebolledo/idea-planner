@@ -76,7 +76,15 @@ export function FilesPanel({
   // The Finding whose code is open. Opening one opens the file it points at,
   // because a Finding that named a place and then showed nothing would be the
   // paragraph this surface exists to replace.
-  const [openFinding, setOpenFinding] = useState<Finding | null>(null)
+  //
+  // It is held with the Session it belongs to, because the panel outlives the
+  // Session selected in it: two Sessions in the same Project share relative
+  // paths, so a Finding carried across would mark lines of a file it was never
+  // about. One from another Session simply is not open.
+  const [held, setHeld] = useState<{ sessionId: string; finding: Finding } | null>(null)
+  const openFinding = held !== null && held.sessionId === sessionId ? held.finding : null
+  const setOpenFinding = (finding: Finding | null): void =>
+    setHeld(finding === null ? null : { sessionId, finding })
   const highlight =
     openFinding !== null && openFinding.path === focusedPath
       ? { startLine: openFinding.startLine, endLine: openFinding.endLine }

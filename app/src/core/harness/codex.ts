@@ -18,6 +18,7 @@ import type { SandboxMode } from './codex-protocol/v2/SandboxMode'
 import type { ThreadResumeParams } from './codex-protocol/v2/ThreadResumeParams'
 import type { ThreadStartParams } from './codex-protocol/v2/ThreadStartParams'
 import type { TurnStartParams } from './codex-protocol/v2/TurnStartParams'
+import type { TurnSteerParams } from './codex-protocol/v2/TurnSteerParams'
 
 /**
  * Harness Adapters translate one Harness's protocol into normalized events.
@@ -46,6 +47,8 @@ export interface HarnessAdapter {
    * arrive on the app's own MCP socket — so its Adapter always says no.
    */
   answerApproval(approvalId: string, answer: ApprovalAnswer): boolean
+  /** Adds the person's correction to the turn currently in progress. */
+  steer(prompt: string, submissionId: string): boolean
   /** Asks the Harness to end the turn it is running, if it can be asked. */
   interrupt(): void
 }
@@ -75,6 +78,7 @@ const INITIALIZE_ID = 1
 const THREAD_ID = 2
 const TURN_ID = 3
 const INTERRUPT_ID = 4
+const FIRST_STEER_ID = 5
 
 const responseSchema = z.object({
   id: z.number(),
@@ -414,6 +418,8 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
     return []
   }
   let turn: string | null = null
+  let nextSteerId = FIRST_STEER_ID
+  const pendingSteers = new Map<number, string>()
 
   const send = (message: Record<string, unknown>): void => {
     outgoing.push(JSON.stringify({ jsonrpc: '2.0', ...message }))
@@ -513,6 +519,16 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
   }
 
   function consumeResponse(raw: z.infer<typeof responseSchema>): HarnessEvent[] {
+    const steerSubmissionId = pendingSteers.get(raw.id)
+    if (steerSubmissionId !== undefined) {
+      pendingSteers.delete(raw.id)
+      return [
+        {
+          type: raw.error ? 'steer-rejected' : 'steer-accepted',
+          submissionId: steerSubmissionId
+        }
+      ]
+    }
     if (raw.error) {
       return [
         {
@@ -794,6 +810,18 @@ export function createCodexAdapter(launch?: CodexLaunch): HarnessAdapter {
       const numeric = Number(approvalId)
       send({ id: Number.isNaN(numeric) ? approvalId : numeric, result: { decision } })
       proposedPrefixes.delete(approvalId)
+      return true
+    },
+    steer(prompt, submissionId) {
+      if (!thread || !turn) return false
+      const params: TurnSteerParams = {
+        threadId: thread,
+        expectedTurnId: turn,
+        input: [{ type: 'text', text: prompt, text_elements: [] }]
+      }
+      const requestId = nextSteerId++
+      pendingSteers.set(requestId, submissionId)
+      send({ id: requestId, method: 'turn/steer', params })
       return true
     },
     interrupt() {

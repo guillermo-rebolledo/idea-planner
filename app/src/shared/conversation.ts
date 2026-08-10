@@ -347,6 +347,14 @@ export const harnessEventSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('completed') }),
   z.object({
+    type: z.literal('steer-accepted'),
+    submissionId: z.string().min(1).max(200)
+  }),
+  z.object({
+    type: z.literal('steer-rejected'),
+    submissionId: z.string().min(1).max(200)
+  }),
+  z.object({
     type: z.literal('failed'),
     category: harnessFailureCategorySchema,
     summary: z.string().min(1).max(2_000)
@@ -563,6 +571,30 @@ export const queueOutcomeEntrySchema = z.object({
   submissionId: z.string().min(1).max(200).nullable()
 })
 export type QueueOutcome = Pick<z.infer<typeof queueOutcomeEntrySchema>, 'type' | 'submissionId'>
+
+/**
+ * Core's durable receipt for a correction offered to an active native turn.
+ * `pending` means the exact submission must still fall back to the ordinary
+ * queue unless the Harness acknowledges it. Replacing this entry with a
+ * terminal disposition makes that rule recoverable across a Core restart.
+ */
+export const steerDispositionEntrySchema = z.object({
+  kind: z.literal('steer-disposition'),
+  id: z.string().min(1),
+  at: z.string().datetime(),
+  runId: z.string().min(1),
+  submissionId: z.string().min(1).max(200),
+  text: z.string().min(1).max(100_000),
+  source: z.enum(['composer', 'suggested-response']),
+  harness: harnessIdSchema,
+  model: z.string().min(1).max(200),
+  effort: z.string().min(1).max(50).nullable(),
+  skill: skillNameSchema.optional(),
+  permissionMode: permissionModeSchema,
+  reviewAttachments: z.array(reviewAttachmentSchema).max(MAX_REVIEW_ATTACHMENTS).default([]),
+  disposition: z.enum(['pending', 'accepted', 'queued'])
+})
+export type SteerDispositionEntry = z.infer<typeof steerDispositionEntrySchema>
 
 export const conversationEntrySchema = z.discriminatedUnion('kind', [
   z.object({
@@ -846,6 +878,7 @@ export const conversationEntrySchema = z.discriminatedUnion('kind', [
     unlisted: z.number().int().nonnegative().default(0)
   }),
   queuedSubmissionEntrySchema,
+  steerDispositionEntrySchema,
   queueStateEntrySchema,
   queueOutcomeEntrySchema
 ])
@@ -944,6 +977,12 @@ export const conversationSnapshotSchema = z.object({
 })
 export type ConversationSnapshot = z.infer<typeof conversationSnapshotSchema>
 
+export const runSteerAdmissionResultSchema = z.object({
+  delivery: z.enum(['steer', 'queue']),
+  conversation: conversationSnapshotSchema
+})
+export type RunSteerAdmissionResult = z.infer<typeof runSteerAdmissionResultSchema>
+
 export const submitConversationMessageInputSchema = z.object({
   sessionId: z.string().min(1),
   submissionId: z
@@ -982,6 +1021,13 @@ export type RunRequest = z.infer<typeof runRequestSchema>
 export const enqueueQueuedSubmissionInputSchema =
   submitConversationMessageInputSchema.merge(runRequestSchema)
 export type EnqueueQueuedSubmissionInput = z.input<typeof enqueueQueuedSubmissionInputSchema>
+
+/** A correction aimed at the Run the person saw when they pressed Send. */
+export const runSteerAdmissionInputSchema = enqueueQueuedSubmissionInputSchema.extend({
+  runId: z.string().min(1)
+})
+export type RunSteerAdmissionInput = z.input<typeof runSteerAdmissionInputSchema>
+export type RunSteerAdmission = z.output<typeof runSteerAdmissionInputSchema>
 
 export const editQueuedSubmissionInputSchema = z.object({
   sessionId: z.string().min(1),
@@ -1122,13 +1168,20 @@ export type RecordRewindInput = z.infer<typeof recordRewindInputSchema>
 export const compactSessionInputSchema = z.object({ sessionId: z.string().min(1) })
 export type CompactSessionInput = z.infer<typeof compactSessionInputSchema>
 
+export const messageDeliveryIntentSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('steer'), runId: z.string().min(1) }),
+  z.object({ type: z.literal('queue') })
+])
+export type MessageDeliveryIntent = z.infer<typeof messageDeliveryIntentSchema>
+
 /** The Renderer choosing the user message it wants returned to the composer. */
 export const rewindSessionInputSchema = recordRewindInputSchema
 export type RewindSessionInput = z.infer<typeof rewindSessionInputSchema>
 
 /** The Renderer's one command for developing a Session through a Conversation. */
-export const developSessionInputSchema =
-  submitConversationMessageInputSchema.merge(runRequestSchema)
+export const developSessionInputSchema = submitConversationMessageInputSchema
+  .merge(runRequestSchema)
+  .extend({ delivery: messageDeliveryIntentSchema.optional() })
 export type DevelopSessionInput = z.input<typeof developSessionInputSchema>
 
 /**

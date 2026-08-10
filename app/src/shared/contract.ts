@@ -4,6 +4,7 @@ import {
   harnessEventSchema,
   queuedSubmissionChangeSchema,
   queuedSubmissionLaunchObservationSchema,
+  runSteerAdmissionInputSchema,
   recordAppActionInputSchema,
   recordCompactionInputSchema,
   recordRewindInputSchema,
@@ -91,8 +92,9 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
- * 24: a Session's changes can be reviewed on a detached thread, and the
+ * 25: a Session's changes can be reviewed on a detached thread, and the
  *     Findings that answers carry a file and a line range.
+ * 24: mid-Run messages declare steer or queue delivery, and readiness reports steering.
  * 23: a Conversation can be rewound without deleting journal entries or touching files.
  * 22: Projects can be cloned from Git URLs or an authenticated GitHub repository.
  * 21: a Session survives its context window — Conversations carry a compacted
@@ -116,7 +118,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 24
+export const CONTRACT_VERSION = 25
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -396,6 +398,7 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('run/event'), input: recordRunEventInputSchema }),
   z.object({ type: z.literal('conversation/get'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('conversation/submit'), input: submitConversationMessageInputSchema }),
+  z.object({ type: z.literal('conversation/admit-steer'), input: runSteerAdmissionInputSchema }),
   z.object({ type: z.literal('conversation/app-action'), input: recordAppActionInputSchema }),
   z.object({ type: z.literal('conversation/compaction-plan'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('conversation/compact'), input: recordCompactionInputSchema }),
@@ -420,6 +423,11 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     remember: z.boolean()
   }),
   z.object({ type: z.literal('harness/interrupt'), runId: z.string().min(1) }),
+  z.object({
+    type: z.literal('harness/steer'),
+    input: runSteerAdmissionInputSchema,
+    prompt: z.string().min(1).max(100_000)
+  }),
   z.object({
     type: z.literal('conversation/ingest'),
     sessionId: z.string().min(1),

@@ -27,6 +27,7 @@ import {
   headroomExhausted,
   moveQueuedSubmissionInputSchema,
   queuedSubmissionIdentitySchema,
+  runSteerAdmissionResultSchema,
   rewindSessionInputSchema,
   redactCredentials,
   startingSubmissionId,
@@ -151,6 +152,7 @@ const MAILBOX_INVALIDATING_EVENT_TYPES: ReadonlySet<ConversationEvent['type']> =
   'choices',
   'approval-request',
   'approval-resolved',
+  'steer-rejected',
   'completed',
   'failed'
 ])
@@ -487,6 +489,27 @@ export class RunService {
       throw new Error(
         `Developing a Session with ${HARNESS_SPECS[input.harness].displayName} is not supported yet`
       )
+    }
+    if (input.delivery?.type === 'queue') {
+      return await this.enqueueQueuedSubmission(input)
+    }
+    if (input.delivery?.type === 'steer') {
+      const adapter = this.adapters.get(input.delivery.runId)
+      if (HARNESS_SPECS[input.harness].steering === null || adapter?.id !== input.harness) {
+        return await this.enqueueQueuedSubmission(input)
+      }
+      const prompt = harnessPromptWithReviewAttachments(input.text, input.reviewAttachments)
+      const admission = runSteerAdmissionResultSchema.parse(
+        await this.deps.core.send({
+          type: 'conversation/admit-steer',
+          input: { ...input, runId: input.delivery.runId }
+        })
+      )
+      if (admission.delivery === 'queue') return admission.conversation
+      const delivered = await this.runEffect(
+        adapter.steer({ ...input, runId: input.delivery.runId }, prompt)
+      )
+      return delivered.conversation ?? admission.conversation
     }
     const submitted = submitConversationMessageResultSchema.parse(
       await this.deps.core.send({
@@ -1863,6 +1886,8 @@ function describeActivity(
     // beside the turns it stands in for.
     case 'plan':
     case 'context-compacted':
+    case 'steer-accepted':
+    case 'steer-rejected':
     case 'approval-request':
     case 'approval-resolved':
     case 'assistant-message':

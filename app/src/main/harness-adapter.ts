@@ -8,9 +8,12 @@ import * as Layer from 'effect/Layer'
 import { z } from 'zod'
 import {
   HARNESS_DEFAULT_MODEL,
+  conversationSnapshotSchema,
   harnessEventSchema,
   type CodexLaunch,
-  type HarnessEvent
+  type ConversationSnapshot,
+  type HarnessEvent,
+  type RunSteerAdmission
 } from '@shared/conversation'
 import {
   APP_TOOLS,
@@ -217,6 +220,14 @@ export interface HarnessAdapter {
    * Run and leaves no Harness Thread behind.
    */
   summarize(input: HarnessSummaryRequest): Effect.Effect<string, HarnessAdapterError>
+  /** Delivers a correction to the active turn when this Harness supports it. */
+  steer(
+    input: RunSteerAdmission,
+    prompt: string
+  ): Effect.Effect<
+    { steered: boolean; conversation: ConversationSnapshot | null },
+    HarnessAdapterError
+  >
   interrupt(runId: string): Effect.Effect<boolean, HarnessAdapterError>
   answerApproval(input: AdapterApprovalAnswer): Effect.Effect<boolean, HarnessAdapterError>
   terminalFact(event: HarnessEvent): AdapterTerminalFact | null
@@ -228,6 +239,11 @@ const harnessStreamSchema = z.object({
 })
 
 const answerSchema = z.object({ answered: z.boolean(), outgoing: z.array(z.string()) })
+const steerSchema = z.object({
+  steered: z.boolean(),
+  outgoing: z.array(z.string()),
+  conversation: conversationSnapshotSchema.nullable()
+})
 
 const claudeSettingsSchema = z.object({
   permissions: z.object({
@@ -533,6 +549,15 @@ function createCodexAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter 
         return (await readFile(answerPath, 'utf8')).trim()
       })
     },
+    steer(input, prompt) {
+      return withExternal(layer, 'steer Codex', async (dependencies) => {
+        const answer = steerSchema.parse(
+          await dependencies.core.send({ type: 'harness/steer', input, prompt })
+        )
+        for (const frame of answer.outgoing) dependencies.writeFrame?.(input.runId, frame)
+        return { steered: answer.steered, conversation: answer.conversation }
+      })
+    },
     interrupt(runId) {
       return withExternal(layer, 'interrupt Codex', async (dependencies) => {
         const frames = z
@@ -721,6 +746,7 @@ function createClaudeAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter
         ).trim()
       )
     },
+    steer: () => Effect.succeed({ steered: false, conversation: null }),
     interrupt: () => Effect.succeed(false),
     answerApproval(input) {
       return Effect.try({

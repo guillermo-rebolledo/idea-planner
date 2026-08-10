@@ -84,6 +84,34 @@ async function stream(runId: string, events: HarnessEvent[]): Promise<void> {
   }
 }
 
+async function openCodexTurn(runId: string, prompt: string): Promise<void> {
+  await core.openHarness({
+    runId,
+    harness: 'codex',
+    launch: {
+      cwd: projectRoot,
+      approvalPolicy: 'untrusted',
+      sandbox: 'workspace-write',
+      model: 'gpt-5-codex',
+      effort: 'medium',
+      developerInstructions: '',
+      prompt
+    }
+  })
+  for (const frame of [
+    { id: 1, result: {} },
+    { id: 2, result: { thread: { id: 'thread-1' } } },
+    { id: 3, result: { turn: { id: 'turn-1' } } }
+  ]) {
+    await core.ingestHarnessOutput({
+      sessionId,
+      runId,
+      harness: 'codex',
+      chunk: `${JSON.stringify(frame)}\n`
+    })
+  }
+}
+
 function messages(entries: ConversationEntry[]): Extract<ConversationEntry, { kind: 'message' }>[] {
   return entries.filter((entry) => entry.kind === 'message')
 }
@@ -403,6 +431,219 @@ describe('durable Queued Submissions', () => {
     expect(snapshot.queue.items.find((item) => item.submissionId === 'queued-0')).toMatchObject({
       status: 'cancelled'
     })
+  })
+})
+
+describe('mid-Run delivery admission', () => {
+  const correction = (runId: string) => ({
+    sessionId,
+    submissionId: 'correction-1',
+    text: 'Stop changing the API; keep it compatible',
+    source: 'composer' as const,
+    harness: 'codex' as const,
+    model: 'gpt-5',
+    effort: 'high' as const,
+    permissionMode: 'ask' as const,
+    reviewAttachments: [],
+    runId
+  })
+
+  it('admits a correction to the Run the person saw without creating a queue item', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+
+    const result = await core.admitRunSteer(correction(runId))
+
+    expect(result.delivery).toBe('steer')
+    expect(result.conversation.entries).toContainEqual(
+      expect.objectContaining({ kind: 'message', submissionId: 'correction-1' })
+    )
+    expect(result.conversation.queue.items).toEqual([])
+  })
+
+  it('queues atomically when the Run the person saw is no longer active', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness completed the turn'
+    })
+
+    const result = await core.admitRunSteer(correction(runId))
+
+    expect(result.delivery).toBe('queue')
+    expect(result.conversation.queue.items).toContainEqual(
+      expect.objectContaining({ submissionId: 'correction-1', status: 'pending' })
+    )
+  })
+
+  it('queues inside Core when native steering is unavailable after admission', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    const input = correction(runId)
+    await core.admitRunSteer(input)
+
+    const delivery = await core.steerHarness(input, input.text)
+
+    expect(delivery).toMatchObject({ steered: false, outgoing: [] })
+    expect(delivery.conversation?.queue.items).toContainEqual(
+      expect.objectContaining({ submissionId: 'correction-1', status: 'pending' })
+    )
+  })
+
+  it('queues a correction when Codex rejects the active-turn precondition', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    await openCodexTurn(runId, 'Change the API')
+    const input = correction(runId)
+    await core.admitRunSteer(input)
+    const delivery = await core.steerHarness(input, input.text)
+    expect(delivery.steered).toBe(true)
+
+    const rejected = await core.ingestHarnessOutput({
+      sessionId,
+      runId,
+      harness: 'codex',
+      chunk: `${JSON.stringify({ id: 5, error: { code: -32602, message: 'turn ended' } })}\n`
+    })
+
+    expect(rejected.events).toEqual([{ type: 'steer-rejected', submissionId: 'correction-1' }])
+    expect((await core.getConversation(sessionId)).queue.items).toContainEqual(
+      expect.objectContaining({ submissionId: 'correction-1', status: 'pending' })
+    )
+  })
+
+  it('preserves a rejected correction when the queue is full', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    await openCodexTurn(runId, 'Change the API')
+    await Promise.all(
+      Array.from({ length: 50 }, (_, index) =>
+        core.changeQueuedSubmissions({
+          type: 'enqueue',
+          input: {
+            ...correction(runId),
+            submissionId: `queued-${String(index)}`,
+            text: `Message ${String(index)}`
+          }
+        })
+      )
+    )
+    const input = correction(runId)
+    await core.admitRunSteer(input)
+    expect((await core.steerHarness(input, input.text)).steered).toBe(true)
+
+    await core.ingestHarnessOutput({
+      sessionId,
+      runId,
+      harness: 'codex',
+      chunk: `${JSON.stringify({ id: 5, error: { code: -32602, message: 'turn ended' } })}\n`
+    })
+
+    const snapshot = await core.getConversation(sessionId)
+    expect(snapshot.queue.items).toHaveLength(51)
+    expect(snapshot.queue.items).toContainEqual(
+      expect.objectContaining({ submissionId: 'correction-1', text: input.text })
+    )
+  })
+
+  it('queues an unacknowledged correction before finalizing its Run', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    await openCodexTurn(runId, 'Change the API')
+    const input = correction(runId)
+    await core.admitRunSteer(input)
+    expect((await core.steerHarness(input, input.text)).steered).toBe(true)
+
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness completed before acknowledging the correction'
+    })
+
+    expect((await core.getConversation(sessionId)).queue.items).toContainEqual(
+      expect.objectContaining({ submissionId: 'correction-1', status: 'pending' })
+    )
+  })
+
+  it('finalizes and preserves an unacknowledged correction when the queue is full', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    await Promise.all(
+      Array.from({ length: 50 }, (_, index) =>
+        core.changeQueuedSubmissions({
+          type: 'enqueue',
+          input: {
+            ...correction(runId),
+            submissionId: `queued-${String(index)}`,
+            text: `Message ${String(index)}`
+          }
+        })
+      )
+    )
+    const input = correction(runId)
+    await core.admitRunSteer(input)
+
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness completed before acknowledging the correction'
+    })
+
+    const snapshot = await core.getConversation(sessionId)
+    expect(snapshot.activeRunId).toBeNull()
+    expect(snapshot.queue.items).toHaveLength(51)
+    expect(snapshot.queue.items).toContainEqual(
+      expect.objectContaining({ submissionId: 'correction-1', text: input.text })
+    )
+  })
+
+  it('recovers an unacknowledged correction after Core restarts', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    const input = correction(runId)
+    await core.admitRunSteer(input)
+
+    core = makeCore()
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness ended while Core was restarting'
+    })
+
+    expect((await core.getConversation(sessionId)).queue.items).toContainEqual(
+      expect.objectContaining({
+        submissionId: 'correction-1',
+        text: input.text,
+        status: 'pending'
+      })
+    )
+  })
+
+  it('does not queue an acknowledged correction after Core restarts', async () => {
+    const runId = await startRun('Change the API', 'submission-1')
+    await openCodexTurn(runId, 'Change the API')
+    const input = correction(runId)
+    await core.admitRunSteer(input)
+    expect((await core.steerHarness(input, input.text)).steered).toBe(true)
+    await core.ingestHarnessOutput({
+      sessionId,
+      runId,
+      harness: 'codex',
+      chunk: `${JSON.stringify({ id: 5, result: {} })}\n`
+    })
+
+    core = makeCore()
+    await finishRun({
+      sessionId,
+      runId,
+      outcome: 'completed',
+      category: null,
+      summary: 'Harness accepted the correction before Core restarted'
+    })
+
+    expect((await core.getConversation(sessionId)).queue.items).toEqual([])
   })
 })
 

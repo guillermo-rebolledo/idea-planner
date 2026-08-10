@@ -330,6 +330,7 @@ export function createClaudeAdapter(): HarnessAdapter {
     // the app's own MCP socket instead, and are answered there.
     takeOutgoing: () => [],
     answerApproval: () => false,
+    steer: () => false,
     interrupt: () => undefined,
     ingest(chunk) {
       pending += chunk
