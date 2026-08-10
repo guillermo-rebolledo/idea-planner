@@ -4,8 +4,7 @@ import {
   type AppearanceSettings,
   type ReadinessSnapshot,
   type StandingApproval,
-  type ThemeState,
-  type UpdateAvailability
+  type ThemeState
 } from '@shared/contract'
 import {
   listApprovalsByProject,
@@ -21,6 +20,7 @@ import {
   MenuShortcut,
   MenuTrigger
 } from '@renderer/components/ui/menu'
+import { useUpdateAvailability } from '@renderer/lib/useUpdateAvailability'
 import { cn } from '@renderer/lib/utils'
 
 interface AppMenuProps {
@@ -56,7 +56,9 @@ export function AppMenu({
   const [approvals, setApprovals] = useState<ProjectApprovals[]>([])
   const [approvalsOpen, setApprovalsOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
-  const [update, setUpdate] = useState<UpdateAvailability | null>(null)
+  // A newer Argos is news, not an interruption: it arrives as a dot on a
+  // footer nobody has to look at, and waits there.
+  const update = useUpdateAvailability()
 
   const refreshReadiness = useCallback(() => {
     window.shell.getReadiness().then(setReadiness, () => setReadiness(null))
@@ -67,14 +69,6 @@ export function AppMenu({
   }, [])
 
   useEffect(refreshReadiness, [refreshReadiness])
-
-  // A newer Argos is news, not an interruption: it arrives as a dot on a
-  // footer nobody has to look at, and waits there. What Main already knows is
-  // read once; a check that lands later says so without the menu being opened.
-  useEffect(() => {
-    window.shell.getUpdate().then(setUpdate, () => setUpdate(null))
-    return window.shell.onUpdateAvailable(setUpdate)
-  }, [])
 
   // Both are cheap reads, refreshed when the menu opens so the numbers it
   // shows are the numbers that are true.

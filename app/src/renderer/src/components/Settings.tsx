@@ -10,6 +10,7 @@ import { AppearanceSettingsPanel } from '@renderer/components/AppearanceSettings
 import { ReadinessPanel } from '@renderer/components/Readiness'
 import { Button } from '@renderer/components/ui/button'
 import { Modal } from '@renderer/components/ui/dialog'
+import { useUpdateAvailability } from '@renderer/lib/useUpdateAvailability'
 import { cn } from '@renderer/lib/utils'
 
 export type SettingsSection = 'general' | 'harnesses' | 'appearance'
@@ -62,7 +63,12 @@ export function SettingsDialog({
   const [customDraft, setCustomDraft] = useState<AppearanceSettings['custom'] | null>(null)
   const [appearanceError, setAppearanceError] = useState(false)
   const [appVersion, setAppVersion] = useState<string | null>(null)
-  const [update, setUpdate] = useState<UpdateAvailability | null>(null)
+  // Whether the version About states is still the newest one. Nothing waits on
+  // it, and a check that never landed leaves About saying exactly what it said
+  // before there was one. Settings can outlive a check — it is open while the
+  // launch-time one finishes, and can be open for the daily one — so it is
+  // told, rather than only asking once on the way in.
+  const update = useUpdateAvailability()
   const activeSection = SECTION_BY_ID[section]
 
   useEffect(() => {
@@ -81,16 +87,6 @@ export function SettingsDialog({
       },
       () => setAppearanceError(true)
     )
-  }, [])
-
-  // Whether the version About states is still the newest one. Nothing waits on
-  // it, and a check that never landed leaves About saying exactly what it said
-  // before there was one. Settings can outlive a check — it is open while the
-  // launch-time one finishes, and can be open for the daily one — so it is
-  // told, rather than only asking once on the way in.
-  useEffect(() => {
-    void window.shell.getUpdate().then(setUpdate, () => undefined)
-    return window.shell.onUpdateAvailable(setUpdate)
   }, [])
 
   function changeQuitWarning(enabled: boolean): void {
