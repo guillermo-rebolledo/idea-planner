@@ -215,6 +215,15 @@ type RequestProposal = AdapterRequestProposal
 const DECLINED_IN_APP = 'You declined this in the app. Ask before trying it again.'
 
 /**
+ * How hard the app tries to write down a decision the Harness has already
+ * acted on, and how long it waits between attempts. Short: this runs while the
+ * person waits for their click to land, and the whole point is to ride out a
+ * moment of contention rather than to outlast a broken Core.
+ */
+const DECISION_WRITE_ATTEMPTS = 3
+const DECISION_WRITE_PAUSE_MS = 25
+
+/**
  * What became of one answer. The two failures are opposites, and telling them
  * apart is what keeps the app from describing either one wrongly.
  *
@@ -1512,20 +1521,25 @@ export class RunService {
       return 'undelivered'
     }
     if (!answered) return 'gone'
+    const event: HarnessEvent = {
+      type: 'approval-resolved',
+      id: decided.approvalId,
+      decision: decided.allowed ? 'allowed' : 'denied',
+      // The Harness receives the person's original instruction. Everything
+      // durable or streamed back to the window receives the write-boundary
+      // form, as every other stored Conversation text does.
+      message: decided.allowed
+        ? ''
+        : redactCredentials(decided.reason ?? DECLINED_IN_APP).slice(0, 2_000),
+      remembered: decided.remembered
+    }
+    if (!(await this.settleInConversation(decided.sessionId, decided.runId, event))) {
+      // The Harness has already acted on this, so the proposal stays out:
+      // offering the answer again would only be refused, and calling it "still
+      // waiting" would be the one thing that is certainly untrue.
+      return 'unrecorded'
+    }
     try {
-      const event: HarnessEvent = {
-        type: 'approval-resolved',
-        id: decided.approvalId,
-        decision: decided.allowed ? 'allowed' : 'denied',
-        // The Harness receives the person's original instruction. Everything
-        // durable or streamed back to the window receives the write-boundary
-        // form, as every other stored Conversation text does.
-        message: decided.allowed
-          ? ''
-          : redactCredentials(decided.reason ?? DECLINED_IN_APP).slice(0, 2_000),
-        remembered: decided.remembered
-      }
-      await this.applyConversationEvent(decided.sessionId, decided.runId, event)
       // A denial is an answer, not a failure: the agent was told and carries on.
       // The Run leaves the blocked state once nothing else is outstanding.
       await this.record(
@@ -1535,15 +1549,44 @@ export class RunService {
         decided.summary
       )
     } catch {
-      // The Harness has already acted on this, so the proposal stays out:
-      // offering the answer again would only be refused, and calling it "still
-      // waiting" would be the one thing that is certainly untrue. What is
-      // missing is the app's record, which is what this says. Core settles a
-      // request still open when the Run ends, so the entry does not stay
-      // undecided forever.
+      // The decision itself is durable, so the card is settled and the person
+      // is not stuck. What is missing is the Run's own line about it, which
+      // the next thing the Run records moves past. Not retried: an activity
+      // entry written twice is a Run that claims it decided this twice.
       return 'unrecorded'
     }
     return 'answered'
+  }
+
+  /**
+   * Writes one decision into the Conversation, with a few attempts.
+   *
+   * This is the write that settles the card. Without it Core goes on reading
+   * the request as open, so the person is shown a request the agent has
+   * already acted on — and no answer can land, because the Harness is no
+   * longer holding it. A transient failure here is the one worth surviving,
+   * and it is safe to survive: Core ignores an answer to a request already
+   * settled, so re-applying costs nothing whether or not the previous attempt
+   * got further than this app could see.
+   *
+   * A failure that persists is a Core this app cannot write to at all. Core
+   * settles a request still open when the Run ends, which is the backstop.
+   */
+  private async settleInConversation(
+    sessionId: string,
+    runId: string,
+    event: HarnessEvent
+  ): Promise<boolean> {
+    for (let attempt = 1; attempt <= DECISION_WRITE_ATTEMPTS; attempt++) {
+      try {
+        await this.applyConversationEvent(sessionId, runId, event)
+        return true
+      } catch {
+        if (attempt === DECISION_WRITE_ATTEMPTS) return false
+        await new Promise((resolve) => setTimeout(resolve, DECISION_WRITE_PAUSE_MS * attempt))
+      }
+    }
+    return false
   }
 
   /**

@@ -103,8 +103,8 @@ interface FakeCore {
   submitDisposition: 'accepted' | 'visible-replay' | 'rewound-replay'
   /** Approval ids whose answer cannot reach the Harness right now. */
   failAnswerFor: Set<string>
-  /** Approval ids whose decision cannot be written down right now. */
-  failApplyFor: Set<string>
+  /** Approval id → how many attempts at writing its decision down must fail. */
+  failApplyFor: Map<string, number>
 }
 
 let nextRunId = 0
@@ -147,7 +147,7 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     compactionPlan: undefined,
     submitDisposition: 'accepted',
     failAnswerFor: new Set<string>(),
-    failApplyFor: new Set<string>()
+    failApplyFor: new Map<string, number>()
   }
   const run: RunSnapshot = {
     id: runId,
@@ -196,7 +196,9 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     }
     if (command.type === 'conversation/apply') {
       const { event } = command as { event?: { id?: string } }
-      if (event?.id !== undefined && state.failApplyFor.has(event.id)) {
+      const remaining = event?.id === undefined ? 0 : (state.failApplyFor.get(event.id) ?? 0)
+      if (event?.id !== undefined && remaining > 0) {
+        state.failApplyFor.set(event.id, remaining - 1)
         return Promise.reject(new Error('Core could not write that down'))
       }
       return Promise.resolve(state.conversation.journalPosition)
@@ -2282,7 +2284,10 @@ describe('one decision settling the requests it answers', () => {
     return activity(core).filter((summary) => summary.startsWith('Waiting for you to approve'))
   }
 
-  /** Every decision written into the Conversation, in order. */
+  /**
+   * Every decision the service tried to write into the Conversation, in order.
+   * A write that failed and was attempted again appears once per attempt.
+   */
   function resolutions(core: FakeCore): Extract<HarnessEvent, { type: 'approval-resolved' }>[] {
     return (core.send.mock.calls as [{ type: string; event?: HarnessEvent }][])
       .filter(([command]) => command.type === 'conversation/apply')
@@ -2444,12 +2449,38 @@ describe('one decision settling the requests it answers', () => {
     expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-2', decision: 'denied' })
   })
 
+  it('settles the card when writing the decision down only fails for a moment', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-write-retry-')
+    // The Harness has been told and has moved on, so nothing can answer this
+    // request again. If the one write that settles it is allowed to fall over
+    // once, the person is left looking at a card that no click can clear —
+    // so the write is attempted again rather than given up on.
+    core.failApplyFor.set('req-1', 1)
+
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-1',
+      decision: 'deny'
+    })
+
+    // The decision landed, so nothing is left asking about it.
+    expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-1', decision: 'denied' })
+    // Core ignores an answer to a request already settled, so trying again
+    // costs nothing even when the attempt before it had in fact landed.
+    expect(
+      (core.send.mock.calls as [{ type: string; event?: { id?: string } }][]).filter(
+        ([command]) => command.type === 'conversation/apply' && command.event?.id === 'req-1'
+      )
+    ).toHaveLength(2)
+  })
+
   it('never calls a refusal the agent has already acted on "still waiting"', async () => {
     const { core, service, runId } = await holdingRequests('run-approval-deny-unrecorded-')
-    // The refusal reaches Codex, which declines and moves on — and only then
-    // does writing it down fail. The two failures are opposites: this one has
+    // The refusal reaches Codex, which declines and moves on — and writing it
+    // down then fails for good. The two failures are opposites: this one has
     // happened, and saying it is still waiting would be the one certain lie.
-    core.failApplyFor.add('req-1')
+    core.failApplyFor.set('req-1', 99)
 
     const failure = await service
       .denyApprovals({
