@@ -2228,6 +2228,7 @@ describe('one decision settling the requests it answers', () => {
     core: FakeCore
     service: RunService
     runId: string
+    broker: ReturnType<typeof fakeBroker>
   }> {
     const root = await readyHarnessRoot(prefix)
     const core = fakeCore(join(root, 'a-project'))
@@ -2270,7 +2271,14 @@ describe('one decision settling the requests it answers', () => {
     await vi.waitFor(() => {
       expect(waitingOn(core)).toHaveLength(REQUESTS.length)
     })
-    return { core, service, runId: broker.launch?.id ?? '' }
+    return { core, service, runId: broker.launch?.id ?? '', broker }
+  }
+
+  /** How many times the decision on one request was offered to Core. */
+  function writeAttempts(core: FakeCore, approvalId: string): number {
+    return (core.send.mock.calls as [{ type: string; event?: { id?: string } }][]).filter(
+      ([command]) => command.type === 'conversation/apply' && command.event?.id === approvalId
+    ).length
   }
 
   /** What the Run's activity says, in the order it was written. */
@@ -2501,8 +2509,8 @@ describe('one decision settling the requests it answers', () => {
     expect(core.commands.filter((command) => command === 'conversation/queue-change')).toHaveLength(
       1
     )
-    // And it is not offered back: the Harness has moved on, so answering it
-    // again would be refused rather than recorded.
+    // And it is never reported as merely stale, which would send the person
+    // back to a card that no answer can clear.
     await expect(
       service.resolveApproval({
         sessionId: 'session',
@@ -2510,7 +2518,74 @@ describe('one decision settling the requests it answers', () => {
         approvalId: 'req-1',
         decision: 'deny'
       })
+    ).rejects.toThrow('still cannot record it')
+  })
+
+  it('finishes a stranded decision the next time the person touches its card', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-stranded-click-')
+    // Every attempt fails, so the decision is taken but never written: Core
+    // goes on reading the request as open and the card stays up.
+    core.failApplyFor.set('req-1', 99)
+    await expect(
+      service.resolveApproval({
+        sessionId: 'session',
+        runId,
+        approvalId: 'req-1',
+        decision: 'deny'
+      })
+    ).rejects.toThrow('could not record it')
+
+    // Whatever was failing has passed. Clicking the card that is still up is
+    // not a request to decide it again — the Harness acted long ago — so it
+    // finishes what the app already owed, and the card clears.
+    core.failApplyFor.delete('req-1')
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-1',
+      decision: 'allow'
+    })
+
+    // Recorded as what the person actually decided, not as the click that
+    // happened to finish it: the agent was told "denied" and acted on that.
+    expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-1', decision: 'denied' })
+    // The Harness is not answered twice for one request.
+    expect(
+      (core.send.mock.calls as [{ type: string; approvalId?: string }][]).filter(
+        ([command]) => command.type === 'harness/answer' && command.approvalId === 'req-1'
+      )
+    ).toHaveLength(1)
+  })
+
+  it('finishes a stranded decision on its own while the Run is still talking', async () => {
+    const { core, service, runId, broker } = await holdingRequests('run-approval-stranded-stream-')
+    core.failApplyFor.set('req-1', 99)
+    await expect(
+      service.resolveApproval({
+        sessionId: 'session',
+        runId,
+        approvalId: 'req-1',
+        decision: 'deny'
+      })
+    ).rejects.toThrow('could not record it')
+    expect(writeAttempts(core, 'req-1')).toBe(3)
+
+    // Nobody has to notice the stranded card: the Run is still producing
+    // output, and every chunk is another chance to write down what is owed.
+    core.failApplyFor.delete('req-1')
+    core.events = [{ type: 'assistant-message', id: 'item_1', text: 'Carrying on', complete: true }]
+    broker.launch?.onOutput?.('stdout', '{"jsonrpc":"2.0"}\n')
+
+    await vi.waitFor(() => {
+      expect(writeAttempts(core, 'req-1')).toBe(4)
+    })
+    expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-1', decision: 'denied' })
+    // Nothing is owed any more, so it is not offered to Core over and over —
+    // and the request reads as answered rather than stranded.
+    await expect(
+      service.denyApprovals({ sessionId: 'session', runId, approvalIds: ['req-1'] })
     ).rejects.toThrow('no longer waiting')
+    expect(writeAttempts(core, 'req-1')).toBe(4)
   })
 
   it('keeps a decision that has taken effect when settling a sibling fails', async () => {

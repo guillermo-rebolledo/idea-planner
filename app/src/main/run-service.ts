@@ -224,6 +224,21 @@ const DECISION_WRITE_ATTEMPTS = 3
 const DECISION_WRITE_PAUSE_MS = 25
 
 /**
+ * A decision the Harness has acted on that the Conversation does not hold yet.
+ *
+ * This is the one state where Main knows something Core's journal does not,
+ * and forgetting it is what strands a request: Core goes on reading it as
+ * open, so the card stays up and the inbox says the Session is waiting on the
+ * person, while the agent has long since carried on. Kept until it is written.
+ */
+interface UnwrittenDecision {
+  sessionId: string
+  event: HarnessEvent
+  kind: RunActivityKind
+  summary: string
+}
+
+/**
  * What became of one answer. The two failures are opposites, and telling them
  * apart is what keeps the app from describing either one wrongly.
  *
@@ -270,6 +285,13 @@ export class RunService {
    * record deliberately bounds.
    */
   private readonly proposals = new Map<string, Map<string, RequestProposal>>()
+  /**
+   * Decisions already taken that the Conversation could not be told about, by
+   * Run and request id. Held rather than dropped, and written at the next
+   * chance Core gives: whatever failed the write is usually passing, and a
+   * request stranded here is one the person is being shown and cannot answer.
+   */
+  private readonly unwritten = new Map<string, Map<string, UnwrittenDecision>>()
   /** Runs already being ended by their own turn completing, so it happens once. */
   private readonly finishing = new Set<string>()
   /**
@@ -1120,6 +1142,10 @@ export class RunService {
     checkout: string,
     chunk: string
   ): Promise<void> {
+    // The Run still talking is the app's best chance to finish a decision the
+    // Conversation never heard, and the surest one: a person is not required
+    // to notice a stranded card and click it. Free when nothing is owed.
+    if (this.unwritten.size > 0) await this.flushUnwritten(run.id)
     const stream = harnessStreamSchema.parse(
       await this.deps.core.send({
         type: 'conversation/ingest',
@@ -1307,6 +1333,16 @@ export class RunService {
     const allowed = input.decision === 'allow'
     const proposal = this.proposals.get(input.runId)?.get(input.approvalId)
     if (!proposal) {
+      // A card the person can still see, for a decision already taken that
+      // this app could not write down. Clicking it is not a request to decide
+      // it differently — the Harness has long since acted — so this finishes
+      // what is owed rather than answering afresh.
+      if ((await this.flushUnwritten(input.runId)).has(input.approvalId)) {
+        return await this.readConversation(input.sessionId)
+      }
+      if (this.unwritten.get(input.runId)?.has(input.approvalId)) {
+        throw new Error('Your answer reached the agent, but this app still cannot record it')
+      }
       // The Run ended, or somebody already answered. Either way the agent has
       // moved on, and saying so beats silently pretending this took effect.
       throw new Error('That request is no longer waiting for an answer')
@@ -1413,11 +1449,19 @@ export class RunService {
     const input = denyApprovalsInputSchema.parse(rawInput)
     const written = input.message?.trim() ?? ''
     const reason = written === '' ? undefined : written
+    // A card up for a decision already taken is one the person is including in
+    // this refusal, and it goes the moment its decision is recorded.
+    const settledLate = await this.flushUnwritten(input.runId)
     const pending = input.approvalIds.flatMap((approvalId) => {
       const proposal = this.proposals.get(input.runId)?.get(approvalId)
       return proposal ? [[approvalId, proposal] as const] : []
     })
     if (pending.length === 0) {
+      // Nothing left to refuse. If some of what was named has only just been
+      // written down, that is those cards clearing rather than a failure.
+      if (input.approvalIds.some((approvalId) => settledLate.has(approvalId))) {
+        return await this.readConversation(input.sessionId)
+      }
       throw new Error('Those requests are no longer waiting for an answer')
     }
     let carried = false
@@ -1533,10 +1577,21 @@ export class RunService {
         : redactCredentials(decided.reason ?? DECLINED_IN_APP).slice(0, 2_000),
       remembered: decided.remembered
     }
+    const kind: RunActivityKind = decided.allowed ? 'allowed' : 'blocked'
     if (!(await this.settleInConversation(decided.sessionId, decided.runId, event))) {
       // The Harness has already acted on this, so the proposal stays out:
       // offering the answer again would only be refused, and calling it "still
-      // waiting" would be the one thing that is certainly untrue.
+      // waiting" would be the one thing that is certainly untrue. What this
+      // app still owes is the record, so it keeps hold of it rather than
+      // forgetting a decision only it knows about.
+      const stranded = this.unwritten.get(decided.runId) ?? new Map<string, UnwrittenDecision>()
+      stranded.set(decided.approvalId, {
+        sessionId: decided.sessionId,
+        event,
+        kind,
+        summary: decided.summary
+      })
+      this.unwritten.set(decided.runId, stranded)
       return 'unrecorded'
     }
     try {
@@ -1545,7 +1600,7 @@ export class RunService {
       await this.record(
         { id: decided.runId, sessionId: decided.sessionId },
         this.proposals.get(decided.runId)?.size ? undefined : 'running',
-        decided.allowed ? 'allowed' : 'blocked',
+        kind,
         decided.summary
       )
     } catch {
@@ -1575,18 +1630,56 @@ export class RunService {
   private async settleInConversation(
     sessionId: string,
     runId: string,
-    event: HarnessEvent
+    event: HarnessEvent,
+    /** One attempt where something else will come back to it soon enough. */
+    attempts = DECISION_WRITE_ATTEMPTS
   ): Promise<boolean> {
-    for (let attempt = 1; attempt <= DECISION_WRITE_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
         await this.applyConversationEvent(sessionId, runId, event)
         return true
       } catch {
-        if (attempt === DECISION_WRITE_ATTEMPTS) return false
+        if (attempt === attempts) return false
         await new Promise((resolve) => setTimeout(resolve, DECISION_WRITE_PAUSE_MS * attempt))
       }
     }
     return false
+  }
+
+  /**
+   * Writes down whatever decisions this Run took that the Conversation never
+   * heard about, and says which of them landed.
+   *
+   * Retrying is what keeps a decision from stranding a request forever. The
+   * write can fail persistently without Core being unusable — a full disk
+   * fails every append while every read still answers — and until it lands,
+   * Core reads the request as open: the person is shown a card no answer can
+   * clear, and the inbox says the Session is waiting on them while the agent
+   * is working. So this is tried again at every point that has a reason to be
+   * talking to Core about this Run anyway, and costs one call when there is
+   * nothing to write.
+   *
+   * One attempt each. Whatever brought us here will come back.
+   */
+  private async flushUnwritten(runId: string): Promise<Set<string>> {
+    const written = new Set<string>()
+    const stranded = this.unwritten.get(runId)
+    if (!stranded?.size) return written
+    for (const [approvalId, decision] of [...stranded]) {
+      if (!(await this.settleInConversation(decision.sessionId, runId, decision.event, 1))) continue
+      stranded.delete(approvalId)
+      written.add(approvalId)
+      // The Run's own line about it, now that the decision it describes is
+      // durable. Still best-effort: the card is already settled without it.
+      await this.record(
+        { id: runId, sessionId: decision.sessionId },
+        this.proposals.get(runId)?.size ? undefined : 'running',
+        decision.kind,
+        decision.summary
+      ).catch(() => undefined)
+    }
+    if (stranded.size === 0) this.unwritten.delete(runId)
+    return written
   }
 
   /**
@@ -1846,6 +1939,9 @@ export class RunService {
     this.failures.delete(run.id)
     this.diagnostics.delete(run.id)
     this.proposals.delete(run.id)
+    // Core settles a request still open when the Run ends, so anything never
+    // written is answered there rather than held for a Run that is over.
+    this.unwritten.delete(run.id)
     this.adapters.delete(run.id)
     // The store itself stays: it belongs to the Session, not to this Run, and
     // it is what makes undoing this Run possible for as long as the Session
