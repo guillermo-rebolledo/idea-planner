@@ -160,6 +160,16 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
         runId: command.runId,
         event: command.event
       })
+    case 'review/open':
+      return core.openReview({
+        reviewId: command.reviewId,
+        harness: command.harness,
+        launch: command.launch
+      })
+    case 'review/ingest':
+      return core.ingestReviewOutput({ reviewId: command.reviewId, chunk: command.chunk })
+    case 'review/close':
+      return core.closeReview(command.reviewId)
     case 'conversation/unfinished':
       return core.listUnfinishedRuns()
   }

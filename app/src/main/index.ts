@@ -121,6 +121,9 @@ import { GitHubPullRequests } from './github'
 import { PullRequestStore } from './pull-request-store'
 import { makePullRequestService, type PullRequestService } from './pull-request-service'
 import { ProjectCloneService } from './project-clone'
+import { ReviewStore } from './review-store'
+import { ReviewService } from './review-service'
+import { reviewStateSchema } from '@shared/review'
 import {
   createPullRequestInputSchema,
   createPullRequestResultSchema,
@@ -202,6 +205,8 @@ let runService: RunService
 let runUndo: RunUndoService
 let pullRequests: PullRequestService
 let pullRequestStore: PullRequestStore
+let reviews: ReviewService
+let reviewStore: ReviewStore
 let github: GitHubPullRequests
 let projectClones: ProjectCloneService
 let updates: UpdateService
@@ -265,6 +270,16 @@ function publishTheme(): ThemeState {
   mainWindow?.setBackgroundColor(windowBackground(state))
   mainWindow?.webContents.send(IPC_CHANNELS.themeChanged, state)
   return state
+}
+
+/** The Session ids the app still has, so app-owned records for the rest can go. */
+function known(sessions: unknown): ReadonlySet<string> {
+  return new Set(
+    sessionSummarySchema
+      .array()
+      .parse(sessions)
+      .map((session) => session.id)
+  )
 }
 
 function isTrustedSender(event: IpcMainInvokeEvent): boolean {
@@ -709,6 +724,7 @@ function registerIpc(): void {
     runUndo.forget(sessionId)
     await snapshots.forget(sessionId)
     await mainEffectRuntime.runPromise(pullRequests.forget(sessionId))
+    await reviews.forget(sessionId)
   })
 
   handleInvoke(IPC_CHANNELS.getAppearanceSettings, z.undefined(), appearanceSettings)
@@ -895,6 +911,16 @@ function registerIpc(): void {
     if (url.protocol !== 'https:') throw new Error('Refused a non-HTTPS Pull Request link')
     await shell.openExternal(url.toString())
   })
+
+  // Asking for a Review is explicit and costs the Session nothing: it runs on
+  // a thread of its own, appends nothing to the Conversation, and is refused
+  // the ability to change anything in the Checkout.
+  handleInvoke(IPC_CHANNELS.getSessionReview, z.string().min(1), async (sessionId) =>
+    reviewStateSchema.parse(await reviews.state(sessionId))
+  )
+  handleInvoke(IPC_CHANNELS.requestSessionReview, z.string().min(1), async (sessionId) =>
+    reviewStateSchema.parse(await reviews.request(sessionId))
+  )
 
   handleInvoke(IPC_CHANNELS.startRun, startRunInputSchema, (input) => runService.start(input))
   handleInvoke(IPC_CHANNELS.listRuns, z.string().min(1), async (sessionId) =>
@@ -1237,6 +1263,7 @@ void app.whenReady().then(async () => {
   pullRequests = await mainEffectRuntime.runPromise(
     makePullRequestService({ github, store: pullRequestStore })
   )
+  reviewStore = new ReviewStore(join(app.getPath('userData'), 'runs'))
   runService = new RunService({
     core: coreClient,
     snapshots,
@@ -1255,6 +1282,23 @@ void app.whenReady().then(async () => {
       mainWindow?.webContents.send(IPC_CHANNELS.conversationEvent, event)
       void notifyWhileAway(event).catch(() => undefined)
     }
+  })
+  reviews = new ReviewService({
+    core: coreClient,
+    store: reviewStore,
+    session: async (sessionId) =>
+      sessionSummarySchema.parse(await coreClient.send({ type: 'session/get', sessionId })),
+    // The Harness a Review is asked of is the one that has been answering in
+    // this Session, so a Review is never a second opinion from a Harness the
+    // person did not choose.
+    harnessFor: async (sessionId) =>
+      runSnapshotSchema
+        .array()
+        .parse(await coreClient.send({ type: 'run/list', sessionId }))
+        .at(-1)?.configuration.harness ?? null,
+    readiness,
+    homeDirectory: app.getPath('home'),
+    privateRoot: join(app.getPath('userData'), 'runs')
   })
   runUndo = new RunUndoService({
     store: snapshots,
@@ -1314,14 +1358,10 @@ void app.whenReady().then(async () => {
   void coreClient
     .send({ type: 'session/list' })
     .then((sessions) =>
-      pullRequestStore.pruneUnknown(
-        new Set(
-          sessionSummarySchema
-            .array()
-            .parse(sessions)
-            .map((session) => session.id)
-        )
-      )
+      Promise.all([
+        pullRequestStore.pruneUnknown(known(sessions)),
+        reviewStore.pruneUnknown(known(sessions))
+      ])
     )
     .catch(() => undefined)
   registerIpc()

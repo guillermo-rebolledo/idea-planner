@@ -43,6 +43,7 @@ import type {
   UnfinishedRun
 } from '@shared/conversation'
 import type { ProjectSkillsTrust, ProjectView } from '@shared/project'
+import type { ReviewStream } from '@shared/review'
 import type { HarnessId } from '@shared/readiness'
 import {
   completeRunLifecycleInputSchema,
@@ -75,6 +76,7 @@ import {
   type OpenHarnessInput
 } from './conversation'
 import { createQueuedSubmissionLifecycle } from './queued-submission-lifecycle'
+import { createReviewEffects, type IngestReviewInput, type OpenReviewInput } from './reviews'
 
 export interface CoreDeps {
   now?: () => Date
@@ -145,6 +147,9 @@ export interface Core {
   }>
   interruptHarness(runId: string): Promise<string[]>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Promise<HarnessStream>
+  openReview(input: OpenReviewInput): Promise<ReviewStream>
+  ingestReviewOutput(input: IngestReviewInput): Promise<ReviewStream>
+  closeReview(reviewId: string): Promise<ReviewStream>
   listUnfinishedRuns(): Promise<UnfinishedRun[]>
 }
 
@@ -217,6 +222,9 @@ export interface CoreEffects {
   >
   interruptHarness(runId: string): Effect.Effect<string[], CoreError>
   ingestHarnessOutput(input: IngestHarnessOutputInput): Effect.Effect<HarnessStream, CoreError>
+  openReview(input: OpenReviewInput): Effect.Effect<ReviewStream, CoreError>
+  ingestReviewOutput(input: IngestReviewInput): Effect.Effect<ReviewStream, CoreError>
+  closeReview(reviewId: string): Effect.Effect<ReviewStream, CoreError>
   listUnfinishedRuns(): Effect.Effect<UnfinishedRun[], CoreError>
 }
 
@@ -251,6 +259,9 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
       sessions.get(sessionId).pipe(Effect.map((s) => checkoutDirectory(s.projectRoot, s.checkout))),
     clock: Effect.sync(now)
   })
+  // A Review belongs to no Conversation and to no Run, so it is kept beside
+  // them rather than inside either.
+  const reviews = createReviewEffects()
   const queuedSubmissions = createQueuedSubmissionLifecycle({
     conversation,
     runs: (sessionId) => listRuns(sessionId)
@@ -840,6 +851,9 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     steerHarness: (input, prompt) => conversation.steer(input, prompt),
     interruptHarness: (runId) => conversation.interrupt(runId),
     ingestHarnessOutput: (input) => conversation.ingest(input),
+    openReview: (input) => reviews.open(input),
+    ingestReviewOutput: (input) => reviews.ingest(input),
+    closeReview: (reviewId) => reviews.close(reviewId),
     listUnfinishedRuns
   }
 }
@@ -990,6 +1004,9 @@ export function createCore(deps: CoreDeps = {}): Core {
     steerHarness: (input, prompt) => run(core.steerHarness(input, prompt)),
     interruptHarness: (runId) => run(core.interruptHarness(runId)),
     ingestHarnessOutput: (input) => run(core.ingestHarnessOutput(input)),
+    openReview: (input) => run(core.openReview(input)),
+    ingestReviewOutput: (input) => run(core.ingestReviewOutput(input)),
+    closeReview: (reviewId) => run(core.closeReview(reviewId)),
     listUnfinishedRuns: () => run(core.listUnfinishedRuns())
   }
 }

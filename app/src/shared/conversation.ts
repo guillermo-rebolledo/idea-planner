@@ -386,8 +386,24 @@ export const codexLaunchSchema = z.object({
 export type CodexLaunch = z.infer<typeof codexLaunchSchema>
 
 /**
+ * What a Claude Run needs before it can start, which is only what to work on.
+ * Everything else about the Run is argv; this crosses to Core because the
+ * prompt is a protocol frame written to stdin rather than an argument, and
+ * frames are Core's to build. That is what leaves the stream open afterwards,
+ * which is what makes a correction mid-Run possible at all.
+ */
+export const claudeLaunchSchema = z.object({
+  prompt: z.string().min(1).max(100_000)
+})
+export type ClaudeLaunch = z.infer<typeof claudeLaunchSchema>
+
+/** What either Harness needs to be started, chosen by the Harness being started. */
+export type HarnessLaunch = CodexLaunch | ClaudeLaunch
+
+/**
  * One pass of Harness protocol: what it said, and what it is owed in reply.
- * Only Codex is owed anything; Claude broadcasts and is never answered.
+ * Both Harnesses are written to — Codex answers a protocol, Claude is handed
+ * the person's words — so both produce frames Main writes back.
  */
 export interface HarnessStream {
   events: HarnessEvent[]

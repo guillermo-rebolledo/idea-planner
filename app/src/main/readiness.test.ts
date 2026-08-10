@@ -334,6 +334,27 @@ exit 1`
     expect(readiness.capabilities.steerRun.summary).toContain('wait in the queue')
   })
 
+  it('reports Claude steering only from the version the app watched it steer', async () => {
+    await installSkills('.claude/skills', ['grilling', 'wayfinder'])
+    await fakeExecutable(
+      'claude',
+      `case "$1" in
+  --version) echo "2.1.226 (Claude Code)"; exit 0;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+esac
+exit 1`
+    )
+    const readiness = await probeHarness(HARNESS_SPECS.claude, {
+      pathEntries: [binDir],
+      homeDir,
+      probeTimeoutMs: 2000
+    })
+    // A correction written into a turn in flight was measured against this
+    // binary; below it the composer keeps saying queue.
+    expect(readiness.capabilities.steerRun).toMatchObject({ available: true, command: null })
+    expect(readiness.capabilities.steerRun.summary).toContain('already in progress')
+  })
+
   it('points at the failing checks rather than a version when the Harness is unready', async () => {
     // Again through a spec that can run a Session, so the answer is about
     // readiness rather than about Codex having no Adapter. Unready here means

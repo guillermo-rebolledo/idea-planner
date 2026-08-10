@@ -76,6 +76,9 @@ const api: ShellApi = {
   preparePullRequest: (input) => ipcRenderer.invoke(IPC_CHANNELS.preparePullRequest, input),
   createPullRequest: (input) => ipcRenderer.invoke(IPC_CHANNELS.createPullRequest, input),
   openPullRequest: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.openPullRequest, sessionId),
+  getSessionReview: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.getSessionReview, sessionId),
+  requestSessionReview: (sessionId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.requestSessionReview, sessionId),
   startRun: (input) => ipcRenderer.invoke(IPC_CHANNELS.startRun, input),
   listRuns: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.listRuns, sessionId),
   stopRun: (input) => ipcRenderer.invoke(IPC_CHANNELS.stopRun, input),

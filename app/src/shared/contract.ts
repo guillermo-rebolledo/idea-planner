@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import {
+  claudeLaunchSchema,
   codexLaunchSchema,
   harnessEventSchema,
   queuedSubmissionChangeSchema,
@@ -65,6 +66,7 @@ import {
   type StopRunInput
 } from './run'
 import { pullRequestSchema } from './pull-request'
+import { reviewLaunchSchema, type ReviewState } from './review'
 import type { UpdateAvailability } from './update'
 import {
   appearanceSettingsSchema,
@@ -92,7 +94,11 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
- * 25: the app can say a newer version of itself has been published.
+ * 27: the app can say a newer version of itself has been published.
+ * 26: Claude is launched through its own protocol frames, so `harness/open`
+ *     carries either Harness's launch payload.
+ * 25: a Session's changes can be reviewed on a detached thread, and the
+ *     Findings that answers carry a file and a line range.
  * 24: mid-Run messages declare steer or queue delivery, and readiness reports steering.
  * 23: a Conversation can be rewound without deleting journal entries or touching files.
  * 22: Projects can be cloned from Git URLs or an authenticated GitHub repository.
@@ -117,7 +123,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 25
+export const CONTRACT_VERSION = 27
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -412,7 +418,9 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('harness/open'),
     runId: z.string().min(1),
     harness: harnessIdSchema,
-    launch: codexLaunchSchema.optional()
+    // Whichever Harness is being opened decides which of these it is; the
+    // Adapter for that Harness is the one that reads it.
+    launch: z.union([codexLaunchSchema, claudeLaunchSchema]).optional()
   }),
   z.object({
     type: z.literal('harness/answer'),
@@ -440,6 +448,18 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     runId: z.string().min(1),
     event: harnessEventSchema
   }),
+  z.object({
+    type: z.literal('review/open'),
+    reviewId: z.string().min(1),
+    harness: harnessIdSchema,
+    launch: reviewLaunchSchema
+  }),
+  z.object({
+    type: z.literal('review/ingest'),
+    reviewId: z.string().min(1),
+    chunk: z.string()
+  }),
+  z.object({ type: z.literal('review/close'), reviewId: z.string().min(1) }),
   z.object({ type: z.literal('conversation/unfinished') })
 ])
 export type CoreCommand = z.infer<typeof coreCommandSchema>
@@ -593,6 +613,19 @@ export interface ShellApi {
   createPullRequest(input: CreatePullRequestInput): Promise<CreatePullRequestResult>
   /** Opens the stored PR for this Session; the Renderer never supplies a privileged URL. */
   openPullRequest(sessionId: string): Promise<void>
+  /**
+   * What is known about reviewing this Session right now: whether its Harness
+   * can be asked at all, whether one is running, and the last one that
+   * answered. Read-only — asking for a Review is a separate, explicit act.
+   */
+  getSessionReview(sessionId: string): Promise<ReviewState>
+  /**
+   * Asks this Session's Harness what it thinks of the code the Session
+   * changed. It runs on a thread of its own: nothing is appended to the
+   * Conversation and none of the Session's context is spent. Resolves when the
+   * Review answers, or when it fails and says why.
+   */
+  requestSessionReview(sessionId: string): Promise<ReviewState>
   startRun(input: StartRunInput): Promise<RunSnapshot>
   listRuns(sessionId: string): Promise<RunSnapshot[]>
   stopRun(input: StopRunInput): Promise<RunSnapshot>
@@ -673,6 +706,7 @@ export * from './model'
 export * from './project'
 export * from './pull-request'
 export * from './readiness'
+export * from './review'
 export * from './review-attachment'
 export * from './run'
 export * from './run-undo'
