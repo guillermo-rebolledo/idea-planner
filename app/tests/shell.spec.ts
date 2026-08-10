@@ -685,9 +685,20 @@ test('a person organizes the mailbox: pin, search, archive with undo, rename, co
  * A Harness that answers the readiness probe (`-p`) and then, for a real Run
  * (`--print`), starts and keeps working — so a Run is genuinely running.
  */
+/**
+ * A Harness that starts its turn and stays in it.
+ *
+ * The Run branch names a thread and a model, because a real `init` frame does
+ * and the app refuses one that does not — an agent whose first frame it cannot
+ * read is not one it will let go on working. The readiness probe is a
+ * different question and reads none of that.
+ */
 const BUSY_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
-  -p|--print) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
+  --print)
+    echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
+    /bin/sleep 30;;
 esac`
 
 test('quitting with active agents warns, safely exits, and remembers the reversible choice', async () => {
@@ -1468,7 +1479,7 @@ const QUIET_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
   -p) echo '{"type":"system","subtype":"init"}'; /bin/sleep 30;;
   --print)
-    echo '{"type":"system","subtype":"init"}'
+    echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
     printf 'quietly changed\n' >> quiet.ts
     rm -f doomed.ts
     echo '{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}]},"session_id":"thread-1"}'
@@ -2134,7 +2145,7 @@ exit 1`
 const LONG_RUNNING_CLAUDE_FAKE = `case "$1" in
   --version) echo "2.1.220 (Claude Code)"; exit 0;;
 esac
-echo '{"type":"system","subtype":"init"}'
+echo '{"type":"system","subtype":"init","session_id":"thread-1","model":"claude-opus-5"}'
 trap 'exit 0' TERM INT
 while :; do /bin/sleep 1; done`
 
