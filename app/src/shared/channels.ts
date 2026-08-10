@@ -49,6 +49,8 @@ export const IPC_CHANNELS = {
   preparePullRequest: 'pull-request:prepare',
   createPullRequest: 'pull-request:create',
   openPullRequest: 'pull-request:open',
+  getSessionReview: 'review:get',
+  requestSessionReview: 'review:request',
   startRun: 'run:start',
   listRuns: 'run:list',
   stopRun: 'run:stop',

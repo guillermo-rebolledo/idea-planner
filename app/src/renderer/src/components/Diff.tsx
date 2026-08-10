@@ -57,11 +57,18 @@ export interface DiffAttachControls {
 export function DiffView({
   hunks,
   className,
-  attach
+  attach,
+  highlight
 }: {
   hunks: DiffHunk[]
   className?: string
   attach?: DiffAttachControls
+  /**
+   * Lines a Finding points at, numbered in the file as it stands now. Marked
+   * rather than filtered: a Finding is read against the change around it, and
+   * a diff cropped to one line is a diff nobody can judge.
+   */
+  highlight?: { startLine: number; endLine: number }
 }): React.JSX.Element {
   // Which lines are ticked, per hunk. Ephemeral by design: a selection is a
   // way of naming an attachment, not a thing the Session remembers.
@@ -117,6 +124,10 @@ export function DiffView({
                 key={lineIndex}
                 className={cn(
                   'flex items-start gap-1.5',
+                  highlight !== undefined &&
+                    (numbers[lineIndex] ?? 0) >= highlight.startLine &&
+                    (numbers[lineIndex] ?? 0) <= highlight.endLine &&
+                    'ring-1 ring-ring ring-inset',
                   line.startsWith('+')
                     ? 'bg-diff-added-surface text-diff-added-foreground'
                     : line.startsWith('-')
