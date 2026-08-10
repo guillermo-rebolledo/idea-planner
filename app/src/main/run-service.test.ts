@@ -101,6 +101,8 @@ interface FakeCore {
   /** What Core would answer a compaction plan with, or nothing to refuse it. */
   compactionPlan?: CompactionPlan
   submitDisposition: 'accepted' | 'visible-replay' | 'rewound-replay'
+  /** Approval ids whose answer cannot reach the Harness right now. */
+  failAnswerFor: Set<string>
 }
 
 let nextRunId = 0
@@ -141,7 +143,8 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     standingRules: [],
     unfinished: [],
     compactionPlan: undefined,
-    submitDisposition: 'accepted'
+    submitDisposition: 'accepted',
+    failAnswerFor: new Set<string>()
   }
   const run: RunSnapshot = {
     id: runId,
@@ -175,6 +178,10 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     if (command.type === 'harness/open') return Promise.resolve({ events: [], outgoing: [] })
     if (command.type === 'harness/interrupt') return Promise.resolve([])
     if (command.type === 'harness/answer') {
+      const { approvalId } = command as { approvalId?: string }
+      if (approvalId !== undefined && state.failAnswerFor.has(approvalId)) {
+        return Promise.reject(new Error('Core could not answer that request'))
+      }
       return Promise.resolve({ answered: true, outgoing: ['{"id":7,"result":{}}'] })
     }
     if (command.type === 'conversation/ingest') {
@@ -2399,5 +2406,64 @@ describe('one decision settling the requests it answers', () => {
     await expect(
       service.denyApprovals({ sessionId: 'session', runId, approvalIds: ['req-1'] })
     ).rejects.toThrow('no longer waiting')
+  })
+
+  it('attempts the whole set even when one refusal cannot reach the Harness', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-deny-partial-')
+    // The middle one cannot be delivered. Refusing part of the set and
+    // silently stopping is the worst of both, so the rest is still attempted.
+    core.failAnswerFor.add('req-2')
+
+    await expect(
+      service.denyApprovals({
+        sessionId: 'session',
+        runId,
+        approvalIds: ['req-1', 'req-2', 'req-3']
+      })
+      // Said out loud rather than handed back a snapshot that looks settled.
+    ).rejects.toThrow('1 of 3 requests could not be answered')
+
+    expect(resolutions(core).map((event) => event.id)).toEqual(['req-1', 'req-3'])
+    // The Harness never heard about the one that failed, so it is still
+    // holding it — and the person can still answer it, rather than being left
+    // with a card nothing can settle and a Run blocked behind it.
+    core.failAnswerFor.delete('req-2')
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-2',
+      decision: 'deny'
+    })
+    expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-2', decision: 'denied' })
+  })
+
+  it('keeps a decision that has taken effect when settling a sibling fails', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-sibling-failure-')
+    core.failAnswerFor.add('req-2')
+
+    // The rule is stored and the person's own request is answered, so the
+    // consequence failing must not report the whole decision as failed.
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-1',
+      decision: 'allow',
+      remember: true
+    })
+
+    expect(core.commands).toContain('approval/grant')
+    expect(resolutions(core)).toEqual([
+      expect.objectContaining({ id: 'req-1', decision: 'allowed', remembered: true })
+    ])
+    // And the sibling is left exactly where it would have been without any of
+    // this: held, and asked.
+    core.failAnswerFor.delete('req-2')
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-2',
+      decision: 'allow'
+    })
+    expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-2', decision: 'allowed' })
   })
 })
