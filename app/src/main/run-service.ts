@@ -1659,14 +1659,21 @@ export class RunService {
    * talking to Core about this Run anyway, and costs one call when there is
    * nothing to write.
    *
-   * One attempt each. Whatever brought us here will come back.
+   * One attempt each, because whatever brought us here will come back — until
+   * the caller is the Run ending, which is the one that will not.
    */
-  private async flushUnwritten(runId: string): Promise<Set<string>> {
+  private async flushUnwritten(runId: string, attempts = 1): Promise<Set<string>> {
     const written = new Set<string>()
     const stranded = this.unwritten.get(runId)
     if (!stranded?.size) return written
     for (const [approvalId, decision] of [...stranded]) {
-      if (!(await this.settleInConversation(decision.sessionId, runId, decision.event, 1))) continue
+      const settled = await this.settleInConversation(
+        decision.sessionId,
+        runId,
+        decision.event,
+        attempts
+      )
+      if (!settled) continue
       stranded.delete(approvalId)
       written.add(approvalId)
       // The Run's own line about it, now that the decision it describes is
@@ -1925,6 +1932,13 @@ export class RunService {
       status === 'failed' && category === null && diagnostic ? `${summary}: ${diagnostic}` : summary
     const baseline = recoveredBaseline ?? this.baselines.get(run.id)
     const checkoutObservation = await this.observeUnreportedChanges(run, baseline)
+    // The last chance to write down a decision the Conversation never heard.
+    // Core settles whatever is still open as abandoned — "the Run ended before
+    // this was answered" — and that must never be the permanent record of a
+    // request the person answered and the agent acted on. Given the full
+    // budget rather than one attempt: the Run is over, so nobody is waiting on
+    // this, and nothing comes after it.
+    await this.flushUnwritten(run.id, DECISION_WRITE_ATTEMPTS)
     const terminal = completeRunLifecycleResultSchema.parse(
       await this.deps.core.send({
         type: 'run/lifecycle-complete',
@@ -1939,8 +1953,9 @@ export class RunService {
     this.failures.delete(run.id)
     this.diagnostics.delete(run.id)
     this.proposals.delete(run.id)
-    // Core settles a request still open when the Run ends, so anything never
-    // written is answered there rather than held for a Run that is over.
+    // Anything that still could not be written is released with the Run. Core
+    // has settled it as abandoned, which is the honest record of a decision
+    // this app was never able to keep — and the only one left to write.
     this.unwritten.delete(run.id)
     this.adapters.delete(run.id)
     // The store itself stays: it belongs to the Session, not to this Run, and

@@ -2557,6 +2557,39 @@ describe('one decision settling the requests it answers', () => {
     ).toHaveLength(1)
   })
 
+  it('writes a stranded decision down before the Run ends, rather than letting it read as unanswered', async () => {
+    const { core, service, runId, broker } = await holdingRequests('run-approval-stranded-end-')
+    core.failApplyFor.set('req-1', 99)
+    await expect(
+      service.resolveApproval({
+        sessionId: 'session',
+        runId,
+        approvalId: 'req-1',
+        decision: 'deny'
+      })
+    ).rejects.toThrow('could not record it')
+
+    // Core settles whatever is still open as abandoned when the Run ends, so
+    // this is the last chance. A request the person answered and the agent
+    // acted on must not read back forever as one nobody answered.
+    core.failApplyFor.delete('req-1')
+    broker.launch?.onExit?.(0, null)
+
+    await vi.waitFor(() => {
+      expect(core.commands).toContain('run/lifecycle-complete')
+    })
+    // Tried once more than the three that failed — without that, the ordering
+    // below would hold for the failed attempts and prove nothing.
+    expect(writeAttempts(core, 'req-1')).toBe(4)
+    const order = (core.send.mock.calls as [{ type: string; event?: { id?: string } }][]).map(
+      ([command]) =>
+        command.type === 'conversation/apply' && command.event?.id === 'req-1'
+          ? 'decision'
+          : command.type
+    )
+    expect(order.lastIndexOf('decision')).toBeLessThan(order.indexOf('run/lifecycle-complete'))
+  })
+
   it('finishes a stranded decision on its own while the Run is still talking', async () => {
     const { core, service, runId, broker } = await holdingRequests('run-approval-stranded-stream-')
     core.failApplyFor.set('req-1', 99)
