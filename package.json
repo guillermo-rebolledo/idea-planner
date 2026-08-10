@@ -15,6 +15,7 @@
     "prototype:check": "tsc -p prototypes/core-workspace/tsconfig.json && vite build prototypes/core-workspace --outDir ../../dist/prototype --emptyOutDir && tsc -p prototypes/subagent-thread/tsconfig.json && tsc -p prototypes/run-plan/tsconfig.json && tsc -p prototypes/project-source/tsconfig.json",
     "codex:protocol": "rm -rf app/src/core/harness/codex-protocol && codex app-server generate-ts --out app/src/core/harness/codex-protocol",
     "codex:record": "node scripts/record-codex-session.mjs",
+    "codex:record-review": "node scripts/record-codex-review.mjs",
     "claude:probe-steer": "node scripts/probe-claude-steering.mjs",
     "package": "pnpm --filter argos-desktop package",
     "lint": "eslint .",

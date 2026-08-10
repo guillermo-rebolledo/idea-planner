@@ -716,6 +716,7 @@ export function Mailbox({
 
         {selectedSession && filesOpen && (
           <FilesPanel
+            sessionId={selectedSession.id}
             changes={changes}
             focusedPath={focusedFile}
             onFocus={setFocusedFile}
