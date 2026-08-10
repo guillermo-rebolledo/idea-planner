@@ -2320,7 +2320,7 @@ describe('an approval from request to answer', () => {
 
     await stream(runId, [request])
     const blocked = await makeCore().getConversation(sessionId)
-    expect(blocked.pendingApprovalId).toBe(`approval:${runId}:toolu_approve_1`)
+    expect(blocked.pendingApprovalIds).toEqual([`approval:${runId}:toolu_approve_1`])
 
     await stream(runId, [
       {
@@ -2332,7 +2332,7 @@ describe('an approval from request to answer', () => {
       }
     ])
     const resolved = await makeCore().getConversation(sessionId)
-    expect(resolved.pendingApprovalId).toBeNull()
+    expect(resolved.pendingApprovalIds).toEqual([])
     // One request happened, so the Conversation holds one — answered.
     expect(resolved.entries.filter((entry) => entry.kind === 'approval')).toMatchObject([
       { tool: 'Bash', summary: 'pnpm test', decision: 'allowed' }
@@ -2422,7 +2422,7 @@ describe('an approval from request to answer', () => {
     })
 
     const reloaded = await makeCore().getConversation(sessionId)
-    expect(reloaded.pendingApprovalId).toBeNull()
+    expect(reloaded.pendingApprovalIds).toEqual([])
     expect(reloaded.entries.filter((entry) => entry.kind === 'approval')).toMatchObject([
       { decision: 'abandoned' }
     ])

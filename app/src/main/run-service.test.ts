@@ -101,6 +101,10 @@ interface FakeCore {
   /** What Core would answer a compaction plan with, or nothing to refuse it. */
   compactionPlan?: CompactionPlan
   submitDisposition: 'accepted' | 'visible-replay' | 'rewound-replay'
+  /** Approval ids whose answer cannot reach the Harness right now. */
+  failAnswerFor: Set<string>
+  /** Approval id → how many attempts at writing its decision down must fail. */
+  failApplyFor: Map<string, number>
 }
 
 let nextRunId = 0
@@ -135,13 +139,15 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       harnessThreads: {},
       changedFiles: [],
       activeRunId: null,
-      pendingApprovalId: null,
+      pendingApprovalIds: [],
       queue: { paused: true, items: [], outcome: null }
     },
     standingRules: [],
     unfinished: [],
     compactionPlan: undefined,
-    submitDisposition: 'accepted'
+    submitDisposition: 'accepted',
+    failAnswerFor: new Set<string>(),
+    failApplyFor: new Map<string, number>()
   }
   const run: RunSnapshot = {
     id: runId,
@@ -175,6 +181,10 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     if (command.type === 'harness/open') return Promise.resolve({ events: [], outgoing: [] })
     if (command.type === 'harness/interrupt') return Promise.resolve([])
     if (command.type === 'harness/answer') {
+      const { approvalId } = command as { approvalId?: string }
+      if (approvalId !== undefined && state.failAnswerFor.has(approvalId)) {
+        return Promise.reject(new Error('Core could not answer that request'))
+      }
       return Promise.resolve({ answered: true, outgoing: ['{"id":7,"result":{}}'] })
     }
     if (command.type === 'conversation/ingest') {
@@ -185,6 +195,12 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       })
     }
     if (command.type === 'conversation/apply') {
+      const { event } = command as { event?: { id?: string } }
+      const remaining = event?.id === undefined ? 0 : (state.failApplyFor.get(event.id) ?? 0)
+      if (event?.id !== undefined && remaining > 0) {
+        state.failApplyFor.set(event.id, remaining - 1)
+        return Promise.reject(new Error('Core could not write that down'))
+      }
       return Promise.resolve(state.conversation.journalPosition)
     }
     if (command.type === 'conversation/unfinished') return Promise.resolve(state.unfinished)
@@ -1117,7 +1133,7 @@ describe('Run service', () => {
                   harnessThreads: {},
                   changedFiles: [],
                   activeRunId: next.id,
-                  pendingApprovalId: null,
+                  pendingApprovalIds: [],
                   queue: { paused: true, items: [] }
                 }
               }
@@ -2459,5 +2475,478 @@ describe('a Run nobody closed', () => {
     await service.recoverUnfinishedWork()
 
     expect(deps.core.commands).not.toContain('run/lifecycle-complete')
+  })
+})
+
+/**
+ * Requests are answered one at a time even when one decision has logically
+ * answered several. Codex raises them in-band, which is the path where a turn
+ * really can be holding more than one at once.
+ */
+describe('one decision settling the requests it answers', () => {
+  const pnpmTest = {
+    harness: 'codex' as const,
+    kind: 'command' as const,
+    pattern: ['pnpm', 'test']
+  }
+  const pnpmBuild = {
+    harness: 'codex' as const,
+    kind: 'command' as const,
+    pattern: ['pnpm', 'build']
+  }
+
+  /** Three things asked for at once: two the same rule covers, one it does not. */
+  const REQUESTS: Extract<HarnessEvent, { type: 'approval-request' }>[] = [
+    {
+      type: 'approval-request',
+      id: 'req-1',
+      tool: 'Bash',
+      summary: 'pnpm test',
+      detail: '',
+      proposedRule: pnpmTest
+    },
+    {
+      type: 'approval-request',
+      id: 'req-2',
+      tool: 'Bash',
+      summary: 'pnpm test src/app.test.ts',
+      detail: '',
+      proposedRule: pnpmTest
+    },
+    {
+      type: 'approval-request',
+      id: 'req-3',
+      tool: 'Bash',
+      summary: 'pnpm build',
+      detail: '',
+      proposedRule: pnpmBuild
+    }
+  ]
+
+  async function holdingRequests(prefix: string): Promise<{
+    core: FakeCore
+    service: RunService
+    runId: string
+    broker: ReturnType<typeof fakeBroker>
+  }> {
+    const root = await readyHarnessRoot(prefix)
+    const core = fakeCore(join(root, 'a-project'))
+    core.events = REQUESTS
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            harnesses: [
+              {
+                harness: 'codex' as const,
+                available: true,
+                executablePath: join(root, 'codex'),
+                version: 'codex-cli 0.146.0'
+              }
+            ]
+          })
+        )
+      },
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root)
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      sessionId: 'session',
+      prompt: 'Get the tests passing',
+      harness: 'codex',
+      model: 'gpt-5-codex',
+      effort: 'medium',
+      permissionMode: 'ask'
+    })
+    broker.launch?.onOutput?.('stdout', '{"jsonrpc":"2.0"}\n')
+    await vi.waitFor(() => {
+      expect(waitingOn(core)).toHaveLength(REQUESTS.length)
+    })
+    return { core, service, runId: broker.launch?.id ?? '', broker }
+  }
+
+  /** How many times the decision on one request was offered to Core. */
+  function writeAttempts(core: FakeCore, approvalId: string): number {
+    return (core.send.mock.calls as [{ type: string; event?: { id?: string } }][]).filter(
+      ([command]) => command.type === 'conversation/apply' && command.event?.id === approvalId
+    ).length
+  }
+
+  /** What the Run's activity says, in the order it was written. */
+  function activity(core: FakeCore): string[] {
+    return (core.send.mock.calls as [{ type: string; input?: { summary?: string } }][])
+      .filter(([command]) => command.type === 'run/event')
+      .map(([command]) => command.input?.summary ?? '')
+  }
+
+  function waitingOn(core: FakeCore): string[] {
+    return activity(core).filter((summary) => summary.startsWith('Waiting for you to approve'))
+  }
+
+  /**
+   * Every decision the service tried to write into the Conversation, in order.
+   * A write that failed and was attempted again appears once per attempt.
+   */
+  function resolutions(core: FakeCore): Extract<HarnessEvent, { type: 'approval-resolved' }>[] {
+    return (core.send.mock.calls as [{ type: string; event?: HarnessEvent }][])
+      .filter(([command]) => command.type === 'conversation/apply')
+      .flatMap(([command]) => (command.event?.type === 'approval-resolved' ? [command.event] : []))
+  }
+
+  it('answers the requests the new rule permits, and leaves the rest asked', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-batch-')
+
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-1',
+      decision: 'allow',
+      remember: true
+    })
+
+    // One grant, stored exactly as Codex proposed it.
+    const granted = (core.send.mock.calls as [{ type: string; input?: unknown }][])
+      .filter(([command]) => command.type === 'approval/grant')
+      .map(([command]) => command.input)
+    expect(granted).toEqual([
+      expect.objectContaining({ harness: 'codex', pattern: ['pnpm', 'test'] })
+    ])
+    // The sibling the rule covers is settled; the one it does not is not
+    // touched, because batch resolution applies a grant and never widens it.
+    expect(resolutions(core)).toEqual([
+      expect.objectContaining({ id: 'req-1', decision: 'allowed', remembered: true }),
+      expect.objectContaining({ id: 'req-2', decision: 'allowed', remembered: true })
+    ])
+    // One grant is one rule: the Harness is handed the amendment to keep once,
+    // and the sibling is simply accepted under it.
+    expect(
+      (core.send.mock.calls as [{ type: string; remember?: boolean }][])
+        .filter(([command]) => command.type === 'harness/answer')
+        .map(([command]) => command.remember)
+    ).toEqual([true, false])
+    // Each resolution is its own entry in the Run's activity, so a person
+    // reading it back sees what was decided about each request.
+    expect(activity(core)).toContain(
+      'You approved the request, and always allow prefix_rule(pattern = ["pnpm", "test"], decision = "allow")'
+    )
+    expect(activity(core)).toContain(
+      'Allowed by the rule you stored: prefix_rule(pattern = ["pnpm", "test"], decision = "allow")'
+    )
+    // And the settled one cannot be answered twice.
+    await expect(
+      service.resolveApproval({
+        sessionId: 'session',
+        runId,
+        approvalId: 'req-2',
+        decision: 'allow'
+      })
+    ).rejects.toThrow('no longer waiting')
+  })
+
+  it('goes on asking a pending request the new rule does not permit', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-unpermitted-')
+
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-1',
+      decision: 'allow',
+      remember: true
+    })
+
+    // Still standing, and still answerable: a rule about `pnpm test` says
+    // nothing about `pnpm build`.
+    expect(resolutions(core).map((event) => event.id)).not.toContain('req-3')
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-3',
+      decision: 'deny'
+    })
+    expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-3', decision: 'denied' })
+  })
+
+  it('refuses exactly the set the person chose, each recorded on its own', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-deny-set-')
+
+    await service.denyApprovals({
+      sessionId: 'session',
+      runId,
+      approvalIds: ['req-1', 'req-3'],
+      message: 'Stop and check with me first'
+    })
+
+    expect(resolutions(core)).toEqual([
+      expect.objectContaining({
+        id: 'req-1',
+        decision: 'denied',
+        message: 'Stop and check with me first'
+      }),
+      expect.objectContaining({
+        id: 'req-3',
+        decision: 'denied',
+        message: 'Stop and check with me first'
+      })
+    ])
+    // The person wrote one instruction, so Codex — whose decline cannot carry
+    // feedback — is handed it once rather than once per refusal.
+    expect(core.commands.filter((command) => command === 'conversation/queue-change')).toHaveLength(
+      1
+    )
+    // A request outside the named set is untouched, which is also what keeps
+    // one arriving mid-decision from being answered by a choice made before it.
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-2',
+      decision: 'allow'
+    })
+    expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-2', decision: 'allowed' })
+  })
+
+  it('says so rather than pretending, when every named request has already been answered', async () => {
+    const { service, runId } = await holdingRequests('run-approval-deny-stale-')
+
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-1',
+      decision: 'deny'
+    })
+
+    await expect(
+      service.denyApprovals({ sessionId: 'session', runId, approvalIds: ['req-1'] })
+    ).rejects.toThrow('no longer waiting')
+  })
+
+  it('attempts the whole set even when one refusal cannot reach the Harness', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-deny-partial-')
+    // The middle one cannot be delivered. Refusing part of the set and
+    // silently stopping is the worst of both, so the rest is still attempted.
+    core.failAnswerFor.add('req-2')
+
+    await expect(
+      service.denyApprovals({
+        sessionId: 'session',
+        runId,
+        approvalIds: ['req-1', 'req-2', 'req-3']
+      })
+      // Said out loud rather than handed back a snapshot that looks settled.
+    ).rejects.toThrow('1 of 3 could not be answered and are still waiting')
+
+    expect(resolutions(core).map((event) => event.id)).toEqual(['req-1', 'req-3'])
+    // The Harness never heard about the one that failed, so it is still
+    // holding it — and the person can still answer it, rather than being left
+    // with a card nothing can settle and a Run blocked behind it.
+    core.failAnswerFor.delete('req-2')
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-2',
+      decision: 'deny'
+    })
+    expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-2', decision: 'denied' })
+  })
+
+  it('settles the card when writing the decision down only fails for a moment', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-write-retry-')
+    // The Harness has been told and has moved on, so nothing can answer this
+    // request again. If the one write that settles it is allowed to fall over
+    // once, the person is left looking at a card that no click can clear —
+    // so the write is attempted again rather than given up on.
+    core.failApplyFor.set('req-1', 1)
+
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-1',
+      decision: 'deny'
+    })
+
+    // The decision landed, so nothing is left asking about it.
+    expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-1', decision: 'denied' })
+    // Core ignores an answer to a request already settled, so trying again
+    // costs nothing even when the attempt before it had in fact landed.
+    expect(
+      (core.send.mock.calls as [{ type: string; event?: { id?: string } }][]).filter(
+        ([command]) => command.type === 'conversation/apply' && command.event?.id === 'req-1'
+      )
+    ).toHaveLength(2)
+  })
+
+  it('never calls a refusal the agent has already acted on "still waiting"', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-deny-unrecorded-')
+    // The refusal reaches Codex, which declines and moves on — and writing it
+    // down then fails for good. The two failures are opposites: this one has
+    // happened, and saying it is still waiting would be the one certain lie.
+    core.failApplyFor.set('req-1', 99)
+
+    const failure = await service
+      .denyApprovals({
+        sessionId: 'session',
+        runId,
+        approvalIds: ['req-1', 'req-2'],
+        message: 'Stop and check with me first'
+      })
+      .then(
+        () => null,
+        (cause: unknown) => (cause as Error).message
+      )
+    expect(failure).toContain('1 reached the agent but could not be recorded')
+    expect(failure).not.toContain('still waiting')
+
+    // The agent was told once, so the person's instruction goes with that one
+    // refusal and is not sent again by the next.
+    expect(core.commands.filter((command) => command === 'conversation/queue-change')).toHaveLength(
+      1
+    )
+    // And it is never reported as merely stale, which would send the person
+    // back to a card that no answer can clear.
+    await expect(
+      service.resolveApproval({
+        sessionId: 'session',
+        runId,
+        approvalId: 'req-1',
+        decision: 'deny'
+      })
+    ).rejects.toThrow('still cannot record it')
+  })
+
+  it('finishes a stranded decision the next time the person touches its card', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-stranded-click-')
+    // Every attempt fails, so the decision is taken but never written: Core
+    // goes on reading the request as open and the card stays up.
+    core.failApplyFor.set('req-1', 99)
+    await expect(
+      service.resolveApproval({
+        sessionId: 'session',
+        runId,
+        approvalId: 'req-1',
+        decision: 'deny'
+      })
+    ).rejects.toThrow('could not record it')
+
+    // Whatever was failing has passed. Clicking the card that is still up is
+    // not a request to decide it again — the Harness acted long ago — so it
+    // finishes what the app already owed, and the card clears.
+    core.failApplyFor.delete('req-1')
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-1',
+      decision: 'allow'
+    })
+
+    // Recorded as what the person actually decided, not as the click that
+    // happened to finish it: the agent was told "denied" and acted on that.
+    expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-1', decision: 'denied' })
+    // The Harness is not answered twice for one request.
+    expect(
+      (core.send.mock.calls as [{ type: string; approvalId?: string }][]).filter(
+        ([command]) => command.type === 'harness/answer' && command.approvalId === 'req-1'
+      )
+    ).toHaveLength(1)
+  })
+
+  it('writes a stranded decision down before the Run ends, rather than letting it read as unanswered', async () => {
+    const { core, service, runId, broker } = await holdingRequests('run-approval-stranded-end-')
+    core.failApplyFor.set('req-1', 99)
+    await expect(
+      service.resolveApproval({
+        sessionId: 'session',
+        runId,
+        approvalId: 'req-1',
+        decision: 'deny'
+      })
+    ).rejects.toThrow('could not record it')
+
+    // Core settles whatever is still open as abandoned when the Run ends, so
+    // this is the last chance. A request the person answered and the agent
+    // acted on must not read back forever as one nobody answered.
+    core.failApplyFor.delete('req-1')
+    broker.launch?.onExit?.(0, null)
+
+    await vi.waitFor(() => {
+      expect(core.commands).toContain('run/lifecycle-complete')
+    })
+    // Tried once more than the three that failed — without that, the ordering
+    // below would hold for the failed attempts and prove nothing.
+    expect(writeAttempts(core, 'req-1')).toBe(4)
+    const order = (core.send.mock.calls as [{ type: string; event?: { id?: string } }][]).map(
+      ([command]) =>
+        command.type === 'conversation/apply' && command.event?.id === 'req-1'
+          ? 'decision'
+          : command.type
+    )
+    expect(order.lastIndexOf('decision')).toBeLessThan(order.indexOf('run/lifecycle-complete'))
+  })
+
+  it('finishes a stranded decision on its own while the Run is still talking', async () => {
+    const { core, service, runId, broker } = await holdingRequests('run-approval-stranded-stream-')
+    core.failApplyFor.set('req-1', 99)
+    await expect(
+      service.resolveApproval({
+        sessionId: 'session',
+        runId,
+        approvalId: 'req-1',
+        decision: 'deny'
+      })
+    ).rejects.toThrow('could not record it')
+    expect(writeAttempts(core, 'req-1')).toBe(3)
+
+    // Nobody has to notice the stranded card: the Run is still producing
+    // output, and every chunk is another chance to write down what is owed.
+    core.failApplyFor.delete('req-1')
+    core.events = [{ type: 'assistant-message', id: 'item_1', text: 'Carrying on', complete: true }]
+    broker.launch?.onOutput?.('stdout', '{"jsonrpc":"2.0"}\n')
+
+    await vi.waitFor(() => {
+      expect(writeAttempts(core, 'req-1')).toBe(4)
+    })
+    expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-1', decision: 'denied' })
+    // Nothing is owed any more, so it is not offered to Core over and over —
+    // and the request reads as answered rather than stranded.
+    await expect(
+      service.denyApprovals({ sessionId: 'session', runId, approvalIds: ['req-1'] })
+    ).rejects.toThrow('no longer waiting')
+    expect(writeAttempts(core, 'req-1')).toBe(4)
+  })
+
+  it('keeps a decision that has taken effect when settling a sibling fails', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-sibling-failure-')
+    core.failAnswerFor.add('req-2')
+
+    // The rule is stored and the person's own request is answered, so the
+    // consequence failing must not report the whole decision as failed.
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-1',
+      decision: 'allow',
+      remember: true
+    })
+
+    expect(core.commands).toContain('approval/grant')
+    expect(resolutions(core)).toEqual([
+      expect.objectContaining({ id: 'req-1', decision: 'allowed', remembered: true })
+    ])
+    // And the sibling is left exactly where it would have been without any of
+    // this: held, and asked.
+    core.failAnswerFor.delete('req-2')
+    await service.resolveApproval({
+      sessionId: 'session',
+      runId,
+      approvalId: 'req-2',
+      decision: 'allow'
+    })
+    expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-2', decision: 'allowed' })
   })
 })

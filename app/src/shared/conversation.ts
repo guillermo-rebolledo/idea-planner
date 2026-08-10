@@ -973,11 +973,12 @@ export const conversationSnapshotSchema = z.object({
   /** The Run the Conversation is currently waiting on, when there is one. */
   activeRunId: z.string().min(1).nullable(),
   /**
-   * The approval the Run is blocked on, when one stands. Ticket 12 owns
-   * Session status, so blocked lives on the Run and this is where the app
-   * reads it from.
+   * The Approval Requests still standing, oldest first — the whole set, because
+   * one decision can settle more than the one being asked. The first is the one
+   * put to the person; the rest are behind it. Ticket 12 owns Session status,
+   * so blocked lives on the Run and this is where the app reads it from.
    */
-  pendingApprovalId: z.string().min(1).nullable().default(null),
+  pendingApprovalIds: z.array(z.string().min(1)).default([]),
   queue: z
     .object({
       paused: z.boolean(),

@@ -32,6 +32,7 @@ import {
   skillCatalogSchema,
   trustProjectSkillsInputSchema,
   type SkillCatalog,
+  denyApprovalsInputSchema,
   resolveApprovalInputSchema,
   applyRunUndoInputSchema,
   prepareRunUndoInputSchema,
@@ -1007,6 +1008,9 @@ function registerIpc(): void {
   )
   handleInvoke(IPC_CHANNELS.resolveApproval, resolveApprovalInputSchema, async (input) =>
     conversationSnapshotSchema.parse(await runService.resolveApproval(input))
+  )
+  handleInvoke(IPC_CHANNELS.denyApprovals, denyApprovalsInputSchema, async (input) =>
+    conversationSnapshotSchema.parse(await runService.denyApprovals(input))
   )
 
   // Two calls, deliberately. Preparing reads and writes nothing; applying is

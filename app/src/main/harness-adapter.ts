@@ -188,6 +188,14 @@ export interface AdapterApprovalAnswer {
   remembered: boolean
   /** Present only when the person supplied an alternative instruction. */
   reason: string | undefined
+  /**
+   * Whether this answer is the one that delivers that instruction as the next
+   * turn, where the Harness's own decline cannot carry it. One decision
+   * refusing several requests wrote one instruction, and the agent should read
+   * it once — so every refusal in the set is told, and exactly one carries it
+   * forward.
+   */
+  deliverInstruction: boolean
   proposal: AdapterRequestProposal
   host?: ApprovalHost
 }
@@ -583,7 +591,7 @@ function createCodexAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter 
         // its native decline, then use the ordinary durable queue for the
         // person's requested alternative. The adapter owns this fallback;
         // RunService does not need to know which Harness lacks feedback.
-        if (answer.answered && !input.allowed && input.reason) {
+        if (answer.answered && !input.allowed && input.reason && input.deliverInstruction) {
           const continuation = input.proposal.continuation
           await dependencies.core.send({
             type: 'conversation/queue-change',

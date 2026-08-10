@@ -175,6 +175,31 @@ export const resolveApprovalInputSchema = z.object({
 })
 export type ResolveApprovalInput = z.infer<typeof resolveApprovalInputSchema>
 
+/**
+ * Refusing several outstanding Approval Requests in one action, as a choice
+ * rather than a side effect of refusing one of them. Stopping a Run that has
+ * gone wrong should take one action, not one per request it happens to have
+ * outstanding.
+ *
+ * The requests are named rather than described, so what is refused is exactly
+ * what the person was looking at when they chose. A request that arrives while
+ * this is in flight is not in the list, and is still asked.
+ */
+export const denyApprovalsInputSchema = z.object({
+  sessionId: z.string().min(1),
+  runId: z.string().min(1),
+  approvalIds: z
+    .array(z.string().min(1).max(200))
+    .min(1)
+    .max(50)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: 'The same request cannot be denied twice in one decision'
+    }),
+  /** One instruction for the whole set, read by the agent once. */
+  message: z.string().max(2_000).optional()
+})
+export type DenyApprovalsInput = z.infer<typeof denyApprovalsInputSchema>
+
 export const recordRunEventInputSchema = z.object({
   sessionId: z.string().min(1),
   runId: z.string().min(1),

@@ -29,6 +29,7 @@ import {
   HARNESS_DEFAULT_MODEL,
   assistantMessageId,
   isActiveQueuedSubmission,
+  permits,
   projectDisplayName,
   ruleText,
   type ApprovalDecision,
@@ -263,14 +264,31 @@ export function Conversation({
   const snapshot = phase.state === 'ready' ? phase.snapshot : null
   const activeRunId = snapshot?.activeRunId ?? null
   const hasQueuedSubmissions = snapshot?.queue.items.some(isActiveQueuedSubmission) ?? false
-  const pendingApproval = useMemo(
+  // Every request still standing, in the order they were asked. Core decides
+  // what is open; this only reads the entries it named, so the set offered a
+  // decision is the set the person is looking at.
+  const pendingApprovals = useMemo(
     () =>
-      snapshot?.entries.find(
-        (entry): entry is Extract<ConversationEntry, { kind: 'approval' }> =>
-          entry.kind === 'approval' && entry.id === snapshot.pendingApprovalId
-      ) ?? null,
+      (snapshot?.pendingApprovalIds ?? []).flatMap((id) => {
+        const entry = snapshot?.entries.find(
+          (candidate): candidate is ApprovalEntry =>
+            candidate.kind === 'approval' && candidate.id === id
+        )
+        return entry ? [entry] : []
+      }),
     [snapshot]
   )
+  const pendingApproval = pendingApprovals[0] ?? null
+  // What storing the rule would settle besides the request being asked. Said
+  // before it is stored, because a decision that answers more than one request
+  // has to say so while it can still be declined.
+  const alsoSettled = useMemo(() => {
+    const rule = pendingApproval?.proposedRule
+    if (!rule) return 0
+    return pendingApprovals.filter(
+      (entry) => entry.id !== pendingApproval.id && permits(rule, entry.proposedRule)
+    ).length
+  }, [pendingApproval, pendingApprovals])
 
   // The Harness comes from the model, and the first group is one that can
   // actually run a Session: offering one the app has just said it cannot use
@@ -465,6 +483,35 @@ export function Conversation({
         adoptSnapshot(next)
       } catch {
         setError('That request could not be answered. The Run may have already ended.')
+        await refresh()
+      } finally {
+        setDeciding(false)
+      }
+    },
+    [sessionId, refresh, adoptSnapshot]
+  )
+
+  /**
+   * Refusing everything the Run has outstanding, as one decision. The exact
+   * requests on screen are named, so a request that arrives while this is in
+   * flight is not answered by a choice made before it existed.
+   */
+  const denyAll = useCallback(
+    async (approvals: ApprovalEntry[], message?: string) => {
+      const [first] = approvals
+      if (!first) return
+      setDeciding(true)
+      setError(null)
+      try {
+        const next = await window.shell.denyApprovals({
+          sessionId,
+          runId: first.runId,
+          approvalIds: approvals.map((approval) => approval.requestId),
+          ...(message?.trim() ? { message: message.trim() } : {})
+        })
+        adoptSnapshot(next)
+      } catch {
+        setError('Those requests could not be answered. The Run may have already ended.')
         await refresh()
       } finally {
         setDeciding(false)
@@ -965,7 +1012,11 @@ export function Conversation({
                           className="size-3.5 shrink-0 text-status-blocked"
                         />
                         <span className="font-semibold">Approval Request</span>
-                        <span className="text-muted-foreground">Run is waiting</span>
+                        <span className="text-muted-foreground">
+                          {pendingApprovals.length > 1
+                            ? `Run is waiting · ${String(pendingApprovals.length)} requests`
+                            : 'Run is waiting'}
+                        </span>
                       </p>
                       <p className="mx-3.5 mt-2 rounded-md border border-border bg-surface px-3 py-2 font-mono text-xs break-all select-text">
                         {pendingApproval.summary}
@@ -1020,6 +1071,20 @@ export function Conversation({
                         >
                           Deny
                         </Button>
+                        {pendingApprovals.length > 1 && (
+                          // Refusing the set is its own choice, never what
+                          // Deny quietly did: a Run that has gone wrong is
+                          // stopped in one action rather than one per request
+                          // it happens to have outstanding.
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={deciding}
+                            onClick={() => void denyAll(pendingApprovals, denialInstruction)}
+                          >
+                            Deny all {pendingApprovals.length}
+                          </Button>
+                        )}
                         {deciding ? (
                           <span
                             role="status"
@@ -1052,6 +1117,21 @@ export function Conversation({
                           <p className="mt-1.5 text-xs break-all text-muted-foreground">
                             Stored only for {session.projectRoot}. You can revoke it at any time.
                           </p>
+                          {alsoSettled > 0 && (
+                            // A rule the Harness consults first has already
+                            // answered these; leaving them up would ask a
+                            // question that is settled. Said here, before it
+                            // is stored, rather than discovered afterwards.
+                            <p className="mt-1.5 text-xs text-muted-foreground">
+                              It also answers{' '}
+                              <span className="text-foreground">
+                                {alsoSettled === 1
+                                  ? '1 other waiting request'
+                                  : `${String(alsoSettled)} other waiting requests`}
+                              </span>{' '}
+                              that this exact rule permits. Anything else waiting is still asked.
+                            </p>
+                          )}
                           {standingApprovalConfirmId === pendingApproval.id ? (
                             <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-status-blocked-border pt-3">
                               <p className="mr-auto text-xs font-medium">

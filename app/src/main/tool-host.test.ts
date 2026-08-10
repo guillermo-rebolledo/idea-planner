@@ -64,7 +64,7 @@ const conversation: ConversationSnapshot = {
     }
   ],
   activeRunId: 'run-2',
-  pendingApprovalId: null,
+  pendingApprovalIds: [],
   queue: { paused: true, items: [], outcome: null }
 }
 
