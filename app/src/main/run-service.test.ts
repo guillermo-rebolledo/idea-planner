@@ -103,6 +103,8 @@ interface FakeCore {
   submitDisposition: 'accepted' | 'visible-replay' | 'rewound-replay'
   /** Approval ids whose answer cannot reach the Harness right now. */
   failAnswerFor: Set<string>
+  /** Approval ids whose decision cannot be written down right now. */
+  failApplyFor: Set<string>
 }
 
 let nextRunId = 0
@@ -144,7 +146,8 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
     unfinished: [],
     compactionPlan: undefined,
     submitDisposition: 'accepted',
-    failAnswerFor: new Set<string>()
+    failAnswerFor: new Set<string>(),
+    failApplyFor: new Set<string>()
   }
   const run: RunSnapshot = {
     id: runId,
@@ -192,6 +195,10 @@ function fakeCore(projectRoot = '/a-project'): FakeCore {
       })
     }
     if (command.type === 'conversation/apply') {
+      const { event } = command as { event?: { id?: string } }
+      if (event?.id !== undefined && state.failApplyFor.has(event.id)) {
+        return Promise.reject(new Error('Core could not write that down'))
+      }
       return Promise.resolve(state.conversation.journalPosition)
     }
     if (command.type === 'conversation/unfinished') return Promise.resolve(state.unfinished)
@@ -2421,7 +2428,7 @@ describe('one decision settling the requests it answers', () => {
         approvalIds: ['req-1', 'req-2', 'req-3']
       })
       // Said out loud rather than handed back a snapshot that looks settled.
-    ).rejects.toThrow('1 of 3 requests could not be answered')
+    ).rejects.toThrow('1 of 3 could not be answered and are still waiting')
 
     expect(resolutions(core).map((event) => event.id)).toEqual(['req-1', 'req-3'])
     // The Harness never heard about the one that failed, so it is still
@@ -2435,6 +2442,44 @@ describe('one decision settling the requests it answers', () => {
       decision: 'deny'
     })
     expect(resolutions(core).at(-1)).toMatchObject({ id: 'req-2', decision: 'denied' })
+  })
+
+  it('never calls a refusal the agent has already acted on "still waiting"', async () => {
+    const { core, service, runId } = await holdingRequests('run-approval-deny-unrecorded-')
+    // The refusal reaches Codex, which declines and moves on — and only then
+    // does writing it down fail. The two failures are opposites: this one has
+    // happened, and saying it is still waiting would be the one certain lie.
+    core.failApplyFor.add('req-1')
+
+    const failure = await service
+      .denyApprovals({
+        sessionId: 'session',
+        runId,
+        approvalIds: ['req-1', 'req-2'],
+        message: 'Stop and check with me first'
+      })
+      .then(
+        () => null,
+        (cause: unknown) => (cause as Error).message
+      )
+    expect(failure).toContain('1 reached the agent but could not be recorded')
+    expect(failure).not.toContain('still waiting')
+
+    // The agent was told once, so the person's instruction goes with that one
+    // refusal and is not sent again by the next.
+    expect(core.commands.filter((command) => command === 'conversation/queue-change')).toHaveLength(
+      1
+    )
+    // And it is not offered back: the Harness has moved on, so answering it
+    // again would be refused rather than recorded.
+    await expect(
+      service.resolveApproval({
+        sessionId: 'session',
+        runId,
+        approvalId: 'req-1',
+        decision: 'deny'
+      })
+    ).rejects.toThrow('no longer waiting')
   })
 
   it('keeps a decision that has taken effect when settling a sibling fails', async () => {
