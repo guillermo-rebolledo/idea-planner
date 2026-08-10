@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import {
+  claudeLaunchSchema,
   codexLaunchSchema,
   harnessEventSchema,
   queuedSubmissionChangeSchema,
@@ -91,6 +92,8 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 25: Claude is launched through its own protocol frames, so `harness/open`
+ *     carries either Harness's launch payload.
  * 24: mid-Run messages declare steer or queue delivery, and readiness reports steering.
  * 23: a Conversation can be rewound without deleting journal entries or touching files.
  * 22: Projects can be cloned from Git URLs or an authenticated GitHub repository.
@@ -115,7 +118,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 24
+export const CONTRACT_VERSION = 25
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -410,7 +413,9 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('harness/open'),
     runId: z.string().min(1),
     harness: harnessIdSchema,
-    launch: codexLaunchSchema.optional()
+    // Whichever Harness is being opened decides which of these it is; the
+    // Adapter for that Harness is the one that reads it.
+    launch: z.union([codexLaunchSchema, claudeLaunchSchema]).optional()
   }),
   z.object({
     type: z.literal('harness/answer'),

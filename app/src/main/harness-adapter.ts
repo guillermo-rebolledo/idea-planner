@@ -622,7 +622,12 @@ function createCodexAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter 
 function createClaudeAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter {
   return {
     id: 'claude',
-    answersProtocol: false,
+    // Claude takes its prompt as a protocol frame on stdin rather than in argv,
+    // which is what leaves the stream open for a correction written into the
+    // turn already running. A Run therefore ends on Claude's own result frame:
+    // with stdin still open the process would otherwise sit waiting for a
+    // message nobody is going to send.
+    answersProtocol: true,
     servesApprovals: true,
     askedPermissionMode: (permissionMode) => CLAUDE_PERMISSION_MODES[permissionMode],
     environment: (executable) =>
@@ -673,7 +678,11 @@ function createClaudeAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter
         })
       })
     },
-    arguments(configuration, runDirectory, handoff, threadId) {
+    /**
+     * No prompt among them: it is written to stdin as a user frame instead, so
+     * the same stream stays open for whatever the person says next.
+     */
+    arguments(configuration, runDirectory, _handoff, threadId) {
       return Effect.succeed([
         '--print',
         '--setting-sources',
@@ -689,15 +698,19 @@ function createClaudeAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter
           ? ['--permission-prompt-tool', APPROVAL_TOOL]
           : []),
         '--no-chrome',
+        '--input-format',
+        'stream-json',
         '--output-format',
         'stream-json',
         '--verbose',
         '--include-partial-messages',
         '--include-hook-events',
+        // Claude answers no request ids, so its echo of what it read is the
+        // only acknowledgement a correction can wait for.
+        '--replay-user-messages',
         ...(threadId ? ['--resume', threadId] : []),
         ...(configuration.model === HARNESS_DEFAULT_MODEL ? [] : ['--model', configuration.model]),
-        ...(configuration.effort === null ? [] : ['--effort', configuration.effort]),
-        `${configuration.skill ? `/${configuration.skill.name} ` : ''}${configuration.prompt}${handoff ? `\n\nDeterministic handoff from the Conversation so far:\n${handoff}` : ''}`
+        ...(configuration.effort === null ? [] : ['--effort', configuration.effort])
       ])
     },
     open(input) {
@@ -706,7 +719,8 @@ function createClaudeAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter
           await dependencies.core.send({
             type: 'harness/open',
             runId: input.runId,
-            harness: 'claude'
+            harness: 'claude',
+            launch: { prompt: claudePrompt(input) }
           })
         )
       )
@@ -746,7 +760,15 @@ function createClaudeAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter
         ).trim()
       )
     },
-    steer: () => Effect.succeed({ steered: false, conversation: null }),
+    steer(input, prompt) {
+      return withExternal(layer, 'steer Claude', async (dependencies) => {
+        const answer = steerSchema.parse(
+          await dependencies.core.send({ type: 'harness/steer', input, prompt })
+        )
+        for (const frame of answer.outgoing) dependencies.writeFrame?.(input.runId, frame)
+        return { steered: answer.steered, conversation: answer.conversation }
+      })
+    },
     interrupt: () => Effect.succeed(false),
     answerApproval(input) {
       return Effect.try({
@@ -777,8 +799,35 @@ function createClaudeAdapter(layer: HarnessAdapterExternalLayer): HarnessAdapter
         catch: (cause) => new HarnessAdapterError('answer the Claude Approval Request', cause)
       })
     },
-    terminalFact: () => null
+    /**
+     * Claude's turn ending, which is now the Run's ending too: stdin is held
+     * open for corrections, so the process outlives the work it was started
+     * for and has to be told the Conversation is finished with it.
+     */
+    terminalFact(event) {
+      if (event.type === 'completed') {
+        return { status: 'completed', kind: 'lifecycle', summary: 'Harness completed the turn' }
+      }
+      if (event.type === 'failed') {
+        return { status: 'failed', kind: 'error', summary: event.summary.slice(0, 500) }
+      }
+      return null
+    }
   }
+}
+
+/**
+ * Everything this Run asks Claude for, as one message: the Skill it was
+ * started with, what the person said, and the handoff when a Conversation
+ * changed Harness mid-flight. It used to be the last argument on the command
+ * line and is the first frame on stdin now; the text itself is unchanged.
+ */
+function claudePrompt(input: HarnessOpenInput): string {
+  const skill = input.configuration.skill ? `/${input.configuration.skill.name} ` : ''
+  const handoff = input.handoff
+    ? `\n\nDeterministic handoff from the Conversation so far:\n${input.handoff}`
+    : ''
+  return `${skill}${input.prompt}${handoff}`
 }
 
 const ADAPTER_FACTORIES: Record<HarnessId, (layer: HarnessAdapterExternalLayer) => HarnessAdapter> =

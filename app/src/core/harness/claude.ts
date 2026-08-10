@@ -3,6 +3,8 @@ import {
   diffHunkSchema,
   MAX_PLAN_STEPS,
   redactCredentials,
+  type ClaudeLaunch,
+  type DiffHunk,
   type HarnessEvent,
   type HarnessFailureCategory,
   type PlanStepStatus,
@@ -37,6 +39,20 @@ const contentBlockSchema = z.discriminatedUnion('type', [
 const fileChangeSchema = z.object({
   filePath: z.string().min(1),
   structuredPatch: z.array(diffHunkSchema).min(1)
+})
+
+/**
+ * The same payload when the file did not exist before. Claude sends an empty
+ * `structuredPatch` for a creation — there is nothing to diff against — and
+ * the whole new file under `content` instead. Read as an edit it is a change
+ * with no diff, which is the one shape that means the protocol moved; so it
+ * is recognised for what it is, and the file becomes an all-added diff.
+ */
+const fileCreationSchema = z.object({
+  type: z.literal('create'),
+  filePath: z.string().min(1),
+  content: z.string(),
+  structuredPatch: z.array(diffHunkSchema).max(0)
 })
 
 const assistantSchema = z.object({
@@ -145,11 +161,52 @@ const thinkingTokensSchema = z.object({
   estimated_tokens_delta: z.number().int().nonnegative()
 })
 
+/**
+ * One user message, in the shape `--input-format stream-json` reads. It is how
+ * a Run's prompt reaches Claude and how a correction reaches the turn already
+ * running, which are the same frame written at different moments.
+ */
+function userFrame(text: string): string {
+  return JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'text', text }] },
+    parent_tool_use_id: null
+  })
+}
+
+/**
+ * A user message the CLI is echoing back rather than one it is reporting. With
+ * `--replay-user-messages` every frame written to stdin comes back marked, and
+ * that echo is the only acknowledgement the protocol offers — Claude answers no
+ * request ids.
+ */
+const replaySchema = z.object({
+  isReplay: z.literal(true),
+  message: z.object({
+    content: z.array(z.object({ type: z.literal('text'), text: z.string() }).partial()).min(1)
+  })
+})
+
 /** Translates Claude Code's documented `--output-format stream-json` protocol. */
-export function createClaudeAdapter(): HarnessAdapter {
+export function createClaudeAdapter(launch?: ClaudeLaunch): HarnessAdapter {
   let pending = ''
   let streamingMessageId = 'message'
   let streamedText = ''
+  /** Frames Main owes the process, starting with the prompt this Run is for. */
+  const outgoing: string[] = launch ? [userFrame(launch.prompt)] : []
+  /**
+   * Corrections written into this turn that Claude has not echoed yet, by the
+   * text they were written as. Until the echo comes back nothing is claimed:
+   * a correction that arrived after the turn ended reaches the queue instead,
+   * which is what the Run ending does with one still pending.
+   */
+  const awaitingEcho = new Map<string, string[]>()
+  /**
+   * Whether this turn can still be corrected. Claude accepts a frame for as
+   * long as the turn runs and starts a *new* turn with one written after it —
+   * so the result frame is where steering stops and the queue takes over.
+   */
+  let turnEnded = false
   // Commands the Harness has started, by its own call id, so a result can be
   // paired with the command that produced it rather than with whatever came
   // last. Cleared as each result arrives.
@@ -233,8 +290,15 @@ export function createClaudeAdapter(): HarnessAdapter {
       case 'assistant':
         return describeAssistant(frame['message'], pendingCommands, dispatchSubagent, plan)
       case 'result':
+        // Whatever it says, the turn this Adapter could have corrected is over.
+        turnEnded = true
         return describeResult(frame)
-      case 'user':
+      case 'user': {
+        // Claude reading back what was written to it. It is the acknowledgement
+        // a correction waits for, and it is never a tool result — reading it as
+        // one would put the person's own words in the Conversation twice.
+        const echoed = echoedText(frame)
+        if (echoed !== null) return acknowledge(echoed)
         // A created task learns the id every later update names it by here and
         // nowhere else: the call that made it carried none.
         bindCreatedTasks(frame, plan)
@@ -242,11 +306,32 @@ export function createClaudeAdapter(): HarnessAdapter {
           ...describeCommandResult(frame, pendingCommands),
           ...describeFileChange(frame['tool_use_result'])
         ]
+      }
       case 'rate_limit_event':
         return []
       default:
         return [protocolFailure(`Unsupported Claude protocol event: ${type || 'unknown'}`)]
     }
+  }
+
+  /** What a frame is echoing back, or null when it is not an echo at all. */
+  function echoedText(frame: Record<string, unknown>): string | null {
+    const parsed = replaySchema.safeParse(frame)
+    if (!parsed.success) return null
+    return parsed.data.message.content.map((block) => block.text ?? '').join('')
+  }
+
+  /**
+   * The correction Claude just read back, told to the Conversation as accepted.
+   * An echo of something else — the Run's own prompt, most often — is Claude
+   * confirming what it was already asked, and says nothing new.
+   */
+  function acknowledge(echoed: string): HarnessEvent[] {
+    const waiting = awaitingEcho.get(echoed) ?? []
+    const submissionId = waiting.shift()
+    if (submissionId === undefined) return []
+    if (waiting.length === 0) awaitingEcho.delete(echoed)
+    return [{ type: 'steer-accepted', submissionId }]
   }
 
   /** The tool call that dispatched it: the first anything is known about it. */
@@ -326,11 +411,28 @@ export function createClaudeAdapter(): HarnessAdapter {
 
   return {
     harness: 'claude',
-    // Claude broadcasts: it is read, never answered. Its approvals arrive on
+    takeOutgoing: () => outgoing.splice(0, outgoing.length),
+    // Claude raises no Approval Request on this wire: its approvals arrive on
     // the app's own MCP socket instead, and are answered there.
-    takeOutgoing: () => [],
     answerApproval: () => false,
-    steer: () => false,
+    /**
+     * The person's correction, written into the turn already running. Claude
+     * takes a second user frame while a turn is in flight and folds it into
+     * that same turn — measured against 2.1.226, recorded in
+     * `.scratch/research/claude-steering-on-stdin.md`. After the turn ends the
+     * same frame would start another one, which is the queue by a longer road,
+     * so this refuses and the caller queues it honestly. An Adapter that never
+     * launched this Run — one rebuilt mid-Run after Core restarted — refuses
+     * too: what its process is doing is not something this can claim to know.
+     */
+    steer(prompt, submissionId) {
+      if (turnEnded || launch === undefined) return false
+      awaitingEcho.set(prompt, [...(awaitingEcho.get(prompt) ?? []), submissionId])
+      outgoing.push(userFrame(prompt))
+      return true
+    },
+    // Claude ends a turn when it is killed, and there is nothing on this wire
+    // to ask it with.
     interrupt: () => undefined,
     ingest(chunk) {
       pending += chunk
@@ -777,11 +879,36 @@ function describeFileChange(raw: unknown): HarnessEvent[] {
   if (!('structuredPatch' in raw)) {
     return edited ? [protocolFailure('Claude reported an edit with no diff')] : []
   }
+  const created = fileCreationSchema.safeParse(raw)
+  if (created.success) {
+    return [
+      {
+        type: 'file-change',
+        path: created.data.filePath,
+        changeKind: 'added',
+        hunks: [addedFileHunk(created.data.content)]
+      }
+    ]
+  }
   const parsed = fileChangeSchema.safeParse(raw)
   if (!parsed.success) {
     return [protocolFailure('Unsupported Claude file-change payload')]
   }
   return [{ type: 'file-change', path: parsed.data.filePath, hunks: parsed.data.structuredPatch }]
+}
+
+/** A new file as a diff: it is all addition, which is what the panel shows. */
+function addedFileHunk(content: string): DiffHunk {
+  const lines = content.split('\n')
+  // A trailing newline ends the last line rather than starting an empty one.
+  if (lines.at(-1) === '') lines.pop()
+  return {
+    oldStart: 0,
+    oldLines: 0,
+    newStart: 1,
+    newLines: lines.length,
+    lines: lines.map((line) => `+${line}`)
+  }
 }
 
 function describeResult(frame: Record<string, unknown>): HarnessEvent[] {

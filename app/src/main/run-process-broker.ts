@@ -16,8 +16,12 @@ export interface SpawnedProcess {
   pid?: number
   stdout: NodeJS.EventEmitter
   stderr: NodeJS.EventEmitter
-  /** Present only for a Harness this app has to answer. */
-  stdin?: { write(chunk: string): unknown; end?(): unknown } | null
+  /** Present only for a Harness this app speaks to as well as reads. */
+  stdin?: {
+    write(chunk: string): unknown
+    end?(): unknown
+    on?(event: 'error', listener: (error: Error) => void): unknown
+  } | null
   once(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this
 }
 
@@ -299,6 +303,10 @@ export class RunProcessBroker {
   private observe(entry: ActiveRun): void {
     const { launch, process: child } = entry
     if (!launch.answersProtocol) child.stdin?.end?.()
+    // A Harness that has already exited leaves a pipe nobody is reading. That
+    // is the Run ending, which is reported through its own exit; it must not
+    // also arrive here as an unhandled stream error and take Main down.
+    else child.stdin?.on?.('error', () => undefined)
     child.stdout.on('data', (chunk) => this.observeOutput(launch, chunk, 'stdout'))
     child.stderr.on('data', (chunk) => this.observeOutput(launch, chunk, 'stderr'))
     // `close` follows `exit` only after stdout/stderr have drained, so the

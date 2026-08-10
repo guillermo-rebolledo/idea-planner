@@ -273,6 +273,18 @@ function readyReadiness(executablePath: string): {
 const fakeClaudeOauthToken = (): Promise<string> => Promise.resolve('test-oauth-token')
 
 /**
+ * What the Run asked its Harness to work on. Claude takes it as a launch
+ * payload rather than as an argument, because the frame it becomes is written
+ * to a stream that then stays open for the person's next message.
+ */
+function launchPrompt(core: FakeCore): string {
+  const opened = core.send.mock.calls
+    .map(([command]) => command as { type: string; launch?: { prompt?: string } })
+    .findLast((command) => command.type === 'harness/open')
+  return opened?.launch?.prompt ?? ''
+}
+
+/**
  * Discovery, as Main injects it. Tests install Skills on disk in the Harness's
  * own documented directory, so this reads them the way the app does.
  */
@@ -335,9 +347,15 @@ describe('Run service', () => {
         '--include-hook-events'
       ])
     )
-    expect(broker.launch?.args).not.toContain('--input-format')
+    expect(broker.launch?.args).toEqual(
+      expect.arrayContaining(['--input-format', 'stream-json', '--replay-user-messages'])
+    )
     expect(broker.launch?.args).toEqual(expect.arrayContaining(['--setting-sources', 'user']))
-    expect(broker.launch?.args.at(-1)).toContain('/wayfinder Develop this Session')
+    // The prompt is not on the command line at all: it is the first frame.
+    expect(broker.launch?.args.some((argument) => argument.includes('Develop this Session'))).toBe(
+      false
+    )
+    expect(launchPrompt(core)).toContain('/wayfinder Develop this Session')
     expect(broker.launch?.args).not.toContain('--disable-slash-commands')
     const mcpConfigPath = broker.launch?.args[broker.launch.args.indexOf('--mcp-config') + 1]
     if (!mcpConfigPath) throw new Error('Claude launch did not include an MCP config')
@@ -494,7 +512,7 @@ describe('Run service', () => {
     })
     const args = broker.launch?.args ?? []
     expect(args).not.toContain('--resume')
-    expect(args.at(-1)).toBe(
+    expect(launchPrompt(core)).toBe(
       '/wayfinder Continue\n\nDeterministic handoff from the Conversation so far:\nSkill: wayfinder\nRecent turns:\nUser: Where did we get to?'
     )
   })
@@ -907,11 +925,12 @@ describe('Run service', () => {
     const args = broker.launch?.args ?? []
     // The compacted Thread is not resumed, however resumable it still is.
     expect(args).not.toContain('--resume')
-    expect(args.at(-1)).toContain('Summary of this Conversation up to the turns below:')
-    expect(args.at(-1)).toContain('Receipts are offline-first; the tests are green.')
-    expect(args.at(-1)).toContain('User: Where did we get to?')
+    const prompt = launchPrompt(core)
+    expect(prompt).toContain('Summary of this Conversation up to the turns below:')
+    expect(prompt).toContain('Receipts are offline-first; the tests are green.')
+    expect(prompt).toContain('User: Where did we get to?')
     // The turns the summary stands in for are not sent again beside it.
-    expect(args.at(-1)).not.toContain('Receipts render offline now')
+    expect(prompt).not.toContain('Receipts render offline now')
   })
 
   it('starts a fresh Thread from the tail alone after a rewind', async () => {
@@ -1022,10 +1041,11 @@ describe('Run service', () => {
 
     const args = broker.launch?.args ?? []
     expect(args).not.toContain('--resume')
-    expect(args.at(-1)).toContain('User: The part that remains')
-    expect(args.at(-1)?.match(/Continue/g)).toHaveLength(1)
-    expect(args.at(-1)).not.toContain('Discarded understanding')
-    expect(args.at(-1)).not.toContain('Summary of this Conversation')
+    const prompt = launchPrompt(core)
+    expect(prompt).toContain('User: The part that remains')
+    expect(prompt.match(/Continue/g)).toHaveLength(1)
+    expect(prompt).not.toContain('Discarded understanding')
+    expect(prompt).not.toContain('Summary of this Conversation')
   })
 
   it('freezes executable and Skill provenance into the durable lifecycle', async () => {
@@ -1269,6 +1289,74 @@ describe('Run service', () => {
     expect(commands).not.toContain('run/lifecycle-open')
   })
 
+  it('delivers an admitted Claude correction into the turn already running', async () => {
+    const root = await readyClaudeRoot('run-steer-claude-')
+    const core = fakeCore(join(root, 'a-project'))
+    const original = core.send.getMockImplementation()
+    if (!original) throw new Error('Fake Core implementation missing')
+    core.send.mockImplementation(async (command: { type: string }): Promise<unknown> => {
+      if (command.type === 'conversation/admit-steer') {
+        return { delivery: 'steer', conversation: core.conversation }
+      }
+      if (command.type === 'harness/steer') {
+        return { steered: true, outgoing: ['steer-frame'], conversation: null }
+      }
+      if (command.type === 'harness/open') {
+        return { events: [], outgoing: ['prompt-frame'] }
+      }
+      return await Promise.resolve(original(command) as unknown)
+    })
+    const broker = fakeBroker()
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
+    })
+    await service.develop({
+      sessionId: 'session',
+      submissionId: 'submission-1',
+      text: 'Start here',
+      source: 'composer',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'high',
+      permissionMode: 'auto'
+    })
+    const runId = broker.launch?.id
+    if (!runId) throw new Error('Run did not launch')
+    // The Harness is spoken to rather than only read: what the Run is for
+    // reaches it as a frame, and its stdin stays open afterwards.
+    expect(broker.launch?.answersProtocol).toBe(true)
+    expect(broker.written).toContain('prompt-frame')
+    core.send.mockClear()
+
+    await service.develop({
+      sessionId: 'session',
+      submissionId: 'correction-1',
+      text: 'Keep the API compatible',
+      source: 'composer',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'high',
+      permissionMode: 'auto',
+      delivery: { type: 'steer', runId }
+    })
+
+    const commands = core.send.mock.calls.map(([command]) => (command as { type: string }).type)
+    expect(commands).toContain('conversation/admit-steer')
+    expect(commands).toContain('harness/steer')
+    expect(broker.written).toContain('steer-frame')
+    // A correction is not a second Run.
+    expect(commands).not.toContain('run/lifecycle-open')
+  })
+
   it('keeps an ended-Run correction queued when Core rejects the target', async () => {
     const root = await readyHarnessRoot('run-steer-race-')
     const core = fakeCore(join(root, 'a-project'))
@@ -1370,8 +1458,8 @@ describe('Run service', () => {
     expect(core.commands).not.toContain('run/lifecycle-open')
   })
 
-  it('queues a steer intent when Main has no supported native steering path', async () => {
-    const root = await readyHarnessRoot('run-steer-unsupported-')
+  it('queues a steer intent when Main holds no Adapter for the named Run', async () => {
+    const root = await readyHarnessRoot('run-steer-unknown-')
     const core = fakeCore(join(root, 'a-project'))
     const service = new RunService({
       core,
@@ -1397,6 +1485,8 @@ describe('Run service', () => {
       delivery: { type: 'steer', runId: 'active-claude-run' }
     })
 
+    // Nothing here knows what that Run is doing, and a correction offered to a
+    // Harness this app is not holding open is a correction that goes nowhere.
     expect(core.commands).toContain('conversation/queue-change')
     expect(core.commands).not.toContain('conversation/admit-steer')
     expect(core.commands).not.toContain('harness/steer')
@@ -1819,13 +1909,16 @@ describe('Run service', () => {
     broker.launch?.onOutput?.('stdout', '{"type":"system","subtype":"future"}\n')
     broker.launch?.onExit?.(0, null)
     await vi.waitFor(() => {
+      // The first ending is the one that counts, and it is the failure the
+      // Harness reported: Claude's stream now ends the Run, so the process is
+      // stopped by the app rather than waited on, and Core keeps the ending it
+      // already wrote whatever a later exit code says.
       const terminal = (
         core.send.mock.calls as [{ type: string; input?: { observation?: { type?: string } } }][]
-      )
-        .filter(([command]) => command.type === 'run/lifecycle-complete')
-        .at(-1)?.[0].input
+      ).find(([command]) => command.type === 'run/lifecycle-complete')?.[0].input
       expect(terminal?.observation?.type).toBe('harness-failed')
     })
+    expect(broker.stop).toHaveBeenCalled()
     expect(streamed.filter(({ event }) => event.type === 'failed')).toHaveLength(1)
     expect(core.commands).toContain('run/lifecycle-complete')
   })
