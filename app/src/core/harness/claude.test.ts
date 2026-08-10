@@ -284,6 +284,137 @@ describe('the mode a Run is actually running under', () => {
   })
 })
 
+/**
+ * Frames only: the recorded probe interleaves the protocol with notes about
+ * when each correction was written and what the Checkout held afterwards.
+ */
+async function probeFrames(): Promise<string[]> {
+  const raw = await readFile(join(__dirname, 'fixtures', 'claude-steer-probe.jsonl'), 'utf8')
+  return raw.split('\n').filter((line) => line.startsWith('{'))
+}
+
+describe('steering a Claude Run', () => {
+  it('sends what the Run is for as its first frame, and hands it over exactly once', () => {
+    const adapter = createClaudeAdapter({ prompt: '/wayfinder Rename it' })
+    expect(adapter.takeOutgoing().map((frame) => JSON.parse(frame) as unknown)).toEqual([
+      {
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: '/wayfinder Rename it' }] },
+        parent_tool_use_id: null
+      }
+    ])
+    expect(adapter.takeOutgoing()).toEqual([])
+  })
+
+  it('writes a correction into the running turn and claims nothing until Claude reads it back', () => {
+    const adapter = createClaudeAdapter({ prompt: 'Rename it' })
+    adapter.takeOutgoing()
+    expect(adapter.steer('Keep the API compatible', 'correction-1')).toBe(true)
+    expect(adapter.takeOutgoing().map((frame) => JSON.parse(frame) as unknown)).toEqual([
+      {
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: 'Keep the API compatible' }] },
+        parent_tool_use_id: null
+      }
+    ])
+    // Claude answers no request ids. Its echo is the acknowledgement, and
+    // until it comes back nothing has been accepted.
+    expect(
+      adapter.ingest(
+        `${JSON.stringify({
+          type: 'user',
+          isReplay: true,
+          message: { role: 'user', content: [{ type: 'text', text: 'Keep the API compatible' }] },
+          parent_tool_use_id: null
+        })}\n`
+      )
+    ).toEqual([{ type: 'steer-accepted', submissionId: 'correction-1' }])
+  })
+
+  it('reads an echo of anything else as nothing at all', () => {
+    const adapter = createClaudeAdapter({ prompt: 'Rename it' })
+    adapter.takeOutgoing()
+    // The Run's own prompt comes back too. It is already in the Conversation,
+    // and reading it again would say the person spoke twice.
+    expect(
+      adapter.ingest(
+        `${JSON.stringify({
+          type: 'user',
+          isReplay: true,
+          message: { role: 'user', content: [{ type: 'text', text: 'Rename it' }] },
+          parent_tool_use_id: null
+        })}\n`
+      )
+    ).toEqual([])
+  })
+
+  it('waits for the correction’s own echo when it repeats the prompt word for word', () => {
+    const adapter = createClaudeAdapter({ prompt: 'Run the tests' })
+    adapter.takeOutgoing()
+    // Said again, impatiently, before Claude has echoed the first one.
+    expect(adapter.steer('Run the tests', 'correction-1')).toBe(true)
+    adapter.takeOutgoing()
+    const echo = `${JSON.stringify({
+      type: 'user',
+      isReplay: true,
+      message: { role: 'user', content: [{ type: 'text', text: 'Run the tests' }] },
+      parent_tool_use_id: null
+    })}\n`
+    // The first echo is the Run's own prompt coming back. Reading it as the
+    // correction would accept a message Claude has not taken yet — and leave
+    // nothing pending to queue if the turn ended right after.
+    expect(adapter.ingest(echo)).toEqual([])
+    expect(adapter.ingest(echo)).toEqual([{ type: 'steer-accepted', submissionId: 'correction-1' }])
+  })
+
+  it('refuses a correction once the turn it would have joined is over', () => {
+    const adapter = createClaudeAdapter({ prompt: 'Rename it' })
+    adapter.takeOutgoing()
+    expect(
+      adapter.ingest(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: false })}\n`)
+    ).toContainEqual({ type: 'completed' })
+    // The same frame would start a second turn, which is the queue by a
+    // longer road — so the caller is told no and queues it honestly.
+    expect(adapter.steer('Too late', 'correction-2')).toBe(false)
+    expect(adapter.takeOutgoing()).toEqual([])
+  })
+
+  it('refuses a correction from an Adapter that never launched the Run', () => {
+    const adapter = createClaudeAdapter()
+    expect(adapter.steer('Keep the API compatible', 'correction-1')).toBe(false)
+    expect(adapter.takeOutgoing()).toEqual([])
+  })
+
+  it('reads a real steered turn back off the recorded probe', async () => {
+    const frames = await probeFrames()
+    const correction = frames
+      .map((frame) => JSON.parse(frame) as Record<string, unknown>)
+      .find((frame) => frame['isReplay'] === true)
+    const text = (correction?.['message'] as { content: { text: string }[] } | undefined)
+      ?.content[0]?.text
+    if (!text) throw new Error('The recorded probe carries no echoed correction')
+    const adapter = createClaudeAdapter({ prompt: 'probe' })
+    adapter.takeOutgoing()
+    expect(adapter.steer(text, 'correction-1')).toBe(true)
+    const events = frames.flatMap((frame) => adapter.ingest(`${frame}\n`))
+    // What the binary did on 2.1.226: it took the correction into the turn it
+    // was already running, and that turn ended once.
+    expect(events).toContainEqual({ type: 'steer-accepted', submissionId: 'correction-1' })
+    // Twice, because the probe recorded both arms: the turn that ignored a
+    // correction written the way a Run writes nothing, and the one that took it.
+    expect(events.filter((event) => event.type === 'completed')).toHaveLength(2)
+    expect(events.filter((event) => event.type === 'failed')).toEqual([])
+    // The file the corrected turn wrote is a creation, which Claude reports
+    // with no diff at all — read as an edit that would be protocol drift.
+    expect(events).toContainEqual({
+      type: 'file-change',
+      path: '/private/a-project/steer-probe.txt',
+      changeKind: 'added',
+      hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+STEERED'] }]
+    })
+  })
+})
+
 describe('a command that never finished', () => {
   it('still reports what the Run was running when it stopped', () => {
     const adapter = createClaudeAdapter()

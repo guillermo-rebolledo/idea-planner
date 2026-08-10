@@ -101,7 +101,13 @@ export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
     // Stream JSON partial messages, hook events, and effort selection are the
     // protocol surface the Claude Adapter and Wayfinder bridge require.
     conversation: { minimumVersion: '2.1.0' },
-    steering: null,
+    // Claude has no steering method to call: a Run's prompt goes in as a user
+    // frame on stdin, and a second frame written while the turn is in flight is
+    // folded into that same turn. Measured against 2.1.226 and recorded in
+    // `.scratch/research/claude-steering-on-stdin.md`; below the version that
+    // was probed the composer keeps saying queue, because nothing here has
+    // watched an older binary do it.
+    steering: { minimumVersion: '2.1.226' },
     untestedFrom: '2.2.0',
     // Print mode emits its system init line before any API request when the
     // CLI is signed in, and exits with a sign-in error when it is not. The

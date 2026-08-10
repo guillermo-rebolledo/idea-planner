@@ -277,23 +277,49 @@ describe('Harness adapter contract', () => {
           'thread-1'
         )
       )
-    ).toEqual(expect.arrayContaining(['--permission-mode', 'default', '--resume', 'thread-1']))
-    expect(adapter.terminalFact({ type: 'completed' })).toBeNull()
+    ).toEqual(
+      expect.arrayContaining([
+        '--permission-mode',
+        'default',
+        '--resume',
+        'thread-1',
+        '--input-format',
+        'stream-json',
+        '--replay-user-messages'
+      ])
+    )
+    // Claude's turn ending is the Run's ending: stdin stays open for a
+    // correction, so the process would otherwise outlive the work.
+    expect(adapter.terminalFact({ type: 'completed' })).toEqual({
+      status: 'completed',
+      kind: 'lifecycle',
+      summary: 'Harness completed the turn'
+    })
     expect(await Effect.runPromise(adapter.interrupt('run-1'))).toBe(false)
     expect(
       await Effect.runPromise(adapter.steer({ ...steerInput, harness: 'claude' }, 'Correct course'))
-    ).toEqual({ steered: false, conversation: null })
+    ).toEqual({ steered: true, conversation: null })
+    expect(deps.writeFrame).toHaveBeenCalledWith('run-1', 'steer-frame')
     expect(
       await Effect.runPromise(
         adapter.open({
           runId: 'run-1',
           checkout,
-          configuration,
+          configuration: { ...configuration, skill: { ...configuration.skill, name: 'wayfinder' } },
           prompt: 'Rename it',
-          skillInstructions: ''
+          skillInstructions: '',
+          handoff: 'Earlier turn'
         })
       )
     ).toEqual({ events: [], outgoing: ['opening-frame'] })
+    // Skill, prompt, and handoff travel as one message rather than as argv.
+    expect(deps.commands.findLast((command) => command.type === 'harness/open')).toMatchObject({
+      harness: 'claude',
+      launch: {
+        prompt:
+          '/wayfinder Rename it\n\nDeterministic handoff from the Conversation so far:\nEarlier turn'
+      }
+    })
 
     const host = {
       hasOutstandingApproval: vi.fn(() => true),

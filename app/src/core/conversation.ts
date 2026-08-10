@@ -17,6 +17,8 @@ import {
   enqueueQueuedSubmissionInputSchema,
   moveQueuedSubmissionInputSchema,
   queuedSubmissionIdentitySchema,
+  claudeLaunchSchema,
+  codexLaunchSchema,
   queuedSubmissionEntrySchema,
   queueOutcomeEntrySchema,
   isActiveQueuedSubmission,
@@ -39,7 +41,7 @@ import {
   type ConversationSnapshot,
   type CheckoutChange,
   type HarnessEvent,
-  type CodexLaunch,
+  type HarnessLaunch,
   type HarnessFailureCategory,
   type HarnessStream,
   type HarnessUsage,
@@ -194,8 +196,8 @@ export interface IngestHarnessOutputInput {
 export interface OpenHarnessInput {
   runId: string
   harness: HarnessId
-  /** Present for a Harness that is answered rather than only read. */
-  launch?: CodexLaunch
+  /** What this Harness needs said to it first, in its own protocol's terms. */
+  launch?: HarnessLaunch
 }
 
 export interface AnswerHarnessInput {
@@ -2023,7 +2025,7 @@ export function createConversationEffects(options: ConversationOptions): Convers
   const adapterFor = (
     runId: string,
     harness: HarnessId,
-    launch?: CodexLaunch
+    launch?: HarnessLaunch
   ): Effect.Effect<HarnessAdapter, CoreError> =>
     Effect.gen(function* () {
       const known = (yield* Ref.get(adapters)).get(runId)
@@ -2233,9 +2235,14 @@ function runBoundarySummary(input: BeginConversationRunInput): string {
   return input.restorationNote ? `${started}. Harness Thread restored from local history` : started
 }
 
-const ADAPTER_FACTORIES: Partial<Record<HarnessId, (launch?: CodexLaunch) => HarnessAdapter>> = {
-  codex: (launch) => createCodexAdapter(launch),
-  claude: () => createClaudeAdapter()
+/**
+ * One Adapter per Harness, each reading the launch payload it understands.
+ * Which factory runs is decided by the Harness being opened, so a payload that
+ * belongs to the other one parses as nothing and the Adapter opens unlaunched.
+ */
+const ADAPTER_FACTORIES: Partial<Record<HarnessId, (launch?: HarnessLaunch) => HarnessAdapter>> = {
+  codex: (launch) => createCodexAdapter(codexLaunchSchema.optional().safeParse(launch).data),
+  claude: (launch) => createClaudeAdapter(claudeLaunchSchema.optional().safeParse(launch).data)
 }
 
 const HARNESS_RUN_LABELS: Partial<Record<HarnessId, string>> = {

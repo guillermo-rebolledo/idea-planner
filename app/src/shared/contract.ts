@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import {
+  claudeLaunchSchema,
   codexLaunchSchema,
   harnessEventSchema,
   queuedSubmissionChangeSchema,
@@ -92,6 +93,8 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 26: Claude is launched through its own protocol frames, so `harness/open`
+ *     carries either Harness's launch payload.
  * 25: a Session's changes can be reviewed on a detached thread, and the
  *     Findings that answers carry a file and a line range.
  * 24: mid-Run messages declare steer or queue delivery, and readiness reports steering.
@@ -118,7 +121,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 25
+export const CONTRACT_VERSION = 26
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -413,7 +416,9 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('harness/open'),
     runId: z.string().min(1),
     harness: harnessIdSchema,
-    launch: codexLaunchSchema.optional()
+    // Whichever Harness is being opened decides which of these it is; the
+    // Adapter for that Harness is the one that reads it.
+    launch: z.union([codexLaunchSchema, claudeLaunchSchema]).optional()
   }),
   z.object({
     type: z.literal('harness/answer'),
