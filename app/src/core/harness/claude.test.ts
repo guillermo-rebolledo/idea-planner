@@ -348,6 +348,25 @@ describe('steering a Claude Run', () => {
     ).toEqual([])
   })
 
+  it('waits for the correction’s own echo when it repeats the prompt word for word', () => {
+    const adapter = createClaudeAdapter({ prompt: 'Run the tests' })
+    adapter.takeOutgoing()
+    // Said again, impatiently, before Claude has echoed the first one.
+    expect(adapter.steer('Run the tests', 'correction-1')).toBe(true)
+    adapter.takeOutgoing()
+    const echo = `${JSON.stringify({
+      type: 'user',
+      isReplay: true,
+      message: { role: 'user', content: [{ type: 'text', text: 'Run the tests' }] },
+      parent_tool_use_id: null
+    })}\n`
+    // The first echo is the Run's own prompt coming back. Reading it as the
+    // correction would accept a message Claude has not taken yet — and leave
+    // nothing pending to queue if the turn ended right after.
+    expect(adapter.ingest(echo)).toEqual([])
+    expect(adapter.ingest(echo)).toEqual([{ type: 'steer-accepted', submissionId: 'correction-1' }])
+  })
+
   it('refuses a correction once the turn it would have joined is over', () => {
     const adapter = createClaudeAdapter({ prompt: 'Rename it' })
     adapter.takeOutgoing()

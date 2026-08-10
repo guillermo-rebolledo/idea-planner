@@ -195,12 +195,21 @@ export function createClaudeAdapter(launch?: ClaudeLaunch): HarnessAdapter {
   /** Frames Main owes the process, starting with the prompt this Run is for. */
   const outgoing: string[] = launch ? [userFrame(launch.prompt)] : []
   /**
-   * Corrections written into this turn that Claude has not echoed yet, by the
-   * text they were written as. Until the echo comes back nothing is claimed:
-   * a correction that arrived after the turn ended reaches the queue instead,
-   * which is what the Run ending does with one still pending.
+   * Every message written to Claude that it has not echoed back yet, in the
+   * order it was written, and which submission — if any — is waiting to hear
+   * about it. Until the echo comes back nothing is claimed: a correction that
+   * arrived after the turn ended reaches the queue instead, which is what the
+   * Run ending does with one still pending.
+   *
+   * The Run's own prompt is in here too, carrying no submission. Claude echoes
+   * it exactly as it echoes a correction, so a correction that repeats the
+   * prompt word for word would otherwise be accepted on the *prompt's* echo —
+   * before Claude has read the correction at all, and with nothing left to
+   * queue it if the turn then ends.
    */
-  const awaitingEcho = new Map<string, string[]>()
+  const awaitingEcho: { text: string; submissionId: string | null }[] = launch
+    ? [{ text: launch.prompt, submissionId: null }]
+    : []
   /**
    * Whether this turn can still be corrected. Claude accepts a frame for as
    * long as the turn runs and starts a *new* turn with one written after it —
@@ -322,16 +331,17 @@ export function createClaudeAdapter(launch?: ClaudeLaunch): HarnessAdapter {
   }
 
   /**
-   * The correction Claude just read back, told to the Conversation as accepted.
-   * An echo of something else — the Run's own prompt, most often — is Claude
-   * confirming what it was already asked, and says nothing new.
+   * The message Claude just read back, matched to the oldest thing written
+   * that says it — Claude echoes in the order it reads, so the oldest is the
+   * one this is. An echo of the Run's own prompt, or of a message written
+   * before this Adapter existed, is Claude confirming something nobody is
+   * waiting on, and says nothing new.
    */
   function acknowledge(echoed: string): HarnessEvent[] {
-    const waiting = awaitingEcho.get(echoed) ?? []
-    const submissionId = waiting.shift()
-    if (submissionId === undefined) return []
-    if (waiting.length === 0) awaitingEcho.delete(echoed)
-    return [{ type: 'steer-accepted', submissionId }]
+    const index = awaitingEcho.findIndex((sent) => sent.text === echoed)
+    if (index < 0) return []
+    const [sent] = awaitingEcho.splice(index, 1)
+    return sent?.submissionId ? [{ type: 'steer-accepted', submissionId: sent.submissionId }] : []
   }
 
   /** The tool call that dispatched it: the first anything is known about it. */
@@ -427,7 +437,7 @@ export function createClaudeAdapter(launch?: ClaudeLaunch): HarnessAdapter {
      */
     steer(prompt, submissionId) {
       if (turnEnded || launch === undefined) return false
-      awaitingEcho.set(prompt, [...(awaitingEcho.get(prompt) ?? []), submissionId])
+      awaitingEcho.push({ text: prompt, submissionId })
       outgoing.push(userFrame(prompt))
       return true
     },
