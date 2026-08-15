@@ -32,6 +32,9 @@ import { currentBranch, observeWorktreeContents, removeWorktree } from './git'
  */
 const MAX_WALKED_ENTRIES = 120_000
 
+/** What `st_blocks` counts in, fixed by POSIX regardless of the block size. */
+const BLOCK_BYTES = 512
+
 export interface WorktreeReclaimDeps {
   /** The app-owned directory this Project's isolated Checkouts live under. */
   directoryFor: (projectRoot: string) => string
@@ -66,7 +69,7 @@ export class WorktreeReclaimService {
       .sort((left, right) => left.localeCompare(right, 'en'))
     const listed = directories.slice(0, MAX_LISTED_WORKTREES)
     const sessions = await this.sessionsByCheckout()
-    const busy = new Set(this.deps.busyCheckouts().map((path) => resolve(path)))
+    const busy = this.busyNow()
     const worktrees = await Promise.all(
       listed.map((name) => this.describe(join(root, name), sessions, busy))
     )
@@ -85,10 +88,9 @@ export class WorktreeReclaimService {
   async remove(rawInput: RemoveWorktreesInput): Promise<WorktreeRemovalResult> {
     const input = removeWorktreesInputSchema.parse(rawInput)
     const root = this.deps.directoryFor(input.projectRoot)
-    const busy = new Set(this.deps.busyCheckouts().map((path) => resolve(path)))
     const removals: WorktreeRemoval[] = []
     for (const path of input.paths) {
-      removals.push(await this.removeOne({ path, root, projectRoot: input.projectRoot, busy }))
+      removals.push(await this.removeOne({ path, root, projectRoot: input.projectRoot }))
     }
     return { removals }
   }
@@ -103,7 +105,6 @@ export class WorktreeReclaimService {
     path: string
     root: string
     projectRoot: string
-    busy: ReadonlySet<string>
   }): Promise<WorktreeRemoval> {
     const { path } = input
     if (!isInside(input.root, path)) {
@@ -113,7 +114,12 @@ export class WorktreeReclaimService {
         detail: 'That is not a Checkout Argos made for this Project.'
       }
     }
-    if (input.busy.has(resolve(path))) {
+    // Asked again for every removal rather than once for the batch. Removing a
+    // Worktree takes long enough for a Run to start in the next one, and a set
+    // captured before the first `git worktree remove` would answer for a
+    // moment that has passed — which is the moment an agent's directory is
+    // taken out from under it.
+    if (this.busyNow().has(resolve(path))) {
       return {
         path,
         outcome: 'failed',
@@ -124,6 +130,11 @@ export class WorktreeReclaimService {
     if (attempt.status === 'removed') return { path, outcome: 'removed', detail: null }
     if (attempt.status === 'already-gone') return { path, outcome: 'already-gone', detail: null }
     return { path, outcome: 'failed', detail: attempt.message }
+  }
+
+  /** The Checkouts a Run is working in, as of this instant and no earlier. */
+  private busyNow(): ReadonlySet<string> {
+    return new Set(this.deps.busyCheckouts().map((path) => resolve(path)))
   }
 
   /** One Worktree, described from disk, from git, and from the Session store. */
@@ -182,7 +193,18 @@ function isInside(root: string, path: string): boolean {
 }
 
 /**
- * What a directory tree is using, as the sum of the files in it.
+ * What a directory tree is using, as the blocks its files are allocated.
+ *
+ * Allocated rather than apparent, so this is the figure `du` gives and the
+ * person can check it. The difference is not academic in a Worktree: a cloned
+ * dependency directory is hundreds of thousands of very small files, and the
+ * sum of their sizes is far below what the filesystem actually handed them.
+ *
+ * It is still an upper bound on what removing one frees, because a Checkout is
+ * bootstrapped by cloning on APFS (MEM-132) and cloned files share their
+ * blocks until something writes to them. Nothing on the machine can see that
+ * sharing per file — `du` reports the same figure — so the surface says so in
+ * words rather than reporting a number it cannot compute.
  *
  * Symlinks are counted as links and never followed: a Worktree carrying a
  * dependency directory is full of them, and following one leads out of the
@@ -217,7 +239,7 @@ export async function measureDirectory(path: string): Promise<WorktreeDiskUsage>
         complete = false
         continue
       }
-      bytes += stats.size
+      bytes += stats.blocks * BLOCK_BYTES
     }
   }
   return { bytes, complete }

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,12 +20,14 @@ let projectRoot: string
 let worktrees: string
 let sessions: SessionSummary[]
 let busy: string[]
+/** A seam, not a list, so a test can move a Run mid-batch the way one moves. */
+let busyCheckouts: () => string[]
 
 function service(): WorktreeReclaimService {
   return new WorktreeReclaimService({
     directoryFor: () => worktrees,
     sessions: () => Promise.resolve(sessions),
-    busyCheckouts: () => busy
+    busyCheckouts: () => busyCheckouts()
   })
 }
 
@@ -70,6 +73,7 @@ beforeEach(async () => {
   worktrees = join(sandbox, 'worktrees')
   sessions = []
   busy = []
+  busyCheckouts = () => busy
   await mkdir(projectRoot)
   await git('git', ['init', '--quiet', '--initial-branch=main'], { cwd: projectRoot })
   await writeFile(join(projectRoot, 'app.ts'), 'export const app = true\n')
@@ -144,6 +148,25 @@ describe('listing what Argos made', () => {
     const inventory = await service().inventory(projectRoot)
 
     expect(inventory.worktrees[0]?.session?.busy).toBe(true)
+  })
+
+  it('says it cannot tell, rather than clean, when the commit walk fails', async () => {
+    const path = await makeWorktree('unreadable-history')
+    await writeFile(join(path, 'landed.ts'), 'work nothing else has\n')
+    await commitAll(path, 'only here')
+    // A commit object another branch needs has gone. The Checkout itself still
+    // reads perfectly — `git status` answers — but whether it holds commits
+    // nothing else does cannot be walked. Answering "no" to that would drop
+    // the one warning standing between the person and losing them.
+    await writeFile(join(projectRoot, 'later.ts'), 'on main\n')
+    await commitAll(projectRoot, 'later')
+    const { stdout } = await git('git', ['rev-parse', 'main'], { cwd: projectRoot })
+    const sha = stdout.trim()
+    await rm(join(projectRoot, '.git', 'objects', sha.slice(0, 2), sha.slice(2)), { force: true })
+
+    const inventory = await service().inventory(projectRoot)
+
+    expect(inventory.worktrees[0]?.contents).toEqual({ status: 'unreadable' })
   })
 
   it('lists a directory git cannot answer for rather than hiding it', async () => {
@@ -231,6 +254,21 @@ describe('removing the ones that were asked for', () => {
     await expect(access(projectRoot)).resolves.toBeUndefined()
   })
 
+  it('re-checks for a Run before each removal, not once for the batch', async () => {
+    const first = await makeWorktree('first')
+    const second = await makeWorktree('second')
+    // A Run starts in the second Checkout while the first is being removed.
+    // Answering from a set captured before the batch began would take the
+    // directory out from under it.
+    busyCheckouts = () => (existsSync(first) ? [] : [second])
+
+    const result = await service().remove({ projectRoot, paths: [first, second] })
+
+    expect(result.removals.map((removal) => removal.outcome)).toEqual(['removed', 'failed'])
+    expect(result.removals[1]?.detail).toMatch(/Run is working in it/)
+    await expect(access(second)).resolves.toBeUndefined()
+  })
+
   it('lets one failure stand alone, so the rest are still removed', async () => {
     const blocked = await makeWorktree('blocked')
     const removable = await makeWorktree('removable')
@@ -258,13 +296,20 @@ describe('removing the ones that were asked for', () => {
 })
 
 describe('measuring what a directory costs', () => {
-  it('sums the files under it', async () => {
+  it('counts the blocks the files under it hold, not the sum of their sizes', async () => {
     const tree = join(sandbox, 'measured')
     await mkdir(join(tree, 'nested'), { recursive: true })
     await writeFile(join(tree, 'a.txt'), 'x'.repeat(100))
     await writeFile(join(tree, 'nested', 'b.txt'), 'y'.repeat(50))
 
-    await expect(measureDirectory(tree)).resolves.toEqual({ bytes: 150, complete: true })
+    const measured = await measureDirectory(tree)
+
+    expect(measured.complete).toBe(true)
+    // Two tiny files are allocated whole blocks each, which is the whole
+    // reason this counts blocks: a dependency directory is hundreds of
+    // thousands of them, and their sizes add up to far less than they cost.
+    expect(measured.bytes).toBeGreaterThanOrEqual(150)
+    expect(measured.bytes % 512).toBe(0)
   })
 
   it('answers nothing, completely, for a directory that is not there', async () => {

@@ -68,9 +68,14 @@ export const worktreeContentsSchema = z.discriminatedUnion('status', [
 export type WorktreeContents = z.infer<typeof worktreeContentsSchema>
 
 /**
- * What the directory is using on disk **now**, which is the only figure worth
- * showing: a Worktree starts as shared blocks costing nearly nothing and
- * becomes real disk the moment an agent installs or builds in it.
+ * What the directory is using on disk **now** — the blocks its files hold,
+ * which is the figure `du` reports — rather than anything about what it cost
+ * to create.
+ *
+ * It is an upper bound on what removing one frees. A Checkout is bootstrapped
+ * by cloning, and cloned files share their blocks with the Project until
+ * something writes to them; no tool on the machine can see that sharing per
+ * file, so the surface says it in words instead of pretending to a number.
  */
 export const worktreeDiskUsageSchema = z.object({
   bytes: z.number().int().nonnegative(),

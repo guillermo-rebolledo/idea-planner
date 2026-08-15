@@ -1061,7 +1061,10 @@ function mergeBootstrapResults(
     ...previous.skipped.filter((entry) => !retriedPaths.has(entry.path)),
     ...retry.skipped
   ].sort((left, right) => left.path.localeCompare(right.path, 'en'))
-  return buildWorktreeBootstrapResult(copied, skipped)
+  // The origin belongs to the bootstrap, not to each attempt at it: a retry is
+  // the same bootstrap answered again, so it only fills in an origin the first
+  // attempt could not read.
+  return buildWorktreeBootstrapResult(copied, skipped, previous.provenance ?? retry.provenance)
 }
 
 /**

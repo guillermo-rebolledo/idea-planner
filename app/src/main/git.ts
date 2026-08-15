@@ -275,7 +275,8 @@ export async function createWorktree(
       }).catch((): WorktreeBootstrapResult => ({
         outcome: 'skipped',
         copied: [],
-        skipped: [{ path: '.worktreeinclude', reason: 'copy-failed' }]
+        skipped: [{ path: '.worktreeinclude', reason: 'copy-failed' }],
+        provenance: null
       }))
       return { status: 'created', path, branch, bootstrap }
     } catch (error) {
@@ -311,10 +312,12 @@ export async function observeWorktreeContents(
     return {
       status: 'observed',
       uncommittedChanges: dirty.stdout.length > 0,
-      // A repository git could describe but not walk — an unborn branch, a
-      // ref it cannot resolve — has no commits that are only here. `status`
-      // above is what decides whether the Checkout is readable at all.
-      commitsOnlyHere: await hasCommitsOnlyHere(checkout, options).catch(() => false)
+      // Deliberately not caught: a walk that failed is not a walk that found
+      // nothing. Reporting "no commits are only here" because git could not be
+      // asked would drop the one warning standing between a person and commits
+      // that exist nowhere else, so the whole observation goes unreadable and
+      // the surface says it does not know.
+      commitsOnlyHere: await hasCommitsOnlyHere(checkout, options)
     }
   } catch {
     return { status: 'unreadable' }
@@ -329,9 +332,21 @@ export async function observeWorktreeContents(
  * includes a detached HEAD, so a pattern that reads correctly can still answer
  * "nothing is only here" for every Worktree — which is the answer that loses
  * somebody's commits.
+ *
+ * Throws when git cannot answer, which is what keeps "could not tell" out of
+ * the same shape as "nothing to lose".
  */
 async function hasCommitsOnlyHere(checkout: string, options: GitOptions): Promise<boolean> {
   const env = environment(options)
+  // A Checkout with nothing committed in it is the one honest `false` here,
+  // and it is a question with an answer rather than a failure to walk: HEAD
+  // resolving to nothing means there are no commits for anything else to hold.
+  const head = await run('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], {
+    cwd: checkout,
+    env,
+    timeout: TIMEOUT_MS
+  }).catch(() => null)
+  if (head === null || head.stdout.trim() === '') return false
   const branch = await currentBranch(checkout, options)
   const { stdout: named } = await run(
     'git',

@@ -31,26 +31,58 @@ export const worktreeBootstrapSkipReasonSchema = z.enum([
   'not-regular',
   'permission-denied',
   'destination-exists',
+  // The filesystem cannot copy-on-write clone, so a directory was not carried.
+  'clone-unsupported',
   'copy-failed'
 ])
 export type WorktreeBootstrapSkipReason = z.infer<typeof worktreeBootstrapSkipReasonSchema>
 
 /**
- * The filenames considered while preparing an isolated Checkout. Contents
- * never cross this boundary: only Project-relative names and typed outcomes
- * are durable or visible to the Renderer.
+ * Where an isolated Checkout's carried state came from: the Project's commit
+ * when the bootstrap ran, the branch that commit was on, and when it ran.
+ *
+ * Provenance and nothing more. Whether what was carried suits the Checkout's
+ * base is a question about lockfiles, and the bootstrap deliberately knows
+ * nothing about ecosystems — it asks Git what is ignored and carries the
+ * answer — so a verdict here would be a guess wearing a fact's clothes.
+ */
+export const worktreeBootstrapProvenanceSchema = z.object({
+  /** The Project's HEAD when the bootstrap ran, in full. */
+  commit: z.string().regex(/^[0-9a-f]{7,64}$/),
+  /** The branch that commit was on, or null when the Project was detached. */
+  branch: z.string().min(1).nullable(),
+  /** When the state was carried. */
+  at: z.string().datetime()
+})
+export type WorktreeBootstrapProvenance = z.infer<typeof worktreeBootstrapProvenanceSchema>
+
+/**
+ * The names considered while preparing an isolated Checkout — a carried
+ * directory keeps Git's trailing slash, so `node_modules/` reads as the tree
+ * it is. Contents never cross this boundary: only Project-relative names and
+ * typed outcomes are durable or visible to the Renderer.
  */
 export const worktreeBootstrapResultSchema = z.object({
   outcome: z.enum(['copied', 'partial', 'skipped']),
   copied: z.array(z.string().min(1)),
-  skipped: z.array(z.object({ path: z.string().min(1), reason: worktreeBootstrapSkipReasonSchema }))
+  skipped: z.array(
+    z.object({ path: z.string().min(1), reason: worktreeBootstrapSkipReasonSchema })
+  ),
+  /**
+   * Null when Git could not be read, and on Sessions bootstrapped before this
+   * was recorded. Both are an origin nobody knows — which is a different thing
+   * from a Checkout nothing was ever carried into, and that is a Session with
+   * no result at all rather than a result with no provenance.
+   */
+  provenance: worktreeBootstrapProvenanceSchema.nullable().default(null)
 })
 export type WorktreeBootstrapResult = z.infer<typeof worktreeBootstrapResultSchema>
 
 /** Derives the aggregate outcome from the per-file results in one place. */
 export function buildWorktreeBootstrapResult(
   copied: string[],
-  skipped: WorktreeBootstrapResult['skipped']
+  skipped: WorktreeBootstrapResult['skipped'],
+  provenance: WorktreeBootstrapProvenance | null
 ): WorktreeBootstrapResult {
   return {
     outcome:
@@ -60,8 +92,14 @@ export function buildWorktreeBootstrapResult(
           ? 'partial'
           : 'skipped',
     copied,
-    skipped
+    skipped,
+    provenance
   }
+}
+
+/** A commit as a person reads one: short, and never mistaken for a branch. */
+export function shortCommit(commit: string): string {
+  return commit.slice(0, 7)
 }
 
 /**

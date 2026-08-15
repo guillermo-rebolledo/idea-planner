@@ -1,12 +1,14 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ArrowUp, Check, FolderGit2 } from 'lucide-react'
 import {
+  shortCommit,
   type CheckoutRequest,
   type ProjectView,
   type PermissionMode,
   type RunRequest,
   type SessionSummary,
   type StartedSessionResult,
+  type WorktreeBootstrapProvenance,
   type WorktreeBootstrapResult
 } from '@shared/contract'
 import { Button } from '@renderer/components/ui/button'
@@ -31,7 +33,7 @@ import {
   useSkillCatalog
 } from '@renderer/components/Skills'
 import { completeSkillQuery } from '@shared/skill'
-import { cn } from '@renderer/lib/utils'
+import { cn, moment } from '@renderer/lib/utils'
 
 interface ComposerProps {
   /** Pre-selects a Project, as the button on a Project row does. */
@@ -396,11 +398,17 @@ export function Composer({
           className="bg-card mx-auto w-full max-w-xl rounded-lg border border-border p-4 text-sm"
         >
           <h2 id="worktree-bootstrap-heading" className="font-medium">
-            Some local files could not be copied
+            Some local files and directories could not be carried
           </h2>
+          {/* Where the state came from, stated and left there. Whether it
+              suits the branch this Checkout was cut from is a question about
+              lockfiles, and nothing here has read one. */}
+          <p className="mt-1 text-xs text-muted-foreground">
+            {bootstrapOrigin(pendingBootstrap.result.provenance)}
+          </p>
           {pendingBootstrap.result.copied.length > 0 && (
             <div className="mt-3">
-              <h3 className="text-xs font-medium text-muted-foreground">Copied</h3>
+              <h3 className="text-xs font-medium text-muted-foreground">Carried</h3>
               <ul className="mt-1 list-inside list-disc">
                 {pendingBootstrap.result.copied.map((path) => (
                   <li key={path}>{path}</li>
@@ -425,7 +433,7 @@ export function Composer({
               disabled={sending}
               onClick={() => void resolveBootstrap('continue')}
             >
-              Continue without files
+              Continue without them
             </Button>
             <Button type="button" disabled={sending} onClick={() => void resolveBootstrap('retry')}>
               Retry copying
@@ -445,6 +453,13 @@ export function Composer({
 
 function bootstrapReason(reason: WorktreeBootstrapResult['skipped'][number]['reason']): string {
   return reason.replaceAll('-', ' ')
+}
+
+/** The one sentence of fact: where this Checkout was bootstrapped from. */
+function bootstrapOrigin(provenance: WorktreeBootstrapProvenance | null): string {
+  if (provenance === null) return 'Where this was carried from was not recorded.'
+  const from = provenance.branch ?? 'a detached HEAD'
+  return `Carried from ${from} at ${shortCommit(provenance.commit)}, ${moment(provenance.at)}.`
 }
 
 /** How many recent Sessions are worth a chip before they are just a list. */

@@ -96,8 +96,10 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
- * 28: the Worktrees Argos made for a Project can be listed and, once asked
+ * 29: the Worktrees Argos made for a Project can be listed and, once asked
  *     for, removed.
+ * 28: an isolated Checkout's bootstrap result says which commit of which
+ *     branch the carried state came from, and when.
  * 27: the app can say a newer version of itself has been published.
  * 26: Claude is launched through its own protocol frames, so `harness/open`
  *     carries either Harness's launch payload.
@@ -127,7 +129,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 28
+export const CONTRACT_VERSION = 29
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */

@@ -119,7 +119,8 @@ export function WorktreeReclaimDialog({
       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
         The isolated Checkouts Argos made for this Project. Removing one deletes its directory and
         leaves its branch exactly where it is. Nothing here happens on its own — deleting or
-        archiving a Session never touches its Checkout.
+        archiving a Session never touches its Checkout. Sizes are what each one holds; a Checkout
+        nothing has written in yet shares most of that with the Project, so removing it frees less.
       </p>
 
       {inventory === null && error === null && (
