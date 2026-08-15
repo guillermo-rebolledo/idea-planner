@@ -29,6 +29,11 @@ function heldWork(worktree: ReclaimableWorktree): string[] {
   const held: string[] = []
   if (worktree.contents.uncommittedChanges) held.push('uncommitted changes')
   if (worktree.contents.commitsOnlyHere) held.push('commits no other branch or remote has')
+  // Last in the sentence and first in consequence: git can put the other two
+  // back from somewhere, and an ignored file has no undo anywhere.
+  if (worktree.contents.ignoredWorkOnlyHere) {
+    held.push('ignored files the Project does not have, such as a .env')
+  }
   return held
 }
 

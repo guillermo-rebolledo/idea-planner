@@ -291,27 +291,36 @@ export async function createWorktree(
 
 /**
  * What a Worktree holds that removing it would take with it, asked of git in
- * the Checkout itself. Two questions, and only two, because they are the two
- * that decide whether a directory is disposable.
+ * the Checkout itself.
+ *
+ * The Project is named as well as the Checkout, because one of the three
+ * questions is comparative: an ignored file only matters here if the Project
+ * does not already have one, and nothing in the Checkout alone can say that.
  */
 export async function observeWorktreeContents(
   checkout: string,
+  projectRoot: string,
   options: GitOptions = {}
 ): Promise<WorktreeContents> {
   try {
     const env = environment(options)
-    // `--porcelain -z` keeps every possible filename opaque; only the presence
-    // of a record matters. Ignored files are not listed, which is exactly
-    // right: the dependency directory carried in at creation is not work.
-    const dirty = await run('git', ['status', '--porcelain', '-z'], {
+    // One walk answering two questions. `--ignored=traditional` collapses a
+    // wholly ignored directory into a single `dir/` record rather than
+    // descending it, so asking about ignored state costs a short list rather
+    // than every file in a carried-in dependency tree.
+    const { stdout } = await run('git', ['status', '--porcelain', '-z', '--ignored=traditional'], {
       cwd: checkout,
       env,
       timeout: TIMEOUT_MS,
       maxBuffer: MAX_DIFF_BYTES
     })
+    const records = readPorcelainStatus(stdout)
     return {
       status: 'observed',
-      uncommittedChanges: dirty.stdout.length > 0,
+      // Ignored records are not changes: the dependency directory carried in
+      // at creation is not work somebody did here.
+      uncommittedChanges: records.some((record) => record.status !== IGNORED),
+      ignoredWorkOnlyHere: await hasIgnoredWorkOnlyHere(records, projectRoot),
       // Deliberately not caught: a walk that failed is not a walk that found
       // nothing. Reporting "no commits are only here" because git could not be
       // asked would drop the one warning standing between a person and commits
@@ -322,6 +331,64 @@ export async function observeWorktreeContents(
   } catch {
     return { status: 'unreadable' }
   }
+}
+
+/** How `git status --porcelain` marks a path it is ignoring. */
+const IGNORED = '!!'
+
+/**
+ * How many ignored entries are compared against the Project. Whole ignored
+ * directories arrive collapsed, so a Checkout past this is one whose
+ * `.gitignore` names thousands of separate things — and the answer is already
+ * decided by the first entry the Project does not have.
+ */
+const MAX_IGNORED_COMPARED = 1000
+
+/**
+ * `--porcelain -z` records: a two-character status, a space, and a path, each
+ * NUL-terminated. A rename or a copy names where it came from in a field of
+ * its own, which is consumed rather than read as another record — a path taken
+ * for a status is a path this would then compare against the wrong thing.
+ */
+function readPorcelainStatus(stdout: string): { status: string; path: string }[] {
+  const fields = stdout.split('\0')
+  const records: { status: string; path: string }[] = []
+  for (let index = 0; index < fields.length; index++) {
+    const field = fields[index]
+    if (field === undefined || field === '') continue
+    const status = field.slice(0, 2)
+    const path = field.slice(3)
+    if (path === '') continue
+    records.push({ status, path })
+    if (status.startsWith('R') || status.startsWith('C')) index++
+  }
+  return records
+}
+
+/**
+ * Whether this Checkout holds an ignored file or directory the Project does
+ * not — a `.env` written here, an output directory built here.
+ *
+ * Presence in the Project is the whole test. Everything a Checkout is
+ * bootstrapped with came from the Project and is still there, so it reads as
+ * shared; anything made here since does not, and it is the only thing on this
+ * surface with no undo anywhere.
+ */
+async function hasIgnoredWorkOnlyHere(
+  records: { status: string; path: string }[],
+  projectRoot: string
+): Promise<boolean> {
+  const ignored = records
+    .filter((record) => record.status === IGNORED)
+    .slice(0, MAX_IGNORED_COMPARED)
+  for (const record of ignored) {
+    const shared = await access(join(projectRoot, record.path)).then(
+      () => true,
+      () => false
+    )
+    if (!shared) return true
+  }
+  return false
 }
 
 /**

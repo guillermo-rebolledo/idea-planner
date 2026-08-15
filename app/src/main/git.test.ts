@@ -840,14 +840,43 @@ describe('what a Worktree holds', () => {
 
     // Nothing committed yet. Git ran and answered, so there is genuinely
     // nothing here for anything else to hold.
-    await expect(observeWorktreeContents(root)).resolves.toEqual({
+    await expect(observeWorktreeContents(root, root)).resolves.toEqual({
       status: 'observed',
       uncommittedChanges: false,
-      commitsOnlyHere: false
+      commitsOnlyHere: false,
+      ignoredWorkOnlyHere: false
     })
 
-    await expect(observeWorktreeContents(root, { pathEnv: '' })).resolves.toEqual({
+    await expect(observeWorktreeContents(root, root, { pathEnv: '' })).resolves.toEqual({
       status: 'unreadable'
+    })
+  })
+
+  it('names an ignored file made here, and not the one carried in from the Project', async () => {
+    await conflictingRepository()
+    await writeFile(join(root, '.gitignore'), 'node_modules/\n.env*\n')
+    await commitAll(root, 'ignore rules')
+    // The Project's own ignored state, which a Checkout is bootstrapped by
+    // carrying in (MEM-132). Every Worktree has it, so it is not work.
+    await mkdir(join(root, 'node_modules'), { recursive: true })
+    await writeFile(join(root, 'node_modules', 'installed.js'), 'shared\n')
+    const linked = join(root, 'linked')
+    await git('git', ['worktree', 'add', '--quiet', '-b', 'ignored', linked, 'main'], { cwd: root })
+    await mkdir(join(linked, 'node_modules'), { recursive: true })
+    await writeFile(join(linked, 'node_modules', 'installed.js'), 'carried in\n')
+
+    await expect(observeWorktreeContents(linked, root)).resolves.toMatchObject({
+      ignoredWorkOnlyHere: false
+    })
+
+    // A secret written into this Checkout and nowhere else. Git is the undo for
+    // a tracked file; for this there is no undo at all, so removing it without
+    // saying so is the worst thing this surface could do.
+    await writeFile(join(linked, '.env'), 'API_KEY=only-here\n')
+
+    await expect(observeWorktreeContents(linked, root)).resolves.toMatchObject({
+      uncommittedChanges: false,
+      ignoredWorkOnlyHere: true
     })
   })
 
@@ -878,23 +907,25 @@ describe('what a Worktree holds', () => {
     await conflictingRepository()
     const linked = join(root, 'linked')
     await git('git', ['worktree', 'add', '--quiet', '-b', 'topic', linked, 'main'], { cwd: root })
-    await expect(observeWorktreeContents(linked)).resolves.toEqual({
+    await expect(observeWorktreeContents(linked, root)).resolves.toEqual({
       status: 'observed',
       uncommittedChanges: false,
-      commitsOnlyHere: false
+      commitsOnlyHere: false,
+      ignoredWorkOnlyHere: false
     })
 
     await writeFile(join(linked, 'only-here.txt'), 'unsaved\n')
-    await expect(observeWorktreeContents(linked)).resolves.toMatchObject({
+    await expect(observeWorktreeContents(linked, root)).resolves.toMatchObject({
       uncommittedChanges: true,
       commitsOnlyHere: false
     })
 
     await commitAll(linked, 'only here')
-    await expect(observeWorktreeContents(linked)).resolves.toEqual({
+    await expect(observeWorktreeContents(linked, root)).resolves.toEqual({
       status: 'observed',
       uncommittedChanges: false,
-      commitsOnlyHere: true
+      commitsOnlyHere: true,
+      ignoredWorkOnlyHere: false
     })
   })
 })

@@ -128,7 +128,8 @@ describe('listing what Argos made', () => {
     expect(byBranch.get('quiet')?.contents).toEqual({
       status: 'observed',
       uncommittedChanges: false,
-      commitsOnlyHere: false
+      commitsOnlyHere: false,
+      ignoredWorkOnlyHere: false
     })
     // An archived Session still owns its Checkout; archiving says "not now".
     expect(byBranch.get('uncommitted')?.session?.state).toBe('archived')
@@ -293,6 +294,28 @@ describe('removing the ones that were asked for', () => {
     expect(result.removals[0]?.outcome).toBe('changed')
     expect(result.removals[0]?.detail).toMatch(/gained work/)
     await expect(access(join(path, 'written-while-reading.ts'))).resolves.toBeUndefined()
+  })
+
+  it('refuses one that gained an ignored file the Project has not got', async () => {
+    await writeFile(join(projectRoot, '.gitignore'), '.env*\n')
+    await commitAll(projectRoot, 'ignore rules')
+    const path = await makeWorktree('secrets')
+    const reclaiming = service()
+    const inventory = await reclaiming.inventory(projectRoot)
+    expect(inventory.worktrees[0]?.contents).toMatchObject({ ignoredWorkOnlyHere: false })
+    // Written into the Checkout while the person read the list. Git ignores it,
+    // so nothing else on this surface would mention it — and git is not the
+    // undo for it either, because git was never holding it.
+    await writeFile(join(path, '.env'), 'API_KEY=only-here\n')
+
+    const result = await reclaiming.remove({
+      projectRoot,
+      operationId: inventory.operationId,
+      paths: [path]
+    })
+
+    expect(result.removals[0]?.outcome).toBe('changed')
+    await expect(access(join(path, '.env'))).resolves.toBeUndefined()
   })
 
   it('refuses one that gained a commit nothing else holds after the list was read', async () => {

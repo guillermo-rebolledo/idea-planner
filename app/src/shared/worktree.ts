@@ -60,7 +60,24 @@ export const worktreeContentsSchema = z.discriminatedUnion('status', [
      * true and useless. What the person needs to know is whether removing this
      * takes commits that exist nowhere else.
      */
-    commitsOnlyHere: z.boolean()
+    commitsOnlyHere: z.boolean(),
+    /**
+     * Ignored files or directories this Checkout has and the Project does not
+     * — a `.env` written here, an output directory built here.
+     *
+     * These matter more than anything else on this list, not less: git is the
+     * undo for tracked files, and for an ignored one there is no undo at all.
+     * They are still not simply "the ignored files", because a Checkout is
+     * bootstrapped by carrying the Project's own ignored state in, so every
+     * Worktree holds a `node_modules` from the moment it exists and a warning
+     * that is always on is one nobody reads.
+     *
+     * Compared by presence, not by content: a `.env.local` that exists in both
+     * and was edited only here reads as shared. Comparing the contents of
+     * ignored files means walking a dependency directory, and this is asked
+     * once per Worktree on a surface somebody is waiting on.
+     */
+    ignoredWorkOnlyHere: z.boolean()
   }),
   /** Git could not answer for it — no git, or no longer a repository. */
   z.object({ status: z.literal('unreadable') })
@@ -188,11 +205,12 @@ export function holdsUnshownWork(shown: WorktreeContents, now: WorktreeContents)
   // The list already said it did not know, and the person confirmed anyway.
   if (shown.status === 'unreadable') return false
   if (now.status === 'unreadable') {
-    return !shown.uncommittedChanges && !shown.commitsOnlyHere
+    return !shown.uncommittedChanges && !shown.commitsOnlyHere && !shown.ignoredWorkOnlyHere
   }
   return (
     (now.uncommittedChanges && !shown.uncommittedChanges) ||
-    (now.commitsOnlyHere && !shown.commitsOnlyHere)
+    (now.commitsOnlyHere && !shown.commitsOnlyHere) ||
+    (now.ignoredWorkOnlyHere && !shown.ignoredWorkOnlyHere)
   )
 }
 export type WorktreeRemovalResult = z.infer<typeof worktreeRemovalResultSchema>

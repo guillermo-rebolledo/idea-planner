@@ -40,13 +40,25 @@ describe('the reclaim contract', () => {
   })
 
   it('refuses only what has gained something since the person read it', () => {
-    const clean = { status: 'observed', uncommittedChanges: false, commitsOnlyHere: false } as const
-    const dirty = { status: 'observed', uncommittedChanges: true, commitsOnlyHere: false } as const
-    const unique = { status: 'observed', uncommittedChanges: false, commitsOnlyHere: true } as const
+    const observed = {
+      status: 'observed',
+      uncommittedChanges: false,
+      commitsOnlyHere: false,
+      ignoredWorkOnlyHere: false
+    } as const
+    const clean = observed
+    const dirty = { ...observed, uncommittedChanges: true } as const
+    const unique = { ...observed, commitsOnlyHere: true } as const
+    const secret = { ...observed, ignoredWorkOnlyHere: true } as const
     const unknown = { status: 'unreadable' } as const
 
     expect(holdsUnshownWork(clean, dirty)).toBe(true)
     expect(holdsUnshownWork(clean, unique)).toBe(true)
+    // The one with no undo anywhere counts exactly like the other two.
+    expect(holdsUnshownWork(clean, secret)).toBe(true)
+    expect(holdsUnshownWork(secret, secret)).toBe(false)
+    expect(holdsUnshownWork(secret, clean)).toBe(false)
+    expect(holdsUnshownWork(secret, unknown)).toBe(false)
     // Could not be checked, and the list said there was nothing to lose.
     expect(holdsUnshownWork(clean, unknown)).toBe(true)
 

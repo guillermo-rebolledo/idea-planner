@@ -97,7 +97,7 @@ export class WorktreeReclaimService {
     const sessions = await this.sessionsByCheckout()
     const busy = this.busyNow()
     const worktrees = await Promise.all(
-      listed.map((name) => this.describe(join(root, name), sessions, busy))
+      listed.map((name) => this.describe(join(root, name), projectRoot, sessions, busy))
     )
     const operationId = (this.deps.newOperationId ?? randomUUID)()
     // Insertion order is age order, so the first key is the oldest list.
@@ -218,7 +218,10 @@ export class WorktreeReclaimService {
       () => true,
       () => false
     )
-    if (stillThere && holdsUnshownWork(shown, await observeWorktreeContents(path))) {
+    if (
+      stillThere &&
+      holdsUnshownWork(shown, await observeWorktreeContents(path, input.projectRoot))
+    ) {
       return {
         path,
         outcome: 'changed',
@@ -239,13 +242,14 @@ export class WorktreeReclaimService {
   /** One Worktree, described from disk, from git, and from the Session store. */
   private async describe(
     path: string,
+    projectRoot: string,
     sessions: ReadonlyMap<string, SessionSummary>,
     busy: ReadonlySet<string>
   ): Promise<ReclaimableWorktree> {
     const session = sessions.get(resolve(path))
     const [branch, contents, disk] = await Promise.all([
       currentBranch(path),
-      observeWorktreeContents(path),
+      observeWorktreeContents(path, projectRoot),
       measureDirectory(path)
     ])
     return {
