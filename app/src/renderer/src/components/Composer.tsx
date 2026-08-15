@@ -92,7 +92,11 @@ export function Composer({
   // surface opens before there is one. The Projects and the recent Sessions
   // come back together and Send already waits on them; this is asked
   // separately, so it is the one that can still be outstanding.
-  const [localRunProjects, setLocalRunProjects] = useState<string[] | null>(null)
+  //
+  // 'unreadable' is a third thing again: asked, and answered with nothing
+  // anybody can use. It proposes the same baseline an empty list does and is
+  // deliberately not the same value, because the composer says so out loud.
+  const [localRuns, setLocalRuns] = useState<string[] | 'unreadable' | null>(null)
   // One choice, not three: the model carries the Harness that reaches it.
   const { models, readiness } = useModelCatalog()
   const [chosen, setChosen] = useState<ModelChoice | null>(null)
@@ -162,14 +166,16 @@ export function Composer({
     const ticket = localRunAnswers.ask()
     void window.shell.listProjectsWithActiveLocalRuns().then(
       (roots) => {
-        if (!disposedRef.current && localRunAnswers.wins(ticket)) setLocalRunProjects(roots)
+        if (!disposedRef.current && localRunAnswers.wins(ticket)) setLocalRuns(roots)
       },
       () => {
         // A look that failed knows nothing, so it takes no ticket and replaces
-        // no answer. But if it was the only look there has been, holding Send
-        // for an answer that is not coming would be the worse failure of the
-        // two: fall back to the baseline and let the person work.
-        if (!disposedRef.current) setLocalRunProjects((current) => current ?? [])
+        // no answer — a Project seen to be busy stays busy. But if it was the
+        // only look there has been, holding Send for an answer that is not
+        // coming would be the worse failure of the two, so the baseline goes
+        // ahead and the picker says it could not check. Not a quiet "nobody is
+        // working here": nothing here has any business claiming that.
+        if (!disposedRef.current) setLocalRuns((current) => current ?? 'unreadable')
       }
     )
   }, [localRunAnswers])
@@ -201,7 +207,11 @@ export function Composer({
   const { checkout, reason, sendable } = resolveCheckout({
     proposed: defaultCheckout({
       localRunActive:
-        localRunProjects === null ? 'unknown' : localRunProjects.includes(projectRoot),
+        localRuns === null
+          ? 'unknown'
+          : localRuns === 'unreadable'
+            ? 'unreadable'
+            : localRuns.includes(projectRoot),
       lastUsed: lastUsed[projectRoot] ?? null
     }),
     chosenKind: chosenKind[projectRoot],

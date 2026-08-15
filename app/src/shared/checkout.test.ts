@@ -52,6 +52,18 @@ describe('the New Session Checkout default', () => {
       provisional: true
     })
   })
+
+  it('says it could not check rather than claiming nobody is working', () => {
+    // A look that came back unable to say has no answer coming, so it is not
+    // waited on — but the baseline it settles for is not evidence of anything,
+    // and the person is the one who may well know what the app could not find
+    // out. So it is stated, and Isolated is one click away.
+    expect(defaultCheckout({ localRunActive: 'unreadable', lastUsed: null })).toEqual({
+      kind: 'local',
+      reason: 'local-runs-unreadable',
+      provisional: false
+    })
+  })
 })
 
 describe('what the Checkout chip ends up asking for', () => {
@@ -158,5 +170,39 @@ describe('starting a Session on a Checkout that is still being decided', () => {
     expect(
       resolveCheckout({ proposed: free, chosenKind: 'isolated', base: undefined }).sendable
     ).toBe(false)
+  })
+})
+
+describe('a look that came back unable to say', () => {
+  const unreadable = defaultCheckout({ localRunActive: 'unreadable', lastUsed: null })
+
+  it('lets the person work rather than holding Send for an answer that is not coming', () => {
+    // The alternative is a composer that quietly refuses to start any Session
+    // at all because a projection read failed, with nothing on screen saying
+    // why. That is a worse day than the collision it would be guarding.
+    expect(resolveCheckout({ proposed: unreadable }).sendable).toBe(true)
+    expect(resolveCheckout({ proposed: unreadable }).checkout).toEqual({ kind: 'local' })
+  })
+
+  it('carries the line saying so, so the Checkout is not read as a finding', () => {
+    expect(resolveCheckout({ proposed: unreadable }).reason).toBe('local-runs-unreadable')
+  })
+
+  it('says nothing once the person has picked for themselves', () => {
+    expect(resolveCheckout({ proposed: unreadable, chosenKind: 'local' }).reason).toBeNull()
+    expect(
+      resolveCheckout({ proposed: unreadable, chosenKind: 'isolated', base: 'trunk' }).reason
+    ).toBeNull()
+  })
+
+  it('is replaced outright by a later look that can say', () => {
+    // Recovery is the ordinary refresh: the next Run boundary or the window
+    // coming back asks again, and a real answer takes over from this one.
+    const answered = defaultCheckout({ localRunActive: true, lastUsed: null })
+    expect(resolveCheckout({ proposed: answered, base: 'trunk' })).toEqual({
+      checkout: { kind: 'isolated', baseBranch: 'trunk' },
+      reason: 'local-run-active',
+      sendable: true
+    })
   })
 })

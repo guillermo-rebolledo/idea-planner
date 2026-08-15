@@ -39,7 +39,11 @@ function listed(branches: BranchList | 'unreadable' | null): string[] {
  */
 const REASON: Record<CheckoutDefaultReason, string> = {
   'local-run-active':
-    'A Session is already working in this Project’s working copy, so this one gets a Checkout of its own.'
+    'A Session is already working in this Project’s working copy, so this one gets a Checkout of its own.',
+  // Stated rather than assumed away: this is the usual Checkout because the
+  // app has nothing to say otherwise, not because it looked and found nobody.
+  'local-runs-unreadable':
+    'Whether a Session is already working in this Project could not be checked. Isolated is the safe one if it might be.'
 }
 
 export function CheckoutPicker({

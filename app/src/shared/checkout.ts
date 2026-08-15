@@ -148,8 +148,14 @@ export type CheckoutRequest = z.infer<typeof checkoutRequestSchema>
  * when the reason is something observed rather than the standing baseline.
  * The picker states it in one line: a default that moves for reasons nobody
  * can see reads as the app deciding behind the person's back.
+ *
+ * `local-runs-unreadable` is the other half of that honesty. The baseline is
+ * what gets proposed when nothing is known to be running, and a look that
+ * failed knows nothing — but the two are not the same claim, and quietly
+ * making the second wear the first says there is no Run working here on the
+ * strength of a question that was never answered.
  */
-export type CheckoutDefaultReason = 'local-run-active'
+export type CheckoutDefaultReason = 'local-run-active' | 'local-runs-unreadable'
 
 export interface CheckoutDefault {
   kind: CheckoutRequest['kind']
@@ -177,18 +183,25 @@ export interface CheckoutDefault {
  * Nothing here is a refusal. It decides only what is proposed; the person
  * overrides in either direction and the picker argues with neither.
  *
- * Not knowing yet is its own answer rather than a quiet "no". Both of them
- * propose Local, and only one of them is safe to act on: the composer opens
- * before anything has been looked up, and treating that moment as a Project
- * with nothing running is how a Session gets sent into a working copy an
- * agent is already writing to.
+ * Not knowing is its own answer rather than a quiet "no", and there are two
+ * ways not to know. All three propose the same Local baseline and none of
+ * them means the same thing: the composer opens before anything has been
+ * looked up, and treating that moment as a Project with nothing running is
+ * how a Session gets sent into a working copy an agent is already writing to.
+ *
+ * A look that came back unable to say is the one case that still goes. There
+ * is no answer coming and nothing to wait for, and refusing to start any
+ * Session because a read failed would be a far worse day than the collision
+ * it is guarding against — so it proposes the baseline and says out loud that
+ * it could not check, which is the one thing the person can act on.
  */
 export function defaultCheckout(context: {
   /**
-   * Whether a Run is working in this Project's Local Checkout right now, or
-   * 'unknown' while the look that would say has not come back.
+   * Whether a Run is working in this Project's Local Checkout right now,
+   * 'unknown' while the look that would say has not come back, or
+   * 'unreadable' when it came back unable to say.
    */
-  localRunActive: boolean | 'unknown'
+  localRunActive: boolean | 'unknown' | 'unreadable'
   /** What this Project's most recent Session used, or null when it has none. */
   lastUsed: Checkout['kind'] | null
 }): CheckoutDefault {
@@ -197,7 +210,7 @@ export function defaultCheckout(context: {
   }
   return {
     kind: context.lastUsed === 'worktree' ? 'isolated' : 'local',
-    reason: null,
+    reason: context.localRunActive === 'unreadable' ? 'local-runs-unreadable' : null,
     provisional: context.localRunActive === 'unknown'
   }
 }

@@ -64,8 +64,14 @@ to, and a second agent joining it is not "where the person works", it is two wri
   an isolated ask to be given a base. It is a moment, and it is exactly the moment in which a Session
   would otherwise be started in a working copy the app was about to say was occupied. A Checkout the
   person picked waits for nothing, because the answer it was waiting for is one they have already
-  given. A look that fails is not waited on either: it settles to the baseline, since refusing to let
-  somebody start work because a read failed is the worse of the two failures.
+  given.
+- **A look that came back unable to say goes ahead, and says so.** There is no answer coming, and
+  refusing to start any Session because a projection read failed — silently, since a disabled Send
+  explains nothing — is a far worse day than the collision it would be guarding against. So it
+  proposes the baseline and states in the same one line that it could not check. What it must not do
+  is quietly file "could not tell" as "nothing is running": the person is often the one who knows
+  what the app could not find out, and Isolated is one click away. This is the posture the picker
+  already takes when a Project's branches cannot be read.
 - **What is running is observed, never stored.** The Projects with an active Local Run are read from
   the same Conversation projection the inbox reads, on first ask and again on every Run boundary. So
   it covers Runs this window did not start, and it stops applying the moment they end. A Run blocked
