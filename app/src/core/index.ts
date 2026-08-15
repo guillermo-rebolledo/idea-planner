@@ -92,6 +92,8 @@ function dispatch(command: CoreCommand): Effect.Effect<unknown, CoreError> {
       return core.listDamagedSessions()
     case 'session/get':
       return core.getSession(command.sessionId)
+    case 'session/active-local-runs':
+      return core.listProjectsWithActiveLocalRuns()
     case 'mailbox/query':
       return core.queryMailbox(command.query)
     case 'session/set-pinned':

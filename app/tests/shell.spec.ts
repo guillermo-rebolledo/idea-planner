@@ -317,7 +317,9 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'listGitHubRepositories',
       'listModels',
       'listProjectCloneLocations',
+      'listProjectWorktrees',
       'listProjects',
+      'listProjectsWithActiveLocalRuns',
       'listRuns',
       'listSessions',
       'listSkills',
@@ -343,6 +345,7 @@ test('renderer is sandboxed with only the narrow preload surface', async () => {
       'queryMailbox',
       'refreshReadiness',
       'removeProject',
+      'removeWorktrees',
       'renameSession',
       'requestSessionReview',
       'resolveApproval',
@@ -1851,6 +1854,60 @@ test('the Worktrees Argos made are accounted for, and reclaimed only when asked'
       { cwd: sandbox.projectDir }
     )
     expect(branches.split('\n').map((line) => line.trim())).toContain('reclaim-me-later')
+  } finally {
+    await app.close()
+  }
+})
+
+test('a second Session started while one is working lands in a Checkout of its own', async () => {
+  // A genuinely active Run, and a branch for an isolated Checkout to be cut
+  // from — the two facts the default is decided from (ADR 0010).
+  await installFakeHarness('claude', LONG_RUNNING_CLAUDE_FAKE)
+  const gitc = (args: string[]): Promise<unknown> =>
+    git('git', ['-c', 'user.email=a@b', '-c', 'user.name=t', ...args], {
+      cwd: sandbox.projectDir
+    })
+  await writeFile(join(sandbox.projectDir, 'app.ts'), 'export const app = true\n')
+  await gitc(['add', '-A'])
+  await gitc(['commit', '--quiet', '-m', 'init'])
+  await gitc(['checkout', '--quiet', '-b', 'trunk'])
+
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    const composer = page.getByRole('form', { name: 'New chat' })
+    const chip = composer.getByRole('button', { name: 'Checkout' })
+
+    // Nothing is running, so nothing has changed: the first Session edits the
+    // working copy in place, as it always has (ADR 0004).
+    await page.getByRole('button', { name: 'New Session', exact: true }).click()
+    await expect(chip).toContainText('Local')
+    await startSession(page, 'Rewrite the importer')
+    await expect(page.getByRole('img', { name: 'Run in progress' })).toBeVisible()
+
+    // That Run is still working, so the next Session is offered a Checkout of
+    // its own — and the picker says why rather than leaving it to be noticed.
+    await page.getByRole('button', { name: 'New Session', exact: true }).click()
+    await expect(chip).toContainText('Worktree')
+    await expect(chip).toContainText('trunk')
+    const because = page.getByText('already working in this Project', { exact: false })
+    await chip.click()
+    await expect(because).toBeVisible()
+
+    // Overriding it back is allowed, and is not argued with.
+    await page.getByRole('radio', { name: 'Local' }).click()
+    await expect(chip).toContainText('Local')
+    await chip.click()
+    await expect(because).toHaveCount(0)
+    await page.keyboard.press('Escape')
+
+    // The Run ends, and with it the reason. The default stops applying.
+    await page.getByRole('navigation', { name: 'Session inbox' }).getByText('Rewrite the').click()
+    await page.getByRole('button', { name: 'Stop' }).click()
+    await expect(page.getByRole('img', { name: 'Run in progress' })).toHaveCount(0)
+    await page.getByRole('button', { name: 'New Session', exact: true }).click()
+    await expect(chip).toContainText('Local')
   } finally {
     await app.close()
   }

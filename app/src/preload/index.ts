@@ -49,6 +49,8 @@ const api: ShellApi = {
     ipcRenderer.invoke(IPC_CHANNELS.resumeWorktreeBootstrap, input),
   listSessions: () => ipcRenderer.invoke(IPC_CHANNELS.listSessions),
   listDamagedSessions: () => ipcRenderer.invoke(IPC_CHANNELS.listDamagedSessions),
+  listProjectsWithActiveLocalRuns: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.listProjectsWithActiveLocalRuns),
   queryMailbox: (query) => ipcRenderer.invoke(IPC_CHANNELS.queryMailbox, query),
   setSessionPinned: (input) => ipcRenderer.invoke(IPC_CHANNELS.setSessionPinned, input),
   setSessionArchived: (input) => ipcRenderer.invoke(IPC_CHANNELS.setSessionArchived, input),

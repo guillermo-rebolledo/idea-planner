@@ -144,6 +144,134 @@ export const checkoutRequestSchema = z.discriminatedUnion('kind', [
 export type CheckoutRequest = z.infer<typeof checkoutRequestSchema>
 
 /**
+ * Why the New Session composer is proposing the Checkout it is proposing,
+ * when the reason is something observed rather than the standing baseline.
+ * The picker states it in one line: a default that moves for reasons nobody
+ * can see reads as the app deciding behind the person's back.
+ *
+ * `local-runs-unreadable` is the other half of that honesty. The baseline is
+ * what gets proposed when nothing is known to be running, and a look that
+ * failed knows nothing — but the two are not the same claim, and quietly
+ * making the second wear the first says there is no Run working here on the
+ * strength of a question that was never answered.
+ */
+export type CheckoutDefaultReason = 'local-run-active' | 'local-runs-unreadable'
+
+export interface CheckoutDefault {
+  kind: CheckoutRequest['kind']
+  reason: CheckoutDefaultReason | null
+  /**
+   * True while this is the baseline standing in for an answer that has not
+   * come back yet. It is the safe-looking one — Local — and the answer it is
+   * waiting for is the only thing that could say otherwise, so it is not a
+   * proposal to start a Session on.
+   */
+  provisional: boolean
+}
+
+/**
+ * Which Checkout a new Session starts on when the person has not said (ADR
+ * 0010). Two Sessions in one Project's working copy can write the same file
+ * with neither the app nor the person told, so a Project already being worked
+ * in hands the next Session an isolated Checkout of its own — the collision
+ * is answered by the directory, not by narrating it after both writes landed.
+ *
+ * With nothing running the baseline of ADR 0004 stands: the person's editor
+ * and dev server point at the working copy, so that is where work goes, and a
+ * Project whose Sessions are always isolated keeps getting isolated ones.
+ *
+ * Nothing here is a refusal. It decides only what is proposed; the person
+ * overrides in either direction and the picker argues with neither.
+ *
+ * Not knowing is its own answer rather than a quiet "no", and there are two
+ * ways not to know. All three propose the same Local baseline and none of
+ * them means the same thing: the composer opens before anything has been
+ * looked up, and treating that moment as a Project with nothing running is
+ * how a Session gets sent into a working copy an agent is already writing to.
+ *
+ * A look that came back unable to say is the one case that still goes. There
+ * is no answer coming and nothing to wait for, and refusing to start any
+ * Session because a read failed would be a far worse day than the collision
+ * it is guarding against — so it proposes the baseline and says out loud that
+ * it could not check, which is the one thing the person can act on.
+ */
+export function defaultCheckout(context: {
+  /**
+   * Whether a Run is working in this Project's Local Checkout right now,
+   * 'unknown' while the look that would say has not come back, or
+   * 'unreadable' when it came back unable to say.
+   */
+  localRunActive: boolean | 'unknown' | 'unreadable'
+  /** What this Project's most recent Session used, or null when it has none. */
+  lastUsed: Checkout['kind'] | null
+}): CheckoutDefault {
+  if (context.localRunActive === true) {
+    return { kind: 'isolated', reason: 'local-run-active', provisional: false }
+  }
+  return {
+    kind: context.lastUsed === 'worktree' ? 'isolated' : 'local',
+    reason: context.localRunActive === 'unreadable' ? 'local-runs-unreadable' : null,
+    provisional: context.localRunActive === 'unknown'
+  }
+}
+
+/**
+ * What the composer's Checkout chip is actually asking for, from the three
+ * things that have a say and nothing else: what the app proposed, what the
+ * person picked, and what the last look at Git found to cut a worktree from.
+ *
+ * Each keeps its own place, and the order between them is the whole point.
+ * A pick outranks a proposal, so a default cannot move under a choice already
+ * made. An observation outranks neither — it is what was true when Git was
+ * last asked, so a Project with nothing to cut from falls back to Local
+ * without that fallback becoming somebody's decision, and a later look that
+ * finds a branch puts the isolated ask straight back.
+ */
+export function resolveCheckout(context: {
+  /** What the app would offer if nobody had said. */
+  proposed: CheckoutDefault
+  /** The kind the person picked, or undefined while they have not. */
+  chosenKind?: CheckoutRequest['kind'] | undefined
+  /**
+   * The branch a worktree would be cut from: a name, `null` for looked and
+   * there is nothing to cut from, `undefined` for not looked yet.
+   */
+  base?: string | null | undefined
+}): {
+  checkout: CheckoutRequest
+  reason: CheckoutDefaultReason | null
+  /** Whether this is settled enough to start a Session on. */
+  sendable: boolean
+} {
+  const asked = context.chosenKind ?? context.proposed.kind
+  // A Project with no branch to cut from cannot have an isolated Checkout,
+  // whoever asked for one. Send stays live on Local rather than refusing with
+  // nothing to say — and because this is derived, the ask survives the answer.
+  const kind = asked === 'isolated' && context.base === null ? 'local' : asked
+  const checkout: CheckoutRequest =
+    kind === 'isolated' ? { kind: 'isolated', baseBranch: context.base ?? '' } : { kind: 'local' }
+  return {
+    checkout,
+    // Two things are worth waiting a moment for, and both are the difference
+    // between a Session that lands where it was meant to and one that does
+    // not: an isolated ask with no base has nothing to cut from yet, and a
+    // proposal still standing in for an answer is the Local one that a Run
+    // working in that Checkout would have overruled. A Checkout the person
+    // picked is theirs either way and waits for nothing.
+    sendable:
+      (checkout.kind !== 'isolated' || checkout.baseBranch !== '') &&
+      (context.chosenKind !== undefined || !context.proposed.provisional),
+    // The line explains a proposal. Once the person has answered it there is
+    // nothing left to explain, and next to a Checkout that had to fall back it
+    // would be explaining something that did not happen.
+    reason:
+      context.chosenKind === undefined && kind === context.proposed.kind
+        ? context.proposed.reason
+        : null
+  }
+}
+
+/**
  * The branch an isolated checkout is cut onto, derived from the message that
  * starts the Session the same way its title is — deterministic and local. A
  * taken name is the creator's problem to suffix, not this function's.

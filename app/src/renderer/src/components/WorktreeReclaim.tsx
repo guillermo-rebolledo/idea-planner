@@ -12,7 +12,7 @@ import { Modal } from '@renderer/components/ui/dialog'
 
 /**
  * The Worktrees Argos made for one Project, and the one confirmation that
- * removes the ones the person picked (ADR 0008).
+ * removes the ones the person picked (ADR 0010).
  *
  * It is a review before it is an action, like Run Undo: everything that would
  * be lost is on screen — the Session it belongs to, whether it holds work no

@@ -109,6 +109,7 @@ export interface Core {
   listStandingApprovals(projectRoot: string): Promise<StandingApproval[]>
   standingApprovalRules(projectRoot: string, harness: HarnessId): Promise<string[]>
   revokeStandingApproval(input: RevokeStandingApprovalInput): Promise<void>
+  listProjectsWithActiveLocalRuns(): Promise<string[]>
   queryMailbox(query: MailboxCoreQuery): Promise<MailboxSnapshot>
   setSessionPinned(sessionId: string, pinned: boolean): Promise<SessionSummary>
   setSessionArchived(sessionId: string, archived: boolean): Promise<SessionSummary>
@@ -177,6 +178,7 @@ export interface CoreEffects {
   listStandingApprovals(projectRoot: string): Effect.Effect<StandingApproval[], CoreError>
   standingApprovalRules(projectRoot: string, harness: HarnessId): Effect.Effect<string[], CoreError>
   revokeStandingApproval(input: RevokeStandingApprovalInput): Effect.Effect<void, CoreError>
+  listProjectsWithActiveLocalRuns(): Effect.Effect<string[], CoreError>
   queryMailbox(query: MailboxCoreQuery): Effect.Effect<MailboxSnapshot, CoreError>
   setSessionPinned(sessionId: string, pinned: boolean): Effect.Effect<SessionSummary, CoreError>
   setSessionArchived(sessionId: string, archived: boolean): Effect.Effect<SessionSummary, CoreError>
@@ -397,6 +399,35 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     })
 
   /**
+   * The Projects a Run is working in the Local Checkout of right now, for the
+   * New Session composer's default (ADR 0010). Read from the same projection
+   * the mailbox reads, so the app cannot hold two opinions about whether a
+   * Session is working — and observed on every ask, never stored: a default
+   * that outlived the Run it was decided by would be a default nobody can get
+   * rid of.
+   *
+   * An active Run is one whose Conversation is open, which includes a Run
+   * blocked on an Approval Request. It stopped asking for permission; it did
+   * not stop owning the working copy.
+   */
+  const listProjectsWithActiveLocalRuns = (): Effect.Effect<string[], CoreError> =>
+    Effect.gen(function* () {
+      const all = yield* sessions.list()
+      const working = yield* Effect.forEach(
+        all.filter((session) => session.checkout.kind === 'local'),
+        (session) =>
+          conversation.state(session.id).pipe(
+            Effect.map((state) => (state.activeRunId === null ? null : session.projectRoot)),
+            // A Conversation that cannot be read says nothing about whether a
+            // Run is working, and a default is not the place to guess.
+            Effect.catchAll(() => Effect.succeed<string | null>(null))
+          ),
+        { concurrency: 8 }
+      )
+      return [...new Set(working.filter((root): root is string => root !== null))]
+    })
+
+  /**
    * The mailbox over the Session store. Searching is over Session titles in
    * memory: there is no corpus of documents left to index.
    */
@@ -479,10 +510,13 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
           }
           const input = parsed.data
           const session = yield* sessions.get(input.sessionId)
-          // A Run works on the Session's Checkout, which is the Project it
-          // belongs to. Anything else would let a Run edit a directory the
-          // Session never named.
-          if (input.configuration.checkout !== session.projectRoot) {
+          // A Run works on the Session's own Checkout — the Project's working
+          // copy, or the isolated worktree the Session was fixed to. Anything
+          // else would let a Run edit a directory the Session never named.
+          if (
+            input.configuration.checkout !==
+            checkoutDirectory(session.projectRoot, session.checkout)
+          ) {
             return yield* Effect.fail(
               new CoreError('INVALID_INPUT', "Run Checkout does not match the Session's Project")
             )
@@ -819,6 +853,7 @@ export function createCoreEffects(deps: CoreDeps = {}): CoreEffects {
     listStandingApprovals: (projectRoot) => approvals.list(projectRoot),
     standingApprovalRules: (projectRoot, harness) => approvals.rules(projectRoot, harness),
     revokeStandingApproval: (input) => approvals.revoke(input),
+    listProjectsWithActiveLocalRuns,
     queryMailbox,
     setSessionPinned: (sessionId, pinned) => sessions.update(sessionId, { pinned }),
     setSessionArchived: (sessionId, archived) => sessions.update(sessionId, { archived }),
@@ -978,6 +1013,7 @@ export function createCore(deps: CoreDeps = {}): Core {
     standingApprovalRules: (projectRoot, harness) =>
       run(core.standingApprovalRules(projectRoot, harness)),
     revokeStandingApproval: (input) => run(core.revokeStandingApproval(input)),
+    listProjectsWithActiveLocalRuns: () => run(core.listProjectsWithActiveLocalRuns()),
     queryMailbox: (query) => run(core.queryMailbox(query)),
     setSessionPinned: (sessionId, pinned) => run(core.setSessionPinned(sessionId, pinned)),
     setSessionArchived: (sessionId, archived) => run(core.setSessionArchived(sessionId, archived)),

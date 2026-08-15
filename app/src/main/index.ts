@@ -681,6 +681,10 @@ function registerIpc(): void {
     z.array(z.string()).parse(await coreClient.send({ type: 'session/list-damaged' }))
   )
 
+  handleInvoke(IPC_CHANNELS.listProjectsWithActiveLocalRuns, z.undefined(), async () =>
+    z.array(z.string()).parse(await coreClient.send({ type: 'session/active-local-runs' }))
+  )
+
   handleInvoke(IPC_CHANNELS.queryMailbox, mailboxQuerySchema, async (query) => {
     const snapshot = mailboxSnapshotSchema.parse(
       await coreClient.send({
@@ -947,7 +951,7 @@ function registerIpc(): void {
     })
   })
 
-  // Two calls, and nothing between them happens on its own (ADR 0008). Listing
+  // Two calls, and nothing between them happens on its own (ADR 0010). Listing
   // reads the app's own worktrees directory and writes nothing; removing acts
   // on exactly the directories the person named after reading that list.
   // Neither is reached from Delete, from Archive, from quit, or from a timer.
