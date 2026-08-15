@@ -94,8 +94,18 @@ export const checkoutCostSchema = z.object({
   path: z.string().min(1),
   /** When the bootstrap ran. */
   at: z.string().datetime(),
-  /** How long it took, start to finish, including every attempt at it. */
-  durationMs: z.number().int().nonnegative(),
+  /**
+   * How long it took, start to finish, including every attempt at it. Null
+   * when nobody timed it — a bootstrap that threw before it could read its own
+   * clock, or one recorded before this was measured.
+   *
+   * Deliberately not zero for that. Zero is a real measurement: a bootstrap
+   * that carried nothing finishes inside a millisecond, and a clock stepped
+   * backwards mid-bootstrap is clamped to it. Spending the only number that
+   * means "immediately" on "unknown" would leave the fastest Checkouts this
+   * record can produce reading as the ones it failed to measure.
+   */
+  durationMs: z.number().int().nonnegative().nullable().default(null),
   carried: carriedCountsSchema,
   /** What was not carried, tallied by the reason the bootstrap gave. */
   skipped: z.array(skipTallySchema),
@@ -147,10 +157,10 @@ export function measureBootstrap(input: {
   return {
     path: input.path,
     at: input.at,
-    // A bootstrap that could not read its own clock is not a free one; it is
-    // one nobody timed. Zero is the only number this can honestly carry, and
-    // the surface says "not timed" rather than drawing it as instant.
-    durationMs: input.result.durationMs ?? 0,
+    // Carried across exactly as the bootstrap reported it, unknown included: a
+    // bootstrap that could not read its own clock is not a free one, and this
+    // is the only place that distinction could be lost.
+    durationMs: input.result.durationMs,
     carried: carriedCounts(input.result),
     skipped: skipTallies(input.result),
     firstCommand: null

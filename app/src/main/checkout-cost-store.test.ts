@@ -67,6 +67,19 @@ describe('the record of what Checkouts cost', () => {
     })
   })
 
+  // Zero is a real measurement and null is the absence of one. Asserted
+  // through the file because JSON is where a nullable number is most easily
+  // lost, and losing it would make the fastest Checkouts read as the ones
+  // nobody managed to time.
+  it('keeps a bootstrap that took no measurable time apart from one nobody timed', async () => {
+    await bootstrap('/w/instant', { durationMs: 0 })
+    await bootstrap('/w/untimed', { durationMs: null })
+
+    const record = await store.read()
+    expect(record.checkouts.find((entry) => entry.path === '/w/instant')?.durationMs).toBe(0)
+    expect(record.checkouts.find((entry) => entry.path === '/w/untimed')?.durationMs).toBeNull()
+  })
+
   // The actual question. A Checkout prepared in half a second whose first
   // command then failed did not cost half a second — it was not usable.
   it('records how the first command a Run ran in a Checkout went', async () => {

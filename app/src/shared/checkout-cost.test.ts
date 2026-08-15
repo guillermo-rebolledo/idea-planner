@@ -73,8 +73,6 @@ describe('what a bootstrap carried', () => {
     ])
   })
 
-  // Zero is the only number an untimed bootstrap can honestly carry, and the
-  // surface draws it as "not timed" rather than as instant.
   it('reads a bootstrap nobody timed as no measurement', () => {
     const measured = measureBootstrap({
       path: '/w/fix',
@@ -82,8 +80,32 @@ describe('what a bootstrap carried', () => {
       result: bootstrapResult({ durationMs: null })
     })
 
-    expect(measured.durationMs).toBe(0)
+    expect(measured.durationMs).toBeNull()
     expect(measured.firstCommand).toBeNull()
+  })
+
+  /*
+   * The two states zero could be mistaken for each other, kept apart. A
+   * bootstrap that carried nothing finishes inside a millisecond and a clock
+   * stepped backwards is clamped to zero, so zero is a real measurement — and
+   * the fastest Checkouts this record can produce must not read as the ones it
+   * failed to measure.
+   */
+  it('keeps a bootstrap that took no measurable time apart from one nobody timed', () => {
+    const instant = measureBootstrap({
+      path: '/w/instant',
+      at: '2026-08-10T04:32:19.000Z',
+      result: bootstrapResult({ durationMs: 0 })
+    })
+    const untimed = measureBootstrap({
+      path: '/w/untimed',
+      at: '2026-08-10T04:32:19.000Z',
+      result: bootstrapResult({ durationMs: null })
+    })
+
+    expect(instant.durationMs).toBe(0)
+    expect(untimed.durationMs).toBeNull()
+    expect(instant.durationMs).not.toBe(untimed.durationMs)
   })
 })
 

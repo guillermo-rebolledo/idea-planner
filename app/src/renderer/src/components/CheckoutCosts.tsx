@@ -139,8 +139,9 @@ export function CheckoutCostsPanel(): React.JSX.Element {
                       </span>
                       <span className="shrink-0 font-mono text-2xs text-muted-foreground">
                         {/* A bootstrap nobody timed is said so rather than
-                            drawn as one that took no time. */}
-                        {cost.durationMs === 0 ? 'not timed' : describeDuration(cost.durationMs)}
+                            drawn as one that took no time — and `0 ms` is the
+                            second of those, not the first. */}
+                        {cost.durationMs === null ? 'not timed' : describeDuration(cost.durationMs)}
                       </span>
                     </div>
                     <p className="mt-0.5 text-2xs text-muted-foreground">
