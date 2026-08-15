@@ -154,6 +154,13 @@ export type CheckoutDefaultReason = 'local-run-active'
 export interface CheckoutDefault {
   kind: CheckoutRequest['kind']
   reason: CheckoutDefaultReason | null
+  /**
+   * True while this is the baseline standing in for an answer that has not
+   * come back yet. It is the safe-looking one — Local — and the answer it is
+   * waiting for is the only thing that could say otherwise, so it is not a
+   * proposal to start a Session on.
+   */
+  provisional: boolean
 }
 
 /**
@@ -169,15 +176,30 @@ export interface CheckoutDefault {
  *
  * Nothing here is a refusal. It decides only what is proposed; the person
  * overrides in either direction and the picker argues with neither.
+ *
+ * Not knowing yet is its own answer rather than a quiet "no". Both of them
+ * propose Local, and only one of them is safe to act on: the composer opens
+ * before anything has been looked up, and treating that moment as a Project
+ * with nothing running is how a Session gets sent into a working copy an
+ * agent is already writing to.
  */
 export function defaultCheckout(context: {
-  /** Whether a Run is working in this Project's Local Checkout right now. */
-  localRunActive: boolean
+  /**
+   * Whether a Run is working in this Project's Local Checkout right now, or
+   * 'unknown' while the look that would say has not come back.
+   */
+  localRunActive: boolean | 'unknown'
   /** What this Project's most recent Session used, or null when it has none. */
   lastUsed: Checkout['kind'] | null
 }): CheckoutDefault {
-  if (context.localRunActive) return { kind: 'isolated', reason: 'local-run-active' }
-  return { kind: context.lastUsed === 'worktree' ? 'isolated' : 'local', reason: null }
+  if (context.localRunActive === true) {
+    return { kind: 'isolated', reason: 'local-run-active', provisional: false }
+  }
+  return {
+    kind: context.lastUsed === 'worktree' ? 'isolated' : 'local',
+    reason: null,
+    provisional: context.localRunActive === 'unknown'
+  }
 }
 
 /**
@@ -202,17 +224,30 @@ export function resolveCheckout(context: {
    * there is nothing to cut from, `undefined` for not looked yet.
    */
   base?: string | null | undefined
-}): { checkout: CheckoutRequest; reason: CheckoutDefaultReason | null } {
+}): {
+  checkout: CheckoutRequest
+  reason: CheckoutDefaultReason | null
+  /** Whether this is settled enough to start a Session on. */
+  sendable: boolean
+} {
   const asked = context.chosenKind ?? context.proposed.kind
   // A Project with no branch to cut from cannot have an isolated Checkout,
   // whoever asked for one. Send stays live on Local rather than refusing with
   // nothing to say — and because this is derived, the ask survives the answer.
   const kind = asked === 'isolated' && context.base === null ? 'local' : asked
+  const checkout: CheckoutRequest =
+    kind === 'isolated' ? { kind: 'isolated', baseBranch: context.base ?? '' } : { kind: 'local' }
   return {
-    checkout:
-      kind === 'isolated'
-        ? { kind: 'isolated', baseBranch: context.base ?? '' }
-        : { kind: 'local' },
+    checkout,
+    // Two things are worth waiting a moment for, and both are the difference
+    // between a Session that lands where it was meant to and one that does
+    // not: an isolated ask with no base has nothing to cut from yet, and a
+    // proposal still standing in for an answer is the Local one that a Run
+    // working in that Checkout would have overruled. A Checkout the person
+    // picked is theirs either way and waits for nothing.
+    sendable:
+      (checkout.kind !== 'isolated' || checkout.baseBranch !== '') &&
+      (context.chosenKind !== undefined || !context.proposed.provisional),
     // The line explains a proposal. Once the person has answered it there is
     // nothing left to explain, and next to a Checkout that had to fall back it
     // would be explaining something that did not happen.

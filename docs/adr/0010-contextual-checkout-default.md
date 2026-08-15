@@ -58,6 +58,14 @@ to, and a second agent joining it is not "where the person works", it is two wri
   later look that finds a branch puts the isolated ask straight back. An observation quietly filed as
   somebody's choice would be a choice nobody made and nobody could undo — and the Session it sent
   into an occupied working copy would be exactly the collision this ADR exists to prevent.
+- **Not knowing yet is not the same as nothing running.** Both propose Local, and only one of them is
+  safe to act on. The composer opens before it has been told what is running, so until the answer
+  lands the proposal is marked provisional and Send waits on it — the same way it already waits for
+  an isolated ask to be given a base. It is a moment, and it is exactly the moment in which a Session
+  would otherwise be started in a working copy the app was about to say was occupied. A Checkout the
+  person picked waits for nothing, because the answer it was waiting for is one they have already
+  given. A look that fails is not waited on either: it settles to the baseline, since refusing to let
+  somebody start work because a read failed is the worse of the two failures.
 - **What is running is observed, never stored.** The Projects with an active Local Run are read from
   the same Conversation projection the inbox reads, on first ask and again on every Run boundary. So
   it covers Runs this window did not start, and it stops applying the moment they end. A Run blocked

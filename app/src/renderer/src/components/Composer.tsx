@@ -87,8 +87,12 @@ export function Composer({
   // which is what the default was before it had anything else to go on.
   const [lastUsed, setLastUsed] = useState<Record<string, Checkout['kind']>>({})
   // The Projects a Run is working in the Local Checkout of right now, this
-  // window's Sessions and everybody else's alike. Observed, never stored.
-  const [localRunProjects, setLocalRunProjects] = useState<string[]>([])
+  // window's Sessions and everybody else's alike. Observed, never stored —
+  // and null until it has been, because an empty list is an answer and this
+  // surface opens before there is one. The Projects and the recent Sessions
+  // come back together and Send already waits on them; this is asked
+  // separately, so it is the one that can still be outstanding.
+  const [localRunProjects, setLocalRunProjects] = useState<string[] | null>(null)
   // One choice, not three: the model carries the Harness that reaches it.
   const { models, readiness } = useModelCatalog()
   const [chosen, setChosen] = useState<ModelChoice | null>(null)
@@ -160,7 +164,13 @@ export function Composer({
       (roots) => {
         if (!disposedRef.current && localRunAnswers.wins(ticket)) setLocalRunProjects(roots)
       },
-      () => undefined
+      () => {
+        // A look that failed knows nothing, so it takes no ticket and replaces
+        // no answer. But if it was the only look there has been, holding Send
+        // for an answer that is not coming would be the worse failure of the
+        // two: fall back to the baseline and let the person work.
+        if (!disposedRef.current) setLocalRunProjects((current) => current ?? [])
+      }
     )
   }, [localRunAnswers])
 
@@ -188,9 +198,10 @@ export function Composer({
 
   // What this Project's Checkout would be if nobody said, and what it is once
   // the person's pick and the last look at Git are weighed against it.
-  const { checkout, reason } = resolveCheckout({
+  const { checkout, reason, sendable } = resolveCheckout({
     proposed: defaultCheckout({
-      localRunActive: localRunProjects.includes(projectRoot),
+      localRunActive:
+        localRunProjects === null ? 'unknown' : localRunProjects.includes(projectRoot),
       lastUsed: lastUsed[projectRoot] ?? null
     }),
     chosenKind: chosenKind[projectRoot],
@@ -209,8 +220,8 @@ export function Composer({
     message.trim().length > 0 &&
     selected !== undefined &&
     !sending &&
-    // An isolated ask needs its base settled before there is anything to cut.
-    (checkout.kind !== 'isolated' || checkout.baseBranch !== '')
+    // The Checkout has to be settled before a Session can be started on it.
+    sendable
 
   /** The person's own pick for this Project, which outranks the proposal. */
   function chooseCheckout(next: CheckoutRequest): void {

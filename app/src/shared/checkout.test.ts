@@ -10,25 +10,29 @@ describe('the New Session Checkout default', () => {
   it('is the working copy when nothing is running and nothing came before', () => {
     expect(defaultCheckout({ localRunActive: false, lastUsed: null })).toEqual({
       kind: 'local',
-      reason: null
+      reason: null,
+      provisional: false
     })
   })
 
   it('is whatever the Project’s most recent Session used, while nothing is running', () => {
     expect(defaultCheckout({ localRunActive: false, lastUsed: 'worktree' })).toEqual({
       kind: 'isolated',
-      reason: null
+      reason: null,
+      provisional: false
     })
     expect(defaultCheckout({ localRunActive: false, lastUsed: 'local' })).toEqual({
       kind: 'local',
-      reason: null
+      reason: null,
+      provisional: false
     })
   })
 
   it('is an isolated Checkout while a Run is working in the working copy, and says why', () => {
     expect(defaultCheckout({ localRunActive: true, lastUsed: 'local' })).toEqual({
       kind: 'isolated',
-      reason: 'local-run-active'
+      reason: 'local-run-active',
+      provisional: false
     })
   })
 
@@ -37,6 +41,16 @@ describe('the New Session Checkout default', () => {
     // always works isolated did not move, and being told why every time is
     // how an explanation turns into noise.
     expect(defaultCheckout({ localRunActive: false, lastUsed: 'worktree' }).reason).toBeNull()
+  })
+
+  it('marks itself provisional while nobody has looked at what is running', () => {
+    // It reads the same as a Project with nothing running, and it is not the
+    // same thing. Only one of the two is safe to start a Session on.
+    expect(defaultCheckout({ localRunActive: 'unknown', lastUsed: null })).toEqual({
+      kind: 'local',
+      reason: null,
+      provisional: true
+    })
   })
 })
 
@@ -47,7 +61,8 @@ describe('what the Checkout chip ends up asking for', () => {
   it('asks for the proposal, on the base the last look found', () => {
     expect(resolveCheckout({ proposed: occupied, base: 'trunk' })).toEqual({
       checkout: { kind: 'isolated', baseBranch: 'trunk' },
-      reason: 'local-run-active'
+      reason: 'local-run-active',
+      sendable: true
     })
   })
 
@@ -65,11 +80,13 @@ describe('what the Checkout chip ends up asking for', () => {
       checkout: { kind: 'local' },
       // Taking a suggestion back is allowed and is not argued with: the line
       // explained an offer, and the offer has been answered.
-      reason: null
+      reason: null,
+      sendable: true
     })
     expect(resolveCheckout({ proposed: free, chosenKind: 'isolated', base: 'trunk' })).toEqual({
       checkout: { kind: 'isolated', baseBranch: 'trunk' },
-      reason: null
+      reason: null,
+      sendable: true
     })
   })
 
@@ -78,7 +95,9 @@ describe('what the Checkout chip ends up asking for', () => {
       checkout: { kind: 'local' },
       // The Checkout the reason described is not the Checkout being offered,
       // so stating it would explain something that did not happen.
-      reason: null
+      reason: null,
+      // Nothing is outstanding — this is the answer, not a placeholder for one.
+      sendable: true
     })
   })
 
@@ -104,5 +123,40 @@ describe('what the Checkout chip ends up asking for', () => {
     expect(
       resolveCheckout({ proposed: occupied, chosenKind: 'local', base: 'trunk' }).checkout
     ).toEqual({ kind: 'local' })
+  })
+})
+
+describe('starting a Session on a Checkout that is still being decided', () => {
+  const unlooked = defaultCheckout({ localRunActive: 'unknown', lastUsed: null })
+  const free = defaultCheckout({ localRunActive: false, lastUsed: null })
+  const occupied = defaultCheckout({ localRunActive: true, lastUsed: 'local' })
+
+  it('waits while the proposal is standing in for an answer', () => {
+    // The composer opens on Local because that is the baseline, and the one
+    // thing that would have said otherwise has not come back. Sending here is
+    // the collision itself: a second Session in a working copy already being
+    // written to, started in the window before the app could say so.
+    expect(resolveCheckout({ proposed: unlooked, base: 'trunk' }).sendable).toBe(false)
+  })
+
+  it('goes as soon as the answer lands, either way', () => {
+    expect(resolveCheckout({ proposed: free, base: 'trunk' }).sendable).toBe(true)
+    expect(resolveCheckout({ proposed: occupied, base: 'trunk' }).sendable).toBe(true)
+  })
+
+  it('never waits on a Checkout the person picked themselves', () => {
+    // They have answered the question the look was going to answer. Holding
+    // Send would be waiting for permission to do what they already said.
+    expect(resolveCheckout({ proposed: unlooked, chosenKind: 'local' }).sendable).toBe(true)
+    expect(
+      resolveCheckout({ proposed: unlooked, chosenKind: 'isolated', base: 'trunk' }).sendable
+    ).toBe(true)
+  })
+
+  it('waits for a base an isolated ask has not been given yet', () => {
+    expect(resolveCheckout({ proposed: occupied, base: undefined }).sendable).toBe(false)
+    expect(
+      resolveCheckout({ proposed: free, chosenKind: 'isolated', base: undefined }).sendable
+    ).toBe(false)
   })
 })
