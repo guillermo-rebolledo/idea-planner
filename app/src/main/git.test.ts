@@ -9,7 +9,9 @@ import {
   unlink,
   writeFile
 } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
 import { tmpdir } from 'node:os'
+import { promisify } from 'node:util'
 import { isAbsolute, join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
@@ -21,6 +23,8 @@ import {
   initRepository,
   listBranches,
   observeCheckoutState,
+  exitedWith,
+  observeWorktreeContents,
   planRestoration,
   resolveProjectRoot,
   snapshotCheckout,
@@ -826,6 +830,71 @@ describe('creating an isolated checkout', () => {
     await expect(createWorktree(input)).resolves.toEqual({ status: 'not-a-repository' })
     await expect(createWorktree(input, { pathEnv: '' })).resolves.toEqual({
       status: 'git-unavailable'
+    })
+  })
+})
+
+describe('what a Worktree holds', () => {
+  it('answers for a Checkout with nothing committed in it, and for no git at all', async () => {
+    await git('git', ['init', '--quiet', '--initial-branch=main'], { cwd: root })
+
+    // Nothing committed yet. Git ran and answered, so there is genuinely
+    // nothing here for anything else to hold.
+    await expect(observeWorktreeContents(root)).resolves.toEqual({
+      status: 'observed',
+      uncommittedChanges: false,
+      commitsOnlyHere: false
+    })
+
+    await expect(observeWorktreeContents(root, { pathEnv: '' })).resolves.toEqual({
+      status: 'unreadable'
+    })
+  })
+
+  it('tells git choosing an exit status apart from git never answering', async () => {
+    // The three ways `execFile` rejects, taken from real commands rather than
+    // written down: git exiting 1 is git's answer, and it is the answer an
+    // unborn HEAD gives. A git that never started and a git killed for taking
+    // too long arrive in the same field and mean the opposite, and reading
+    // either as the first is how "could not be asked" becomes "nothing here"
+    // — which is what would let a Worktree holding unique commits be
+    // force-removed with no warning on it.
+    await git('git', ['init', '--quiet', '--initial-branch=main'], { cwd: root })
+    const execute = promisify(execFile)
+    const [refused, missing, killed] = await Promise.all([
+      execute('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], { cwd: root }).catch(
+        (error: unknown) => error
+      ),
+      execute('argos-has-no-such-command', [], { cwd: root }).catch((error: unknown) => error),
+      execute('/bin/sleep', ['5'], { cwd: root, timeout: 150 }).catch((error: unknown) => error)
+    ])
+
+    expect(exitedWith(refused, 1)).toBe(true)
+    expect(exitedWith(missing, 1)).toBe(false)
+    expect(exitedWith(killed, 1)).toBe(false)
+  })
+
+  it('reports uncommitted work and commits no other ref holds', async () => {
+    await conflictingRepository()
+    const linked = join(root, 'linked')
+    await git('git', ['worktree', 'add', '--quiet', '-b', 'topic', linked, 'main'], { cwd: root })
+    await expect(observeWorktreeContents(linked)).resolves.toEqual({
+      status: 'observed',
+      uncommittedChanges: false,
+      commitsOnlyHere: false
+    })
+
+    await writeFile(join(linked, 'only-here.txt'), 'unsaved\n')
+    await expect(observeWorktreeContents(linked)).resolves.toMatchObject({
+      uncommittedChanges: true,
+      commitsOnlyHere: false
+    })
+
+    await commitAll(linked, 'only here')
+    await expect(observeWorktreeContents(linked)).resolves.toEqual({
+      status: 'observed',
+      uncommittedChanges: false,
+      commitsOnlyHere: true
     })
   })
 })

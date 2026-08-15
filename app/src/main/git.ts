@@ -341,12 +341,20 @@ async function hasCommitsOnlyHere(checkout: string, options: GitOptions): Promis
   // A Checkout with nothing committed in it is the one honest `false` here,
   // and it is a question with an answer rather than a failure to walk: HEAD
   // resolving to nothing means there are no commits for anything else to hold.
-  const head = await run('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], {
+  //
+  // `--verify --quiet` says so by exiting 1, which a timeout and a missing git
+  // are indistinguishable from unless the error is read rather than swallowed.
+  // Only a git that ran and answered is allowed to mean "nothing to lose";
+  // anything else throws, and the Checkout reads as unknown.
+  const resolved = await run('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], {
     cwd: checkout,
     env,
     timeout: TIMEOUT_MS
-  }).catch(() => null)
-  if (head === null || head.stdout.trim() === '') return false
+  }).catch((error: unknown) => {
+    if (exitedWith(error, 1)) return null
+    throw error
+  })
+  if (resolved === null || resolved.stdout.trim() === '') return false
   const branch = await currentBranch(checkout, options)
   const { stdout: named } = await run(
     'git',
@@ -370,6 +378,24 @@ async function hasCommitsOnlyHere(checkout: string, options: GitOptions): Promis
     { cwd: checkout, env, timeout: TIMEOUT_MS }
   )
   return Number(stdout.trim()) > 0
+}
+
+/**
+ * Whether git ran to completion and chose this exit status, as opposed to
+ * never starting or being killed for taking too long.
+ *
+ * A rejected `execFile` carries all three the same way, and they mean opposite
+ * things: an exit status is git's answer, while `ENOENT` is a string in the
+ * same field and a timeout arrives killed with no status at all. Reading one
+ * as the other is how "git could not be asked" becomes "git said no".
+ *
+ * Exported for its own test: the callers that depend on it reach it only when
+ * git fails in a way a test cannot stage from outside, and this distinction is
+ * exactly the one that must not quietly stop holding.
+ */
+export function exitedWith(error: unknown, status: number): boolean {
+  const failure = error as { code?: unknown; killed?: unknown } | null
+  return failure?.killed !== true && failure?.code === status
 }
 
 /**
