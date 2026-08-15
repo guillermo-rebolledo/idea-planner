@@ -1763,6 +1763,99 @@ test('a partial Checkout bootstrap keeps the Worktree and offers accessible reco
   }
 })
 
+test('the Worktrees Argos made are accounted for, and reclaimed only when asked', async () => {
+  const gitc = (args: string[]): Promise<unknown> =>
+    git('git', ['-c', 'user.email=a@b', '-c', 'user.name=t', ...args], {
+      cwd: sandbox.projectDir
+    })
+  await writeFile(join(sandbox.projectDir, 'app.ts'), 'export const app = true\n')
+  await gitc(['add', '-A'])
+  await gitc(['commit', '--quiet', '-m', 'init'])
+
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+
+    // A Session fixed to an isolated Checkout, which is what makes a Worktree.
+    await page.getByRole('button', { name: 'New Session', exact: true }).click()
+    const composer = page.getByRole('form', { name: 'New chat' })
+    await page.evaluate(async () => {
+      await window.shell.refreshReadiness()
+      window.dispatchEvent(new Event('focus'))
+    })
+    await expect(composer.getByRole('combobox', { name: 'Model' })).toBeVisible()
+    await composer.getByLabel('Message').fill('Reclaim me later')
+    await composer.getByRole('button', { name: 'Checkout' }).click()
+    await page.getByRole('radio', { name: 'Isolated' }).click()
+    await page.keyboard.press('Escape')
+    await composer.getByRole('button', { name: 'Send' }).click()
+    await expect(page.getByRole('heading', { name: 'Reclaim me later' })).toBeVisible()
+
+    const { stdout: listed } = await git('git', ['worktree', 'list', '--porcelain'], {
+      cwd: sandbox.projectDir
+    })
+    const projectReal = await realpath(sandbox.projectDir)
+    const worktreePath = listed
+      .split('\n')
+      .filter((line) => line.startsWith('worktree '))
+      .map((line) => line.slice('worktree '.length).trim())
+      .find((path) => path !== sandbox.projectDir && path !== projectReal)
+    expect(worktreePath).toBeDefined()
+
+    const inbox = page.getByRole('navigation', { name: 'Session inbox' })
+    const group = inbox.getByRole('region', { name: basename(sandbox.projectDir) })
+    const openReclaim = async (): Promise<void> => {
+      await group.getByRole('button', { name: /^More for/ }).click()
+      await page.getByRole('menuitem', { name: 'Worktrees…' }).click()
+    }
+
+    // The surface names the Session it belongs to and refuses the one an agent
+    // is writing into right now — the fake Harness is still working.
+    await openReclaim()
+    let dialog = page.getByRole('alertdialog', { name: /^Worktrees in/ })
+    await expect(dialog).toContainText('Reclaim me later')
+    await expect(dialog).toContainText('a Run is working here now')
+    await expect(dialog.getByRole('checkbox', { name: /^Remove reclaim-me-later/ })).toBeDisabled()
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+
+    await page.getByRole('button', { name: 'Stop' }).click()
+
+    // Deleting the Session leaves its Checkout exactly where it is: git, not
+    // the app, is the undo for files (ADR 0002).
+    await inbox.getByText('Reclaim me later').click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Delete…' }).click()
+    await page
+      .getByRole('alertdialog', { name: 'Delete “Reclaim me later”?' })
+      .getByRole('button', { name: 'Delete Session' })
+      .click()
+    await expect(inbox.getByText('Reclaim me later')).toHaveCount(0)
+    await expect(readdir(worktreePath ?? '')).resolves.toContain('app.ts')
+
+    // And the Worktree is still accounted for, with the Session it outlived
+    // named as gone rather than quietly dropped from the list.
+    await openReclaim()
+    dialog = page.getByRole('alertdialog', { name: /^Worktrees in/ })
+    await expect(dialog).toContainText('No Session')
+    const entry = dialog.getByRole('checkbox', { name: /^Remove reclaim-me-later/ })
+    await expect(entry).toBeEnabled()
+    await entry.check()
+    await dialog.getByRole('button', { name: 'Remove 1 Worktree' }).click()
+    await expect(dialog).toContainText('Removed')
+
+    // The directory is gone; the branch it was on is exactly where it was.
+    await expect(readdir(worktreePath ?? '')).rejects.toThrow()
+    const { stdout: branches } = await git(
+      'git',
+      ['branch', '--list', '--format=%(refname:short)'],
+      { cwd: sandbox.projectDir }
+    )
+    expect(branches.split('\n').map((line) => line.trim())).toContain('reclaim-me-later')
+  } finally {
+    await app.close()
+  }
+})
+
 /** A Codex that answers `model/list`, as the installed one does. */
 const MODEL_LISTING_CODEX = `case "$1" in
   --version) echo "codex-cli 0.146.0"; exit 0;;

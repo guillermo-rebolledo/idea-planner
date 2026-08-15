@@ -30,6 +30,10 @@ _Avoid_: Delete, hide, close
 Permanently removing a Session, its Conversation, and the Run Snapshots kept for it. The one destructive act in the app, and the only one that asks for confirmation. Files the Session changed stay on disk in its Checkout — git, not the app, is the undo for those.
 _Avoid_: Archive, remove, clear
 
+**Reclaim**:
+Removing isolated Checkouts Argos made for a Project, after reading what each one is. The list says which Session it belongs to and whether that Session is archived or gone, whether it holds uncommitted changes or commits no other branch or remote has, and what it is using on disk now rather than what it cost to create. One confirmation removes exactly what was selected; branches are left where they are, one that cannot be removed says why without stopping the rest, and one already removed outside the app is reported as gone rather than as a failure. Nothing is ever reclaimed unasked — not on Delete, not on Archive, not on quit, not on a timer — which is why Archive and Delete still leave a Checkout on disk.
+_Avoid_: Clean up, prune, sweep, garbage collection
+
 **Run Snapshot**:
 The Checkout as it stood before and after one Run, held as Git objects the app owns rather than anything written into the Project. Kept for as long as its Session is, which is what makes **Run Undo** possible; Archive keeps it and Delete removes it. A Run from before snapshots were kept simply reports undo unavailable.
 _Avoid_: Backup, version, checkpoint, commit

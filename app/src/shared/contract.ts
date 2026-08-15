@@ -69,6 +69,7 @@ import {
 import { pullRequestSchema } from './pull-request'
 import { reviewLaunchSchema, type ReviewState } from './review'
 import type { UpdateAvailability } from './update'
+import type { RemoveWorktreesInput, WorktreeInventory, WorktreeRemovalResult } from './worktree'
 import {
   appearanceSettingsSchema,
   resolvedThemeSchema,
@@ -95,6 +96,8 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 29: the Worktrees Argos made for a Project can be listed and, once asked
+ *     for, removed.
  * 28: an isolated Checkout's bootstrap result says which commit of which
  *     branch the carried state came from, and when.
  * 27: the app can say a newer version of itself has been published.
@@ -126,7 +129,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 28
+export const CONTRACT_VERSION = 29
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -697,6 +700,20 @@ export interface ShellApi {
    * an isolated checkout's base. Observed on each ask.
    */
   listBranches(projectRoot: string): Promise<BranchList>
+  /**
+   * Every isolated Checkout Argos made for this Project: which Session it
+   * belongs to and how that Session stands, whether it holds uncommitted
+   * changes or commits no other ref has, and what it is using on disk now.
+   * Reads only, and never as a prelude to anything.
+   */
+  listProjectWorktrees(projectRoot: string): Promise<WorktreeInventory>
+  /**
+   * Removes exactly the Worktrees named, after the person has read the list
+   * and confirmed it once. Branches are left where they are, one that cannot
+   * be removed says why without stopping the rest, and one already removed
+   * outside the app is reported as gone rather than as a failure.
+   */
+  removeWorktrees(input: RemoveWorktreesInput): Promise<WorktreeRemovalResult>
   /** What "Open in" can offer on this Mac, and what was chosen last. */
   listEditors(): Promise<EditorCatalog>
   /**
@@ -721,3 +738,4 @@ export * from './review-attachment'
 export * from './run'
 export * from './run-undo'
 export * from './update'
+export * from './worktree'

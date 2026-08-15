@@ -9,7 +9,9 @@ import {
   unlink,
   writeFile
 } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
 import { tmpdir } from 'node:os'
+import { promisify } from 'node:util'
 import { isAbsolute, join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
@@ -21,6 +23,8 @@ import {
   initRepository,
   listBranches,
   observeCheckoutState,
+  exitedWith,
+  observeWorktreeContents,
   planRestoration,
   resolveProjectRoot,
   snapshotCheckout,
@@ -826,6 +830,126 @@ describe('creating an isolated checkout', () => {
     await expect(createWorktree(input)).resolves.toEqual({ status: 'not-a-repository' })
     await expect(createWorktree(input, { pathEnv: '' })).resolves.toEqual({
       status: 'git-unavailable'
+    })
+  })
+})
+
+describe('what a Worktree holds', () => {
+  it('answers for a Checkout with nothing committed in it, and for no git at all', async () => {
+    await git('git', ['init', '--quiet', '--initial-branch=main'], { cwd: root })
+
+    // Nothing committed yet. Git ran and answered, so there is genuinely
+    // nothing here for anything else to hold.
+    await expect(observeWorktreeContents(root, root)).resolves.toEqual({
+      status: 'observed',
+      uncommittedChanges: false,
+      commitsOnlyHere: false,
+      ignoredWork: { onlyHere: false, complete: true }
+    })
+
+    await expect(observeWorktreeContents(root, root, { pathEnv: '' })).resolves.toEqual({
+      status: 'unreadable'
+    })
+  })
+
+  it('names an ignored file made here, and not the one carried in from the Project', async () => {
+    await conflictingRepository()
+    await writeFile(join(root, '.gitignore'), 'node_modules/\n.env*\n')
+    await commitAll(root, 'ignore rules')
+    // The Project's own ignored state, which a Checkout is bootstrapped by
+    // carrying in (MEM-132). Every Worktree has it, so it is not work.
+    await mkdir(join(root, 'node_modules'), { recursive: true })
+    await writeFile(join(root, 'node_modules', 'installed.js'), 'shared\n')
+    const linked = join(root, 'linked')
+    await git('git', ['worktree', 'add', '--quiet', '-b', 'ignored', linked, 'main'], { cwd: root })
+    await mkdir(join(linked, 'node_modules'), { recursive: true })
+    await writeFile(join(linked, 'node_modules', 'installed.js'), 'carried in\n')
+
+    await expect(observeWorktreeContents(linked, root)).resolves.toMatchObject({
+      ignoredWork: { onlyHere: false, complete: true }
+    })
+
+    // A secret written into this Checkout and nowhere else. Git is the undo for
+    // a tracked file; for this there is no undo at all, so removing it without
+    // saying so is the worst thing this surface could do.
+    await writeFile(join(linked, '.env'), 'API_KEY=only-here\n')
+
+    await expect(observeWorktreeContents(linked, root)).resolves.toMatchObject({
+      uncommittedChanges: false,
+      ignoredWork: { onlyHere: true, complete: true }
+    })
+  })
+
+  it('says the ignored comparison stopped early rather than that it found nothing', async () => {
+    await conflictingRepository()
+    await writeFile(join(root, '.gitignore'), '*.log\n')
+    await commitAll(root, 'ignore rules')
+    const linked = join(root, 'linked')
+    await git('git', ['worktree', 'add', '--quiet', '-b', 'noisy', linked, 'main'], { cwd: root })
+    // More separately-named ignored entries than the comparison will look at,
+    // every one of them shared with the Project. Stopping at the bound and
+    // answering "nothing only here" would be a silent wrong answer of exactly
+    // the kind a swallowed failure gives — and `--force` follows it.
+    await Promise.all(
+      Array.from({ length: 1200 }, (_, index) =>
+        Promise.all([
+          writeFile(join(root, `noise-${String(index)}.log`), 'shared\n'),
+          writeFile(join(linked, `noise-${String(index)}.log`), 'shared\n')
+        ])
+      )
+    )
+
+    await expect(observeWorktreeContents(linked, root)).resolves.toMatchObject({
+      ignoredWork: { onlyHere: false, complete: false }
+    })
+  })
+
+  it('tells git choosing an exit status apart from git never answering', async () => {
+    // The three ways `execFile` rejects, taken from real commands rather than
+    // written down: git exiting 1 is git's answer, and it is the answer an
+    // unborn HEAD gives. A git that never started and a git killed for taking
+    // too long arrive in the same field and mean the opposite, and reading
+    // either as the first is how "could not be asked" becomes "nothing here"
+    // — which is what would let a Worktree holding unique commits be
+    // force-removed with no warning on it.
+    await git('git', ['init', '--quiet', '--initial-branch=main'], { cwd: root })
+    const execute = promisify(execFile)
+    const [refused, missing, killed] = await Promise.all([
+      execute('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], { cwd: root }).catch(
+        (error: unknown) => error
+      ),
+      execute('argos-has-no-such-command', [], { cwd: root }).catch((error: unknown) => error),
+      execute('/bin/sleep', ['5'], { cwd: root, timeout: 150 }).catch((error: unknown) => error)
+    ])
+
+    expect(exitedWith(refused, 1)).toBe(true)
+    expect(exitedWith(missing, 1)).toBe(false)
+    expect(exitedWith(killed, 1)).toBe(false)
+  })
+
+  it('reports uncommitted work and commits no other ref holds', async () => {
+    await conflictingRepository()
+    const linked = join(root, 'linked')
+    await git('git', ['worktree', 'add', '--quiet', '-b', 'topic', linked, 'main'], { cwd: root })
+    await expect(observeWorktreeContents(linked, root)).resolves.toEqual({
+      status: 'observed',
+      uncommittedChanges: false,
+      commitsOnlyHere: false,
+      ignoredWork: { onlyHere: false, complete: true }
+    })
+
+    await writeFile(join(linked, 'only-here.txt'), 'unsaved\n')
+    await expect(observeWorktreeContents(linked, root)).resolves.toMatchObject({
+      uncommittedChanges: true,
+      commitsOnlyHere: false
+    })
+
+    await commitAll(linked, 'only here')
+    await expect(observeWorktreeContents(linked, root)).resolves.toEqual({
+      status: 'observed',
+      uncommittedChanges: false,
+      commitsOnlyHere: true,
+      ignoredWork: { onlyHere: false, complete: true }
     })
   })
 })

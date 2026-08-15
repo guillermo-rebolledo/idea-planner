@@ -57,6 +57,7 @@ import {
 import { SessionSwitcher } from '@renderer/components/SessionSwitcher'
 import { FilesPanel } from '@renderer/components/FilesPanel'
 import { WhereAmI } from '@renderer/components/WhereAmI'
+import { WorktreeReclaimDialog } from '@renderer/components/WorktreeReclaim'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useSessionChanges } from '@renderer/lib/useSessionChanges'
 import { useSelectedConversation } from '@renderer/lib/useSelectedConversation'
@@ -963,6 +964,9 @@ function ProjectGroup({
   // is gentle — Sessions keep an (unavailable) home and disk is untouched —
   // but the person deserves to read that before it happens, not after.
   const [confirmingRemove, setConfirmingRemove] = useState(false)
+  // Reclaiming Worktrees is asked for here and nowhere else: it is a Project's
+  // disk, and the Project group is where a Project's own acts live.
+  const [reclaimingWorktrees, setReclaimingWorktrees] = useState(false)
 
   async function removeProject(): Promise<void> {
     setConfirmingRemove(false)
@@ -1011,6 +1015,10 @@ function ProjectGroup({
               <MenuContent>
                 {/* Deferred past the closing menu's focus restoration, which
                     would otherwise land focus behind the dialog it opens. */}
+                <MenuItem onClick={() => window.setTimeout(() => setReclaimingWorktrees(true), 0)}>
+                  <FolderTree aria-hidden="true" className="size-3.5 text-muted-foreground" />
+                  Worktrees…
+                </MenuItem>
                 <MenuItem onClick={() => window.setTimeout(() => setConfirmingRemove(true), 0)}>
                   <X aria-hidden="true" className="size-3.5 text-muted-foreground" />
                   Remove Project…
@@ -1020,6 +1028,14 @@ function ProjectGroup({
           </span>
         )}
       </div>
+      {reclaimingWorktrees && (
+        <WorktreeReclaimDialog
+          projectRoot={group.root}
+          projectName={group.name}
+          onAnnounce={onAnnounce}
+          onDismiss={() => setReclaimingWorktrees(false)}
+        />
+      )}
       {confirmingRemove && (
         <Modal labelledBy="remove-project-title" onDismiss={() => setConfirmingRemove(false)}>
           <h2 id="remove-project-title" className="text-sm font-semibold">

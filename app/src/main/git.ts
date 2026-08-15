@@ -9,6 +9,7 @@ import type {
   WorktreeBootstrapResult
 } from '@shared/checkout'
 import type { UndoPath, UndoPathClassification } from '@shared/run-undo'
+import type { WorktreeContents } from '@shared/worktree'
 import { promisify } from 'node:util'
 import { bootstrapWorktree } from './worktree-bootstrap'
 
@@ -286,6 +287,298 @@ export async function createWorktree(
     }
   }
   return { status: 'failed', message: failure.slice(0, 500) }
+}
+
+/**
+ * What a Worktree holds that removing it would take with it, asked of git in
+ * the Checkout itself.
+ *
+ * The Project is named as well as the Checkout, because one of the three
+ * questions is comparative: an ignored file only matters here if the Project
+ * does not already have one, and nothing in the Checkout alone can say that.
+ */
+export async function observeWorktreeContents(
+  checkout: string,
+  projectRoot: string,
+  options: GitOptions = {}
+): Promise<WorktreeContents> {
+  try {
+    const env = environment(options)
+    // One walk answering two questions. `--ignored=traditional` collapses a
+    // wholly ignored directory into a single `dir/` record rather than
+    // descending it, so asking about ignored state costs a short list rather
+    // than every file in a carried-in dependency tree.
+    const { stdout } = await run('git', ['status', '--porcelain', '-z', '--ignored=traditional'], {
+      cwd: checkout,
+      env,
+      timeout: TIMEOUT_MS,
+      maxBuffer: MAX_DIFF_BYTES
+    })
+    const records = readPorcelainStatus(stdout)
+    return {
+      status: 'observed',
+      // Ignored records are not changes: the dependency directory carried in
+      // at creation is not work somebody did here.
+      uncommittedChanges: records.some((record) => record.status !== IGNORED),
+      ignoredWork: await compareIgnoredWork(records, projectRoot),
+      // Deliberately not caught: a walk that failed is not a walk that found
+      // nothing. Reporting "no commits are only here" because git could not be
+      // asked would drop the one warning standing between a person and commits
+      // that exist nowhere else, so the whole observation goes unreadable and
+      // the surface says it does not know.
+      commitsOnlyHere: await hasCommitsOnlyHere(checkout, options)
+    }
+  } catch {
+    return { status: 'unreadable' }
+  }
+}
+
+/** How `git status --porcelain` marks a path it is ignoring. */
+const IGNORED = '!!'
+
+/**
+ * How many ignored entries are compared against the Project. Whole ignored
+ * directories arrive collapsed, so passing this takes a `.gitignore` naming
+ * thousands of separate things. Reaching it does not decide the answer — it
+ * ends the comparison, which is then reported as incomplete rather than as
+ * nothing found.
+ */
+const MAX_IGNORED_COMPARED = 1000
+
+/**
+ * `--porcelain -z` records: a two-character status, a space, and a path, each
+ * NUL-terminated. A rename or a copy names where it came from in a field of
+ * its own, which is consumed rather than read as another record — a path taken
+ * for a status is a path this would then compare against the wrong thing.
+ */
+function readPorcelainStatus(stdout: string): { status: string; path: string }[] {
+  const fields = stdout.split('\0')
+  const records: { status: string; path: string }[] = []
+  for (let index = 0; index < fields.length; index++) {
+    const field = fields[index]
+    if (field === undefined || field === '') continue
+    const status = field.slice(0, 2)
+    const path = field.slice(3)
+    if (path === '') continue
+    records.push({ status, path })
+    if (status.startsWith('R') || status.startsWith('C')) index++
+  }
+  return records
+}
+
+/**
+ * Whether this Checkout holds an ignored file or directory the Project does
+ * not — a `.env` written here, an output directory built here.
+ *
+ * Presence in the Project is the whole test. Everything a Checkout is
+ * bootstrapped with came from the Project and is still there, so it reads as
+ * shared; anything made here since does not, and it is the only thing on this
+ * surface with no undo anywhere.
+ *
+ * The bound is reported rather than applied silently. Stopping early and
+ * answering "none here" would be the same wrong answer a swallowed failure
+ * gives — the person is told the comparison was partial, and the removal path
+ * treats a comparison that has become partial as a reason to stop.
+ */
+async function compareIgnoredWork(
+  records: { status: string; path: string }[],
+  projectRoot: string
+): Promise<{ onlyHere: boolean; complete: boolean }> {
+  const ignored = records.filter((record) => record.status === IGNORED)
+  for (const record of ignored.slice(0, MAX_IGNORED_COMPARED)) {
+    const shared = await access(join(projectRoot, record.path)).then(
+      () => true,
+      () => false
+    )
+    // Found one, so the bound no longer matters: the answer is yes either way.
+    if (!shared) return { onlyHere: true, complete: true }
+  }
+  return { onlyHere: false, complete: ignored.length <= MAX_IGNORED_COMPARED }
+}
+
+/**
+ * Whether HEAD holds commits no other ref does.
+ *
+ * The other refs are enumerated and excluded by name rather than by glob:
+ * `--exclude` applies only to the next ref selector and `--all` quietly
+ * includes a detached HEAD, so a pattern that reads correctly can still answer
+ * "nothing is only here" for every Worktree — which is the answer that loses
+ * somebody's commits.
+ *
+ * Throws when git cannot answer, which is what keeps "could not tell" out of
+ * the same shape as "nothing to lose".
+ */
+async function hasCommitsOnlyHere(checkout: string, options: GitOptions): Promise<boolean> {
+  const env = environment(options)
+  // A Checkout with nothing committed in it is the one honest `false` here,
+  // and it is a question with an answer rather than a failure to walk: HEAD
+  // resolving to nothing means there are no commits for anything else to hold.
+  //
+  // `--verify --quiet` says so by exiting 1, which a timeout and a missing git
+  // are indistinguishable from unless the error is read rather than swallowed.
+  // Only a git that ran and answered is allowed to mean "nothing to lose";
+  // anything else throws, and the Checkout reads as unknown.
+  const resolved = await run('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], {
+    cwd: checkout,
+    env,
+    timeout: TIMEOUT_MS
+  }).catch((error: unknown) => {
+    if (exitedWith(error, 1)) return null
+    throw error
+  })
+  if (resolved === null || resolved.stdout.trim() === '') return false
+  const branch = await currentBranch(checkout, options)
+  const { stdout: named } = await run(
+    'git',
+    [
+      'for-each-ref',
+      `--count=${String(MAX_EXCLUDED_REFS)}`,
+      '--format=%(refname)',
+      'refs/heads',
+      'refs/remotes',
+      'refs/tags'
+    ],
+    { cwd: checkout, env, timeout: TIMEOUT_MS, maxBuffer: MAX_DIFF_BYTES }
+  )
+  const others = named
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((ref) => ref !== '' && ref !== `refs/heads/${branch ?? ''}`)
+  const { stdout } = await run(
+    'git',
+    ['rev-list', '--count', 'HEAD', ...others.map((ref) => `^${ref}`)],
+    { cwd: checkout, env, timeout: TIMEOUT_MS }
+  )
+  return Number(stdout.trim()) > 0
+}
+
+/**
+ * Whether git ran to completion and chose this exit status, as opposed to
+ * never starting or being killed for taking too long.
+ *
+ * A rejected `execFile` carries all three the same way, and they mean opposite
+ * things: an exit status is git's answer, while `ENOENT` is a string in the
+ * same field and a timeout arrives killed with no status at all. Reading one
+ * as the other is how "git could not be asked" becomes "git said no".
+ *
+ * Exported for its own test: the callers that depend on it reach it only when
+ * git fails in a way a test cannot stage from outside, and this distinction is
+ * exactly the one that must not quietly stop holding.
+ */
+export function exitedWith(error: unknown, status: number): boolean {
+  const failure = error as { code?: unknown; killed?: unknown } | null
+  return failure?.killed !== true && failure?.code === status
+}
+
+/**
+ * How many refs one repository is asked to exclude. Far past any repository a
+ * person browses by hand, and short of an argument list an operating system
+ * would refuse.
+ */
+const MAX_EXCLUDED_REFS = 2000
+
+export type WorktreeRemovalAttempt =
+  | { status: 'removed' }
+  /** The directory was not there, or git had already forgotten it. */
+  | { status: 'already-gone' }
+  | { status: 'failed'; message: string }
+
+/**
+ * Removes one linked worktree, and only the worktree.
+ *
+ * `--force` because the person has already been shown what it holds and asked
+ * for it anyway; refusing here would mean showing them "uncommitted changes"
+ * and then declining to act on the confirmation they gave. The branch is never
+ * touched — `git worktree remove` does not delete it, and this does not go
+ * looking for one to delete.
+ */
+export async function removeWorktree(
+  input: { projectRoot: string; path: string },
+  options: GitOptions = {}
+): Promise<WorktreeRemovalAttempt> {
+  const gone = await access(input.path).then(
+    () => false,
+    () => true
+  )
+  const env = environment(options)
+  if (gone) {
+    // Removed in a terminal since the list was read. Git's admin record for it
+    // is the only thing left, and pruning is what makes that true on disk too.
+    await run('git', ['worktree', 'prune'], {
+      cwd: input.projectRoot,
+      env,
+      timeout: TIMEOUT_MS
+    }).catch(() => undefined)
+    return { status: 'already-gone' }
+  }
+  try {
+    await run('git', ['worktree', 'remove', '--force', input.path], {
+      cwd: input.projectRoot,
+      env,
+      timeout: TIMEOUT_MS
+    })
+    return { status: 'removed' }
+  } catch (error) {
+    // A machine with no git is a different problem from a worktree git
+    // refused, and sending somebody to read `spawn git ENOENT` sends them to
+    // fix the wrong thing (ADR 0005).
+    if (await isGitMissing(options)) {
+      return { status: 'failed', message: 'Git could not be found on this machine.' }
+    }
+    const message = gitComplaint(error)
+    // A directory this repository has no record of cannot be removed by git at
+    // all — the Project was re-cloned, or its admin file was pruned while the
+    // directory stayed. It is app-owned state and the person selected it, so
+    // the app removes the directory itself rather than reporting a failure
+    // nothing could ever repair.
+    if (!(await isRegisteredWorktree(input, env))) {
+      return await rm(input.path, { recursive: true, force: true }).then(
+        (): WorktreeRemovalAttempt => ({ status: 'removed' }),
+        (): WorktreeRemovalAttempt => ({ status: 'failed', message })
+      )
+    }
+    return { status: 'failed', message }
+  }
+}
+
+/**
+ * What git actually complained about, as one line. A rejected `execFile`
+ * carries the whole command line and every line of stderr; the person needs
+ * the sentence, not the transcript.
+ */
+function gitComplaint(error: unknown): string {
+  const lines = (error instanceof Error ? error.message : '')
+    .split('\n')
+    .map((line) => line.trim().replace(/^(fatal|error|warning):\s*/i, ''))
+    .filter((line) => line !== '' && !line.startsWith('Command failed:'))
+  return (lines.at(-1) ?? 'The Worktree could not be removed').slice(0, 300)
+}
+
+/** Whether the Project's repository still has an admin record for this path. */
+async function isRegisteredWorktree(
+  input: { projectRoot: string; path: string },
+  env: NodeJS.ProcessEnv
+): Promise<boolean> {
+  try {
+    const [{ stdout }, real] = await Promise.all([
+      run('git', ['worktree', 'list', '--porcelain'], {
+        cwd: input.projectRoot,
+        env,
+        timeout: TIMEOUT_MS,
+        maxBuffer: MAX_DIFF_BYTES
+      }),
+      realpath(input.path).catch(() => input.path)
+    ])
+    const registered = stdout
+      .split('\n')
+      .filter((line) => line.startsWith('worktree '))
+      .map((line) => line.slice('worktree '.length).trim())
+    return registered.some((path) => path === input.path || path === real)
+  } catch {
+    // Git could not be asked, so nothing has been ruled out. Reporting the
+    // failure beats removing a directory on a guess.
+    return true
+  }
 }
 
 /**

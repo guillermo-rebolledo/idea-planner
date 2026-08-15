@@ -56,6 +56,8 @@ export const IPC_CHANNELS = {
   stopRun: 'run:stop',
   getCheckoutFacts: 'checkout:facts',
   listBranches: 'checkout:branches',
+  listProjectWorktrees: 'worktree:list',
+  removeWorktrees: 'worktree:remove',
   listEditors: 'editor:list',
   openInEditor: 'editor:open',
   getConversation: 'conversation:get',

@@ -389,6 +389,62 @@ describe('Run service', () => {
     })
   })
 
+  it('names a Run’s Checkout busy from acceptance, not from when its baseline lands', async () => {
+    const root = await readyClaudeRoot('run-active-checkouts-')
+    const projectRoot = join(root, 'a-project')
+    const core = fakeCore(projectRoot)
+    const snapshots = new SessionSnapshotStore(join(root, 'private'))
+    const capture = snapshots.capture.bind(snapshots)
+    // The baseline is recorded only once this capture returns, and capturing
+    // walks the whole Checkout — seconds, where a dependency directory was
+    // carried in. Whatever is true here is true for that whole window, and it
+    // is the window a Worktree removal would land in.
+    const holder: { service?: RunService } = {}
+    let duringCapture: string[] = []
+    vi.spyOn(snapshots, 'capture').mockImplementation((input) => {
+      if (input.phase === 'before') duringCapture = holder.service?.activeCheckouts() ?? []
+      return capture(input)
+    })
+    holder.service = new RunService({
+      core,
+      broker: fakeBroker(),
+      readiness: {
+        refresh: vi.fn(() =>
+          Promise.resolve({
+            harnesses: [
+              {
+                harness: 'claude',
+                available: true,
+                executablePath: join(root, 'claude'),
+                version: '2.1.220 (Claude Code)'
+              }
+            ]
+          })
+        )
+      },
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots,
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      claudeOauthToken: fakeClaudeOauthToken,
+      skills: fakeSkills(root)
+    })
+
+    await holder.service.start({
+      submissionId: 'submission-1',
+      sessionId: 'session',
+      prompt: 'Develop this Session',
+      harness: 'claude',
+      model: 'claude-sonnet-4-5',
+      effort: 'high',
+      skill: 'wayfinder',
+      permissionMode: 'auto'
+    })
+
+    expect(duringCapture).toContain(projectRoot)
+  })
+
   it('resumes compatible Claude continuity but hands off local history when switching Harnesses', async () => {
     const root = await readyClaudeRoot('run-claude-continuity-')
     const core = fakeCore(join(root, 'a-project'))
