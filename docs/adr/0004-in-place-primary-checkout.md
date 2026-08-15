@@ -34,6 +34,11 @@ is still the mechanism, but Argos retains Session-owned Git objects for each
 Run's before/after trees and applies guarded inverse patches from them. Per-hunk
 application stays rejected.
 
+Amended by [ADR 0008](./0008-contextual-checkout-default.md): the primary
+checkout is still the baseline for the _first_ Session on a Project, but a
+Session started while that Project has an active Local Run is isolated by
+default. The install cost cited below no longer applies.
+
 ## Considered options
 
 - **Isolated checkouts as the baseline.** Rejected for a _local_ app. Isolation

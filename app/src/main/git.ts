@@ -9,6 +9,7 @@ import type {
   WorktreeBootstrapResult
 } from '@shared/checkout'
 import type { UndoPath, UndoPathClassification } from '@shared/run-undo'
+import type { WorktreeContents } from '@shared/worktree'
 import { promisify } from 'node:util'
 import { bootstrapWorktree } from './worktree-bootstrap'
 
@@ -285,6 +286,186 @@ export async function createWorktree(
     }
   }
   return { status: 'failed', message: failure.slice(0, 500) }
+}
+
+/**
+ * What a Worktree holds that removing it would take with it, asked of git in
+ * the Checkout itself. Two questions, and only two, because they are the two
+ * that decide whether a directory is disposable.
+ */
+export async function observeWorktreeContents(
+  checkout: string,
+  options: GitOptions = {}
+): Promise<WorktreeContents> {
+  try {
+    const env = environment(options)
+    // `--porcelain -z` keeps every possible filename opaque; only the presence
+    // of a record matters. Ignored files are not listed, which is exactly
+    // right: the dependency directory carried in at creation is not work.
+    const dirty = await run('git', ['status', '--porcelain', '-z'], {
+      cwd: checkout,
+      env,
+      timeout: TIMEOUT_MS,
+      maxBuffer: MAX_DIFF_BYTES
+    })
+    return {
+      status: 'observed',
+      uncommittedChanges: dirty.stdout.length > 0,
+      // A repository git could describe but not walk — an unborn branch, a
+      // ref it cannot resolve — has no commits that are only here. `status`
+      // above is what decides whether the Checkout is readable at all.
+      commitsOnlyHere: await hasCommitsOnlyHere(checkout, options).catch(() => false)
+    }
+  } catch {
+    return { status: 'unreadable' }
+  }
+}
+
+/**
+ * Whether HEAD holds commits no other ref does.
+ *
+ * The other refs are enumerated and excluded by name rather than by glob:
+ * `--exclude` applies only to the next ref selector and `--all` quietly
+ * includes a detached HEAD, so a pattern that reads correctly can still answer
+ * "nothing is only here" for every Worktree — which is the answer that loses
+ * somebody's commits.
+ */
+async function hasCommitsOnlyHere(checkout: string, options: GitOptions): Promise<boolean> {
+  const env = environment(options)
+  const branch = await currentBranch(checkout, options)
+  const { stdout: named } = await run(
+    'git',
+    [
+      'for-each-ref',
+      `--count=${String(MAX_EXCLUDED_REFS)}`,
+      '--format=%(refname)',
+      'refs/heads',
+      'refs/remotes',
+      'refs/tags'
+    ],
+    { cwd: checkout, env, timeout: TIMEOUT_MS, maxBuffer: MAX_DIFF_BYTES }
+  )
+  const others = named
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((ref) => ref !== '' && ref !== `refs/heads/${branch ?? ''}`)
+  const { stdout } = await run(
+    'git',
+    ['rev-list', '--count', 'HEAD', ...others.map((ref) => `^${ref}`)],
+    { cwd: checkout, env, timeout: TIMEOUT_MS }
+  )
+  return Number(stdout.trim()) > 0
+}
+
+/**
+ * How many refs one repository is asked to exclude. Far past any repository a
+ * person browses by hand, and short of an argument list an operating system
+ * would refuse.
+ */
+const MAX_EXCLUDED_REFS = 2000
+
+export type WorktreeRemovalAttempt =
+  | { status: 'removed' }
+  /** The directory was not there, or git had already forgotten it. */
+  | { status: 'already-gone' }
+  | { status: 'failed'; message: string }
+
+/**
+ * Removes one linked worktree, and only the worktree.
+ *
+ * `--force` because the person has already been shown what it holds and asked
+ * for it anyway; refusing here would mean showing them "uncommitted changes"
+ * and then declining to act on the confirmation they gave. The branch is never
+ * touched — `git worktree remove` does not delete it, and this does not go
+ * looking for one to delete.
+ */
+export async function removeWorktree(
+  input: { projectRoot: string; path: string },
+  options: GitOptions = {}
+): Promise<WorktreeRemovalAttempt> {
+  const gone = await access(input.path).then(
+    () => false,
+    () => true
+  )
+  const env = environment(options)
+  if (gone) {
+    // Removed in a terminal since the list was read. Git's admin record for it
+    // is the only thing left, and pruning is what makes that true on disk too.
+    await run('git', ['worktree', 'prune'], {
+      cwd: input.projectRoot,
+      env,
+      timeout: TIMEOUT_MS
+    }).catch(() => undefined)
+    return { status: 'already-gone' }
+  }
+  try {
+    await run('git', ['worktree', 'remove', '--force', input.path], {
+      cwd: input.projectRoot,
+      env,
+      timeout: TIMEOUT_MS
+    })
+    return { status: 'removed' }
+  } catch (error) {
+    // A machine with no git is a different problem from a worktree git
+    // refused, and sending somebody to read `spawn git ENOENT` sends them to
+    // fix the wrong thing (ADR 0005).
+    if (await isGitMissing(options)) {
+      return { status: 'failed', message: 'Git could not be found on this machine.' }
+    }
+    const message = gitComplaint(error)
+    // A directory this repository has no record of cannot be removed by git at
+    // all — the Project was re-cloned, or its admin file was pruned while the
+    // directory stayed. It is app-owned state and the person selected it, so
+    // the app removes the directory itself rather than reporting a failure
+    // nothing could ever repair.
+    if (!(await isRegisteredWorktree(input, env))) {
+      return await rm(input.path, { recursive: true, force: true }).then(
+        (): WorktreeRemovalAttempt => ({ status: 'removed' }),
+        (): WorktreeRemovalAttempt => ({ status: 'failed', message })
+      )
+    }
+    return { status: 'failed', message }
+  }
+}
+
+/**
+ * What git actually complained about, as one line. A rejected `execFile`
+ * carries the whole command line and every line of stderr; the person needs
+ * the sentence, not the transcript.
+ */
+function gitComplaint(error: unknown): string {
+  const lines = (error instanceof Error ? error.message : '')
+    .split('\n')
+    .map((line) => line.trim().replace(/^(fatal|error|warning):\s*/i, ''))
+    .filter((line) => line !== '' && !line.startsWith('Command failed:'))
+  return (lines.at(-1) ?? 'The Worktree could not be removed').slice(0, 300)
+}
+
+/** Whether the Project's repository still has an admin record for this path. */
+async function isRegisteredWorktree(
+  input: { projectRoot: string; path: string },
+  env: NodeJS.ProcessEnv
+): Promise<boolean> {
+  try {
+    const [{ stdout }, real] = await Promise.all([
+      run('git', ['worktree', 'list', '--porcelain'], {
+        cwd: input.projectRoot,
+        env,
+        timeout: TIMEOUT_MS,
+        maxBuffer: MAX_DIFF_BYTES
+      }),
+      realpath(input.path).catch(() => input.path)
+    ])
+    const registered = stdout
+      .split('\n')
+      .filter((line) => line.startsWith('worktree '))
+      .map((line) => line.slice('worktree '.length).trim())
+    return registered.some((path) => path === input.path || path === real)
+  } catch {
+    // Git could not be asked, so nothing has been ruled out. Reporting the
+    // failure beats removing a directory on a guess.
+    return true
+  }
 }
 
 /**

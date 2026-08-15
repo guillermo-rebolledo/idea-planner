@@ -401,6 +401,19 @@ export class RunService {
     return new Set([...this.deps.broker.activeRunIds(), ...this.mine]).size
   }
 
+  /**
+   * The Checkout directories those Runs are working in. Asked by anything that
+   * would write to a Checkout from outside a Run — reclaiming a Worktree is
+   * the first — so the app can refuse to pull a directory out from under an
+   * agent that is writing into it.
+   */
+  activeCheckouts(): string[] {
+    const running = new Set([...this.deps.broker.activeRunIds(), ...this.mine])
+    return [...this.baselines.values()]
+      .filter((baseline) => running.has(baseline.runId))
+      .map((baseline) => baseline.checkout)
+  }
+
   private async recoverAll(): Promise<void> {
     const open = await this.unfinishedRuns()
     await this.closeUnfinishedRuns(open)

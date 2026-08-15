@@ -45,6 +45,9 @@ import {
   stopRunInputSchema,
   branchListSchema,
   buildWorktreeBootstrapResult,
+  removeWorktreesInputSchema,
+  worktreeInventorySchema,
+  worktreeRemovalResultSchema,
   checkoutDirectory,
   checkoutFactsSchema,
   isolatedBranchName,
@@ -118,6 +121,7 @@ import { RunService } from './run-service'
 import { RunUndoService } from './run-undo'
 import { SessionSnapshotStore } from './snapshot-store'
 import { bootstrapWorktree } from './worktree-bootstrap'
+import { WorktreeReclaimService } from './worktree-reclaim'
 import { GitHubPullRequests } from './github'
 import { PullRequestStore } from './pull-request-store'
 import { makePullRequestService, type PullRequestService } from './pull-request-service'
@@ -204,6 +208,7 @@ let settings: SettingsStore
 let readiness: ReadinessService
 let runService: RunService
 let runUndo: RunUndoService
+let worktreeReclaim: WorktreeReclaimService
 let pullRequests: PullRequestService
 let pullRequestStore: PullRequestStore
 let reviews: ReviewService
@@ -562,11 +567,7 @@ function registerIpc(): void {
     if (request.checkout.kind === 'isolated') {
       const created = await createWorktree({
         projectRoot: request.projectRoot,
-        worktreesDirectory: join(
-          app.getPath('userData'),
-          'worktrees',
-          worktreesDirectoryName(request.projectRoot)
-        ),
+        worktreesDirectory: worktreesDirectory(request.projectRoot),
         branch: isolatedBranchName(request.message),
         baseBranch: request.checkout.baseBranch
       })
@@ -946,6 +947,17 @@ function registerIpc(): void {
     })
   })
 
+  // Two calls, and nothing between them happens on its own (ADR 0008). Listing
+  // reads the app's own worktrees directory and writes nothing; removing acts
+  // on exactly the directories the person named after reading that list.
+  // Neither is reached from Delete, from Archive, from quit, or from a timer.
+  handleInvoke(IPC_CHANNELS.listProjectWorktrees, z.string().min(1), async (projectRoot) =>
+    worktreeInventorySchema.parse(await worktreeReclaim.inventory(projectRoot))
+  )
+  handleInvoke(IPC_CHANNELS.removeWorktrees, removeWorktreesInputSchema, async (input) =>
+    worktreeRemovalResultSchema.parse(await worktreeReclaim.remove(input))
+  )
+
   handleInvoke(IPC_CHANNELS.listEditors, z.undefined(), async () =>
     editorCatalogSchema.parse({
       editors: await detectEditors(),
@@ -1030,10 +1042,13 @@ function registerIpc(): void {
  * `weather-app` in different places must not share a worktrees directory.
  * The basename stays in front so a person browsing the state directory can
  * still tell whose worktrees these are.
+ *
+ * Derived in one place because two things now depend on it agreeing with
+ * itself: creating an isolated Checkout, and listing the ones already made.
  */
-function worktreesDirectoryName(projectRoot: string): string {
+function worktreesDirectory(projectRoot: string): string {
   const digest = createHash('sha256').update(projectRoot).digest('hex').slice(0, 12)
-  return `${basename(projectRoot)}-${digest}`
+  return join(app.getPath('userData'), 'worktrees', `${basename(projectRoot)}-${digest}`)
 }
 
 function mergeBootstrapResults(
@@ -1314,6 +1329,14 @@ void app.whenReady().then(async () => {
         input: { ...input, action: 'run-undo' }
       })
     }
+  })
+  worktreeReclaim = new WorktreeReclaimService({
+    directoryFor: worktreesDirectory,
+    sessions: async () =>
+      sessionSummarySchema.array().parse(await coreClient.send({ type: 'session/list' })),
+    // Asked on every call rather than held: a Run can start between the person
+    // opening the list and confirming what to remove from it.
+    busyCheckouts: () => runService.activeCheckouts()
   })
   projectClones = new ProjectCloneService({
     runtime: mainEffectRuntime,
