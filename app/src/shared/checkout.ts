@@ -181,6 +181,49 @@ export function defaultCheckout(context: {
 }
 
 /**
+ * What the composer's Checkout chip is actually asking for, from the three
+ * things that have a say and nothing else: what the app proposed, what the
+ * person picked, and what the last look at Git found to cut a worktree from.
+ *
+ * Each keeps its own place, and the order between them is the whole point.
+ * A pick outranks a proposal, so a default cannot move under a choice already
+ * made. An observation outranks neither — it is what was true when Git was
+ * last asked, so a Project with nothing to cut from falls back to Local
+ * without that fallback becoming somebody's decision, and a later look that
+ * finds a branch puts the isolated ask straight back.
+ */
+export function resolveCheckout(context: {
+  /** What the app would offer if nobody had said. */
+  proposed: CheckoutDefault
+  /** The kind the person picked, or undefined while they have not. */
+  chosenKind?: CheckoutRequest['kind'] | undefined
+  /**
+   * The branch a worktree would be cut from: a name, `null` for looked and
+   * there is nothing to cut from, `undefined` for not looked yet.
+   */
+  base?: string | null | undefined
+}): { checkout: CheckoutRequest; reason: CheckoutDefaultReason | null } {
+  const asked = context.chosenKind ?? context.proposed.kind
+  // A Project with no branch to cut from cannot have an isolated Checkout,
+  // whoever asked for one. Send stays live on Local rather than refusing with
+  // nothing to say — and because this is derived, the ask survives the answer.
+  const kind = asked === 'isolated' && context.base === null ? 'local' : asked
+  return {
+    checkout:
+      kind === 'isolated'
+        ? { kind: 'isolated', baseBranch: context.base ?? '' }
+        : { kind: 'local' },
+    // The line explains a proposal. Once the person has answered it there is
+    // nothing left to explain, and next to a Checkout that had to fall back it
+    // would be explaining something that did not happen.
+    reason:
+      context.chosenKind === undefined && kind === context.proposed.kind
+        ? context.proposed.reason
+        : null
+  }
+}
+
+/**
  * The branch an isolated checkout is cut onto, derived from the message that
  * starts the Session the same way its title is — deterministic and local. A
  * taken name is the creator's problem to suffix, not this function's.

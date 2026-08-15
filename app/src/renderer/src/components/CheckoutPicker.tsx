@@ -47,7 +47,7 @@ export function CheckoutPicker({
   value,
   reason,
   onChange,
-  onSettle,
+  onBaseObserved,
   disabled
 }: {
   projectRoot: string
@@ -57,12 +57,12 @@ export function CheckoutPicker({
   /** The person picked this. */
   onChange: (checkout: CheckoutRequest) => void
   /**
-   * The app settled what the value left open — the base branch an isolated ask
-   * arrived without, or Local for a Project with no branch to cut from. Kept
-   * apart from `onChange` because settling a base is not somebody choosing,
-   * and a default frozen by the app's own bookkeeping would never lift.
+   * What a worktree would be cut from, as of this look at Git: a branch, or
+   * null for a Project with nothing to cut from. Reported rather than acted
+   * on, and kept well apart from `onChange`, because an observation that got
+   * recorded as somebody's choice is a choice nobody made and nobody can undo.
    */
-  onSettle: (checkout: CheckoutRequest) => void
+  onBaseObserved: (base: string | null) => void
   disabled?: boolean
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
@@ -71,23 +71,35 @@ export function CheckoutPicker({
   const [branches, setBranches] = useState<BranchList | 'unreadable' | null>(null)
 
   // Observed when the popover opens — branches move in any terminal at any
-  // time — and also when an isolated default arrives with no base yet, so the
-  // chip can settle onto a real branch without being clicked.
+  // time — and also when an isolated ask arrives with no base yet, so the chip
+  // can settle onto a real branch without being clicked. Two looks can be in
+  // flight at once, and only the newest is believed: a list belonging to the
+  // Project before last is not this Project's list.
   const unsettled = value.kind === 'isolated' && value.baseBranch === ''
   useEffect(() => {
     if ((!open && !unsettled) || !projectRoot) return
-    void window.shell.listBranches(projectRoot).then(setBranches, () => setBranches('unreadable'))
+    let current = true
+    void window.shell.listBranches(projectRoot).then(
+      (listing) => {
+        if (current) setBranches(listing)
+      },
+      () => {
+        if (current) setBranches('unreadable')
+      }
+    )
+    return () => {
+      current = false
+    }
   }, [open, unsettled, projectRoot])
 
-  // Isolated was chosen before the branches had loaded: settle the base onto
-  // the branch the working copy is on as soon as it is known. A Project with
-  // no branch to cut from — none at all, or none readable — settles back to
-  // Local rather than leaving Send disabled with nothing to say.
+  // Whatever that look found, handed straight back: the branch a worktree
+  // would be cut from, or null for a Project with nothing to cut from — none
+  // at all, or none readable. What to do about it is the composer's, which is
+  // the only place that knows whether the person has already said.
   useEffect(() => {
-    if (value.kind !== 'isolated' || value.baseBranch !== '' || branches === null) return
-    const settled = defaultBase(branches)
-    onSettle(settled ? { kind: 'isolated', baseBranch: settled } : { kind: 'local' })
-  }, [value, branches, onSettle])
+    if (branches === null) return
+    onBaseObserved(defaultBase(branches) || null)
+  }, [branches, onBaseObserved])
 
   const isolated = value.kind === 'isolated'
   const explained = reason ? REASON[reason] : null

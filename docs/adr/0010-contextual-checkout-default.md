@@ -50,9 +50,14 @@ to, and a second agent joining it is not "where the person works", it is two wri
   suggestion's clothes.
 - **A choice already made is never replaced.** The default decides what is _proposed_. Once the
   person has picked, the proposal is gone for that Project — a Run starting or ending afterwards
-  moves nothing. The composer holds the person's pick and the app's proposal in separate state
-  precisely so that settling an isolated Checkout's base branch, which the app does on its own,
-  cannot be mistaken for somebody having chosen.
+  moves nothing.
+- **Three things have a say, in a fixed order, and none of them is stored as another.** What the app
+  proposed, what the person picked, and what the last look at Git found to cut a worktree from. A
+  pick outranks a proposal. An observation outranks neither: a Project with no branch to cut from
+  falls back to Local so Send stays live, but that fallback is derived rather than recorded, so a
+  later look that finds a branch puts the isolated ask straight back. An observation quietly filed as
+  somebody's choice would be a choice nobody made and nobody could undo — and the Session it sent
+  into an occupied working copy would be exactly the collision this ADR exists to prevent.
 - **What is running is observed, never stored.** The Projects with an active Local Run are read from
   the same Conversation projection the inbox reads, on first ask and again on every Run boundary. So
   it covers Runs this window did not start, and it stops applying the moment they end. A Run blocked

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ArrowUp, Check, FolderGit2 } from 'lucide-react'
 import {
   defaultCheckout,
+  resolveCheckout,
   shortCommit,
   type Checkout,
   type CheckoutRequest,
@@ -73,10 +74,14 @@ export function Composer({
   // default that moves under a choice already made is the failure this whole
   // rule is trying to avoid. Switching Projects keeps each one's choice.
   const [chosenKind, setChosenKind] = useState<Record<string, CheckoutRequest['kind']>>({})
-  // The base an isolated Checkout would be cut from, per Project. Held apart
-  // from the kind because the picker settles it on its own, and bookkeeping
-  // must not read as somebody having chosen.
-  const [baseBranches, setBaseBranches] = useState<Record<string, string>>({})
+  // The base branch the person named, per Project. It outranks anything the
+  // picker goes on to observe: a base somebody chose is not a guess to revise.
+  const [chosenBase, setChosenBase] = useState<Record<string, string>>({})
+  // What the picker's last look at Git found to cut a worktree from — a
+  // branch, or null for nothing to cut from. An observation and nothing more,
+  // so a Project that had no branch when it was asked is not stuck with the
+  // answer once it has one.
+  const [observedBase, setObservedBase] = useState<Record<string, string | null>>({})
   // What each Project's most recent Session used — the standing fallback,
   // which is what the default was before it had anything else to go on.
   const [lastUsed, setLastUsed] = useState<Record<string, Checkout['kind']>>({})
@@ -102,6 +107,9 @@ export function Composer({
   // in one batch cannot both start a Session.
   const sendingRef = useRef(false)
   const disposedRef = useRef(false)
+  // Which ask for the running Local Runs is the current one, so an older
+  // answer arriving later is dropped rather than believed.
+  const localRunsAskedRef = useRef(0)
 
   useEffect(() => {
     disposedRef.current = false
@@ -140,10 +148,15 @@ export function Composer({
     messageRef.current?.focus()
   }, [])
 
+  // Two of these can be in flight at once — a Run boundary and a focus can
+  // land together — and the one that answers last is not necessarily the one
+  // asked last. Only the newest ask is adopted, or the composer could settle
+  // on a picture of the world that has already been superseded.
   const observeLocalRuns = useCallback(() => {
+    const asked = ++localRunsAskedRef.current
     void window.shell.listProjectsWithActiveLocalRuns().then(
       (roots) => {
-        if (!disposedRef.current) setLocalRunProjects(roots)
+        if (!disposedRef.current && asked === localRunsAskedRef.current) setLocalRunProjects(roots)
       },
       () => undefined
     )
@@ -171,20 +184,16 @@ export function Composer({
     }
   }, [observeLocalRuns])
 
-  // What this Project's Checkout would be if nobody said, and why. The
-  // person's own pick wins over it and is never recomputed.
-  const proposed = defaultCheckout({
-    localRunActive: localRunProjects.includes(projectRoot),
-    lastUsed: lastUsed[projectRoot] ?? null
+  // What this Project's Checkout would be if nobody said, and what it is once
+  // the person's pick and the last look at Git are weighed against it.
+  const { checkout, reason } = resolveCheckout({
+    proposed: defaultCheckout({
+      localRunActive: localRunProjects.includes(projectRoot),
+      lastUsed: lastUsed[projectRoot] ?? null
+    }),
+    chosenKind: chosenKind[projectRoot],
+    base: chosenBase[projectRoot] ?? observedBase[projectRoot]
   })
-  const kind = chosenKind[projectRoot] ?? proposed.kind
-  const checkout: CheckoutRequest =
-    kind === 'isolated'
-      ? { kind: 'isolated', baseBranch: baseBranches[projectRoot] ?? '' }
-      : { kind: 'local' }
-  // Explained only while the offer is still the app's: a person who has
-  // answered the question does not need it argued at them again.
-  const reason = chosenKind[projectRoot] === undefined ? proposed.reason : null
 
   // A Harness that stops being usable stops being offered, and the choice
   // falls back to one that can still answer a message.
@@ -201,20 +210,26 @@ export function Composer({
     // An isolated ask needs its base settled before there is anything to cut.
     (checkout.kind !== 'isolated' || checkout.baseBranch !== '')
 
-  /**
-   * Takes a Checkout for this Project. A pick by the person settles the kind
-   * for good; the picker settling its own base only records the base — except
-   * when it has to fall back to Local, which it does when the Project has no
-   * branch to cut a worktree from and no default can change that.
-   */
-  function chooseCheckout(next: CheckoutRequest, by: 'person' | 'app'): void {
-    if (next.kind === 'isolated') {
-      setBaseBranches((current) => ({ ...current, [projectRoot]: next.baseBranch }))
-    }
-    if (by === 'person' || next.kind === 'local') {
-      setChosenKind((current) => ({ ...current, [projectRoot]: next.kind }))
+  /** The person's own pick for this Project, which outranks the proposal. */
+  function chooseCheckout(next: CheckoutRequest): void {
+    setChosenKind((current) => ({ ...current, [projectRoot]: next.kind }))
+    // Only a base they actually named. Clicking Isolated before the branches
+    // have loaded names none, and recording that would be recording nothing
+    // over the observation that is about to arrive.
+    if (next.kind === 'isolated' && next.baseBranch !== '') {
+      setChosenBase((current) => ({ ...current, [projectRoot]: next.baseBranch }))
     }
   }
+
+  /** What the picker saw when it last asked Git; never a decision. */
+  const noteObservedBase = useCallback(
+    (base: string | null) => {
+      setObservedBase((current) =>
+        current[projectRoot] === base ? current : { ...current, [projectRoot]: base }
+      )
+    },
+    [projectRoot]
+  )
 
   /** Completes the visible Skill token and leaves the prompt ready after it. */
   function chooseSkill(name: string): void {
@@ -407,8 +422,8 @@ export function Composer({
               projectRoot={projectRoot}
               value={checkout}
               reason={reason}
-              onChange={(next) => chooseCheckout(next, 'person')}
-              onSettle={(next) => chooseCheckout(next, 'app')}
+              onChange={chooseCheckout}
+              onBaseObserved={noteObservedBase}
               disabled={sending}
             />
             <PermissionModePicker
