@@ -276,7 +276,9 @@ export async function createWorktree(
         outcome: 'skipped',
         copied: [],
         skipped: [{ path: '.worktreeinclude', reason: 'copy-failed' }],
-        provenance: null
+        provenance: null,
+        // A bootstrap that threw is one nobody timed. Zero would read as free.
+        durationMs: null
       }))
       return { status: 'created', path, branch, bootstrap }
     } catch (error) {

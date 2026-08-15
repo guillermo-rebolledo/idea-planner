@@ -53,7 +53,7 @@ describe('bootstrapping an isolated Checkout', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(withoutOrigin(result)).toEqual({
+    expect(whatWasCarried(result)).toEqual({
       outcome: 'partial',
       copied: ['.env.local'],
       skipped: [{ path: '.env.tracked', reason: 'tracked' }]
@@ -77,7 +77,7 @@ describe('bootstrapping an isolated Checkout', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(withoutOrigin(result)).toEqual({
+    expect(whatWasCarried(result)).toEqual({
       outcome: 'partial',
       copied: ['config/local.json'],
       skipped: [
@@ -112,7 +112,7 @@ describe('bootstrapping an isolated Checkout', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(withoutOrigin(result)).toEqual({
+    expect(whatWasCarried(result)).toEqual({
       outcome: 'copied',
       copied: ['local/日本語/keep.env'],
       skipped: []
@@ -123,7 +123,7 @@ describe('bootstrapping an isolated Checkout', () => {
     await writeFile(join(projectRoot, '.env.local'), 'must stay local\n')
     await writeFile(join(projectRoot, '.worktreeinclude'), '!.env.local\n')
 
-    expect(withoutOrigin(await bootstrapWorktree({ projectRoot, checkoutRoot }))).toEqual({
+    expect(whatWasCarried(await bootstrapWorktree({ projectRoot, checkoutRoot }))).toEqual({
       outcome: 'skipped',
       copied: [],
       skipped: []
@@ -143,7 +143,7 @@ describe('bootstrapping an isolated Checkout', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(withoutOrigin(result)).toEqual({
+    expect(whatWasCarried(result)).toEqual({
       outcome: 'partial',
       copied: ['local/good.env'],
       skipped: [
@@ -168,7 +168,7 @@ describe('bootstrapping an isolated Checkout', () => {
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
     await chmod(join(projectRoot, 'local', 'private.env'), 0o600)
-    expect(withoutOrigin(result)).toEqual({
+    expect(whatWasCarried(result)).toEqual({
       outcome: 'partial',
       copied: ['local/good.env'],
       skipped: [
@@ -199,7 +199,7 @@ describe('carrying the Project’s ignored directories', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(withoutOrigin(result)).toEqual({
+    expect(whatWasCarried(result)).toEqual({
       outcome: 'partial',
       copied: ['.env.local', 'dist/', 'node_modules/', 'packages/web/node_modules/'],
       skipped: [{ path: '.env.tracked', reason: 'tracked' }]
@@ -226,7 +226,7 @@ describe('carrying the Project’s ignored directories', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(withoutOrigin(result)).toEqual({ outcome: 'copied', copied: ['vendor/'], skipped: [] })
+    expect(whatWasCarried(result)).toEqual({ outcome: 'copied', copied: ['vendor/'], skipped: [] })
     await expect(readFile(join(checkoutRoot, 'vendor', 'gem', 'gem.rb'), 'utf8')).resolves.toBe(
       'gem\n'
     )
@@ -258,7 +258,7 @@ describe('carrying the Project’s ignored directories', () => {
 
       const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-      expect(withoutOrigin(result)).toEqual({
+      expect(whatWasCarried(result)).toEqual({
         outcome: 'partial',
         copied: ['node_modules/'],
         skipped: [{ path: '.env.tracked', reason: 'tracked' }]
@@ -285,7 +285,7 @@ describe('carrying the Project’s ignored directories', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(withoutOrigin(result)).toEqual({
+    expect(whatWasCarried(result)).toEqual({
       outcome: 'partial',
       copied: ['cache/warm.bin'],
       skipped: [
@@ -311,7 +311,7 @@ describe('carrying the Project’s ignored directories', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(withoutOrigin(result)).toEqual({
+    expect(whatWasCarried(result)).toEqual({
       outcome: 'copied',
       copied: ['node_modules/left-pad/index.js'],
       skipped: []
@@ -330,7 +330,7 @@ describe('carrying the Project’s ignored directories', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(withoutOrigin(result)).toEqual({
+    expect(whatWasCarried(result)).toEqual({
       outcome: 'copied',
       copied: ['node_modules/'],
       skipped: []
@@ -357,7 +357,7 @@ describe('carrying the Project’s ignored directories', () => {
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
     const spent = before - (await freeBytes(checkoutRoot))
 
-    expect(withoutOrigin(result)).toEqual({
+    expect(whatWasCarried(result)).toEqual({
       outcome: 'partial',
       copied: ['node_modules/'],
       skipped: [{ path: '.env.tracked', reason: 'tracked' }]
@@ -380,7 +380,7 @@ describe('carrying the Project’s ignored directories', () => {
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
     await chmod(join(projectRoot, 'node_modules', 'locked'), 0o700)
-    expect(withoutOrigin(result)).toEqual({
+    expect(whatWasCarried(result)).toEqual({
       outcome: 'skipped',
       copied: [],
       skipped: [
@@ -428,7 +428,7 @@ describe('saying what a Checkout was bootstrapped from', () => {
     try {
       const result = await bootstrapWorktree({ projectRoot: notARepository, checkoutRoot })
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         outcome: 'skipped',
         copied: [],
         skipped: [{ path: '.worktreeinclude', reason: 'copy-failed' }],
@@ -440,6 +440,45 @@ describe('saying what a Checkout was bootstrapped from', () => {
   })
 })
 
+describe('saying what a Checkout cost', () => {
+  it('times itself from before the first Git question to after the last copy', async () => {
+    await writeFile(join(projectRoot, '.env.local'), 'local secret\n')
+    // A clock that advances a second per reading: the bootstrap reads it once
+    // on the way in and once on the way out, whatever it did in between.
+    let readings = 0
+    const now = (): Date => new Date(1_760_000_000_000 + 1000 * readings++)
+
+    const result = await bootstrapWorktree({ projectRoot, checkoutRoot, now })
+
+    expect(result.durationMs).toBe(1000)
+    expect(result.copied).toEqual(['.env.local'])
+  })
+
+  it('times a bootstrap that carried nothing, which is still time spent', async () => {
+    const notARepository = await mkdtemp(join(tmpdir(), 'bootstrap-bare-'))
+    try {
+      const result = await bootstrapWorktree({ projectRoot: notARepository, checkoutRoot })
+
+      expect(result.outcome).toBe('skipped')
+      expect(result.durationMs).toBeGreaterThanOrEqual(0)
+    } finally {
+      await rm(notARepository, { recursive: true, force: true })
+    }
+  })
+
+  // A clock stepped backwards mid-bootstrap — NTP, or the person changing it —
+  // must not produce a Checkout that cost negative time.
+  it('never reports a negative duration', async () => {
+    const stamps = [Date.parse('2026-08-10T04:32:19.000Z'), Date.parse('2026-08-10T04:32:11.000Z')]
+    let index = 0
+    const now = (): Date => new Date(stamps[Math.min(index++, 1)] ?? 0)
+
+    const result = await bootstrapWorktree({ projectRoot, checkoutRoot, now })
+
+    expect(result.durationMs).toBe(0)
+  })
+})
+
 /** The Project's HEAD, as Git itself writes it. */
 async function head(root: string): Promise<string> {
   const { stdout } = await git('git', ['rev-parse', 'HEAD'], { cwd: root })
@@ -447,14 +486,15 @@ async function head(root: string): Promise<string> {
 }
 
 /**
- * What the bootstrap carried, without where it came from: provenance holds a
- * clock reading and the Project's HEAD, and the tests about what is carried
- * are not about either. The ones that are assert on it directly.
+ * What the bootstrap carried, without where it came from or what it cost:
+ * provenance holds a clock reading and the Project's HEAD, the duration holds
+ * another clock reading, and the tests about what is carried are about none of
+ * them. The ones that are assert on them directly.
  */
-function withoutOrigin(
+function whatWasCarried(
   result: WorktreeBootstrapResult
-): Omit<WorktreeBootstrapResult, 'provenance'> {
-  const { provenance: _provenance, ...rest } = result
+): Omit<WorktreeBootstrapResult, 'provenance' | 'durationMs'> {
+  const { provenance: _provenance, durationMs: _durationMs, ...rest } = result
   return rest
 }
 

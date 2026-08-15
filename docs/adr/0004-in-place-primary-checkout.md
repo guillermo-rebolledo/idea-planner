@@ -69,3 +69,10 @@ direction.
   files, not an isolation mechanism.
 - Deferring isolation is safe only because the Checkout concept already carries
   both modes. Adding it later is a new mode, not a retrofit.
+- The cost this rejection rests on — "the first test run either fails or costs a
+  full install" — was asserted here and never measured. Since MEM-132 an
+  isolated Checkout is bootstrapped by cloning the Project's ignored
+  directories into it, which is the answer to that sentence, and since MEM-136
+  Argos keeps a local record of what each Checkout cost and whether its first
+  command worked (`docs/worktreeinclude.md`). The assertion is now checkable on
+  the person's own machine rather than taken on this document's word.

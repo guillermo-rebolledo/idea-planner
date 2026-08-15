@@ -89,7 +89,8 @@ describe('Sessions', () => {
         outcome: 'partial',
         copied: ['.env.local'],
         skipped: [{ path: '.env.private', reason: 'permission-denied' }],
-        provenance: { commit: 'a'.repeat(40), branch: 'trunk', at: '2026-08-10T04:32:19.000Z' }
+        provenance: { commit: 'a'.repeat(40), branch: 'trunk', at: '2026-08-10T04:32:19.000Z' },
+        durationMs: 1420
       }
     })
 
@@ -98,7 +99,8 @@ describe('Sessions', () => {
       outcome: 'partial',
       copied: ['.env.local'],
       skipped: [{ path: '.env.private', reason: 'permission-denied' }],
-      provenance: { commit: 'a'.repeat(40), branch: 'trunk', at: '2026-08-10T04:32:19.000Z' }
+      provenance: { commit: 'a'.repeat(40), branch: 'trunk', at: '2026-08-10T04:32:19.000Z' },
+      durationMs: 1420
     })
     // Fixed at creation, and durable: the next read still says so — which is
     // the whole point of writing down where the Checkout was carried from.
@@ -108,13 +110,14 @@ describe('Sessions', () => {
         worktreeBootstrap: {
           copied: ['.env.local'],
           skipped: [{ path: '.env.private', reason: 'permission-denied' }],
-          provenance: { commit: 'a'.repeat(40), branch: 'trunk', at: '2026-08-10T04:32:19.000Z' }
+          provenance: { commit: 'a'.repeat(40), branch: 'trunk', at: '2026-08-10T04:32:19.000Z' },
+          durationMs: 1420
         }
       }
     ])
   })
 
-  it('reads a Session bootstrapped before provenance existed as an unknown origin', async () => {
+  it('reads a Session bootstrapped before its origin and cost were kept as unknowns', async () => {
     const session = await core.startSession({
       projectRoot,
       message: 'Fix the location crash',
@@ -126,17 +129,20 @@ describe('Sessions', () => {
       worktreeBootstrap: Record<string, unknown>
     }
     delete stored.worktreeBootstrap['provenance']
+    delete stored.worktreeBootstrap['durationMs']
     await writeFile(record, JSON.stringify(stored))
 
     const [read] = await makeCore().listSessions()
 
-    // An origin nobody wrote down, not a Checkout nothing was carried into:
-    // the result is still there, and it still says what it carried.
+    // An origin nobody wrote down and a cost nobody timed, not a Checkout
+    // nothing was carried into: the result is still there, and it still says
+    // what it carried.
     expect(read?.worktreeBootstrap).toEqual({
       outcome: 'copied',
       copied: ['.env.local'],
       skipped: [],
-      provenance: null
+      provenance: null,
+      durationMs: null
     })
   })
 

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ComponentType } from 'react'
-import { Bot, Palette, Settings2, X } from 'lucide-react'
+import { Bot, FolderTree, Palette, Settings2, X } from 'lucide-react'
 import type {
   AppearanceSettings,
   ReadinessSnapshot,
@@ -7,13 +7,14 @@ import type {
   UpdateAvailability
 } from '@shared/contract'
 import { AppearanceSettingsPanel } from '@renderer/components/AppearanceSettings'
+import { CheckoutCostsPanel } from '@renderer/components/CheckoutCosts'
 import { ReadinessPanel } from '@renderer/components/Readiness'
 import { Button } from '@renderer/components/ui/button'
 import { Modal } from '@renderer/components/ui/dialog'
 import { useUpdateAvailability } from '@renderer/lib/useUpdateAvailability'
 import { cn } from '@renderer/lib/utils'
 
-export type SettingsSection = 'general' | 'harnesses' | 'appearance'
+export type SettingsSection = 'general' | 'harnesses' | 'checkouts' | 'appearance'
 
 interface SectionDetails {
   id: SettingsSection
@@ -34,6 +35,12 @@ const SECTION_BY_ID = {
     label: 'Harnesses',
     description: 'See what can run a Session and what needs attention.',
     icon: Bot
+  },
+  checkouts: {
+    id: 'checkouts',
+    label: 'Checkouts',
+    description: 'What isolated Checkouts have cost to become usable on this Mac.',
+    icon: FolderTree
   },
   appearance: {
     id: 'appearance',
@@ -203,6 +210,8 @@ export function SettingsDialog({
                 onSnapshot={(snapshot) => setReadiness(snapshot)}
               />
             </div>
+          ) : section === 'checkouts' ? (
+            <CheckoutCostsPanel />
           ) : (
             <AppearanceSettingsPanel
               theme={theme}

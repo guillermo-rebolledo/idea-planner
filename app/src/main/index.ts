@@ -48,6 +48,7 @@ import {
   removeWorktreesInputSchema,
   worktreeInventorySchema,
   worktreeRemovalResultSchema,
+  checkoutCostRecordSchema,
   checkoutDirectory,
   checkoutFactsSchema,
   isolatedBranchName,
@@ -120,6 +121,7 @@ import { createMainEffectRuntime, RunProcessBroker } from './run-process-broker'
 import { RunService } from './run-service'
 import { RunUndoService } from './run-undo'
 import { SessionSnapshotStore } from './snapshot-store'
+import { CheckoutCostStore } from './checkout-cost-store'
 import { bootstrapWorktree } from './worktree-bootstrap'
 import { WorktreeReclaimService } from './worktree-reclaim'
 import { GitHubPullRequests } from './github'
@@ -218,6 +220,8 @@ let projectClones: ProjectCloneService
 let updates: UpdateService
 /** The one store of app-owned Run snapshots; Runs write it, undo reads it. */
 let snapshots: SessionSnapshotStore
+/** What bootstrapping isolated Checkouts on this machine has cost. */
+let checkoutCosts: CheckoutCostStore
 let shutdownStarted = false
 let quitPromptOpen = false
 let servicesReady = false
@@ -598,6 +602,10 @@ function registerIpc(): void {
         baseBranch: request.checkout.baseBranch
       }
       worktreeBootstrap = created.bootstrap
+      // What this Checkout cost, written before the Session exists: the answer
+      // is about the directory, and a bootstrap the person then abandoned at
+      // the incomplete notice is still a bootstrap that was paid for.
+      await recordCheckoutCost(created.path, created.bootstrap)
       if (created.bootstrap.skipped.length > 0) {
         const token = randomUUID()
         pendingWorktreeBootstraps.set(token, {
@@ -642,6 +650,9 @@ function registerIpc(): void {
           paths: retryable
         })
         pending.result = mergeBootstrapResults(pending.result, retried)
+        // The same Checkout, re-answered: the entry is replaced rather than
+        // added beside, and the retry's time is added to what came before it.
+        await recordCheckoutCost(pending.path, pending.result)
         if (pending.result.skipped.length > 0) {
           return startSessionResultSchema.parse({
             status: 'bootstrap-incomplete',
@@ -962,6 +973,13 @@ function registerIpc(): void {
     worktreeRemovalResultSchema.parse(await worktreeReclaim.remove(input))
   )
 
+  // What creating isolated Checkouts here has cost, so ADR 0004's asserted
+  // price of isolation can be checked rather than believed. One bounded file
+  // on this machine, read and never sent: no request is made to answer this.
+  handleInvoke(IPC_CHANNELS.getCheckoutCosts, z.undefined(), async () =>
+    checkoutCostRecordSchema.parse(await checkoutCosts.read())
+  )
+
   handleInvoke(IPC_CHANNELS.listEditors, z.undefined(), async () =>
     editorCatalogSchema.parse({
       editors: await detectEditors(),
@@ -1055,6 +1073,18 @@ function worktreesDirectory(projectRoot: string): string {
   return join(app.getPath('userData'), 'worktrees', `${basename(projectRoot)}-${digest}`)
 }
 
+/**
+ * Notes what one Checkout cost to become usable. Deliberately swallowing its
+ * own failure: this is a local diagnostic, and a Session must never fail to
+ * start because the file recording how long its Checkout took could not be
+ * written.
+ */
+async function recordCheckoutCost(path: string, result: WorktreeBootstrapResult): Promise<void> {
+  await checkoutCosts
+    .recordBootstrap({ path, at: new Date().toISOString(), result })
+    .catch(() => undefined)
+}
+
 function mergeBootstrapResults(
   previous: WorktreeBootstrapResult,
   retry: WorktreeBootstrapResult
@@ -1067,8 +1097,15 @@ function mergeBootstrapResults(
   ].sort((left, right) => left.path.localeCompare(right.path, 'en'))
   // The origin belongs to the bootstrap, not to each attempt at it: a retry is
   // the same bootstrap answered again, so it only fills in an origin the first
-  // attempt could not read.
-  return buildWorktreeBootstrapResult(copied, skipped, previous.provenance ?? retry.provenance)
+  // attempt could not read. What it cost is the opposite — every attempt was
+  // time the person spent waiting for this Checkout, so the attempts add up.
+  return buildWorktreeBootstrapResult(copied, skipped, {
+    provenance: previous.provenance ?? retry.provenance,
+    durationMs:
+      previous.durationMs === null && retry.durationMs === null
+        ? null
+        : (previous.durationMs ?? 0) + (retry.durationMs ?? 0)
+  })
 }
 
 /**
@@ -1285,6 +1322,7 @@ void app.whenReady().then(async () => {
   })
   snapshots = new SessionSnapshotStore(join(app.getPath('userData'), 'runs'))
   pullRequestStore = new PullRequestStore(join(app.getPath('userData'), 'runs'))
+  checkoutCosts = new CheckoutCostStore(app.getPath('userData'))
   github = await mainEffectRuntime.runPromise(GitHubPullRequests.live)
   pullRequests = await mainEffectRuntime.runPromise(
     makePullRequestService({ github, store: pullRequestStore })
@@ -1307,6 +1345,12 @@ void app.whenReady().then(async () => {
     onConversationEvent: (event) => {
       mainWindow?.webContents.send(IPC_CHANNELS.conversationEvent, event)
       void notifyWhileAway(event).catch(() => undefined)
+    },
+    // Whether the Checkout a Run was handed arrived usable. Nothing waits on
+    // this and a failed write changes nothing the person is doing: it is a
+    // note in a diagnostic file, and losing one entry costs a measurement.
+    onRunCommandFinished: (checkout, command) => {
+      void checkoutCosts.recordFirstCommand(checkout, command).catch(() => undefined)
     }
   })
   reviews = new ReviewService({

@@ -51,13 +51,18 @@ interface PatternSet {
  * ignored decision; filesystem checks then narrow that answer to contained
  * regular files and directories.
  *
- * The result says where that state came from. It says nothing about whether
- * the state suits the Checkout's base: this reads Git, not lockfiles.
+ * The result says where that state came from, and how long it took to get
+ * there — the cost ADR 0004 asserted and nobody has measured since. It says
+ * nothing about whether the state suits the Checkout's base: this reads Git,
+ * not lockfiles.
  */
 export async function bootstrapWorktree(input: BootstrapInput): Promise<WorktreeBootstrapResult> {
+  const now = input.now ?? (() => new Date())
+  const startedAt = now()
+  const elapsed = (): number => Math.max(0, now().getTime() - startedAt.getTime())
   // Read before anything is carried, so the commit named is the one the
   // copying began from rather than wherever the Project has moved to since.
-  const provenance = await observeProvenance(input.projectRoot, input.now ?? (() => new Date()))
+  const provenance = await observeProvenance(input.projectRoot, () => startedAt)
   const patterns = input.paths ? retryPatterns(input.paths) : await readPatterns(input.projectRoot)
   const skipped: WorktreeBootstrapResult['skipped'] = patterns.invalid.map((path) => ({
     path,
@@ -83,7 +88,7 @@ export async function bootstrapWorktree(input: BootstrapInput): Promise<Worktree
     return buildWorktreeBootstrapResult(
       [],
       [...skipped, { path: '.worktreeinclude', reason: 'copy-failed' }],
-      provenance
+      { provenance, durationMs: elapsed() }
     )
   }
 
@@ -97,7 +102,7 @@ export async function bootstrapWorktree(input: BootstrapInput): Promise<Worktree
   }
   copied.sort(comparePaths)
   skipped.sort((left, right) => comparePaths(left.path, right.path))
-  return buildWorktreeBootstrapResult(copied, skipped, provenance)
+  return buildWorktreeBootstrapResult(copied, skipped, { provenance, durationMs: elapsed() })
 }
 
 /**

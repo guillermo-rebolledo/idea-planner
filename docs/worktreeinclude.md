@@ -89,6 +89,35 @@ A Project Git cannot be read for reports no origin rather than a made-up one. A 
 partial bootstrap keeps the origin the bootstrap began from — it is the same bootstrap answered
 again, and it only fills in an origin the first attempt could not read.
 
+## What a Checkout cost to become usable
+
+Everything above exists to answer one sentence in [ADR 0004](./adr/0004-in-place-primary-checkout.md):
+"a fresh worktree has no `node_modules`, `.env`, or build cache, so the first test run either fails
+or costs a full install". That was asserted once and never measured, and every decision since rests
+on it. **Settings → Checkouts** is where the person checks it, on their own machine and their own
+repositories.
+
+Each bootstrapped Checkout gets one entry: how long the bootstrap took, how many directories and
+files it carried, what it skipped tallied by reason, and how the first command a Run ran in that
+Checkout went. The last is the actual question — a Checkout prepared in half a second whose first
+command then fails was not cheap, it was broken — and only the first command counts, because the
+hundredth was run after an agent had already had an hour to install whatever was missing. A
+Checkout no Run has run a command in yet reads as **no command has run here yet**, never as a pass.
+
+The record is bounded to the most recent 50 Checkouts, so it stays the same size whether the person
+has run two Sessions or two thousand. A Checkout bootstrapped again — reclaimed, then cut afresh on
+the same branch name — replaces its entry rather than sitting beside it. A retry after a partial
+bootstrap replaces the entry too, and its time is added to the attempt before it: every attempt was
+time the person spent waiting for this Checkout.
+
+What it deliberately does **not** keep is the command itself. The Conversation already holds that,
+redacted, where the person reads it in context; a second copy in a file whose whole justification is
+that it is cheap to keep forever would be a new resting place for the one input that routinely
+carries a token in an argument. The outcome answers the question.
+
+Nothing here is sent anywhere. Argos has no telemetry, this does not introduce one, and no network
+call is made to write or read the record — which is asserted by a test rather than only stated here.
+
 ## What is never carried
 
 Matching is only the first filter. Argos asks Git to enumerate matches with NUL-delimited output and
