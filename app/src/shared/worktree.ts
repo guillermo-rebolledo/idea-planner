@@ -71,13 +71,24 @@ export const worktreeContentsSchema = z.discriminatedUnion('status', [
      * bootstrapped by carrying the Project's own ignored state in, so every
      * Worktree holds a `node_modules` from the moment it exists and a warning
      * that is always on is one nobody reads.
-     *
-     * Compared by presence, not by content: a `.env.local` that exists in both
-     * and was edited only here reads as shared. Comparing the contents of
-     * ignored files means walking a dependency directory, and this is asked
-     * once per Worktree on a surface somebody is waiting on.
      */
-    ignoredWorkOnlyHere: z.boolean()
+    ignoredWork: z.object({
+      /** At least one ignored entry is here and not in the Project. */
+      onlyHere: z.boolean(),
+      /**
+       * Whether everything git named was compared. False means `onlyHere` is
+       * "none found **so far**", which is not the same claim — a Checkout with
+       * more ignored entries than the comparison will look at must not read as
+       * one with nothing to lose.
+       *
+       * Two things are outside this either way, and the surface says both in
+       * words rather than implying a completeness it does not have: an ignored
+       * file present in both but edited only here, and anything **inside** an
+       * ignored directory the Project also has. Comparing either means walking
+       * a dependency tree on a surface somebody is waiting on.
+       */
+      complete: z.boolean()
+    })
   }),
   /** Git could not answer for it — no git, or no longer a repository. */
   z.object({ status: z.literal('unreadable') })
@@ -205,12 +216,16 @@ export function holdsUnshownWork(shown: WorktreeContents, now: WorktreeContents)
   // The list already said it did not know, and the person confirmed anyway.
   if (shown.status === 'unreadable') return false
   if (now.status === 'unreadable') {
-    return !shown.uncommittedChanges && !shown.commitsOnlyHere && !shown.ignoredWorkOnlyHere
+    return !shown.uncommittedChanges && !shown.commitsOnlyHere && !shown.ignoredWork.onlyHere
   }
   return (
     (now.uncommittedChanges && !shown.uncommittedChanges) ||
     (now.commitsOnlyHere && !shown.commitsOnlyHere) ||
-    (now.ignoredWorkOnlyHere && !shown.ignoredWorkOnlyHere)
+    (now.ignoredWork.onlyHere && !shown.ignoredWork.onlyHere) ||
+    // Seeing less than the person was shown is its own reason to stop. A row
+    // that compared everything and now cannot is a row whose "nothing here"
+    // no longer means what it meant when they confirmed it.
+    (!now.ignoredWork.complete && shown.ignoredWork.complete)
   )
 }
 export type WorktreeRemovalResult = z.infer<typeof worktreeRemovalResultSchema>

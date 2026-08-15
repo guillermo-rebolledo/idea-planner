@@ -44,12 +44,13 @@ describe('the reclaim contract', () => {
       status: 'observed',
       uncommittedChanges: false,
       commitsOnlyHere: false,
-      ignoredWorkOnlyHere: false
+      ignoredWork: { onlyHere: false, complete: true }
     } as const
     const clean = observed
     const dirty = { ...observed, uncommittedChanges: true } as const
     const unique = { ...observed, commitsOnlyHere: true } as const
-    const secret = { ...observed, ignoredWorkOnlyHere: true } as const
+    const secret = { ...observed, ignoredWork: { onlyHere: true, complete: true } } as const
+    const partial = { ...observed, ignoredWork: { onlyHere: false, complete: false } } as const
     const unknown = { status: 'unreadable' } as const
 
     expect(holdsUnshownWork(clean, dirty)).toBe(true)
@@ -59,6 +60,10 @@ describe('the reclaim contract', () => {
     expect(holdsUnshownWork(secret, secret)).toBe(false)
     expect(holdsUnshownWork(secret, clean)).toBe(false)
     expect(holdsUnshownWork(secret, unknown)).toBe(false)
+    // Seeing less than the row that was confirmed is its own reason to stop.
+    expect(holdsUnshownWork(clean, partial)).toBe(true)
+    expect(holdsUnshownWork(partial, partial)).toBe(false)
+    expect(holdsUnshownWork(partial, clean)).toBe(false)
     // Could not be checked, and the list said there was nothing to lose.
     expect(holdsUnshownWork(clean, unknown)).toBe(true)
 

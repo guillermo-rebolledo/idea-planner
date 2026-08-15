@@ -320,7 +320,7 @@ export async function observeWorktreeContents(
       // Ignored records are not changes: the dependency directory carried in
       // at creation is not work somebody did here.
       uncommittedChanges: records.some((record) => record.status !== IGNORED),
-      ignoredWorkOnlyHere: await hasIgnoredWorkOnlyHere(records, projectRoot),
+      ignoredWork: await compareIgnoredWork(records, projectRoot),
       // Deliberately not caught: a walk that failed is not a walk that found
       // nothing. Reporting "no commits are only here" because git could not be
       // asked would drop the one warning standing between a person and commits
@@ -338,9 +338,10 @@ const IGNORED = '!!'
 
 /**
  * How many ignored entries are compared against the Project. Whole ignored
- * directories arrive collapsed, so a Checkout past this is one whose
- * `.gitignore` names thousands of separate things — and the answer is already
- * decided by the first entry the Project does not have.
+ * directories arrive collapsed, so passing this takes a `.gitignore` naming
+ * thousands of separate things. Reaching it does not decide the answer — it
+ * ends the comparison, which is then reported as incomplete rather than as
+ * nothing found.
  */
 const MAX_IGNORED_COMPARED = 1000
 
@@ -373,22 +374,26 @@ function readPorcelainStatus(stdout: string): { status: string; path: string }[]
  * bootstrapped with came from the Project and is still there, so it reads as
  * shared; anything made here since does not, and it is the only thing on this
  * surface with no undo anywhere.
+ *
+ * The bound is reported rather than applied silently. Stopping early and
+ * answering "none here" would be the same wrong answer a swallowed failure
+ * gives — the person is told the comparison was partial, and the removal path
+ * treats a comparison that has become partial as a reason to stop.
  */
-async function hasIgnoredWorkOnlyHere(
+async function compareIgnoredWork(
   records: { status: string; path: string }[],
   projectRoot: string
-): Promise<boolean> {
-  const ignored = records
-    .filter((record) => record.status === IGNORED)
-    .slice(0, MAX_IGNORED_COMPARED)
-  for (const record of ignored) {
+): Promise<{ onlyHere: boolean; complete: boolean }> {
+  const ignored = records.filter((record) => record.status === IGNORED)
+  for (const record of ignored.slice(0, MAX_IGNORED_COMPARED)) {
     const shared = await access(join(projectRoot, record.path)).then(
       () => true,
       () => false
     )
-    if (!shared) return true
+    // Found one, so the bound no longer matters: the answer is yes either way.
+    if (!shared) return { onlyHere: true, complete: true }
   }
-  return false
+  return { onlyHere: false, complete: ignored.length <= MAX_IGNORED_COMPARED }
 }
 
 /**

@@ -31,10 +31,23 @@ function heldWork(worktree: ReclaimableWorktree): string[] {
   if (worktree.contents.commitsOnlyHere) held.push('commits no other branch or remote has')
   // Last in the sentence and first in consequence: git can put the other two
   // back from somewhere, and an ignored file has no undo anywhere.
-  if (worktree.contents.ignoredWorkOnlyHere) {
+  if (worktree.contents.ignoredWork.onlyHere) {
     held.push('ignored files the Project does not have, such as a .env')
   }
   return held
+}
+
+/**
+ * What was not compared on this row. Said per row rather than once, because it
+ * is only true of the rows where the comparison actually stopped — a notice on
+ * every row is one nobody reads, which is the same trap as warning about every
+ * carried-in `node_modules`.
+ */
+function unchecked(worktree: ReclaimableWorktree): string | null {
+  if (worktree.contents.status === 'unreadable') return null
+  return worktree.contents.ignoredWork.complete
+    ? null
+    : 'It has more ignored files than were compared, so there may be more here than this says.'
 }
 
 function sessionText(worktree: ReclaimableWorktree): string {
@@ -133,6 +146,16 @@ export function WorktreeReclaimDialog({
         archiving a Session never touches its Checkout. Sizes are what each one holds; a Checkout
         nothing has written in yet shares most of that with the Project, so removing it frees less.
       </p>
+      {/* The one thing this cannot tell you, said once and up front rather than
+          left to be discovered by losing something. Descending them means
+          walking a dependency tree per Worktree, and flagging every built file
+          they differ by would put a warning on every row. */}
+      <p className="mt-1.5 text-2xs leading-relaxed text-muted-foreground">
+        Ignored files are compared with the Project by name. What is inside an ignored directory the
+        Project also has — <span className="font-mono">node_modules</span>,{' '}
+        <span className="font-mono">dist</span> — is not looked at, and neither is the content of an
+        ignored file both of them have.
+      </p>
 
       {inventory === null && error === null && (
         <p className="mt-3 text-xs text-muted-foreground">Reading the Worktrees…</p>
@@ -180,6 +203,11 @@ export function WorktreeReclaimDialog({
                       <span className="mt-0.5 flex items-center gap-1 text-2xs text-notice-foreground">
                         <AlertTriangle aria-hidden="true" className="size-2.5 shrink-0" />
                         Holds {held.join(' and ')}
+                      </span>
+                    )}
+                    {unchecked(worktree) !== null && (
+                      <span className="mt-0.5 block text-2xs text-muted-foreground">
+                        {unchecked(worktree)}
                       </span>
                     )}
                     {removal && (

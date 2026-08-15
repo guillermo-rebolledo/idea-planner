@@ -129,7 +129,7 @@ describe('listing what Argos made', () => {
       status: 'observed',
       uncommittedChanges: false,
       commitsOnlyHere: false,
-      ignoredWorkOnlyHere: false
+      ignoredWork: { onlyHere: false, complete: true }
     })
     // An archived Session still owns its Checkout; archiving says "not now".
     expect(byBranch.get('uncommitted')?.session?.state).toBe('archived')
@@ -302,7 +302,7 @@ describe('removing the ones that were asked for', () => {
     const path = await makeWorktree('secrets')
     const reclaiming = service()
     const inventory = await reclaiming.inventory(projectRoot)
-    expect(inventory.worktrees[0]?.contents).toMatchObject({ ignoredWorkOnlyHere: false })
+    expect(inventory.worktrees[0]?.contents).toMatchObject({ ignoredWork: { onlyHere: false } })
     // Written into the Checkout while the person read the list. Git ignores it,
     // so nothing else on this surface would mention it — and git is not the
     // undo for it either, because git was never holding it.

@@ -844,7 +844,7 @@ describe('what a Worktree holds', () => {
       status: 'observed',
       uncommittedChanges: false,
       commitsOnlyHere: false,
-      ignoredWorkOnlyHere: false
+      ignoredWork: { onlyHere: false, complete: true }
     })
 
     await expect(observeWorktreeContents(root, root, { pathEnv: '' })).resolves.toEqual({
@@ -866,7 +866,7 @@ describe('what a Worktree holds', () => {
     await writeFile(join(linked, 'node_modules', 'installed.js'), 'carried in\n')
 
     await expect(observeWorktreeContents(linked, root)).resolves.toMatchObject({
-      ignoredWorkOnlyHere: false
+      ignoredWork: { onlyHere: false, complete: true }
     })
 
     // A secret written into this Checkout and nowhere else. Git is the undo for
@@ -876,7 +876,31 @@ describe('what a Worktree holds', () => {
 
     await expect(observeWorktreeContents(linked, root)).resolves.toMatchObject({
       uncommittedChanges: false,
-      ignoredWorkOnlyHere: true
+      ignoredWork: { onlyHere: true, complete: true }
+    })
+  })
+
+  it('says the ignored comparison stopped early rather than that it found nothing', async () => {
+    await conflictingRepository()
+    await writeFile(join(root, '.gitignore'), '*.log\n')
+    await commitAll(root, 'ignore rules')
+    const linked = join(root, 'linked')
+    await git('git', ['worktree', 'add', '--quiet', '-b', 'noisy', linked, 'main'], { cwd: root })
+    // More separately-named ignored entries than the comparison will look at,
+    // every one of them shared with the Project. Stopping at the bound and
+    // answering "nothing only here" would be a silent wrong answer of exactly
+    // the kind a swallowed failure gives — and `--force` follows it.
+    await Promise.all(
+      Array.from({ length: 1200 }, (_, index) =>
+        Promise.all([
+          writeFile(join(root, `noise-${String(index)}.log`), 'shared\n'),
+          writeFile(join(linked, `noise-${String(index)}.log`), 'shared\n')
+        ])
+      )
+    )
+
+    await expect(observeWorktreeContents(linked, root)).resolves.toMatchObject({
+      ignoredWork: { onlyHere: false, complete: false }
     })
   })
 
@@ -911,7 +935,7 @@ describe('what a Worktree holds', () => {
       status: 'observed',
       uncommittedChanges: false,
       commitsOnlyHere: false,
-      ignoredWorkOnlyHere: false
+      ignoredWork: { onlyHere: false, complete: true }
     })
 
     await writeFile(join(linked, 'only-here.txt'), 'unsaved\n')
@@ -925,7 +949,7 @@ describe('what a Worktree holds', () => {
       status: 'observed',
       uncommittedChanges: false,
       commitsOnlyHere: true,
-      ignoredWorkOnlyHere: false
+      ignoredWork: { onlyHere: false, complete: true }
     })
   })
 })
