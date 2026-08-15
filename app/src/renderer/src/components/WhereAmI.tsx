@@ -8,16 +8,18 @@ import {
   FolderTree,
   GitBranch,
   Monitor,
+  PackageOpen,
   SquareTerminal,
   type LucideIcon
 } from 'lucide-react'
-import type {
-  CheckoutFacts,
-  CheckoutStateObservation,
-  DetectedEditor,
-  EditorCatalog,
-  EditorId,
-  SessionSummary
+import {
+  shortCommit,
+  type CheckoutFacts,
+  type CheckoutStateObservation,
+  type DetectedEditor,
+  type EditorCatalog,
+  type EditorId,
+  type SessionSummary
 } from '@shared/contract'
 import { DiffCounts } from '@renderer/components/Diff'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -29,7 +31,7 @@ import {
   MenuSeparator,
   MenuTrigger
 } from '@renderer/components/ui/menu'
-import { cn } from '@renderer/lib/utils'
+import { cn, moment } from '@renderer/lib/utils'
 import { PullRequestAction } from '@renderer/components/PullRequestAction'
 
 /**
@@ -352,6 +354,7 @@ function ProjectCard({
           <GitBranch aria-hidden="true" className="size-3.5 text-muted-foreground" />
           <span className="font-mono">{facts?.branch ?? 'no branch'}</span>
         </div>
+        <BootstrapRow session={session} rowClass={ROW_CLASS} />
         {facts !== null && (
           <div className={cn(ROW_CLASS, 'hover:bg-transparent')}>
             <span className="text-muted-foreground">Checkout State</span>
@@ -386,6 +389,61 @@ function ProjectCard({
       <p className="border-t border-border px-3.5 py-2.5 text-2xs leading-relaxed text-muted-foreground">
         Clicking Changes opens “Files this Session changed”. Everything on disk, under git.
       </p>
+    </div>
+  )
+}
+
+/**
+ * What this Session's Checkout was bootstrapped from: how much local state was
+ * carried into it, out of which commit of which branch of the Project, and
+ * when. Stored with the Session rather than observed, because the Project has
+ * long since moved on — this is the one fact about a Checkout that a person
+ * coming back days later cannot go and look up.
+ *
+ * It stops at where the state came from. Saying whether those dependencies
+ * still suit the branch this Checkout was cut from would mean knowing which
+ * file is a lockfile, and the bootstrap asks Git what is ignored and carries
+ * the answer — so the app would be guessing, in the voice it uses for facts.
+ *
+ * A Session with no result at all is a Checkout nothing was carried into, and
+ * says nothing here. A result with no provenance is a Session bootstrapped
+ * before this was recorded: an origin nobody knows, which is a different thing
+ * and reads as one.
+ */
+function BootstrapRow({
+  session,
+  rowClass
+}: {
+  session: SessionSummary
+  rowClass: string
+}): React.JSX.Element | null {
+  const bootstrap = session.worktreeBootstrap
+  if (session.checkout.kind !== 'worktree' || bootstrap === null) return null
+  const provenance = bootstrap.provenance
+  return (
+    <div className={cn(rowClass, 'items-start hover:bg-transparent')}>
+      <PackageOpen aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0">
+        <span className="block">Bootstrapped from</span>
+        {provenance === null ? (
+          <span className="mt-0.5 block text-2xs text-muted-foreground">not recorded</span>
+        ) : (
+          <>
+            <span
+              className="mt-0.5 block truncate font-mono text-2xs text-muted-foreground"
+              title={provenance.commit}
+            >
+              {provenance.branch ?? 'detached HEAD'} · {shortCommit(provenance.commit)}
+            </span>
+            <span className="block text-2xs text-muted-foreground">{moment(provenance.at)}</span>
+          </>
+        )}
+      </span>
+      <span className="ml-auto shrink-0 text-2xs text-muted-foreground">
+        {bootstrap.copied.length === 0
+          ? 'nothing carried'
+          : `${String(bootstrap.copied.length)} carried`}
+      </span>
     </div>
   )
 }

@@ -66,6 +66,29 @@ symlinks _inside_ a cloned directory are kept as symlinks, including ones resolv
 Project: a pnpm `node_modules` is a farm of links into a store elsewhere on the machine, and a clone
 that dropped them would look present and not work.
 
+## What a Checkout says it was bootstrapped from
+
+A Session records where its Checkout's carried state came from: the Project's commit when the
+bootstrap ran, the branch that commit was on, and when. It is stored with the Session, so it is
+still there after a restart and on a Session opened days later — by which time the Project has long
+since moved on and nobody could go and look it up.
+
+It is shown on the Project card, beside the Checkout and the branch, and again in the recovery
+surface a partial bootstrap opens. A Session bootstrapped before this was recorded reads as an
+origin **not recorded**, which is a different thing from a Session with no bootstrap result at all —
+that is a Checkout nothing was ever carried into, and it says nothing here.
+
+Argos makes **no claim** about whether the carried dependencies are right for the branch the
+Checkout was cut from. Judging that means knowing which file is a lockfile, and the bootstrap
+deliberately knows nothing about ecosystems — it asks Git what is ignored and carries the answer.
+The generic form of the check, "some tracked file differs between these two commits", is true
+nearly always and therefore says nothing. Provenance is a fact the app holds; staleness would be a
+guess wearing a fact's clothes.
+
+A Project Git cannot be read for reports no origin rather than a made-up one. A retry after a
+partial bootstrap keeps the origin the bootstrap began from — it is the same bootstrap answered
+again, and it only fills in an origin the first attempt could not read.
+
 ## What is never carried
 
 Matching is only the first filter. Argos asks Git to enumerate matches with NUL-delimited output and

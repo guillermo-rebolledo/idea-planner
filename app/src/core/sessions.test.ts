@@ -88,7 +88,8 @@ describe('Sessions', () => {
       worktreeBootstrap: {
         outcome: 'partial',
         copied: ['.env.local'],
-        skipped: [{ path: '.env.private', reason: 'permission-denied' }]
+        skipped: [{ path: '.env.private', reason: 'permission-denied' }],
+        provenance: { commit: 'a'.repeat(40), branch: 'trunk', at: '2026-08-10T04:32:19.000Z' }
       }
     })
 
@@ -96,18 +97,47 @@ describe('Sessions', () => {
     expect(session.worktreeBootstrap).toEqual({
       outcome: 'partial',
       copied: ['.env.local'],
-      skipped: [{ path: '.env.private', reason: 'permission-denied' }]
+      skipped: [{ path: '.env.private', reason: 'permission-denied' }],
+      provenance: { commit: 'a'.repeat(40), branch: 'trunk', at: '2026-08-10T04:32:19.000Z' }
     })
-    // Fixed at creation, and durable: the next read still says so.
-    await expect(core.listSessions()).resolves.toMatchObject([
+    // Fixed at creation, and durable: the next read still says so — which is
+    // the whole point of writing down where the Checkout was carried from.
+    await expect(makeCore().listSessions()).resolves.toMatchObject([
       {
         checkout: { kind: 'worktree', path: worktree },
         worktreeBootstrap: {
           copied: ['.env.local'],
-          skipped: [{ path: '.env.private', reason: 'permission-denied' }]
+          skipped: [{ path: '.env.private', reason: 'permission-denied' }],
+          provenance: { commit: 'a'.repeat(40), branch: 'trunk', at: '2026-08-10T04:32:19.000Z' }
         }
       }
     ])
+  })
+
+  it('reads a Session bootstrapped before provenance existed as an unknown origin', async () => {
+    const session = await core.startSession({
+      projectRoot,
+      message: 'Fix the location crash',
+      checkout: { kind: 'worktree', path: join(projectRoot, '.worktrees', 'fix') },
+      worktreeBootstrap: { outcome: 'copied', copied: ['.env.local'], skipped: [] }
+    })
+    const record = join(stateDir, 'sessions', session.id, 'session.json')
+    const stored = JSON.parse(await readFile(record, 'utf8')) as {
+      worktreeBootstrap: Record<string, unknown>
+    }
+    delete stored.worktreeBootstrap['provenance']
+    await writeFile(record, JSON.stringify(stored))
+
+    const [read] = await makeCore().listSessions()
+
+    // An origin nobody wrote down, not a Checkout nothing was carried into:
+    // the result is still there, and it still says what it carried.
+    expect(read?.worktreeBootstrap).toEqual({
+      outcome: 'copied',
+      copied: ['.env.local'],
+      skipped: [],
+      provenance: null
+    })
   })
 
   it('leaves no Session behind when the message cannot be accepted', async () => {

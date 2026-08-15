@@ -274,7 +274,8 @@ export async function createWorktree(
       }).catch((): WorktreeBootstrapResult => ({
         outcome: 'skipped',
         copied: [],
-        skipped: [{ path: '.worktreeinclude', reason: 'copy-failed' }]
+        skipped: [{ path: '.worktreeinclude', reason: 'copy-failed' }],
+        provenance: null
       }))
       return { status: 'created', path, branch, bootstrap }
     } catch (error) {
