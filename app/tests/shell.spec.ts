@@ -1665,6 +1665,14 @@ test('the title bar states where a Session works — Local, or an isolated Workt
     await chips.click()
     await expect(card.getByText(/worktrees/)).toBeVisible()
     await expect(card.getByText('working copy')).toHaveCount(0)
+    // What this Checkout was bootstrapped from, on the card a person comes
+    // back to. Nothing about whether it suits the base it was cut from.
+    const { stdout: projectHead } = await git('git', ['rev-parse', 'HEAD'], {
+      cwd: sandbox.projectDir
+    })
+    await expect(card.getByText('Bootstrapped from')).toBeVisible()
+    await expect(card.getByText(`trunk · ${projectHead.trim().slice(0, 7)}`)).toBeVisible()
+    await expect(card.getByText('1 carried')).toBeVisible()
     const { stdout: worktrees } = await git('git', ['worktree', 'list', '--porcelain'], {
       cwd: sandbox.projectDir
     })
@@ -1686,9 +1694,17 @@ test('the title bar states where a Session works — Local, or an isolated Workt
     const stored = records.find((record) => record.includes('fix-the-location-crash'))
     expect(stored).toBeTruthy()
     const storedSession = JSON.parse(stored ?? '{}') as {
-      worktreeBootstrap?: { copied?: string[] }
+      worktreeBootstrap?: {
+        copied?: string[]
+        provenance?: { commit: string; branch: string | null; at: string }
+      }
     }
     expect(storedSession.worktreeBootstrap?.copied).toEqual(['.env.local'])
+    // Durable, so the Session still says it days and restarts later.
+    expect(storedSession.worktreeBootstrap?.provenance).toMatchObject({
+      commit: projectHead.trim(),
+      branch: 'trunk'
+    })
     expect(stored).not.toContain('checkout-only')
     // The person's own copy never moved.
     const { stdout } = await git('git', ['symbolic-ref', '--short', 'HEAD'], {
@@ -1730,6 +1746,9 @@ test('a partial Checkout bootstrap keeps the Worktree and offers accessible reco
     })
     await expect(recovery.getByText('.env.local')).toBeVisible()
     await expect(recovery.getByText(/\.env\.private.*permission denied/)).toBeVisible()
+    // Where the state came from, beside what could not be brought — and not a
+    // word about whether it suits the branch this Checkout was cut from.
+    await expect(recovery.getByText(/^Carried from \S+ at [0-9a-f]{7},/)).toBeVisible()
     await expect(recovery.getByRole('button', { name: 'Retry copying' })).toBeVisible()
     await recovery.getByRole('button', { name: 'Continue without them' }).click()
     await expect(page.getByRole('heading', { name: 'Keep the partial Checkout' })).toBeVisible()

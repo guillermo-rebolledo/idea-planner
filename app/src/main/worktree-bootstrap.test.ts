@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import type { WorktreeBootstrapResult } from '@shared/checkout'
 import { testGit as git } from './git-test-support'
 import { bootstrapWorktree } from './worktree-bootstrap'
 
@@ -52,7 +53,7 @@ describe('bootstrapping an isolated Checkout', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(result).toEqual({
+    expect(withoutOrigin(result)).toEqual({
       outcome: 'partial',
       copied: ['.env.local'],
       skipped: [{ path: '.env.tracked', reason: 'tracked' }]
@@ -76,7 +77,7 @@ describe('bootstrapping an isolated Checkout', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(result).toEqual({
+    expect(withoutOrigin(result)).toEqual({
       outcome: 'partial',
       copied: ['config/local.json'],
       skipped: [
@@ -111,7 +112,7 @@ describe('bootstrapping an isolated Checkout', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(result).toEqual({
+    expect(withoutOrigin(result)).toEqual({
       outcome: 'copied',
       copied: ['local/日本語/keep.env'],
       skipped: []
@@ -122,7 +123,7 @@ describe('bootstrapping an isolated Checkout', () => {
     await writeFile(join(projectRoot, '.env.local'), 'must stay local\n')
     await writeFile(join(projectRoot, '.worktreeinclude'), '!.env.local\n')
 
-    await expect(bootstrapWorktree({ projectRoot, checkoutRoot })).resolves.toEqual({
+    expect(withoutOrigin(await bootstrapWorktree({ projectRoot, checkoutRoot }))).toEqual({
       outcome: 'skipped',
       copied: [],
       skipped: []
@@ -142,7 +143,7 @@ describe('bootstrapping an isolated Checkout', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(result).toEqual({
+    expect(withoutOrigin(result)).toEqual({
       outcome: 'partial',
       copied: ['local/good.env'],
       skipped: [
@@ -167,7 +168,7 @@ describe('bootstrapping an isolated Checkout', () => {
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
     await chmod(join(projectRoot, 'local', 'private.env'), 0o600)
-    expect(result).toEqual({
+    expect(withoutOrigin(result)).toEqual({
       outcome: 'partial',
       copied: ['local/good.env'],
       skipped: [
@@ -198,7 +199,7 @@ describe('carrying the Project’s ignored directories', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(result).toEqual({
+    expect(withoutOrigin(result)).toEqual({
       outcome: 'partial',
       copied: ['.env.local', 'dist/', 'node_modules/', 'packages/web/node_modules/'],
       skipped: [{ path: '.env.tracked', reason: 'tracked' }]
@@ -225,7 +226,7 @@ describe('carrying the Project’s ignored directories', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(result).toEqual({ outcome: 'copied', copied: ['vendor/'], skipped: [] })
+    expect(withoutOrigin(result)).toEqual({ outcome: 'copied', copied: ['vendor/'], skipped: [] })
     await expect(readFile(join(checkoutRoot, 'vendor', 'gem', 'gem.rb'), 'utf8')).resolves.toBe(
       'gem\n'
     )
@@ -257,7 +258,7 @@ describe('carrying the Project’s ignored directories', () => {
 
       const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-      expect(result).toEqual({
+      expect(withoutOrigin(result)).toEqual({
         outcome: 'partial',
         copied: ['node_modules/'],
         skipped: [{ path: '.env.tracked', reason: 'tracked' }]
@@ -284,7 +285,7 @@ describe('carrying the Project’s ignored directories', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(result).toEqual({
+    expect(withoutOrigin(result)).toEqual({
       outcome: 'partial',
       copied: ['cache/warm.bin'],
       skipped: [
@@ -310,7 +311,7 @@ describe('carrying the Project’s ignored directories', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(result).toEqual({
+    expect(withoutOrigin(result)).toEqual({
       outcome: 'copied',
       copied: ['node_modules/left-pad/index.js'],
       skipped: []
@@ -329,7 +330,11 @@ describe('carrying the Project’s ignored directories', () => {
 
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
-    expect(result).toEqual({ outcome: 'copied', copied: ['node_modules/'], skipped: [] })
+    expect(withoutOrigin(result)).toEqual({
+      outcome: 'copied',
+      copied: ['node_modules/'],
+      skipped: []
+    })
     // The exclusion applies to files it names, and does not reach inside a
     // directory carried whole — which is what keeps the clone worth having.
     await expect(readFile(join(checkoutRoot, 'node_modules', 'debug.log'), 'utf8')).resolves.toBe(
@@ -352,7 +357,7 @@ describe('carrying the Project’s ignored directories', () => {
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
     const spent = before - (await freeBytes(checkoutRoot))
 
-    expect(result).toEqual({
+    expect(withoutOrigin(result)).toEqual({
       outcome: 'partial',
       copied: ['node_modules/'],
       skipped: [{ path: '.env.tracked', reason: 'tracked' }]
@@ -375,7 +380,7 @@ describe('carrying the Project’s ignored directories', () => {
     const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
 
     await chmod(join(projectRoot, 'node_modules', 'locked'), 0o700)
-    expect(result).toEqual({
+    expect(withoutOrigin(result)).toEqual({
       outcome: 'skipped',
       copied: [],
       skipped: [
@@ -390,6 +395,68 @@ describe('carrying the Project’s ignored directories', () => {
     })
   })
 })
+
+describe('saying what a Checkout was bootstrapped from', () => {
+  it('names the Project’s commit, the branch it was on, and when', async () => {
+    await writeFile(join(projectRoot, '.env.local'), 'local secret\n')
+    const at = new Date('2026-08-10T04:32:19.000Z')
+
+    const result = await bootstrapWorktree({ projectRoot, checkoutRoot, now: () => at })
+
+    expect(result.provenance).toEqual({
+      commit: await head(projectRoot),
+      branch: 'main',
+      at: '2026-08-10T04:32:19.000Z'
+    })
+    expect(result.copied).toEqual(['.env.local'])
+  })
+
+  it('reports the commit and no branch when the Project is detached', async () => {
+    const commit = await head(projectRoot)
+    await git('git', ['checkout', '--quiet', '--detach', commit], { cwd: projectRoot })
+
+    const result = await bootstrapWorktree({ projectRoot, checkoutRoot })
+
+    expect(result.provenance).toMatchObject({ commit, branch: null })
+  })
+
+  // Unknown, and said so — never mistaken for a Checkout nothing was carried
+  // into, which is a Session with no result at all rather than one with no
+  // origin.
+  it('reports no origin for a Project Git cannot answer for', async () => {
+    const notARepository = await mkdtemp(join(tmpdir(), 'bootstrap-bare-'))
+    try {
+      const result = await bootstrapWorktree({ projectRoot: notARepository, checkoutRoot })
+
+      expect(result).toEqual({
+        outcome: 'skipped',
+        copied: [],
+        skipped: [{ path: '.worktreeinclude', reason: 'copy-failed' }],
+        provenance: null
+      })
+    } finally {
+      await rm(notARepository, { recursive: true, force: true })
+    }
+  })
+})
+
+/** The Project's HEAD, as Git itself writes it. */
+async function head(root: string): Promise<string> {
+  const { stdout } = await git('git', ['rev-parse', 'HEAD'], { cwd: root })
+  return stdout.trim()
+}
+
+/**
+ * What the bootstrap carried, without where it came from: provenance holds a
+ * clock reading and the Project's HEAD, and the tests about what is carried
+ * are not about either. The ones that are assert on it directly.
+ */
+function withoutOrigin(
+  result: WorktreeBootstrapResult
+): Omit<WorktreeBootstrapResult, 'provenance'> {
+  const { provenance: _provenance, ...rest } = result
+  return rest
+}
 
 const execute = promisify(execFile)
 

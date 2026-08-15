@@ -4,6 +4,7 @@ import { lstat, mkdir, open, readFile, realpath, rm, stat, unlink } from 'node:f
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import {
   buildWorktreeBootstrapResult,
+  type WorktreeBootstrapProvenance,
   type WorktreeBootstrapResult,
   type WorktreeBootstrapSkipReason
 } from '@shared/checkout'
@@ -30,6 +31,7 @@ interface BootstrapInput {
   checkoutRoot: string
   /** Restricts a retry to the paths that failed previously. */
   paths?: string[]
+  now?: () => Date
 }
 
 interface PatternSet {
@@ -48,8 +50,14 @@ interface PatternSet {
  * configuration files, copied. Git owns both candidate matching and the
  * ignored decision; filesystem checks then narrow that answer to contained
  * regular files and directories.
+ *
+ * The result says where that state came from. It says nothing about whether
+ * the state suits the Checkout's base: this reads Git, not lockfiles.
  */
 export async function bootstrapWorktree(input: BootstrapInput): Promise<WorktreeBootstrapResult> {
+  // Read before anything is carried, so the commit named is the one the
+  // copying began from rather than wherever the Project has moved to since.
+  const provenance = await observeProvenance(input.projectRoot, input.now ?? (() => new Date()))
   const patterns = input.paths ? retryPatterns(input.paths) : await readPatterns(input.projectRoot)
   const skipped: WorktreeBootstrapResult['skipped'] = patterns.invalid.map((path) => ({
     path,
@@ -74,7 +82,8 @@ export async function bootstrapWorktree(input: BootstrapInput): Promise<Worktree
   } catch {
     return buildWorktreeBootstrapResult(
       [],
-      [...skipped, { path: '.worktreeinclude', reason: 'copy-failed' }]
+      [...skipped, { path: '.worktreeinclude', reason: 'copy-failed' }],
+      provenance
     )
   }
 
@@ -88,7 +97,40 @@ export async function bootstrapWorktree(input: BootstrapInput): Promise<Worktree
   }
   copied.sort(comparePaths)
   skipped.sort((left, right) => comparePaths(left.path, right.path))
-  return buildWorktreeBootstrapResult(copied, skipped)
+  return buildWorktreeBootstrapResult(copied, skipped, provenance)
+}
+
+/**
+ * The Project as it stood when the bootstrap began: HEAD, the branch HEAD was
+ * on, and the moment. A Project Git cannot answer for reports no origin at
+ * all, which reads as unknown — never as a Checkout nothing was carried into.
+ */
+async function observeProvenance(
+  projectRoot: string,
+  now: () => Date
+): Promise<WorktreeBootstrapProvenance | null> {
+  let commit: string
+  try {
+    const { stdout } = await run('git', ['rev-parse', 'HEAD'], {
+      cwd: projectRoot,
+      env: gitEnvironment(),
+      timeout: TIMEOUT_MS
+    })
+    commit = stdout.trim()
+  } catch {
+    return null
+  }
+  if (!/^[0-9a-f]{7,64}$/.test(commit)) return null
+  // A detached Project has a commit and no branch, and saying so is the whole
+  // point: `--abbrev-ref` would answer the literal string `HEAD` instead.
+  const branch = await run('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], {
+    cwd: projectRoot,
+    env: gitEnvironment(),
+    timeout: TIMEOUT_MS
+  })
+    .then(({ stdout }) => stdout.trim() || null)
+    .catch(() => null)
+  return { commit, branch, at: now().toISOString() }
 }
 
 /** A retry asks Git about exactly the paths that failed, nothing wider. */

@@ -44,6 +44,12 @@ async function toplevel(cwd: string): Promise<string> {
   return stdout.trim()
 }
 
+/** The commit a checkout is on, as git itself writes it. */
+async function headOf(cwd: string): Promise<string> {
+  const { stdout } = await git('git', ['rev-parse', 'HEAD'], { cwd })
+  return stdout.trim()
+}
+
 /** A repository whose two branches change the same file differently. */
 async function conflictingRepository(filename = 'conflict.txt'): Promise<void> {
   await prepareConflict(root, filename)
@@ -732,7 +738,14 @@ describe('creating an isolated checkout', () => {
 
     if (created.status !== 'created') throw new Error('expected a worktree')
     expect(await currentBranch(created.path)).toBe('fix-location-crash')
-    expect(created.bootstrap).toEqual({ outcome: 'copied', copied: ['.env.local'], skipped: [] })
+    expect(created.bootstrap).toMatchObject({
+      outcome: 'copied',
+      copied: ['.env.local'],
+      skipped: [],
+      // The Project's own HEAD, not the worktree's: the state carried came out
+      // of the person's working copy.
+      provenance: { branch: 'trunk', commit: await headOf(root) }
+    })
     await expect(readFile(join(created.path, '.env.local'), 'utf8')).resolves.toBe(
       'checkout-only\n'
     )
