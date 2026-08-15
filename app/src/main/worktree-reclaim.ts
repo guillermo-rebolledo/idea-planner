@@ -1,11 +1,14 @@
-import { lstat, readdir, realpath } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { access, lstat, readdir, realpath } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
 import type { SessionSummary } from '@shared/contract'
 import {
+  holdsUnshownWork,
   MAX_LISTED_WORKTREES,
   removeWorktreesInputSchema,
   type ReclaimableWorktree,
   type RemoveWorktreesInput,
+  type WorktreeContents,
   type WorktreeDiskUsage,
   type WorktreeInventory,
   type WorktreeRemoval,
@@ -35,6 +38,21 @@ const MAX_WALKED_ENTRIES = 120_000
 /** What `st_blocks` counts in, fixed by POSIX regardless of the block size. */
 const BLOCK_BYTES = 512
 
+/**
+ * How many lists may stand at once. Opening the dialog and closing it again is
+ * free, so without a bound every reading would be kept for the life of the
+ * process. The oldest goes first; a list that has aged out is answered as
+ * changed, which is what it is.
+ */
+const MAX_OPEN_LISTS = 8
+
+/** One reading of a Project's Worktrees, waiting for a confirmation. */
+interface PublishedInventory {
+  projectRoot: string
+  /** What each Worktree held when the person read it, by resolved path. */
+  shown: ReadonlyMap<string, WorktreeContents>
+}
+
 export interface WorktreeReclaimDeps {
   /** The app-owned directory this Project's isolated Checkouts live under. */
   directoryFor: (projectRoot: string) => string
@@ -45,9 +63,17 @@ export interface WorktreeReclaimDeps {
    * working in. Asked on every call: a Run can start while the dialog is open.
    */
   busyCheckouts: () => string[]
+  newOperationId?: () => string
 }
 
 export class WorktreeReclaimService {
+  /**
+   * The lists still open, by operation id. Deliberately in memory: a list is
+   * an assertion about directories at a moment, and after a restart every such
+   * assertion is stale. Losing them costs a second look and nothing else.
+   */
+  private readonly published = new Map<string, PublishedInventory>()
+
   constructor(private readonly deps: WorktreeReclaimDeps) {}
 
   /**
@@ -73,7 +99,21 @@ export class WorktreeReclaimService {
     const worktrees = await Promise.all(
       listed.map((name) => this.describe(join(root, name), sessions, busy))
     )
-    return { projectRoot, worktrees, unlisted: directories.length - listed.length }
+    const operationId = (this.deps.newOperationId ?? randomUUID)()
+    // Insertion order is age order, so the first key is the oldest list.
+    while (this.published.size >= MAX_OPEN_LISTS) {
+      const oldest = this.published.keys().next()
+      if (oldest.done) break
+      this.published.delete(oldest.value)
+    }
+    this.published.set(operationId, {
+      projectRoot,
+      // What this list said each one held. Removal is checked against exactly
+      // this, so work written while the person was reading cannot be deleted
+      // by a confirmation that never mentioned it.
+      shown: new Map(worktrees.map((worktree) => [resolve(worktree.path), worktree.contents]))
+    })
+    return { projectRoot, operationId, worktrees, unlisted: directories.length - listed.length }
   }
 
   /**
@@ -84,13 +124,36 @@ export class WorktreeReclaimService {
    * somewhere else is refused rather than interpreted. A Session's own record
    * of where it works is never consulted here — this removes directories, and
    * a Session keeps pointing at the one it was fixed to.
+   *
+   * What each one held is measured again here, against what the list the
+   * person confirmed said it held. A confirmation is only worth having if it
+   * answers for what is really there: a Checkout that gained uncommitted work
+   * while they were reading would otherwise be force-removed on the strength
+   * of a row that said it was empty.
    */
   async remove(rawInput: RemoveWorktreesInput): Promise<WorktreeRemovalResult> {
     const input = removeWorktreesInputSchema.parse(rawInput)
+    const published = this.published.get(input.operationId)
+    // Consumed before anything is removed, so one list can never answer for
+    // two confirmations: the second has to be made against a fresh reading.
+    this.published.delete(input.operationId)
+    // A list this process never issued, one already used, or one belonging to
+    // another Project. All three are the same answer: look again.
+    if (published?.projectRoot !== input.projectRoot) {
+      return {
+        removals: input.paths.map((path) => ({
+          path,
+          outcome: 'changed' as const,
+          detail: 'This list is no longer the one you read. Open Worktrees… again.'
+        }))
+      }
+    }
     const root = this.deps.directoryFor(input.projectRoot)
     const removals: WorktreeRemoval[] = []
     for (const path of input.paths) {
-      removals.push(await this.removeOne({ path, root, projectRoot: input.projectRoot }))
+      removals.push(
+        await this.removeOne({ path, root, projectRoot: input.projectRoot, shown: published.shown })
+      )
     }
     return { removals }
   }
@@ -105,6 +168,7 @@ export class WorktreeReclaimService {
     path: string
     root: string
     projectRoot: string
+    shown: ReadonlyMap<string, WorktreeContents>
   }): Promise<WorktreeRemoval> {
     const { path } = input
     if (!isInside(input.root, path)) {
@@ -112,6 +176,14 @@ export class WorktreeReclaimService {
         path,
         outcome: 'failed',
         detail: 'That is not a Checkout Argos made for this Project.'
+      }
+    }
+    const shown = input.shown.get(resolve(path))
+    if (shown === undefined) {
+      return {
+        path,
+        outcome: 'changed',
+        detail: 'This was not in the list you read. Open Worktrees… again.'
       }
     }
     // Asked again for every removal rather than once for the batch. Removing a
@@ -131,6 +203,26 @@ export class WorktreeReclaimService {
         path,
         outcome: 'failed',
         detail: 'A Run is working in it. Stop the Run, then remove it.'
+      }
+    }
+    // Measured again at the last possible moment, and compared with what the
+    // person was actually shown. `--force` follows this, so this is the only
+    // thing standing between a Checkout that gained work while the dialog was
+    // open and that work being deleted unmentioned.
+    //
+    // Asked only of a directory that is still there. One removed in a terminal
+    // since the list was read cannot be read either, and calling that "it
+    // changed" would refuse to finish something already finished — so it falls
+    // through to the removal, which reports it gone.
+    const stillThere = await access(path).then(
+      () => true,
+      () => false
+    )
+    if (stillThere && holdsUnshownWork(shown, await observeWorktreeContents(path))) {
+      return {
+        path,
+        outcome: 'changed',
+        detail: 'It gained work after you read this list, so nothing was touched. Look again.'
       }
     }
     const attempt = await removeWorktree({ projectRoot: input.projectRoot, path })

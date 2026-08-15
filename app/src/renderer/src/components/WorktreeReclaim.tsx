@@ -45,6 +45,8 @@ function removalText(removal: WorktreeRemoval): string {
       return 'Removed'
     case 'already-gone':
       return 'Already gone — it had been removed outside Argos'
+    case 'changed':
+      return removal.detail ?? 'Changed after you read this — nothing was touched'
     case 'failed':
       return removal.detail ?? 'Could not be removed'
   }
@@ -92,13 +94,17 @@ export function WorktreeReclaimDialog({
   }
 
   function confirm(): void {
-    if (selected.length === 0) return
+    if (selected.length === 0 || !inventory) return
     setBusy(true)
     window.shell
-      .removeWorktrees({ projectRoot, paths: selected })
+      // The list being answered, not just the paths: Main re-reads each one
+      // and refuses any that gained work since this was drawn.
+      .removeWorktrees({ projectRoot, operationId: inventory.operationId, paths: selected })
       .then((removed) => {
         setResult(removed)
-        const gone = removed.removals.filter((one) => one.outcome !== 'failed').length
+        const gone = removed.removals.filter(
+          (one) => one.outcome === 'removed' || one.outcome === 'already-gone'
+        ).length
         onAnnounce(
           `Removed ${String(gone)} of ${String(removed.removals.length)} Worktrees. Branches were left where they are.`
         )

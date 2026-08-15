@@ -112,6 +112,13 @@ export type ReclaimableWorktree = z.infer<typeof reclaimableWorktreeSchema>
  */
 export const worktreeInventorySchema = z.object({
   projectRoot: z.string().min(1),
+  /**
+   * Opaque, and the only handle the window ever holds. It stands for what this
+   * list said each Worktree held, which is what removal is checked against —
+   * the window cannot describe a Checkout back to Main, so it cannot claim to
+   * have shown a warning it never drew.
+   */
+  operationId: z.string().uuid(),
   worktrees: z.array(reclaimableWorktreeSchema).max(MAX_LISTED_WORKTREES),
   /**
    * How many were found beyond the ones listed. Zero means the list is
@@ -124,6 +131,8 @@ export type WorktreeInventory = z.infer<typeof worktreeInventorySchema>
 
 export const removeWorktreesInputSchema = z.object({
   projectRoot: z.string().min(1),
+  /** The list this confirmation answers, so what was read can be re-checked. */
+  operationId: z.string().uuid(),
   /** Exactly the directories the person selected; nothing is inferred. */
   paths: z.array(z.string().min(1)).min(1).max(MAX_LISTED_WORKTREES)
 })
@@ -137,6 +146,12 @@ export const worktreeRemovalOutcomeSchema = z.enum([
    * gone, and it is gone.
    */
   'already-gone',
+  /**
+   * It holds something the list the person confirmed did not show — work
+   * written while they were reading it. Nothing was touched, and that is a
+   * promise the surface may repeat.
+   */
+  'changed',
   'failed'
 ])
 export type WorktreeRemovalOutcome = z.infer<typeof worktreeRemovalOutcomeSchema>
@@ -157,6 +172,29 @@ export type WorktreeRemoval = z.infer<typeof worktreeRemovalSchema>
 export const worktreeRemovalResultSchema = z.object({
   removals: z.array(worktreeRemovalSchema)
 })
+
+/**
+ * Whether removing this now would take work the list the person confirmed
+ * never showed them.
+ *
+ * Only ever in that direction. A Checkout that has become *safer* since it was
+ * read — the changes committed, the commits pushed — is removed without
+ * complaint: the person was warned about more than is there, which is not a
+ * reason to refuse what they asked for. What is refused is a Checkout that has
+ * gained something, and a Checkout that could be read then and cannot be now,
+ * because "I could not check" is not "there is nothing to lose".
+ */
+export function holdsUnshownWork(shown: WorktreeContents, now: WorktreeContents): boolean {
+  // The list already said it did not know, and the person confirmed anyway.
+  if (shown.status === 'unreadable') return false
+  if (now.status === 'unreadable') {
+    return !shown.uncommittedChanges && !shown.commitsOnlyHere
+  }
+  return (
+    (now.uncommittedChanges && !shown.uncommittedChanges) ||
+    (now.commitsOnlyHere && !shown.commitsOnlyHere)
+  )
+}
 export type WorktreeRemovalResult = z.infer<typeof worktreeRemovalResultSchema>
 
 /**

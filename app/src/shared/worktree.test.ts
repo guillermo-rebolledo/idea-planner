@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { describeDiskSize, removeWorktreesInputSchema, worktreeRemovalSchema } from './worktree'
+import {
+  describeDiskSize,
+  holdsUnshownWork,
+  removeWorktreesInputSchema,
+  worktreeRemovalSchema
+} from './worktree'
 
 describe('describing what a Worktree costs', () => {
   it('reads in the units a developer already thinks in', () => {
@@ -20,12 +25,38 @@ describe('describing what a Worktree costs', () => {
 
 describe('the reclaim contract', () => {
   it('refuses a removal that names nothing, so "remove" can never mean "all"', () => {
-    expect(removeWorktreesInputSchema.safeParse({ projectRoot: '/p', paths: [] }).success).toBe(
-      false
-    )
+    const operationId = '00000000-0000-4000-8000-000000000000'
+    expect(
+      removeWorktreesInputSchema.safeParse({ projectRoot: '/p', operationId, paths: [] }).success
+    ).toBe(false)
+    expect(
+      removeWorktreesInputSchema.safeParse({ projectRoot: '/p', operationId, paths: ['/p/one'] })
+        .success
+    ).toBe(true)
+    // And never without naming the list it answers.
     expect(
       removeWorktreesInputSchema.safeParse({ projectRoot: '/p', paths: ['/p/one'] }).success
-    ).toBe(true)
+    ).toBe(false)
+  })
+
+  it('refuses only what has gained something since the person read it', () => {
+    const clean = { status: 'observed', uncommittedChanges: false, commitsOnlyHere: false } as const
+    const dirty = { status: 'observed', uncommittedChanges: true, commitsOnlyHere: false } as const
+    const unique = { status: 'observed', uncommittedChanges: false, commitsOnlyHere: true } as const
+    const unknown = { status: 'unreadable' } as const
+
+    expect(holdsUnshownWork(clean, dirty)).toBe(true)
+    expect(holdsUnshownWork(clean, unique)).toBe(true)
+    // Could not be checked, and the list said there was nothing to lose.
+    expect(holdsUnshownWork(clean, unknown)).toBe(true)
+
+    // Warned about, and confirmed anyway: still theirs to remove.
+    expect(holdsUnshownWork(dirty, dirty)).toBe(false)
+    expect(holdsUnshownWork(dirty, unknown)).toBe(false)
+    expect(holdsUnshownWork(unknown, dirty)).toBe(false)
+    // Safer than the row that was confirmed is never a reason to refuse.
+    expect(holdsUnshownWork(dirty, clean)).toBe(false)
+    expect(holdsUnshownWork(unique, clean)).toBe(false)
   })
 
   it('carries no explanation for an outcome that needs none', () => {
