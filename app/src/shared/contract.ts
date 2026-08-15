@@ -50,6 +50,7 @@ import {
   type CheckoutFacts,
   worktreeBootstrapResultSchema
 } from './checkout'
+import type { CheckoutCostRecord } from './checkout-cost'
 import { completeRunLifecycleInputSchema, openRunLifecycleInputSchema } from './run-lifecycle'
 import type { EditorCatalog, OpenInEditorInput } from './editor'
 import type {
@@ -96,6 +97,8 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 31: an isolated Checkout's bootstrap result says how long it took, and the
+ *     window can read what bootstrapping Checkouts on this machine has cost.
  * 30: the window can ask which Projects have a Run working in their Local
  *     Checkout, so a new Session can default away from one.
  * 29: the Worktrees Argos made for a Project can be listed and, once asked
@@ -131,7 +134,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 30
+export const CONTRACT_VERSION = 31
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -724,6 +727,13 @@ export interface ShellApi {
    * outside the app is reported as gone rather than as a failure.
    */
   removeWorktrees(input: RemoveWorktreesInput): Promise<WorktreeRemovalResult>
+  /**
+   * What creating isolated Checkouts on this machine has cost: how long each
+   * bootstrap took, how much it carried, what it refused and why, and how the
+   * first command a Run ran in it went. Read from one bounded local file and
+   * sent nowhere — Argos has no telemetry and this does not begin one.
+   */
+  getCheckoutCosts(): Promise<CheckoutCostRecord>
   /** What "Open in" can offer on this Mac, and what was chosen last. */
   listEditors(): Promise<EditorCatalog>
   /**
@@ -736,6 +746,7 @@ export interface ShellApi {
 export { IPC_CHANNELS } from './channels'
 export * from './approval'
 export * from './checkout'
+export * from './checkout-cost'
 export * from './editor'
 export * from './skill'
 export * from './conversation'

@@ -45,6 +45,7 @@ import {
   type RewindSessionInput,
   type UnfinishedRun
 } from '@shared/conversation'
+import type { CheckoutFirstCommand } from '@shared/checkout-cost'
 import { harnessPromptWithReviewAttachments } from '@shared/review-attachment'
 import { permits, proposeStandingApproval, ruleText, type ProposedRule } from '@shared/approval'
 import {
@@ -135,6 +136,13 @@ interface RunServiceDeps {
   interruptGraceMs?: number
   /** Delivers normalized assistant and control events straight to the window. */
   onConversationEvent?: (event: ConversationStreamEvent) => void
+  /**
+   * The first command each Run finished, with the Checkout it ran in. Whether
+   * that Checkout was bootstrapped, and whether this is the first command it
+   * has ever seen, is the record's question to answer — a Run knows neither,
+   * and asking it to would make every Run's ingest loop depend on a file.
+   */
+  onRunCommandFinished?: (checkout: string, command: CheckoutFirstCommand) => void
   /** Runs Main product Effects on Electron's one scoped runtime. */
   runEffect?: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
 }
@@ -314,6 +322,13 @@ export class RunService {
    * would be told no while an agent is being started in it.
    */
   private readonly checkouts = new Map<string, string>()
+  /**
+   * Runs whose first finished command has already been reported. A Harness
+   * describes one command more than once — running, then landed — and a Run
+   * runs dozens more after it; only the first one that finished says anything
+   * about whether the Checkout it was handed arrived usable.
+   */
+  private readonly commandReported = new Set<string>()
   /**
    * What each Run's Checkout looked like when it started. Comparing it with
    * the Checkout when the Run ends is the only way a change made by a shell
@@ -1235,6 +1250,19 @@ export class RunService {
       if (activity) {
         await this.record(run, undefined, activity.kind, sanitize(activity.summary, checkout))
       }
+      // How the Checkout this Run was handed actually behaved. Reported after
+      // the command landed rather than when it started, because a command
+      // still running has said nothing about whether anything works yet.
+      if (event.type === 'command' && !event.running && !this.commandReported.has(run.id)) {
+        this.commandReported.add(run.id)
+        this.deps.onRunCommandFinished?.(checkout, {
+          outcome:
+            event.interrupted === true ? 'interrupted' : event.failed ? 'failed' : 'succeeded',
+          at: new Date().toISOString(),
+          exitCode: event.exitCode,
+          durationMs: event.durationMs
+        })
+      }
       // An Approval Request Codex raised in-band. Core has already written it
       // into the Conversation; what is left is what Claude's path does too —
       // remember what would answer it, and block the Run while it stands.
@@ -2016,6 +2044,7 @@ export class RunService {
     // still be naming this Run for a moment, and a Run still named with no
     // Checkout beside it would read as one working nowhere.
     this.checkouts.delete(run.id)
+    this.commandReported.delete(run.id)
     // The store itself stays: it belongs to the Session, not to this Run, and
     // it is what makes undoing this Run possible for as long as the Session
     // exists (ADR 0006). Only the in-memory handle is released.

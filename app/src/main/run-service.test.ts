@@ -10,7 +10,12 @@ import {
   type HarnessEvent,
   type QueuedSubmission
 } from '@shared/conversation'
-import { LOCAL_CHECKOUT, startingSubmissionId, type SessionSummary } from '@shared/contract'
+import {
+  LOCAL_CHECKOUT,
+  startingSubmissionId,
+  type CheckoutFirstCommand,
+  type SessionSummary
+} from '@shared/contract'
 import { runConfigurationSchema, type RunSnapshot } from '@shared/run'
 import type { RunLaunch } from './run-process-broker'
 import { SessionSnapshotStore } from './snapshot-store'
@@ -1857,6 +1862,87 @@ describe('Run service', () => {
     expect(activity).toContainEqual(
       expect.objectContaining({ kind: 'output', summary: 'app.read_file: Read file session.md' })
     )
+  })
+
+  // Whether the Checkout a Run was handed arrived usable. The first command it
+  // finished is the one that answers that; a command still running has said
+  // nothing yet, and every command after it ran in a Checkout an agent has
+  // already had the chance to repair.
+  it('reports the first command a Run finished, with the Checkout it ran in', async () => {
+    const root = await readyHarnessRoot('run-first-command-')
+    const projectRoot = join(root, 'a-project')
+    const core = fakeCore(projectRoot)
+    core.events = [
+      {
+        type: 'command',
+        id: 'call-1',
+        command: 'pnpm test',
+        output: '',
+        failed: false,
+        running: true,
+        exitCode: null,
+        durationMs: null
+      },
+      {
+        type: 'command',
+        id: 'call-1',
+        command: 'pnpm test',
+        output: 'Cannot find module vitest',
+        failed: true,
+        running: false,
+        exitCode: 127,
+        durationMs: 240
+      },
+      {
+        type: 'command',
+        id: 'call-2',
+        command: 'pnpm install',
+        output: '',
+        failed: false,
+        running: false,
+        exitCode: 0,
+        durationMs: 91_000
+      }
+    ]
+    const broker = fakeBroker()
+    const finished: { checkout: string; command: CheckoutFirstCommand }[] = []
+    const service = new RunService({
+      core,
+      broker,
+      readiness: readyReadiness(join(root, 'claude')),
+      homeDirectory: root,
+      privateRoot: join(root, 'private'),
+      snapshots: new SessionSnapshotStore(join(root, 'private')),
+      proxyExecutable: '/usr/bin/true',
+      proxyScript: '/tmp/mcp-proxy.js',
+      skills: fakeSkills(root),
+      onRunCommandFinished: (checkout, command) => finished.push({ checkout, command })
+    })
+    await service.start({
+      submissionId: 'submission-1',
+      sessionId: 'session',
+      prompt: 'Run the tests',
+      harness: 'claude',
+      model: 'gpt-5-codex',
+      effort: 'medium',
+      permissionMode: 'auto'
+    })
+    broker.launch?.onOutput?.('stdout', '{"type":"turn.started"}\n')
+    await Promise.resolve()
+    await broker.launch?.onBeforeCleanup?.()
+
+    // Once, for the one that landed first — not for the start of it, and not
+    // for the install that followed it.
+    expect(finished).toHaveLength(1)
+    expect(finished[0]?.checkout).toBe(projectRoot)
+    expect(finished[0]?.command).toMatchObject({
+      outcome: 'failed',
+      exitCode: 127,
+      durationMs: 240
+    })
+    // The command itself is deliberately not carried: the Conversation keeps
+    // it, redacted, and this record only needs to know whether it worked.
+    expect(JSON.stringify(finished[0]?.command)).not.toContain('pnpm')
   })
 
   it('reports the end of a Run, so surfaces that only listen stop saying it runs', async () => {

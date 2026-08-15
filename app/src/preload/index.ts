@@ -89,6 +89,7 @@ const api: ShellApi = {
   listProjectWorktrees: (projectRoot) =>
     ipcRenderer.invoke(IPC_CHANNELS.listProjectWorktrees, projectRoot),
   removeWorktrees: (input) => ipcRenderer.invoke(IPC_CHANNELS.removeWorktrees, input),
+  getCheckoutCosts: () => ipcRenderer.invoke(IPC_CHANNELS.getCheckoutCosts),
   listEditors: () => ipcRenderer.invoke(IPC_CHANNELS.listEditors),
   openInEditor: (input) => ipcRenderer.invoke(IPC_CHANNELS.openInEditor, input),
   getConversation: (sessionId) => ipcRenderer.invoke(IPC_CHANNELS.getConversation, sessionId),

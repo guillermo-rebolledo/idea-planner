@@ -1859,6 +1859,75 @@ test('the Worktrees Argos made are accounted for, and reclaimed only when asked'
   }
 })
 
+/**
+ * ADR 0004 rejected isolation as the baseline on a cost it asserted and never
+ * measured. The person is the one who can settle it, on their own machine, and
+ * this is where they read the answer — locally, with nothing sent anywhere.
+ */
+test('what a Checkout cost to become usable is readable without leaving the machine', async () => {
+  // The record as a previous run of the app would have left it: one Checkout
+  // whose first command worked, and one that was prepared and then could not
+  // run anything — which is the pair the whole surface exists to distinguish.
+  await mkdir(join(sandbox.appDataDir, 'com.memojiinc.argos'), { recursive: true })
+  await writeFile(
+    join(sandbox.appDataDir, 'com.memojiinc.argos', 'checkout-costs.json'),
+    JSON.stringify({
+      checkouts: [
+        {
+          path: '/checkouts/fix-the-crash',
+          at: '2026-08-10T04:32:19.000Z',
+          durationMs: 640,
+          carried: { directories: 2, files: 1 },
+          skipped: [],
+          firstCommand: {
+            outcome: 'succeeded',
+            at: '2026-08-10T04:33:02.000Z',
+            exitCode: 0,
+            durationMs: 4200
+          }
+        },
+        {
+          path: '/checkouts/other-volume',
+          at: '2026-08-09T11:02:00.000Z',
+          durationMs: 120,
+          carried: { directories: 0, files: 1 },
+          skipped: [{ reason: 'clone-unsupported', count: 2 }],
+          firstCommand: null
+        }
+      ]
+    })
+  )
+
+  const app = await launchShell()
+  try {
+    const page = await app.firstWindow()
+    await completeOnboarding(page)
+    await page.getByRole('button', { name: 'App menu' }).click()
+    await page.getByRole('menuitem', { name: 'Settings…' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Settings' })
+    await dialog.getByRole('button', { name: 'Checkouts' }).click()
+
+    const costs = dialog.getByRole('region', { name: 'What isolated Checkouts cost' })
+    await expect(costs.getByText('fix-the-crash', { exact: true })).toBeVisible()
+    await expect(costs.getByText('640 ms', { exact: true })).toBeVisible()
+    await expect(costs.getByText('Carried 2 directories and 1 file')).toBeVisible()
+    await expect(costs.getByText('First command succeeded in 4.2 s')).toBeVisible()
+
+    // The second Checkout is the honest half: what it refused and why, and a
+    // first command nobody has run — said as not knowing, never as a pass.
+    await expect(costs.getByText('other-volume', { exact: true })).toBeVisible()
+    await expect(costs.getByText('2 skipped — is on a filesystem that cannot clone')).toBeVisible()
+    await expect(costs.getByText('No command has run here yet')).toBeVisible()
+    await expect(costs.getByText('First command succeeded in 4.2 s')).toHaveCount(1)
+
+    // It is a record, not a report: nothing about it is sent anywhere, and the
+    // surface says so rather than leaving the person to wonder.
+    await expect(costs.getByText('Argos sends none of it anywhere', { exact: false })).toBeVisible()
+  } finally {
+    await app.close()
+  }
+})
+
 test('a second Session started while one is working lands in a Checkout of its own', async () => {
   // A genuinely active Run, and a branch for an isolated Checkout to be cut
   // from — the two facts the default is decided from (ADR 0010).

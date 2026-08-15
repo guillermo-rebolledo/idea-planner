@@ -59,6 +59,7 @@ export const IPC_CHANNELS = {
   listBranches: 'checkout:branches',
   listProjectWorktrees: 'worktree:list',
   removeWorktrees: 'worktree:remove',
+  getCheckoutCosts: 'checkout:costs',
   listEditors: 'editor:list',
   openInEditor: 'editor:open',
   getConversation: 'conversation:get',

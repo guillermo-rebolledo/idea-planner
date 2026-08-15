@@ -74,7 +74,14 @@ export const worktreeBootstrapResultSchema = z.object({
    * from a Checkout nothing was ever carried into, and that is a Session with
    * no result at all rather than a result with no provenance.
    */
-  provenance: worktreeBootstrapProvenanceSchema.nullable().default(null)
+  provenance: worktreeBootstrapProvenanceSchema.nullable().default(null),
+  /**
+   * How long the bootstrap took, wall clock, across every attempt at it — the
+   * measurement ADR 0004's asserted cost was never given. Null on Sessions
+   * bootstrapped before it was measured, which is not the same as a bootstrap
+   * that took no time at all.
+   */
+  durationMs: z.number().int().nonnegative().nullable().default(null)
 })
 export type WorktreeBootstrapResult = z.infer<typeof worktreeBootstrapResultSchema>
 
@@ -82,7 +89,7 @@ export type WorktreeBootstrapResult = z.infer<typeof worktreeBootstrapResultSche
 export function buildWorktreeBootstrapResult(
   copied: string[],
   skipped: WorktreeBootstrapResult['skipped'],
-  provenance: WorktreeBootstrapProvenance | null
+  measured: { provenance: WorktreeBootstrapProvenance | null; durationMs: number | null }
 ): WorktreeBootstrapResult {
   return {
     outcome:
@@ -93,7 +100,8 @@ export function buildWorktreeBootstrapResult(
           : 'skipped',
     copied,
     skipped,
-    provenance
+    provenance: measured.provenance,
+    durationMs: measured.durationMs
   }
 }
 
