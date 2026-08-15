@@ -304,6 +304,17 @@ export class RunService {
    */
   private readonly mine = new Set<string>()
   /**
+   * The Checkout each accepted Run works in, recorded the moment the Run
+   * becomes this process's rather than when its baseline is captured.
+   *
+   * Deliberately not read off `baselines`: that entry lands after the adapter
+   * is prepared, the tool host is up, and the whole Checkout has been walked
+   * for a snapshot — seconds, in a Worktree carrying a cloned dependency
+   * directory. Anything asking "is a Run working in here" during that window
+   * would be told no while an agent is being started in it.
+   */
+  private readonly checkouts = new Map<string, string>()
+  /**
    * What each Run's Checkout looked like when it started. Comparing it with
    * the Checkout when the Run ends is the only way a change made by a shell
    * command is ever seen: the Harness reports the edits it makes with its own
@@ -406,12 +417,18 @@ export class RunService {
    * would write to a Checkout from outside a Run — reclaiming a Worktree is
    * the first — so the app can refuse to pull a directory out from under an
    * agent that is writing into it.
+   *
+   * A Run counts from the moment it is accepted rather than from the moment
+   * its baseline exists: preparing one takes long enough to remove a directory
+   * in, and a Run that is starting has as much claim on its Checkout as one
+   * already talking to a Harness.
    */
   activeCheckouts(): string[] {
-    const running = new Set([...this.deps.broker.activeRunIds(), ...this.mine])
-    return [...this.baselines.values()]
-      .filter((baseline) => running.has(baseline.runId))
-      .map((baseline) => baseline.checkout)
+    const running = [...new Set([...this.deps.broker.activeRunIds(), ...this.mine])]
+    return running.flatMap((runId) => {
+      const checkout = this.checkouts.get(runId) ?? this.baselines.get(runId)?.checkout
+      return checkout === undefined ? [] : [checkout]
+    })
   }
 
   private async recoverAll(): Promise<void> {
@@ -857,6 +874,7 @@ export class RunService {
     if (TERMINAL_RUN_STATUSES.has(accepted.status)) return accepted
     // From here on this Run is this process's, whatever the broker knows yet.
     this.mine.add(accepted.id)
+    this.checkouts.set(accepted.id, checkout)
     this.adapters.set(accepted.id, adapter)
     if (accepted.status !== 'accepted') {
       if (this.deps.broker.activeRunIds().includes(accepted.id)) return accepted
@@ -1994,6 +2012,10 @@ export class RunService {
     // this app was never able to keep — and the only one left to write.
     this.unwritten.delete(run.id)
     this.adapters.delete(run.id)
+    // Released here rather than where `mine` is, at the top: the broker can
+    // still be naming this Run for a moment, and a Run still named with no
+    // Checkout beside it would read as one working nowhere.
+    this.checkouts.delete(run.id)
     // The store itself stays: it belongs to the Session, not to this Run, and
     // it is what makes undoing this Run possible for as long as the Session
     // exists (ADR 0006). Only the in-memory handle is released.

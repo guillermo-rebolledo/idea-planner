@@ -119,6 +119,13 @@ export class WorktreeReclaimService {
     // captured before the first `git worktree remove` would answer for a
     // moment that has passed — which is the moment an agent's directory is
     // taken out from under it.
+    //
+    // This is a check and then an act, so it narrows the window rather than
+    // closing it: a Run admitted between this line and git's unlink would find
+    // its Checkout gone. Closing it would need Run admission and removal to
+    // share a lock, and what is left is bounded by something the design
+    // already accepts — a Session whose Worktree the person removed is broken
+    // either way, and this is the same failure a second earlier.
     if (this.busyNow().has(resolve(path))) {
       return {
         path,
