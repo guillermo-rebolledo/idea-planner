@@ -42,6 +42,31 @@ describe('the newest answer', () => {
     expect(answers.wins(answers.ask())).toBe(true)
   })
 
+  it('is replaced by the ask that was still in flight when it was adopted', () => {
+    // The reader moves forward in ask order and never back, so an answer taken
+    // while a newer one was pending is a step towards that newer one rather
+    // than somewhere it can get stuck. What it cannot be is current — an
+    // answer is stale the moment it arrives, and ordering is not freshness.
+    const answers = new LatestAnswer()
+    const first = answers.ask()
+    const pending = answers.ask()
+
+    expect(answers.wins(first)).toBe(true)
+    expect(answers.wins(pending)).toBe(true)
+  })
+
+  it('never goes backwards, however the answers interleave', () => {
+    const answers = new LatestAnswer()
+    const [first, second, third] = [answers.ask(), answers.ask(), answers.ask()]
+    const adopted: number[] = []
+
+    for (const ticket of [second, first, third]) {
+      if (answers.wins(ticket)) adopted.push(ticket)
+    }
+
+    expect(adopted).toEqual([second, third])
+  })
+
   it('refuses the same answer twice', () => {
     const answers = new LatestAnswer()
     const only = answers.ask()
