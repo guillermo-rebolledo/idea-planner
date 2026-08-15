@@ -50,7 +50,7 @@ export const worktreeBootstrapProvenanceSchema = z.object({
   /** The Project's HEAD when the bootstrap ran, in full. */
   commit: z.string().regex(/^[0-9a-f]{7,64}$/),
   /** The branch that commit was on, or null when the Project was detached. */
-  branch: z.string().min(1).max(200).nullable(),
+  branch: z.string().min(1).nullable(),
   /** When the state was carried. */
   at: z.string().datetime()
 })
