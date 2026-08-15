@@ -96,6 +96,8 @@ import type {
  * reloads the Renderer and leaves Main as it was — and this number is what
  * lets the Renderer notice before it acts on an answer it cannot read.
  *
+ * 30: the window can ask which Projects have a Run working in their Local
+ *     Checkout, so a new Session can default away from one.
  * 29: the Worktrees Argos made for a Project can be listed and, once asked
  *     for, removed.
  * 28: an isolated Checkout's bootstrap result says which commit of which
@@ -129,7 +131,7 @@ import type {
  * 7: starting a Session answers with the Session *and* whether its first Run
  *    started, where it used to answer with the Session alone.
  */
-export const CONTRACT_VERSION = 29
+export const CONTRACT_VERSION = 30
 
 export const sessionSummarySchema = z.object({
   /** Opaque identity. A Session is app-owned state, never a path. */
@@ -390,6 +392,7 @@ export const coreCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('session/list') }),
   z.object({ type: z.literal('session/list-damaged') }),
   z.object({ type: z.literal('session/get'), sessionId: z.string().min(1) }),
+  z.object({ type: z.literal('session/active-local-runs') }),
   z.object({ type: z.literal('mailbox/query'), query: mailboxCoreQuerySchema }),
   z.object({
     type: z.literal('session/set-pinned'),
@@ -563,6 +566,13 @@ export interface ShellApi {
   listSessions(): Promise<SessionSummary[]>
   /** Ids whose record could not be read, so the loss can be shown rather than inferred. */
   listDamagedSessions(): Promise<string[]>
+  /**
+   * The Projects a Run is working in the Local Checkout of right now, by root.
+   * Observed on each ask and never stored: it decides which Checkout a new
+   * Session is offered (ADR 0010), and that offer has to stop applying the
+   * moment the Run it was decided by ends.
+   */
+  listProjectsWithActiveLocalRuns(): Promise<string[]>
   queryMailbox(query: MailboxQuery): Promise<MailboxSnapshot>
   setSessionPinned(input: SetSessionPinnedInput): Promise<SessionSummary>
   setSessionArchived(input: SetSessionArchivedInput): Promise<SessionSummary>

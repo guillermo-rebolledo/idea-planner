@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Check, FolderTree, Monitor } from 'lucide-react'
-import type { BranchList, CheckoutRequest } from '@shared/contract'
+import type { BranchList, CheckoutDefaultReason, CheckoutRequest } from '@shared/contract'
 import { ChipTrigger, PopoverHeading } from '@renderer/components/ui/chip-popover'
 import { ChoiceRow } from '@renderer/components/ui/choice'
 import { Popover, PopoverContent } from '@renderer/components/ui/popover'
@@ -11,6 +11,10 @@ import { Popover, PopoverContent } from '@renderer/components/ui/popover'
  * Local — the Project's working copy, edited in place (ADR 0004) — or an
  * isolated checkout, a linked worktree cut from a chosen base branch. Once
  * the Session exists the choice freezes into the title-bar cluster.
+ *
+ * What it opens on is proposed rather than decided (ADR 0010), and when that
+ * proposal came from something observed it says so in one line. Both options
+ * stay live either way: this picker offers, and never refuses.
  */
 /**
  * The base an isolated checkout is cut from when nobody has said: the branch
@@ -27,15 +31,38 @@ function listed(branches: BranchList | 'unreadable' | null): string[] {
   return branches === null || branches === 'unreadable' ? [] : branches.branches
 }
 
+/**
+ * Why this Checkout is the one being offered, in one line — said only while
+ * the offer is still the app's and not the person's. It is an explanation and
+ * never a warning: overriding it back to Local is allowed, and being told off
+ * for taking an offer up is how a default starts reading as a rule.
+ */
+const REASON: Record<CheckoutDefaultReason, string> = {
+  'local-run-active':
+    'A Session is already working in this Project’s working copy, so this one gets a Checkout of its own.'
+}
+
 export function CheckoutPicker({
   projectRoot,
   value,
+  reason,
   onChange,
+  onSettle,
   disabled
 }: {
   projectRoot: string
   value: CheckoutRequest
+  /** Set while `value` is still the app's own proposal. Null once chosen. */
+  reason?: CheckoutDefaultReason | null
+  /** The person picked this. */
   onChange: (checkout: CheckoutRequest) => void
+  /**
+   * The app settled what the value left open — the base branch an isolated ask
+   * arrived without, or Local for a Project with no branch to cut from. Kept
+   * apart from `onChange` because settling a base is not somebody choosing,
+   * and a default frozen by the app's own bookkeeping would never lift.
+   */
+  onSettle: (checkout: CheckoutRequest) => void
   disabled?: boolean
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
@@ -59,13 +86,22 @@ export function CheckoutPicker({
   useEffect(() => {
     if (value.kind !== 'isolated' || value.baseBranch !== '' || branches === null) return
     const settled = defaultBase(branches)
-    onChange(settled ? { kind: 'isolated', baseBranch: settled } : { kind: 'local' })
-  }, [value, branches, onChange])
+    onSettle(settled ? { kind: 'isolated', baseBranch: settled } : { kind: 'local' })
+  }, [value, branches, onSettle])
 
   const isolated = value.kind === 'isolated'
+  const explained = reason ? REASON[reason] : null
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <ChipTrigger aria-label="Checkout" disabled={(disabled ?? false) || !projectRoot}>
+      <ChipTrigger
+        aria-label="Checkout"
+        // The reason travels on the chip as well as inside the popover: a
+        // person who never opens this one still gets a Session somewhere they
+        // did not ask for, and a Checkout nobody can see a reason for reads as
+        // a bug rather than as a decision.
+        {...(explained ? { title: explained } : {})}
+        disabled={(disabled ?? false) || !projectRoot}
+      >
         {value.kind === 'isolated' ? (
           <>
             Worktree
@@ -78,6 +114,9 @@ export function CheckoutPicker({
       <PopoverContent align="start" className="w-72">
         <PopoverHeading>Checkout</PopoverHeading>
         <div className="flex flex-col gap-0.5 px-1.5 pb-2">
+          {explained && (
+            <p className="px-2 pt-0.5 pb-1.5 text-2xs text-muted-foreground">{explained}</p>
+          )}
           <div role="radiogroup" aria-label="Checkout" className="flex flex-col gap-0.5">
             <ChoiceRow
               icon={<Monitor aria-hidden="true" className="size-3.5 text-muted-foreground" />}

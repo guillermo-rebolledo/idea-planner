@@ -48,6 +48,11 @@ Explicitly surface output that contradicts an existing ADR rather than silently 
   Submission carrying them. Their bounds, identity-reuse rule, and Harness
   prompt serialization live in the shared contract, so Renderer never decides
   what may be sent and the Conversation keeps only the person's prose.
+- **The New Session Checkout default** is one shared pure rule (ADR 0010) over
+  one Core observation — the Projects with an active Local Run, read from the
+  same Conversation projection the mailbox reads. The composer keeps the app's
+  proposal and the person's own pick in separate state, so a proposal can move
+  with what is running and a choice never does.
 - **Pull Request associations** are external source-control facts owned by Main
   beside its native `gh` process behavior (ADR 0007), not Conversation facts.
   Their app-owned record follows Session lifetime and is joined into the

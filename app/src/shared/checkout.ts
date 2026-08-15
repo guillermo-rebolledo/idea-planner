@@ -144,6 +144,43 @@ export const checkoutRequestSchema = z.discriminatedUnion('kind', [
 export type CheckoutRequest = z.infer<typeof checkoutRequestSchema>
 
 /**
+ * Why the New Session composer is proposing the Checkout it is proposing,
+ * when the reason is something observed rather than the standing baseline.
+ * The picker states it in one line: a default that moves for reasons nobody
+ * can see reads as the app deciding behind the person's back.
+ */
+export type CheckoutDefaultReason = 'local-run-active'
+
+export interface CheckoutDefault {
+  kind: CheckoutRequest['kind']
+  reason: CheckoutDefaultReason | null
+}
+
+/**
+ * Which Checkout a new Session starts on when the person has not said (ADR
+ * 0010). Two Sessions in one Project's working copy can write the same file
+ * with neither the app nor the person told, so a Project already being worked
+ * in hands the next Session an isolated Checkout of its own — the collision
+ * is answered by the directory, not by narrating it after both writes landed.
+ *
+ * With nothing running the baseline of ADR 0004 stands: the person's editor
+ * and dev server point at the working copy, so that is where work goes, and a
+ * Project whose Sessions are always isolated keeps getting isolated ones.
+ *
+ * Nothing here is a refusal. It decides only what is proposed; the person
+ * overrides in either direction and the picker argues with neither.
+ */
+export function defaultCheckout(context: {
+  /** Whether a Run is working in this Project's Local Checkout right now. */
+  localRunActive: boolean
+  /** What this Project's most recent Session used, or null when it has none. */
+  lastUsed: Checkout['kind'] | null
+}): CheckoutDefault {
+  if (context.localRunActive) return { kind: 'isolated', reason: 'local-run-active' }
+  return { kind: context.lastUsed === 'worktree' ? 'isolated' : 'local', reason: null }
+}
+
+/**
  * The branch an isolated checkout is cut onto, derived from the message that
  * starts the Session the same way its title is — deterministic and local. A
  * taken name is the creator's problem to suffix, not this function's.

@@ -1,7 +1,9 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ArrowUp, Check, FolderGit2 } from 'lucide-react'
 import {
+  defaultCheckout,
   shortCommit,
+  type Checkout,
   type CheckoutRequest,
   type ProjectView,
   type PermissionMode,
@@ -21,6 +23,7 @@ import {
   useModelCatalog,
   type ModelChoice
 } from '@renderer/components/ModelPicker'
+import { ConversationMailboxRefresh } from '@renderer/lib/mailbox-refresh'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@renderer/components/ui/menu'
 import { PermissionModePicker } from '@renderer/components/PermissionModePicker'
 import {
@@ -65,10 +68,21 @@ export function Composer({
   const [projects, setProjects] = useState<ProjectView[]>([])
   const [projectRoot, setProjectRoot] = useState(boundProjectRoot ?? '')
   const [sessions, setSessions] = useState<SessionSummary[]>([])
-  // The Checkout per Project: seeded from the kind that Project's most recent
-  // Session used, replaced by whatever the person chooses for this message —
-  // switching Projects keeps each one's choice.
-  const [checkouts, setCheckouts] = useState<Record<string, CheckoutRequest>>({})
+  // The Checkout kind the person picked, per Project. Absent means the app's
+  // own proposal still stands; present means it never will again, because a
+  // default that moves under a choice already made is the failure this whole
+  // rule is trying to avoid. Switching Projects keeps each one's choice.
+  const [chosenKind, setChosenKind] = useState<Record<string, CheckoutRequest['kind']>>({})
+  // The base an isolated Checkout would be cut from, per Project. Held apart
+  // from the kind because the picker settles it on its own, and bookkeeping
+  // must not read as somebody having chosen.
+  const [baseBranches, setBaseBranches] = useState<Record<string, string>>({})
+  // What each Project's most recent Session used — the standing fallback,
+  // which is what the default was before it had anything else to go on.
+  const [lastUsed, setLastUsed] = useState<Record<string, Checkout['kind']>>({})
+  // The Projects a Run is working in the Local Checkout of right now, this
+  // window's Sessions and everybody else's alike. Observed, never stored.
+  const [localRunProjects, setLocalRunProjects] = useState<string[]>([])
   // One choice, not three: the model carries the Harness that reaches it.
   const { models, readiness } = useModelCatalog()
   const [chosen, setChosen] = useState<ModelChoice | null>(null)
@@ -97,25 +111,18 @@ export function Composer({
         setProjects(listed)
         setSessions(listedSessions)
         // Sessions are newest first, so the first seen per Project is its
-        // most recent — and its Checkout kind is that Project's default. An
-        // isolated default arrives with no base; the picker settles it onto
-        // a real branch. Anything already chosen stays chosen.
-        const defaults: Record<string, CheckoutRequest> = {}
-        for (const session of listedSessions) {
-          defaults[session.projectRoot] ??=
-            session.checkout.kind === 'worktree'
-              ? { kind: 'isolated', baseBranch: '' }
-              : { kind: 'local' }
-        }
-        setCheckouts((current) => ({ ...defaults, ...current }))
+        // most recent — and what it used is that Project's fallback.
+        const recent: Record<string, Checkout['kind']> = {}
+        for (const session of listedSessions) recent[session.projectRoot] ??= session.checkout.kind
+        setLastUsed(recent)
         setProjectRoot((current) => {
           if (current && listed.some((project) => project.root === current)) return current
           const available = (root: string | undefined): string | undefined =>
             listed.find((project) => project.root === root && project.available)?.root
           // Where the last Session went is where the next one probably goes.
           // Sessions are newest first, so the most recent one is the answer.
-          const lastUsed = listedSessions.map((session) => session.projectRoot).find(available)
-          if (lastUsed) return lastUsed
+          const lastProject = listedSessions.map((session) => session.projectRoot).find(available)
+          if (lastProject) return lastProject
           // A lone Project is not a guess. Beyond that, nothing here can say
           // which repository is about to be edited, so nothing is chosen: the
           // headline renders a required picker instead (mockup 1c).
@@ -133,7 +140,51 @@ export function Composer({
     messageRef.current?.focus()
   }, [])
 
-  const checkout: CheckoutRequest = checkouts[projectRoot] ?? { kind: 'local' }
+  const observeLocalRuns = useCallback(() => {
+    void window.shell.listProjectsWithActiveLocalRuns().then(
+      (roots) => {
+        if (!disposedRef.current) setLocalRunProjects(roots)
+      },
+      () => undefined
+    )
+  }, [])
+
+  // Asked once for what is already running, then again on every Run boundary
+  // — the same lifecycle invalidation the inbox watches, which is what says a
+  // Run started or ended no matter which Session it belongs to. A default
+  // decided from state observed at this moment has to keep being observed, or
+  // it is a default that outlives its reason.
+  //
+  // Coming back to the window asks again too, as the inbox does: a Run started
+  // somewhere this window hears nothing from is still a Run in that Checkout.
+  useEffect(() => {
+    observeLocalRuns()
+    const refresh = new ConversationMailboxRefresh(observeLocalRuns)
+    const stop = window.shell.onConversationEvent((streamed) => {
+      refresh.handle(streamed)
+    })
+    window.addEventListener('focus', observeLocalRuns)
+    return () => {
+      refresh.dispose()
+      stop()
+      window.removeEventListener('focus', observeLocalRuns)
+    }
+  }, [observeLocalRuns])
+
+  // What this Project's Checkout would be if nobody said, and why. The
+  // person's own pick wins over it and is never recomputed.
+  const proposed = defaultCheckout({
+    localRunActive: localRunProjects.includes(projectRoot),
+    lastUsed: lastUsed[projectRoot] ?? null
+  })
+  const kind = chosenKind[projectRoot] ?? proposed.kind
+  const checkout: CheckoutRequest =
+    kind === 'isolated'
+      ? { kind: 'isolated', baseBranch: baseBranches[projectRoot] ?? '' }
+      : { kind: 'local' }
+  // Explained only while the offer is still the app's: a person who has
+  // answered the question does not need it argued at them again.
+  const reason = chosenKind[projectRoot] === undefined ? proposed.reason : null
 
   // A Harness that stops being usable stops being offered, and the choice
   // falls back to one that can still answer a message.
@@ -149,6 +200,21 @@ export function Composer({
     !sending &&
     // An isolated ask needs its base settled before there is anything to cut.
     (checkout.kind !== 'isolated' || checkout.baseBranch !== '')
+
+  /**
+   * Takes a Checkout for this Project. A pick by the person settles the kind
+   * for good; the picker settling its own base only records the base — except
+   * when it has to fall back to Local, which it does when the Project has no
+   * branch to cut a worktree from and no default can change that.
+   */
+  function chooseCheckout(next: CheckoutRequest, by: 'person' | 'app'): void {
+    if (next.kind === 'isolated') {
+      setBaseBranches((current) => ({ ...current, [projectRoot]: next.baseBranch }))
+    }
+    if (by === 'person' || next.kind === 'local') {
+      setChosenKind((current) => ({ ...current, [projectRoot]: next.kind }))
+    }
+  }
 
   /** Completes the visible Skill token and leaves the prompt ready after it. */
   function chooseSkill(name: string): void {
@@ -340,7 +406,9 @@ export function Composer({
             <CheckoutPicker
               projectRoot={projectRoot}
               value={checkout}
-              onChange={(next) => setCheckouts((current) => ({ ...current, [projectRoot]: next }))}
+              reason={reason}
+              onChange={(next) => chooseCheckout(next, 'person')}
+              onSettle={(next) => chooseCheckout(next, 'app')}
               disabled={sending}
             />
             <PermissionModePicker

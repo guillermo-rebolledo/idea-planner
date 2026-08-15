@@ -62,6 +62,27 @@ describe('durable Run lifecycle', () => {
     ).toHaveLength(1)
   })
 
+  it('opens a Run in the isolated Checkout its Session was fixed to', async () => {
+    const worktree = join(stateDirectory, 'worktrees', 'implement-the-lifecycle')
+    const session = await core.startSession({
+      projectRoot,
+      message: 'Start here',
+      checkout: { kind: 'worktree', path: worktree, baseBranch: 'trunk' }
+    })
+
+    const opened = await core.openRunLifecycle({
+      ...opening(session.id),
+      configuration: { ...opening(session.id).configuration, checkout: worktree }
+    })
+
+    expect(opened.run.configuration.checkout).toBe(worktree)
+    // And still only its own: the Project's working copy is a directory this
+    // Session was deliberately kept out of.
+    await expect(core.openRunLifecycle(opening(session.id))).rejects.toMatchObject({
+      code: 'INVALID_INPUT'
+    })
+  })
+
   it('repairs a derived Run after interruption behind the canonical opening boundary', async () => {
     const session = await core.startSession({ projectRoot, message: 'Start here' })
     const runsPath = join(stateDirectory, 'sessions', session.id, 'runs')

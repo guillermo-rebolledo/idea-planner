@@ -26,6 +26,7 @@ export const IPC_CHANNELS = {
   resumeWorktreeBootstrap: 'session:resume-worktree-bootstrap',
   listSessions: 'session:list',
   listDamagedSessions: 'session:list-damaged',
+  listProjectsWithActiveLocalRuns: 'session:active-local-runs',
   queryMailbox: 'mailbox:query',
   setSessionPinned: 'session:set-pinned',
   setSessionArchived: 'session:set-archived',

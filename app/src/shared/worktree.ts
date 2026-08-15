@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 /**
- * Reclaiming the isolated Checkouts Argos made (ADR 0008).
+ * Reclaiming the isolated Checkouts Argos made (ADR 0010).
  *
  * Argos has never removed a worktree, deliberately: git is the undo for files
  * and the app does not touch a person's work uninvited. That rule was written

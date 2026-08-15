@@ -3,8 +3,10 @@ import type { ConversationStreamEvent } from '@shared/conversation'
 const MAILBOX_REFRESH_DELAY_MS = 150
 
 /**
- * The mailbox's coalesced Conversation lane. It owns the timer so the same
- * policy the Renderer runs is what query-count tests exercise.
+ * The coalesced Conversation lane for anything read back when a Run starts or
+ * ends: the mailbox's rows, and the New Session composer's Checkout default.
+ * It owns the timer so the same policy the Renderer runs is what query-count
+ * tests exercise.
  */
 export class ConversationMailboxRefresh {
   private timer: ReturnType<typeof setTimeout> | null = null
