@@ -66,25 +66,36 @@ export function CheckoutPicker({
   disabled?: boolean
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
+  // A branch list is only ever a fact about the Project it was read from, so
+  // it is kept with that Project's root and never read as anything else's.
   // Null while nothing has been asked; 'unreadable' when git itself failed —
   // which is not the same as a Project with no branches.
-  const [branches, setBranches] = useState<BranchList | 'unreadable' | null>(null)
+  const [observed, setObserved] = useState<{
+    root: string
+    branches: BranchList | 'unreadable'
+  } | null>(null)
+  // The Project on screen has no branches until its own have been read. The
+  // one before it had a working copy, a current branch and a list of names,
+  // and every one of them is the wrong answer here — a worktree cut from a
+  // branch belonging to another repository is the mildest thing that goes
+  // wrong, and it is not the likeliest.
+  const branches = observed?.root === projectRoot ? observed.branches : null
 
   // Observed when the popover opens — branches move in any terminal at any
   // time — and also when an isolated ask arrives with no base yet, so the chip
   // can settle onto a real branch without being clicked. Two looks can be in
-  // flight at once, and only the newest is believed: a list belonging to the
-  // Project before last is not this Project's list.
+  // flight at once, so a look that is no longer the current one is dropped
+  // when it lands rather than replacing the one that is.
   const unsettled = value.kind === 'isolated' && value.baseBranch === ''
   useEffect(() => {
     if ((!open && !unsettled) || !projectRoot) return
     let current = true
     void window.shell.listBranches(projectRoot).then(
       (listing) => {
-        if (current) setBranches(listing)
+        if (current) setObserved({ root: projectRoot, branches: listing })
       },
       () => {
-        if (current) setBranches('unreadable')
+        if (current) setObserved({ root: projectRoot, branches: 'unreadable' })
       }
     )
     return () => {

@@ -24,6 +24,7 @@ import {
   useModelCatalog,
   type ModelChoice
 } from '@renderer/components/ModelPicker'
+import { LatestAnswer } from '@renderer/lib/latest-answer'
 import { ConversationMailboxRefresh } from '@renderer/lib/mailbox-refresh'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@renderer/components/ui/menu'
 import { PermissionModePicker } from '@renderer/components/PermissionModePicker'
@@ -107,9 +108,9 @@ export function Composer({
   // in one batch cannot both start a Session.
   const sendingRef = useRef(false)
   const disposedRef = useRef(false)
-  // Which ask for the running Local Runs is the current one, so an older
-  // answer arriving later is dropped rather than believed.
-  const localRunsAskedRef = useRef(0)
+  // Orders the answers about what is running, so an older one arriving later
+  // is dropped rather than believed.
+  const [localRunAnswers] = useState(() => new LatestAnswer())
 
   useEffect(() => {
     disposedRef.current = false
@@ -150,17 +151,18 @@ export function Composer({
 
   // Two of these can be in flight at once — a Run boundary and a focus can
   // land together — and the one that answers last is not necessarily the one
-  // asked last. Only the newest ask is adopted, or the composer could settle
-  // on a picture of the world that has already been superseded.
+  // asked last, so answers are ordered by when they were asked. An ask that
+  // fails just never wins: the newest answer anybody got stays, rather than
+  // being thrown away because a later question went unanswered.
   const observeLocalRuns = useCallback(() => {
-    const asked = ++localRunsAskedRef.current
+    const ticket = localRunAnswers.ask()
     void window.shell.listProjectsWithActiveLocalRuns().then(
       (roots) => {
-        if (!disposedRef.current && asked === localRunsAskedRef.current) setLocalRunProjects(roots)
+        if (!disposedRef.current && localRunAnswers.wins(ticket)) setLocalRunProjects(roots)
       },
       () => undefined
     )
-  }, [])
+  }, [localRunAnswers])
 
   // Asked once for what is already running, then again on every Run boundary
   // — the same lifecycle invalidation the inbox watches, which is what says a
